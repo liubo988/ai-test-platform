@@ -363,7 +363,6 @@ async function ensureModuleNameAvailable(projectUid: string, name: string, exclu
     `SELECT module_uid
      FROM test_modules
      WHERE project_uid = ?
-       AND status = 'active'
        AND name = ?
        AND (? = '' OR module_uid <> ?)
      LIMIT 1`,
@@ -849,8 +848,14 @@ export async function updateTestModule(moduleUid: string, input: TestModuleInput
 
 export async function archiveTestModule(moduleUid: string): Promise<void> {
   const pool = getDbPool();
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT COUNT(*) AS cnt FROM test_configurations WHERE module_uid = ? AND status = 'active'`,
+    [moduleUid]
+  );
+  if (Number(rows[0]?.cnt) > 0) {
+    throw new Error('该模块下还有任务，请先删除或移动任务后再归档模块');
+  }
   await pool.execute<ResultSetHeader>(`UPDATE test_modules SET status = 'archived' WHERE module_uid = ?`, [moduleUid]);
-  await pool.execute<ResultSetHeader>(`UPDATE test_configurations SET status = 'archived' WHERE module_uid = ?`, [moduleUid]);
 }
 
 export async function restoreTestModule(moduleUid: string): Promise<void> {

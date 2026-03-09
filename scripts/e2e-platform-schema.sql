@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS test_modules (
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   UNIQUE KEY uk_test_modules_uid (module_uid),
+  UNIQUE KEY uk_test_modules_project_name (project_uid, name),
   KEY idx_test_modules_project_sort (project_uid, status, sort_order, updated_at),
   CONSTRAINT fk_test_modules_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
     ON UPDATE CASCADE ON DELETE RESTRICT

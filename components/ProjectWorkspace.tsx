@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type CSSProperties } from 'react';
 import { useSearchParams } from 'next/navigation';
+import Link from 'next/link';
 
 type ProjectStatus = 'active' | 'archived';
 type ModuleStatus = 'active' | 'archived';
@@ -262,9 +263,11 @@ function formatMoment(value: string): string {
   return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
+const ALL_MODULES_UID = '__all__';
+
 export default function ProjectWorkspace({ projectUid }: { projectUid: string }) {
   const searchParams = useSearchParams();
-  const initialModuleUid = searchParams.get('module') || '';
+  const initialModuleUid = searchParams.get('module') || ALL_MODULES_UID;
   const [project, setProject] = useState<ProjectItem | null>(null);
   const [modules, setModules] = useState<ModuleItem[]>([]);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
@@ -308,6 +311,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
 
   const [currentPage, setCurrentPage] = useState(1);
   const [generatingUid, setGeneratingUid] = useState('');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const PAGE_SIZE = 10;
 
   const activeModule = modules.find((item) => item.moduleUid === activeModuleUid) || null;
@@ -377,10 +381,11 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
       const nextItems = (json.items || []) as ModuleItem[];
       setModules(nextItems);
       setActiveModuleUid((current) => {
+        if (current === ALL_MODULES_UID) return current;
         if (current && nextItems.some((item) => item.moduleUid === current)) return current;
-        return nextItems[0]?.moduleUid || '';
+        return ALL_MODULES_UID;
       });
-      if (nextItems.length === 0) setTasks([]);
+      if (nextItems.length === 0 && activeModuleUid !== ALL_MODULES_UID) setTasks([]);
       setError('');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '加载模块失败');
@@ -393,7 +398,9 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
     if (!moduleUid) { setTasks([]); return; }
     setLoadingTasks(true);
     try {
-      const qs = new URLSearchParams({ projectUid, moduleUid, page: '1', pageSize: '100', status: contentStatusFilter });
+      const qsParams: Record<string, string> = { projectUid, page: '1', pageSize: '100', status: contentStatusFilter };
+      if (moduleUid !== ALL_MODULES_UID) qsParams.moduleUid = moduleUid;
+      const qs = new URLSearchParams(qsParams);
       const res = await fetch(`/api/test-configs?${qs.toString()}`);
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || '加载任务失败');
@@ -681,6 +688,12 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                   <span className="text-amber-600">{project.activeExecutionCount} 执行中</span>
                 </>
               )}
+              <Link
+                href="/"
+                className="ml-2 inline-flex h-7 items-center rounded-lg border border-slate-200 bg-white px-2.5 text-xs text-slate-500 transition hover:bg-slate-50 hover:text-slate-700"
+              >
+                返回项目首页
+              </Link>
             </div>
           )}
         </div>
@@ -701,57 +714,131 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
         <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</div>
       )}
 
-      {/* ── 2:8 layout ── */}
-      <div className="grid gap-4 xl:grid-cols-[220px_minmax(0,1fr)]">
-        {/* ── modules sidebar ── */}
-        <aside className="space-y-1.5">
-          {loadingModules && <p className="px-3 py-4 text-xs text-slate-400">加载模块中...</p>}
-
-          {!loadingModules && modules.length === 0 && (
-            <div className="rounded-lg border border-dashed border-slate-300 px-3 py-6 text-center text-xs text-slate-500">
-              还没有模块
-            </div>
-          )}
-
-          {!loadingModules && modules.map((module) => {
-            const active = module.moduleUid === activeModuleUid;
-            return (
+      {/* ── sidebar + task layout ── */}
+      <div className={`grid gap-4 ${sidebarCollapsed ? 'xl:grid-cols-[44px_minmax(0,1fr)]' : 'xl:grid-cols-[220px_minmax(0,1fr)]'} transition-all duration-200`}>
+        {/* ── modules sidebar (glassmorphism) ── */}
+        <aside>
+          <div className="relative overflow-hidden rounded-2xl p-2">
+            {/* colored gradient backdrop for glass effect */}
+            <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-blue-400/30 via-violet-400/20 to-orange-300/25" />
+            <div className="absolute inset-0 rounded-2xl border border-white/40 bg-white/45 shadow-lg backdrop-blur-2xl" style={{ WebkitBackdropFilter: 'blur(24px)' }} />
+            <div className="relative">
+              {/* collapse/expand toggle */}
               <button
-                key={module.moduleUid}
-                onClick={() => { setActiveModuleUid(module.moduleUid); setCurrentPage(1); }}
-                className={`w-full rounded-lg px-3 py-2.5 text-left transition ${
-                  active
-                    ? 'bg-slate-900 text-white shadow-sm'
-                    : 'text-slate-700 hover:bg-slate-100'
-                }`}
+                onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+                title={sidebarCollapsed ? '展开模块' : '收起模块'}
+                className="mb-1 flex w-full items-center justify-center rounded-lg bg-white/40 py-1.5 text-slate-500 transition hover:bg-white/70 hover:text-slate-700"
               >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-sm font-medium">{module.name}</span>
-                  <span className={`flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                    active ? 'bg-white/20 text-white/80' : 'bg-slate-100 text-slate-500'
-                  }`}>
-                    {module.taskCount}
-                  </span>
-                </div>
-                <div className={`mt-1 flex items-center gap-2 text-[11px] ${active ? 'text-white/60' : 'text-slate-400'}`}>
-                  <span className={`h-1.5 w-1.5 rounded-full ${statusDot(module.latestExecutionStatus)}`} />
-                  <span>{formatPassRate(module.executionCount, module.passRate)} 通过</span>
-                  <span>· {module.executionCount} 次</span>
-                </div>
+                <svg className={`h-3.5 w-3.5 transition-transform ${sidebarCollapsed ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+                </svg>
+                {!sidebarCollapsed && <span className="ml-1 text-[11px] font-medium">收起</span>}
               </button>
-            );
-          })}
 
-          {activeModule && !loadingModules && (
-            <div className="mt-2 flex gap-1 px-1">
-              <button onClick={() => openEditModule(activeModule)} className="flex-1 rounded-md border border-slate-200 bg-white py-1.5 text-[11px] text-slate-500 hover:bg-slate-50">
-                编辑
-              </button>
-              <button onClick={() => void deleteModule(activeModule)} className="flex-1 rounded-md border border-rose-200 bg-rose-50 py-1.5 text-[11px] text-rose-600 hover:bg-rose-100">
-                归档
-              </button>
+              {/* collapsed: only show icons for each module */}
+              {sidebarCollapsed && (
+                <div className="space-y-1">
+                  <button
+                    onClick={() => { setActiveModuleUid(ALL_MODULES_UID); setCurrentPage(1); }}
+                    title={`默认 (${project?.taskCount ?? 0})`}
+                    className={`flex h-7 w-full items-center justify-center rounded-lg text-[11px] font-bold transition-all ${
+                      activeModuleUid === ALL_MODULES_UID
+                        ? 'bg-white/90 text-slate-900 shadow-md ring-1 ring-white/60'
+                        : 'text-slate-600 hover:bg-white/40'
+                    }`}
+                  >
+                    全
+                  </button>
+                  {!loadingModules && modules.map((module) => {
+                    const active = module.moduleUid === activeModuleUid;
+                    return (
+                      <button
+                        key={module.moduleUid}
+                        onClick={() => { setActiveModuleUid(module.moduleUid); setCurrentPage(1); }}
+                        title={`${module.name} (${module.taskCount})`}
+                        className={`flex h-7 w-full items-center justify-center rounded-lg text-[11px] font-bold transition-all ${
+                          active
+                            ? 'bg-white/90 text-slate-900 shadow-md ring-1 ring-white/60'
+                            : 'text-slate-600 hover:bg-white/40'
+                        }`}
+                      >
+                        {module.name.charAt(0)}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* expanded: full module list */}
+              {!sidebarCollapsed && (
+                <div className="space-y-1">
+                  {/* default "all tasks" module */}
+                  <button
+                    onClick={() => { setActiveModuleUid(ALL_MODULES_UID); setCurrentPage(1); }}
+                    className={`w-full rounded-xl px-3 py-2.5 text-left transition-all ${
+                      activeModuleUid === ALL_MODULES_UID
+                        ? 'bg-white/90 text-slate-900 shadow-md ring-1 ring-white/60'
+                        : 'text-slate-700 hover:bg-white/40'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate text-sm font-semibold">默认</span>
+                      <span className={`flex-shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                        activeModuleUid === ALL_MODULES_UID ? 'bg-slate-800 text-white' : 'bg-white/70 text-slate-500'
+                      }`}>
+                        {project?.taskCount ?? 0}
+                      </span>
+                    </div>
+                    <div className={`mt-1 text-[11px] ${activeModuleUid === ALL_MODULES_UID ? 'text-slate-500' : 'text-slate-500/70'}`}>
+                      全部任务
+                    </div>
+                  </button>
+
+                  {loadingModules && <p className="px-3 py-4 text-xs text-slate-400">加载模块中...</p>}
+
+                  {!loadingModules && modules.map((module) => {
+                    const active = module.moduleUid === activeModuleUid;
+                    return (
+                      <button
+                        key={module.moduleUid}
+                        onClick={() => { setActiveModuleUid(module.moduleUid); setCurrentPage(1); }}
+                        className={`w-full rounded-xl px-3 py-2.5 text-left transition-all ${
+                          active
+                            ? 'bg-white/90 text-slate-900 shadow-md ring-1 ring-white/60'
+                            : 'text-slate-700 hover:bg-white/40'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate text-sm font-semibold">{module.name}</span>
+                          <span className={`flex-shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                            active ? 'bg-slate-800 text-white' : 'bg-white/70 text-slate-500'
+                          }`}>
+                            {module.taskCount}
+                          </span>
+                        </div>
+                        <div className={`mt-1 flex items-center gap-2 text-[11px] ${active ? 'text-slate-500' : 'text-slate-500/70'}`}>
+                          <span className={`h-1.5 w-1.5 rounded-full ${statusDot(module.latestExecutionStatus)}`} />
+                          <span>{formatPassRate(module.executionCount, module.passRate)} 通过</span>
+                          <span>· {module.executionCount} 次</span>
+                        </div>
+                      </button>
+                    );
+                  })}
+
+                  {activeModule && activeModuleUid !== ALL_MODULES_UID && !loadingModules && (
+                    <div className="flex gap-1 px-0.5 pt-1">
+                      <button onClick={() => openEditModule(activeModule)} className="flex-1 rounded-lg bg-white/40 py-1.5 text-[11px] font-medium text-slate-600 transition hover:bg-white/70">
+                        编辑
+                      </button>
+                      <button onClick={() => void deleteModule(activeModule)} className="flex-1 rounded-lg bg-white/40 py-1.5 text-[11px] font-medium text-rose-500 transition hover:bg-rose-100/60">
+                        归档
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-          )}
+          </div>
         </aside>
 
         {/* ── task table area ── */}
@@ -764,21 +851,21 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
               placeholder="搜索任务名称、URL、描述..."
               className="h-9 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-slate-400"
             />
-            {activeModule && (
-              <span className="flex-shrink-0 text-xs text-slate-400">{activeModule.name} · {filteredTasks.length} 个任务</span>
-            )}
+            <span className="flex-shrink-0 text-xs text-slate-400">
+              {activeModuleUid === ALL_MODULES_UID ? '全部' : activeModule?.name} · {filteredTasks.length} 个任务
+            </span>
           </div>
 
           {loadingTasks && <p className="py-8 text-center text-sm text-slate-400">加载任务中...</p>}
 
-          {!loadingTasks && !activeModule && (
+          {!loadingTasks && !activeModule && activeModuleUid !== ALL_MODULES_UID && (
             <div className="rounded-lg border border-dashed border-slate-300 px-6 py-12 text-center">
               <p className="text-sm font-medium text-slate-700">请先选择或创建模块</p>
               <p className="mt-1 text-xs text-slate-400">左侧选中模块后，这里会展示该模块下的测试任务。</p>
             </div>
           )}
 
-          {!loadingTasks && activeModule && filteredTasks.length === 0 && (
+          {!loadingTasks && (activeModule || activeModuleUid === ALL_MODULES_UID) && filteredTasks.length === 0 && (
             <div className="rounded-lg border border-dashed border-slate-300 px-6 py-12 text-center">
               <p className="text-sm font-medium text-slate-700">当前模块没有测试任务</p>
               <button onClick={openCreateTask} className="mt-3 h-8 rounded-lg bg-slate-900 px-4 text-xs font-medium text-white hover:bg-slate-700">
