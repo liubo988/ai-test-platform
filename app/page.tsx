@@ -1,222 +1,184 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useEffect, useState, useTransition } from 'react';
 
-type ConfigStatus = 'active' | 'archived';
+type ProjectStatus = 'active' | 'archived';
 
-type ConfigItem = {
-  configUid: string;
-  sortOrder: number;
-  moduleName: string;
+type ProjectItem = {
+  projectUid: string;
   name: string;
-  targetUrl: string;
-  featureDescription: string;
+  description: string;
+  coverImageUrl: string;
   authRequired: boolean;
   loginUrl: string;
   loginUsername: string;
-  loginPasswordMasked: string;
-  coverageMode: 'all_tiers';
-  status: ConfigStatus;
+  loginDescription: string;
+  status: ProjectStatus;
   createdAt: string;
   updatedAt: string;
-  latestPlanUid?: string;
-  latestPlanVersion?: number;
-  latestExecutionUid?: string;
-  latestExecutionStatus?: string;
+  moduleCount: number;
+  taskCount: number;
+  executionCount: number;
+  passedExecutionCount: number;
+  failedExecutionCount: number;
+  activeExecutionCount: number;
+  passRate: number;
+  latestExecutionUid: string;
+  latestExecutionStatus: string;
+  lastExecutionAt: string;
 };
 
-type FormState = {
-  sortOrder: number;
-  moduleName: string;
+type ProjectFormState = {
   name: string;
-  targetUrl: string;
-  featureDescription: string;
+  description: string;
+  coverImageUrl: string;
   authRequired: boolean;
   loginUrl: string;
   loginUsername: string;
   loginPassword: string;
+  loginDescription: string;
 };
 
-type PlanPreview = {
-  planUid: string;
-  planTitle: string;
-  planVersion: number;
-  planSummary: string;
-  planCode: string;
-  generatedFiles: Array<{ name: string; content: string; language: string }>;
-  createdAt: string;
-};
-
-type PlanCase = {
-  caseUid: string;
-  tier: 'simple' | 'medium' | 'complex';
-  caseName: string;
-  expectedResult: string;
-};
-
-type ExecutionRow = {
-  executionUid: string;
-  planUid: string;
-  status: 'queued' | 'running' | 'passed' | 'failed' | 'canceled';
-  startedAt: string;
-  endedAt: string;
-  durationMs: number;
-  resultSummary: string;
-  errorMessage: string;
-  createdAt: string;
-};
-
-type ExecutionEvent = {
-  eventType: string;
-  payload: unknown;
-  createdAt: string;
-};
-
-type EventTypeFilter = 'all' | 'step' | 'log' | 'frame' | 'status' | 'artifact';
-type EventTimeRange = 'all' | '15m' | '1h' | '24h';
-type EventLogLevelFilter = 'all' | 'error' | 'warn' | 'info';
-
-const defaultForm: FormState = {
-  sortOrder: 100,
-  moduleName: 'general',
+const defaultForm: ProjectFormState = {
   name: '',
-  targetUrl: '',
-  featureDescription: '',
+  description: '',
+  coverImageUrl: '',
   authRequired: false,
   loginUrl: '',
   loginUsername: '',
   loginPassword: '',
+  loginDescription: '',
 };
 
 function statusTone(status?: string): string {
   switch (status) {
     case 'passed':
-      return 'bg-emerald-100 text-emerald-700';
+      return 'bg-emerald-500/12 text-emerald-700 ring-emerald-500/20';
     case 'failed':
-      return 'bg-rose-100 text-rose-700';
+      return 'bg-rose-500/12 text-rose-700 ring-rose-500/20';
     case 'running':
-      return 'bg-amber-100 text-amber-700';
+      return 'bg-amber-500/12 text-amber-700 ring-amber-500/20';
     case 'queued':
-      return 'bg-slate-100 text-slate-700';
+      return 'bg-slate-500/12 text-slate-700 ring-slate-500/20';
     default:
-      return 'bg-zinc-100 text-zinc-600';
+      return 'bg-white/72 text-slate-600 ring-white/45';
   }
 }
 
-function isErrorEvent(event: ExecutionEvent): boolean {
-  const payload = (event.payload || {}) as Record<string, unknown>;
-
-  if (event.eventType === 'step') {
-    const status = String(payload.status || '').toLowerCase();
-    return status === 'failed';
+function buildCoverStyle(project: ProjectItem): React.CSSProperties {
+  const fallback = `linear-gradient(135deg, rgba(48,79,254,0.16), rgba(255,255,255,0.04) 34%, rgba(255,158,74,0.22))`;
+  if (!project.coverImageUrl) {
+    return {
+      backgroundImage: fallback,
+    };
   }
 
-  if (event.eventType === 'status') {
-    const status = String(payload.status || '').toLowerCase();
-    return status === 'failed';
-  }
+  return {
+    backgroundImage: `linear-gradient(180deg, rgba(18,28,45,0.12), rgba(18,28,45,0.78)), url(${project.coverImageUrl})`,
+    backgroundSize: 'cover',
+    backgroundPosition: 'center',
+  };
+}
 
-  if (event.eventType === 'log') {
-    const level = String(payload.level || '').toLowerCase();
-    if (level === 'error') return true;
-  }
+function formatPassRate(total: number, passRate: number): string {
+  return total > 0 ? `${passRate}%` : '暂无';
+}
 
-  const text = JSON.stringify(payload || {}).toLowerCase();
-  return text.includes('error') || text.includes('failed') || text.includes('异常');
+function formatExecutionMoment(value: string): string {
+  if (!value) return '暂无';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '暂无';
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 export default function HomePage() {
-  const [items, setItems] = useState<ConfigItem[]>([]);
+  const router = useRouter();
+  const [items, setItems] = useState<ProjectItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [keyword, setKeyword] = useState('');
-  const [statusFilter, setStatusFilter] = useState<ConfigStatus>('active');
+  const [statusFilter, setStatusFilter] = useState<ProjectStatus>('active');
   const [error, setError] = useState('');
-
-  const [openDrawer, setOpenDrawer] = useState(false);
+  const [openModal, setOpenModal] = useState(false);
   const [editingUid, setEditingUid] = useState('');
-  const [form, setForm] = useState<FormState>(defaultForm);
+  const [navigatingProjectUid, setNavigatingProjectUid] = useState('');
+  const [form, setForm] = useState<ProjectFormState>(defaultForm);
+  const [isNavigating, startNavigation] = useTransition();
 
-  const [actioningUid, setActioningUid] = useState('');
+  const isEditing = Boolean(editingUid);
+  const totalModules = items.reduce((sum, item) => sum + item.moduleCount, 0);
+  const totalTasks = items.reduce((sum, item) => sum + item.taskCount, 0);
+  const totalExecutions = items.reduce((sum, item) => sum + item.executionCount, 0);
+  const totalPassedExecutions = items.reduce((sum, item) => sum + item.passedExecutionCount, 0);
+  const totalActiveExecutions = items.reduce((sum, item) => sum + item.activeExecutionCount, 0);
+  const fleetPassRate = totalExecutions > 0 ? Math.round((totalPassedExecutions / totalExecutions) * 100) : 0;
 
-  const [previewOpen, setPreviewOpen] = useState(false);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewPlan, setPreviewPlan] = useState<PlanPreview | null>(null);
-  const [previewCases, setPreviewCases] = useState<PlanCase[]>([]);
-
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyRows, setHistoryRows] = useState<ExecutionRow[]>([]);
-  const [historyConfigName, setHistoryConfigName] = useState('');
-  const [historyStatusFilter, setHistoryStatusFilter] = useState<'all' | ExecutionRow['status']>('all');
-  const [historyOrder, setHistoryOrder] = useState<'desc' | 'asc'>('desc');
-  const [historyKeyword, setHistoryKeyword] = useState('');
-  const [historyEventMap, setHistoryEventMap] = useState<Record<string, ExecutionEvent[]>>({});
-  const [historyEventLoadingUid, setHistoryEventLoadingUid] = useState('');
-  const [historyExpandedUid, setHistoryExpandedUid] = useState('');
-  const [historyEventTypeFilter, setHistoryEventTypeFilter] = useState<EventTypeFilter>('all');
-  const [historyEventLogLevelFilter, setHistoryEventLogLevelFilter] = useState<EventLogLevelFilter>('all');
-  const [historyEventKeyword, setHistoryEventKeyword] = useState('');
-  const [historyEventTimeRange, setHistoryEventTimeRange] = useState<EventTimeRange>('all');
-  const [historyAutoHandled, setHistoryAutoHandled] = useState(false);
-
-  const isEditing = useMemo(() => Boolean(editingUid), [editingUid]);
-
-  const loadList = useCallback(async () => {
+async function loadProjects() {
     setLoading(true);
     setError('');
     try {
       const qs = new URLSearchParams({
         page: '1',
-        pageSize: '50',
+        pageSize: '48',
         status: statusFilter,
       });
       if (keyword.trim()) qs.set('keyword', keyword.trim());
 
-      const res = await fetch(`/api/test-configs?${qs.toString()}`);
+      const res = await fetch(`/api/projects?${qs.toString()}`);
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || '加载失败');
+      if (!res.ok) throw new Error(json.error || '加载项目失败');
       setItems(json.items || []);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : '加载失败');
+      setError(err instanceof Error ? err.message : '加载项目失败');
     } finally {
       setLoading(false);
     }
+  }
+
+  useEffect(() => {
+    void loadProjects();
   }, [keyword, statusFilter]);
 
   useEffect(() => {
-    void loadList();
-  }, [loadList]);
+    if (!isNavigating) {
+      setNavigatingProjectUid('');
+    }
+  }, [isNavigating]);
 
-  const resetForm = () => {
-    setForm(defaultForm);
+  function resetForm() {
     setEditingUid('');
-  };
+    setForm(defaultForm);
+  }
 
-  const openCreate = () => {
+  function openCreate() {
     resetForm();
-    setOpenDrawer(true);
-  };
+    setOpenModal(true);
+  }
 
-  const openEdit = (item: ConfigItem) => {
-    setEditingUid(item.configUid);
+  function openEdit(item: ProjectItem) {
+    setEditingUid(item.projectUid);
     setForm({
-      sortOrder: item.sortOrder || 100,
-      moduleName: item.moduleName || 'general',
       name: item.name,
-      targetUrl: item.targetUrl,
-      featureDescription: item.featureDescription,
+      description: item.description,
+      coverImageUrl: item.coverImageUrl,
       authRequired: item.authRequired,
       loginUrl: item.loginUrl || '',
       loginUsername: item.loginUsername || '',
       loginPassword: '',
+      loginDescription: item.loginDescription || '',
     });
-    setOpenDrawer(true);
-  };
+    setOpenModal(true);
+  }
 
-  const submitForm = async () => {
-    if (!form.name || !form.targetUrl || !form.featureDescription) {
-      setError('请填写完整的名称、目标 URL、功能描述');
+  async function submitProject() {
+    if (!form.name.trim() || !form.description.trim()) {
+      setError('请填写完整的项目名称和描述');
       return;
     }
 
@@ -224,960 +186,449 @@ export default function HomePage() {
     setError('');
     try {
       const payload = {
-        sortOrder: Number.isFinite(Number(form.sortOrder)) ? Number(form.sortOrder) : 100,
-        moduleName: form.moduleName || 'general',
-        name: form.name,
-        targetUrl: form.targetUrl,
-        featureDescription: form.featureDescription,
+        name: form.name.trim(),
+        description: form.description.trim(),
+        coverImageUrl: form.coverImageUrl.trim(),
         authRequired: form.authRequired,
-        loginUrl: form.authRequired ? form.loginUrl : '',
-        loginUsername: form.authRequired ? form.loginUsername : '',
+        loginUrl: form.authRequired ? form.loginUrl.trim() : '',
+        loginUsername: form.authRequired ? form.loginUsername.trim() : '',
         loginPassword: form.authRequired ? form.loginPassword : '',
+        loginDescription: form.authRequired ? form.loginDescription.trim() : '',
       };
 
-      const res = await fetch(isEditing ? `/api/test-configs/${editingUid}` : '/api/test-configs', {
+      const res = await fetch(isEditing ? `/api/projects/${editingUid}` : '/api/projects', {
         method: isEditing ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
 
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || '保存失败');
+      if (!res.ok) throw new Error(json.error || '保存项目失败');
 
-      setOpenDrawer(false);
+      setOpenModal(false);
       resetForm();
-      await loadList();
+      await loadProjects();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : '保存失败');
+      setError(err instanceof Error ? err.message : '保存项目失败');
     } finally {
       setSaving(false);
     }
-  };
+  }
 
-  const deleteConfig = async (configUid: string) => {
-    if (!confirm('确认删除该测试配置？')) return;
+  async function deleteProject(projectUid: string) {
+    if (!confirm('确认归档这个测试项目？项目下的模块和任务会一并归档。')) return;
 
-    setActioningUid(configUid);
     setError('');
     try {
-      const res = await fetch(`/api/test-configs/${configUid}`, { method: 'DELETE' });
+      const res = await fetch(`/api/projects/${projectUid}`, { method: 'DELETE' });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || '删除失败');
-      await loadList();
+      if (!res.ok) throw new Error(json.error || '删除项目失败');
+      await loadProjects();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : '删除失败');
-    } finally {
-      setActioningUid('');
+      setError(err instanceof Error ? err.message : '删除项目失败');
     }
-  };
+  }
 
-  const generatePlan = async (configUid: string) => {
-    setActioningUid(configUid);
+  async function restoreProject(projectUid: string) {
     setError('');
     try {
-      const res = await fetch(`/api/test-configs/${configUid}/generate-plan`, { method: 'POST' });
+      const res = await fetch(`/api/projects/${projectUid}/restore`, { method: 'POST' });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || '生成测试计划失败');
-      await loadList();
-      await openPlanPreviewByUid(json.planUid);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : '生成失败');
-    } finally {
-      setActioningUid('');
-    }
-  };
-
-  const executePlan = async (item: ConfigItem) => {
-    if (!item.latestPlanUid) {
-      setError('请先生成测试计划');
-      return;
-    }
-
-    setActioningUid(item.configUid);
-    setError('');
-    try {
-      const res = await fetch(`/api/test-plans/${item.latestPlanUid}/execute`, { method: 'POST' });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || '执行失败');
-      window.location.href = `/executions/${json.executionUid}`;
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : '执行失败');
-      setActioningUid('');
-    }
-  };
-
-  const openPlanPreviewByUid = async (planUid?: string) => {
-    if (!planUid) {
-      setError('暂无测试计划可预览');
-      return;
-    }
-
-    setPreviewOpen(true);
-    setPreviewLoading(true);
-    try {
-      const res = await fetch(`/api/test-plans/${planUid}`);
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || '加载测试计划失败');
-      setPreviewPlan(json.plan);
-      setPreviewCases(json.cases || []);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : '加载计划失败');
-      setPreviewOpen(false);
-    } finally {
-      setPreviewLoading(false);
-    }
-  };
-
-  const openExecutionHistory = async (item: ConfigItem) => {
-    setHistoryOpen(true);
-    setHistoryLoading(true);
-    setHistoryConfigName(item.name);
-    setHistoryStatusFilter('all');
-    setHistoryOrder('desc');
-    setHistoryKeyword('');
-    setHistoryExpandedUid('');
-    setHistoryEventMap({});
-    setHistoryEventLoadingUid('');
-    setHistoryEventTypeFilter('all');
-    setHistoryEventLogLevelFilter('all');
-    setHistoryEventKeyword('');
-    setHistoryEventTimeRange('all');
-    setHistoryAutoHandled(false);
-    try {
-      const res = await fetch(`/api/test-configs/${item.configUid}/executions?limit=50`);
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || '加载执行历史失败');
-      setHistoryRows(json.items || []);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : '加载历史失败');
-      setHistoryOpen(false);
-    } finally {
-      setHistoryLoading(false);
-    }
-  };
-
-  const filteredHistoryRows = useMemo(() => {
-    const rows = historyRows.filter((row) => {
-      if (historyStatusFilter !== 'all' && row.status !== historyStatusFilter) {
-        return false;
+      if (!res.ok) throw new Error(json.error || '恢复项目失败');
+      if (statusFilter === 'archived') {
+        setItems((current) => current.filter((item) => item.projectUid !== projectUid));
+      } else {
+        await loadProjects();
       }
-      const kw = historyKeyword.trim().toLowerCase();
-      if (!kw) return true;
-      return (
-        row.executionUid.toLowerCase().includes(kw) ||
-        row.planUid.toLowerCase().includes(kw) ||
-        row.resultSummary.toLowerCase().includes(kw) ||
-        row.errorMessage.toLowerCase().includes(kw)
-      );
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '恢复项目失败');
+    }
+  }
+
+  function openProject(projectUid: string) {
+    setNavigatingProjectUid(projectUid);
+    startNavigation(() => {
+      router.push(`/projects/${projectUid}`);
     });
-
-    rows.sort((a, b) => {
-      const at = new Date(a.createdAt).getTime();
-      const bt = new Date(b.createdAt).getTime();
-      return historyOrder === 'desc' ? bt - at : at - bt;
-    });
-
-    return rows;
-  }, [historyRows, historyStatusFilter, historyKeyword, historyOrder]);
-
-  const downloadTextFile = (filename: string, content: string, mimeType: string) => {
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const exportHistoryJson = () => {
-    const filename = `execution-history-${Date.now()}.json`;
-    downloadTextFile(filename, JSON.stringify(filteredHistoryRows, null, 2), 'application/json;charset=utf-8');
-  };
-
-  const csvEscape = (value: string) => `"${value.replace(/"/g, '""')}"`;
-
-  const exportHistoryCsv = () => {
-    const header = ['execution_uid', 'plan_uid', 'status', 'created_at', 'started_at', 'ended_at', 'duration_ms', 'result_summary', 'error_message'];
-    const lines = [header.join(',')];
-    for (const row of filteredHistoryRows) {
-      lines.push(
-        [
-          row.executionUid,
-          row.planUid,
-          row.status,
-          row.createdAt,
-          row.startedAt,
-          row.endedAt,
-          String(row.durationMs || 0),
-          row.resultSummary || '',
-          row.errorMessage || '',
-        ]
-          .map(csvEscape)
-          .join(',')
-      );
-    }
-    const filename = `execution-history-${Date.now()}.csv`;
-    downloadTextFile(filename, lines.join('\n'), 'text/csv;charset=utf-8');
-  };
-
-  const downloadPlanScript = () => {
-    if (!previewPlan) return;
-    const content = previewPlan.generatedFiles?.[0]?.content || previewPlan.planCode || '';
-    const filename = (previewPlan.generatedFiles?.[0]?.name || `${previewPlan.planUid}.spec.ts`).replace(/\s+/g, '-');
-    downloadTextFile(filename, content, 'text/plain;charset=utf-8');
-  };
-
-  const payloadPreview = (payload: unknown): string => {
-    try {
-      return JSON.stringify(payload);
-    } catch {
-      return String(payload || '');
-    }
-  };
-
-  const renderEventLine = (event: ExecutionEvent) => {
-    const payload = (event.payload || {}) as Record<string, unknown>;
-    if (event.eventType === 'step') {
-      return `[step] ${String(payload.title || '-')}: ${String(payload.status || '-')}${payload.error ? ` · ${String(payload.error)}` : ''}`;
-    }
-    if (event.eventType === 'log') {
-      return `[log] ${String(payload.level || 'info')}: ${String(payload.message || '')}`;
-    }
-    if (event.eventType === 'artifact') {
-      return `[artifact] ${String(payload.type || '-')}: ${String(payload.name || payload.path || '')}`;
-    }
-    if (event.eventType === 'status') {
-      return `[status] ${String(payload.status || '-')}: ${String(payload.summary || '')}`;
-    }
-    if (event.eventType === 'frame') {
-      return `[frame] #${String(payload.frameIndex || 0)} ${payload.channel ? `(${String(payload.channel)})` : ''}`;
-    }
-    return `[${event.eventType}] ${payloadPreview(event.payload)}`;
-  };
-
-  const getFilteredEventsForExecution = (executionUid: string): ExecutionEvent[] => {
-    let rows = historyEventMap[executionUid] || [];
-
-    if (historyEventTypeFilter === 'all') {
-      // 默认不展示 frame，避免实时画面帧日志淹没有效信息
-      rows = rows.filter((item) => item.eventType !== 'frame');
-    } else {
-      rows = rows.filter((item) => item.eventType === historyEventTypeFilter);
-    }
-
-    if (historyEventTimeRange !== 'all') {
-      const now = Date.now();
-      const rangeMs =
-        historyEventTimeRange === '15m'
-          ? 15 * 60 * 1000
-          : historyEventTimeRange === '1h'
-            ? 60 * 60 * 1000
-            : 24 * 60 * 60 * 1000;
-      rows = rows.filter((item) => {
-        const t = new Date(item.createdAt).getTime();
-        return Number.isFinite(t) && now - t <= rangeMs;
-      });
-    }
-
-    if (historyEventLogLevelFilter !== 'all' && (historyEventTypeFilter === 'all' || historyEventTypeFilter === 'log')) {
-      rows = rows.filter((item) => {
-        if (item.eventType !== 'log') return false;
-        const payload = (item.payload || {}) as Record<string, unknown>;
-        const level = String(payload.level || '').toLowerCase();
-        return level === historyEventLogLevelFilter;
-      });
-    }
-
-    const kw = historyEventKeyword.trim().toLowerCase();
-    if (kw) {
-      rows = rows.filter((item) => {
-        const line = renderEventLine(item).toLowerCase();
-        const payload = payloadPreview(item.payload).toLowerCase();
-        return (
-          item.eventType.toLowerCase().includes(kw) ||
-          line.includes(kw) ||
-          payload.includes(kw)
-        );
-      });
-    }
-
-    return rows;
-  };
-
-  const getHiddenFrameCountForExecution = (executionUid: string): number => {
-    if (historyEventTypeFilter !== 'all') return 0;
-    const all = historyEventMap[executionUid] || [];
-    return all.filter((item) => item.eventType === 'frame').length;
-  };
-
-  const exportExecutionEventsJson = (executionUid: string) => {
-    const rows = getFilteredEventsForExecution(executionUid);
-    const filename = `execution-events-${executionUid}-${Date.now()}.json`;
-    downloadTextFile(filename, JSON.stringify(rows, null, 2), 'application/json;charset=utf-8');
-  };
-
-  const exportExecutionEventsCsv = (executionUid: string) => {
-    const rows = getFilteredEventsForExecution(executionUid);
-    const header = ['created_at', 'event_type', 'rendered_line', 'payload_json'];
-    const lines = [header.join(',')];
-    for (const row of rows) {
-      lines.push(
-        [row.createdAt, row.eventType, renderEventLine(row), payloadPreview(row.payload)]
-          .map(csvEscape)
-          .join(',')
-      );
-    }
-    const filename = `execution-events-${executionUid}-${Date.now()}.csv`;
-    downloadTextFile(filename, lines.join('\n'), 'text/csv;charset=utf-8');
-  };
-
-  const getVisibleEventsForExecution = (executionUid: string): ExecutionEvent[] => {
-    return getFilteredEventsForExecution(executionUid).slice(-300);
-  };
-
-  const buildEventDomId = (executionUid: string, event: ExecutionEvent, idx: number): string => {
-    const ts = new Date(event.createdAt).getTime();
-    const safeTs = Number.isFinite(ts) ? ts : 0;
-    return `history-event-${executionUid}-${safeTs}-${event.eventType}-${idx}`;
-  };
-
-  const jumpToFirstErrorEvent = (executionUid: string) => {
-    const rows = getVisibleEventsForExecution(executionUid);
-    const index = rows.findIndex((item) => isErrorEvent(item));
-    if (index < 0) return;
-    const id = buildEventDomId(executionUid, rows[index], index);
-    setTimeout(() => {
-      const el = document.getElementById(id);
-      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }, 50);
-  };
-
-  const toggleHistoryEvents = async (executionUid: string, options?: { autoJumpToError?: boolean }) => {
-    const autoJumpToError = !!options?.autoJumpToError;
-
-    if (historyExpandedUid === executionUid && !autoJumpToError) {
-      setHistoryExpandedUid('');
-      return;
-    }
-
-    setHistoryExpandedUid(executionUid);
-    if (historyEventMap[executionUid]) {
-      if (autoJumpToError) {
-        setTimeout(() => jumpToFirstErrorEvent(executionUid), 80);
-      }
-      return;
-    }
-
-    setHistoryEventLoadingUid(executionUid);
-    try {
-      const res = await fetch(`/api/test-executions/${executionUid}/events`);
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || '加载执行事件失败');
-      setHistoryEventMap((prev) => ({
-        ...prev,
-        [executionUid]: json.events || [],
-      }));
-      if (autoJumpToError) {
-        setTimeout(() => jumpToFirstErrorEvent(executionUid), 120);
-      }
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : '加载执行日志失败');
-    } finally {
-      setHistoryEventLoadingUid('');
-    }
-  };
-
-  useEffect(() => {
-    if (!historyOpen || historyLoading || historyAutoHandled) return;
-    const failedRow = filteredHistoryRows.find((row) => row.status === 'failed');
-    setHistoryAutoHandled(true);
-    if (failedRow) {
-      void toggleHistoryEvents(failedRow.executionUid, { autoJumpToError: true });
-    }
-  }, [historyOpen, historyLoading, historyAutoHandled, filteredHistoryRows]);
+  }
 
   return (
-    <div className="min-h-screen bg-[#f8f7f4] text-zinc-800">
-      <div className="mx-auto max-w-[1280px] px-6 py-8">
-        <header className="mb-6 flex flex-col gap-4 rounded-2xl border border-zinc-200 bg-white p-6 shadow-[0_8px_30px_rgba(0,0,0,0.05)] md:flex-row md:items-end md:justify-between">
-          <div>
-            <p className="text-xs uppercase tracking-[0.2em] text-zinc-400">AI E2E Platform</p>
-            <h1 className="mt-2 text-2xl font-semibold text-zinc-900">测试配置中心</h1>
-            <p className="mt-2 text-sm text-zinc-500">管理测试配置，生成测试计划，并执行简单-中等-复杂三层端到端测试。</p>
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(91,135,255,0.17),transparent_32%),radial-gradient(circle_at_84%_18%,rgba(255,176,118,0.22),transparent_24%),linear-gradient(180deg,#f7f9fe_0%,#eef2f8_100%)] text-slate-900">
+      <div className="mx-auto max-w-[1360px] px-5 py-8 md:px-8 lg:px-10">
+        <section className="relative overflow-hidden rounded-[32px] border border-white/60 bg-white/72 p-6 shadow-[0_24px_80px_rgba(15,23,42,0.12)] backdrop-blur-xl md:p-8">
+          <div className="absolute inset-x-0 top-0 h-32 bg-[linear-gradient(90deg,rgba(83,106,255,0.11),rgba(255,186,116,0.09),rgba(255,255,255,0))]" />
+          <div className="relative flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+            <div className="max-w-3xl">
+              <p className="text-xs font-semibold uppercase tracking-[0.34em] text-slate-400">AI E2E Project Hub</p>
+              <h1 className="mt-4 text-3xl font-semibold tracking-[-0.03em] text-slate-950 md:text-5xl">
+                让测试能力从单个用例，升级成可运营的项目资产。
+              </h1>
+              <p className="mt-4 max-w-2xl text-sm leading-6 text-slate-600 md:text-base">
+                首页现在以测试项目为中心组织数据。项目承载统一登录认证、模块划分、任务列表和执行结果，避免重复维护同一套环境信息。
+              </p>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2 lg:min-w-[520px] xl:grid-cols-4">
+              <div className="rounded-[24px] border border-white/70 bg-white/78 p-4 shadow-[0_8px_30px_rgba(15,23,42,0.05)]">
+                <p className="text-xs uppercase tracking-[0.18em] text-slate-400">项目数</p>
+                <p className="mt-3 text-3xl font-semibold tracking-[-0.04em] text-slate-950">{items.length}</p>
+              </div>
+              <div className="rounded-[24px] border border-white/70 bg-white/78 p-4 shadow-[0_8px_30px_rgba(15,23,42,0.05)]">
+                <p className="text-xs uppercase tracking-[0.18em] text-slate-400">模块总数</p>
+                <p className="mt-3 text-3xl font-semibold tracking-[-0.04em] text-slate-950">{totalModules}</p>
+              </div>
+              <div className="rounded-[24px] border border-white/70 bg-white/78 p-4 shadow-[0_8px_30px_rgba(15,23,42,0.05)]">
+                <p className="text-xs uppercase tracking-[0.18em] text-slate-400">任务总数</p>
+                <p className="mt-3 text-3xl font-semibold tracking-[-0.04em] text-slate-950">{totalTasks}</p>
+              </div>
+              <div className="rounded-[24px] border border-white/70 bg-white/78 p-4 shadow-[0_8px_30px_rgba(15,23,42,0.05)]">
+                <p className="text-xs uppercase tracking-[0.18em] text-slate-400">整体通过率</p>
+                <p className="mt-3 text-3xl font-semibold tracking-[-0.04em] text-slate-950">
+                  {formatPassRate(totalExecutions, fleetPassRate)}
+                </p>
+                <p className="mt-2 text-xs text-slate-500">
+                  {totalExecutions > 0
+                    ? `${totalPassedExecutions}/${totalExecutions} 通过 · ${totalActiveExecutions} 个执行中`
+                    : '还没有执行记录'}
+                </p>
+              </div>
+            </div>
           </div>
+        </section>
+
+        <section className="mt-6 flex flex-col gap-4 rounded-[28px] border border-white/60 bg-white/65 p-4 shadow-[0_18px_60px_rgba(15,23,42,0.09)] backdrop-blur-xl md:flex-row md:items-center md:justify-between md:p-5">
+          <div className="flex flex-1 flex-col gap-3 md:flex-row md:items-center">
+            <input
+              value={keyword}
+              onChange={(event) => setKeyword(event.target.value)}
+              placeholder="搜索项目名称或描述"
+              className="h-12 w-full rounded-2xl border border-slate-200/80 bg-white/84 px-4 text-sm text-slate-700 outline-none transition focus:border-slate-400 md:max-w-[360px]"
+            />
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value as ProjectStatus)}
+              className="h-12 rounded-2xl border border-slate-200/80 bg-white/84 px-4 text-sm text-slate-700 outline-none transition focus:border-slate-400"
+            >
+              <option value="active">启用中项目</option>
+              <option value="archived">已归档项目</option>
+            </select>
+            <button
+              onClick={() => void loadProjects()}
+              className="h-12 rounded-2xl border border-slate-200/80 bg-white/84 px-4 text-sm text-slate-700 transition hover:bg-white"
+            >
+              刷新
+            </button>
+          </div>
+
           <button
             onClick={openCreate}
-            className="rounded-lg border border-zinc-900 bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-zinc-700"
+            className="inline-flex h-12 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,#111827,#334155)] px-5 text-sm font-medium text-white shadow-[0_18px_40px_rgba(15,23,42,0.18)] transition hover:scale-[1.01] hover:shadow-[0_24px_48px_rgba(15,23,42,0.22)]"
           >
-            新建配置
-          </button>
-        </header>
-
-        <section className="mb-4 flex flex-wrap items-center gap-3">
-          <input
-            value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
-            placeholder="搜索名称 / 模块 / URL / 描述"
-            className="w-[320px] rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-zinc-800"
-          />
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as ConfigStatus)}
-            className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none"
-          >
-            <option value="active">启用中</option>
-            <option value="archived">已归档</option>
-          </select>
-          <button
-            onClick={() => void loadList()}
-            className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-700 hover:bg-zinc-50"
-          >
-            刷新
+            新建测试项目
           </button>
         </section>
 
-        {error && <p className="mb-4 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
+        {error && (
+          <div className="mt-5 rounded-2xl border border-rose-200 bg-rose-50/90 px-4 py-3 text-sm text-rose-700">
+            {error}
+          </div>
+        )}
 
-        <section className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-[0_6px_24px_rgba(0,0,0,0.04)]">
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-left text-sm">
-              <thead className="bg-zinc-50 text-xs uppercase tracking-[0.12em] text-zinc-500">
-                <tr>
-                  <th className="px-4 py-3">排序号</th>
-                  <th className="px-4 py-3">功能模块</th>
-                  <th className="px-4 py-3">配置</th>
-                  <th className="px-4 py-3">覆盖层级</th>
-                  <th className="px-4 py-3">计划版本</th>
-                  <th className="px-4 py-3">最近执行</th>
-                  <th className="px-4 py-3">更新时间</th>
-                  <th className="px-4 py-3">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {loading && (
-                  <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center text-zinc-400">
-                      正在加载配置列表...
-                    </td>
-                  </tr>
-                )}
-                {!loading && items.length === 0 && (
-                  <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center text-zinc-400">
-                      暂无配置，先创建一个测试配置。
-                    </td>
-                  </tr>
-                )}
-                {!loading &&
-                  items.map((item) => (
-                    <tr key={item.configUid} className="border-t border-zinc-100 align-top">
-                      <td className="px-4 py-3 text-xs text-zinc-600">{item.sortOrder}</td>
-                      <td className="px-4 py-3">
-                        <span className="rounded bg-zinc-100 px-2 py-1 text-xs text-zinc-700">{item.moduleName || 'general'}</span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <p className="font-medium text-zinc-900">{item.name}</p>
-                        <p className="mt-1 line-clamp-1 text-xs text-zinc-500">{item.targetUrl}</p>
-                        <p className="mt-1 line-clamp-2 text-xs text-zinc-400">{item.featureDescription}</p>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs text-zinc-600">简单 + 中等 + 复杂</span>
-                      </td>
-                      <td className="px-4 py-3">
-                        {item.latestPlanUid ? (
-                          <div className="flex flex-col gap-1">
-                            <span className="inline-flex w-fit rounded-md bg-sky-50 px-2 py-1 text-xs text-sky-700">v{item.latestPlanVersion || 1}</span>
-                            <button
-                              onClick={() => void openPlanPreviewByUid(item.latestPlanUid)}
-                              className="w-fit text-xs text-zinc-500 underline-offset-2 hover:text-zinc-800 hover:underline"
-                            >
-                              查看计划
-                            </button>
-                          </div>
-                        ) : (
-                          <span className="text-xs text-zinc-400">未生成</span>
+        <section className="mt-6">
+          {loading && (
+            <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+              {Array.from({ length: 6 }).map((_, index) => (
+                <div
+                  key={index}
+                  className="h-[360px] animate-pulse rounded-[30px] border border-white/60 bg-white/55 shadow-[0_18px_50px_rgba(15,23,42,0.08)]"
+                />
+              ))}
+            </div>
+          )}
+
+          {!loading && items.length === 0 && (
+            <div className="rounded-[32px] border border-dashed border-slate-300/90 bg-white/55 px-6 py-16 text-center shadow-[0_18px_50px_rgba(15,23,42,0.06)]">
+              <p className="text-xl font-semibold tracking-[-0.02em] text-slate-900">还没有测试项目</p>
+              <p className="mt-2 text-sm text-slate-500">先创建一个项目，把统一登录和模块结构建立起来，再往里面添加具体测试任务。</p>
+              <button
+                onClick={openCreate}
+                className="mt-6 inline-flex h-11 items-center justify-center rounded-2xl bg-slate-900 px-5 text-sm text-white transition hover:bg-slate-800"
+              >
+                创建第一个项目
+              </button>
+            </div>
+          )}
+
+          {!loading && items.length > 0 && (
+            <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+              {items.map((item) => (
+                <article
+                  key={item.projectUid}
+                  className="group relative overflow-hidden rounded-[32px] border border-white/70 bg-white/64 shadow-[0_20px_68px_rgba(15,23,42,0.12)] transition duration-300 hover:-translate-y-1 hover:shadow-[0_26px_80px_rgba(15,23,42,0.16)]"
+                >
+                  <div className="min-h-[190px] px-6 pb-6 pt-5 text-white" style={buildCoverStyle(item)}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex flex-wrap gap-2">
+                        <span className="rounded-full bg-white/18 px-3 py-1 text-[11px] font-medium tracking-[0.16em] text-white/88 backdrop-blur-md">
+                          {item.moduleCount} 个模块
+                        </span>
+                        <span className="rounded-full bg-white/18 px-3 py-1 text-[11px] font-medium tracking-[0.16em] text-white/88 backdrop-blur-md">
+                          {item.taskCount} 个任务
+                        </span>
+                        {item.activeExecutionCount > 0 && (
+                          <span className="rounded-full bg-white/18 px-3 py-1 text-[11px] font-medium tracking-[0.16em] text-white/88 backdrop-blur-md">
+                            {item.activeExecutionCount} 个执行中
+                          </span>
                         )}
-                      </td>
-                      <td className="px-4 py-3">
-                        {item.latestExecutionStatus ? (
-                          <div className="flex flex-col gap-1">
-                            <span className={`inline-flex w-fit rounded-md px-2 py-1 text-xs ${statusTone(item.latestExecutionStatus)}`}>
-                              {item.latestExecutionStatus}
-                            </span>
-                            <button
-                              onClick={() => void openExecutionHistory(item)}
-                              className="w-fit text-xs text-zinc-500 underline-offset-2 hover:text-zinc-800 hover:underline"
-                            >
-                              查看日志
-                            </button>
-                          </div>
-                        ) : (
-                          <span className="text-xs text-zinc-400">未执行</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-xs text-zinc-500">{new Date(item.updatedAt).toLocaleString('zh-CN')}</td>
-                      <td className="px-4 py-3">
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            onClick={() => void generatePlan(item.configUid)}
-                            disabled={Boolean(actioningUid)}
-                            className="rounded-md border border-zinc-300 bg-white px-2.5 py-1 text-xs text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
-                          >
-                            生成测试计划
-                          </button>
-                          <button
-                            onClick={() => void executePlan(item)}
-                            disabled={Boolean(actioningUid)}
-                            className="rounded-md border border-zinc-900 bg-zinc-900 px-2.5 py-1 text-xs text-white hover:bg-zinc-700 disabled:opacity-50"
-                          >
-                            执行测试计划
-                          </button>
+                      </div>
+                      <span className={`rounded-full px-3 py-1 text-[11px] font-medium ring-1 backdrop-blur-md ${statusTone(item.latestExecutionStatus)}`}>
+                        {item.latestExecutionStatus || '暂无执行'}
+                      </span>
+                    </div>
+
+                    <div className="mt-14">
+                      {item.status === 'archived' && (
+                        <span className="inline-flex rounded-full bg-black/20 px-3 py-1 text-[11px] font-medium tracking-[0.16em] text-white/88 backdrop-blur-md">
+                          已归档
+                        </span>
+                      )}
+                      <h2 className="text-2xl font-semibold tracking-[-0.03em]">{item.name}</h2>
+                      <p className="mt-3 line-clamp-3 text-sm leading-6 text-white/78">{item.description}</p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4 px-6 pb-6 pt-5 text-slate-700">
+                    <div className="grid gap-3 rounded-[24px] bg-slate-50/90 p-4 sm:grid-cols-2">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-slate-400">认证</p>
+                        <p className="mt-2 text-sm font-medium text-slate-900">{item.authRequired ? '项目统一登录' : '无需登录'}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-slate-400">最近更新</p>
+                        <p className="mt-2 text-sm font-medium text-slate-900">
+                          {item.updatedAt ? new Date(item.updatedAt).toLocaleDateString('zh-CN') : '-'}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-slate-400">执行通过率</p>
+                        <p className="mt-2 text-sm font-medium text-slate-900">{formatPassRate(item.executionCount, item.passRate)}</p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {item.executionCount > 0
+                            ? `${item.passedExecutionCount} 通过 / ${item.failedExecutionCount} 失败`
+                            : '暂无执行'}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-slate-400">最近执行</p>
+                        <p className="mt-2 text-sm font-medium text-slate-900">{formatExecutionMoment(item.lastExecutionAt)}</p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {item.executionCount > 0 ? `累计 ${item.executionCount} 次` : '等待首次执行'}
+                        </p>
+                      </div>
+                    </div>
+
+                    {item.authRequired && item.loginDescription && (
+                      <div className="rounded-[22px] border border-slate-200/80 bg-white/84 px-4 py-3 text-xs leading-6 text-slate-500">
+                        登录方式说明：{item.loginDescription}
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={() => openProject(item.projectUid)}
+                        disabled={isNavigating && navigatingProjectUid === item.projectUid}
+                        className={`inline-flex h-11 flex-1 items-center justify-center rounded-2xl px-4 text-sm font-medium transition disabled:cursor-wait disabled:opacity-80 ${
+                          item.status === 'archived'
+                            ? 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                            : 'bg-slate-950 text-white hover:bg-slate-800'
+                        }`}
+                      >
+                        {isNavigating && navigatingProjectUid === item.projectUid
+                          ? '正在进入...'
+                          : item.status === 'archived'
+                            ? '查看归档内容'
+                            : '进入项目'}
+                      </button>
+                      {item.status === 'active' ? (
+                        <>
                           <button
                             onClick={() => openEdit(item)}
-                            disabled={Boolean(actioningUid)}
-                            className="rounded-md border border-zinc-300 bg-white px-2.5 py-1 text-xs text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
+                            className="inline-flex h-11 items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-700 transition hover:bg-slate-50"
                           >
-                            修改
+                            编辑
                           </button>
                           <button
-                            onClick={() => void deleteConfig(item.configUid)}
-                            disabled={Boolean(actioningUid)}
-                            className="rounded-md border border-rose-300 bg-rose-50 px-2.5 py-1 text-xs text-rose-700 hover:bg-rose-100 disabled:opacity-50"
+                            onClick={() => void deleteProject(item.projectUid)}
+                            className="inline-flex h-11 items-center justify-center rounded-2xl border border-rose-200 bg-rose-50 px-4 text-sm text-rose-700 transition hover:bg-rose-100"
                           >
-                            删除
+                            归档
                           </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
+                        </>
+                      ) : (
+                        <button
+                          onClick={() => void restoreProject(item.projectUid)}
+                          className="inline-flex h-11 items-center justify-center rounded-2xl border border-emerald-200 bg-emerald-50 px-4 text-sm text-emerald-700 transition hover:bg-emerald-100"
+                        >
+                          恢复
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
         </section>
+      </div>
 
-        <p className="mt-4 text-xs text-zinc-400">
-          计划支持预览与脚本下载；列表新增排序号和功能模块字段，并持久化到 MySQL。
-        </p>
-
-        {openDrawer && (
-          <div className="fixed inset-0 z-40 flex justify-end bg-black/30">
-            <div className="h-full w-full max-w-[520px] overflow-y-auto bg-white p-6 shadow-2xl">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-zinc-900">{isEditing ? '修改测试配置' : '新建测试配置'}</h2>
+      {openModal && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/28 p-3 backdrop-blur-sm md:items-center">
+          <div className="w-full max-w-[760px] overflow-hidden rounded-[32px] border border-white/70 bg-white/96 shadow-[0_28px_90px_rgba(15,23,42,0.28)]">
+            <div className="border-b border-slate-200/80 px-6 py-5">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.26em] text-slate-400">Project</p>
+                  <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-slate-950">
+                    {isEditing ? '编辑测试项目' : '新建测试项目'}
+                  </h2>
+                </div>
                 <button
                   onClick={() => {
-                    setOpenDrawer(false);
+                    setOpenModal(false);
                     resetForm();
                   }}
-                  className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs text-zinc-600"
+                  className="inline-flex h-10 items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-600"
                 >
                   关闭
                 </button>
               </div>
+            </div>
 
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-3">
+            <div className="max-h-[80vh] overflow-y-auto px-6 py-6">
+              <div className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+                <div className="space-y-5">
                   <div>
-                    <label className="mb-1 block text-xs text-zinc-500">排序号</label>
+                    <label className="mb-2 block text-sm font-medium text-slate-700">项目名称</label>
                     <input
-                      type="number"
-                      value={form.sortOrder}
-                      onChange={(e) => setForm((p) => ({ ...p, sortOrder: Number(e.target.value) || 100 }))}
-                      className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-zinc-800"
+                      value={form.name}
+                      onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+                      placeholder="例如：商品中心回归"
+                      className="h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
                     />
                   </div>
+
                   <div>
-                    <label className="mb-1 block text-xs text-zinc-500">功能模块</label>
+                    <label className="mb-2 block text-sm font-medium text-slate-700">卡片背景图</label>
                     <input
-                      value={form.moduleName}
-                      onChange={(e) => setForm((p) => ({ ...p, moduleName: e.target.value }))}
-                      className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-zinc-800"
-                      placeholder="如: 订单中心"
+                      value={form.coverImageUrl}
+                      onChange={(event) => setForm((current) => ({ ...current, coverImageUrl: event.target.value }))}
+                      placeholder="https://..."
+                      className="h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-slate-700">项目描述</label>
+                    <textarea
+                      value={form.description}
+                      onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))}
+                      rows={6}
+                      placeholder="描述项目覆盖的业务范围、关键风险点和回归目标。"
+                      className="w-full rounded-[24px] border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-800 outline-none transition focus:border-slate-400"
                     />
                   </div>
                 </div>
 
-                <div>
-                  <label className="mb-1 block text-xs text-zinc-500">配置名称</label>
-                  <input
-                    value={form.name}
-                    onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
-                    className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-zinc-800"
-                    placeholder="例如：产品管理新增产品流程"
-                  />
-                </div>
+                <div className="space-y-5 rounded-[28px] bg-slate-50/80 p-5">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-slate-900">项目统一登录认证</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">项目下所有测试任务自动继承，不用重复录入。</p>
+                    </div>
+                    <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={form.authRequired}
+                        onChange={(event) => setForm((current) => ({ ...current, authRequired: event.target.checked }))}
+                      />
+                      启用
+                    </label>
+                  </div>
 
-                <div>
-                  <label className="mb-1 block text-xs text-zinc-500">目标 URL</label>
-                  <input
-                    value={form.targetUrl}
-                    onChange={(e) => setForm((p) => ({ ...p, targetUrl: e.target.value }))}
-                    className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-zinc-800"
-                    placeholder="https://example.com/products"
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-1 block text-xs text-zinc-500">功能描述</label>
-                  <textarea
-                    value={form.featureDescription}
-                    onChange={(e) => setForm((p) => ({ ...p, featureDescription: e.target.value }))}
-                    rows={4}
-                    className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-zinc-800"
-                    placeholder="描述待测试的关键流程、断言和风险点"
-                  />
-                </div>
-
-                <label className="flex items-center gap-2 text-sm text-zinc-700">
-                  <input
-                    type="checkbox"
-                    checked={form.authRequired}
-                    onChange={(e) => setForm((p) => ({ ...p, authRequired: e.target.checked }))}
-                  />
-                  需要登录认证
-                </label>
-
-                {form.authRequired && (
-                  <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-4">
-                    <div className="space-y-3">
+                  {form.authRequired ? (
+                    <div className="space-y-4">
                       <div>
-                        <label className="mb-1 block text-xs text-zinc-500">登录 URL</label>
+                        <label className="mb-2 block text-sm font-medium text-slate-700">登录页 URL</label>
                         <input
                           value={form.loginUrl}
-                          onChange={(e) => setForm((p) => ({ ...p, loginUrl: e.target.value }))}
-                          className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-zinc-800"
+                          onChange={(event) => setForm((current) => ({ ...current, loginUrl: event.target.value }))}
                           placeholder="https://example.com/login"
+                          className="h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
                         />
                       </div>
+
                       <div>
-                        <label className="mb-1 block text-xs text-zinc-500">登录用户名</label>
+                        <label className="mb-2 block text-sm font-medium text-slate-700">登录账号</label>
                         <input
                           value={form.loginUsername}
-                          onChange={(e) => setForm((p) => ({ ...p, loginUsername: e.target.value }))}
-                          className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-zinc-800"
-                          placeholder="手机号或邮箱"
+                          onChange={(event) => setForm((current) => ({ ...current, loginUsername: event.target.value }))}
+                          placeholder="手机号 / 邮箱 / 用户名"
+                          className="h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
                         />
                       </div>
+
                       <div>
-                        <label className="mb-1 block text-xs text-zinc-500">登录密码（仅服务端加密存储）</label>
+                        <label className="mb-2 block text-sm font-medium text-slate-700">登录密码</label>
                         <input
                           type="password"
                           value={form.loginPassword}
-                          onChange={(e) => setForm((p) => ({ ...p, loginPassword: e.target.value }))}
-                          className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-zinc-800"
-                          placeholder={isEditing ? '留空则沿用旧密码' : '请输入密码'}
+                          onChange={(event) => setForm((current) => ({ ...current, loginPassword: event.target.value }))}
+                          placeholder={isEditing ? '留空则沿用原密码' : '仅服务端加密存储'}
+                          className="h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="mb-2 block text-sm font-medium text-slate-700">登录方式说明</label>
+                        <textarea
+                          value={form.loginDescription}
+                          onChange={(event) => setForm((current) => ({ ...current, loginDescription: event.target.value }))}
+                          rows={5}
+                          placeholder="例如：先切换到“密码登录”tab，再输入账号密码；禁止使用扫码登录。"
+                          className="w-full rounded-[24px] border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-800 outline-none transition focus:border-slate-400"
                         />
                       </div>
                     </div>
-                  </div>
-                )}
-
-                <div className="flex items-center justify-end gap-2 pt-2">
-                  <button
-                    onClick={() => {
-                      setOpenDrawer(false);
-                      resetForm();
-                    }}
-                    className="rounded-md border border-zinc-300 px-3 py-2 text-sm text-zinc-600"
-                  >
-                    取消
-                  </button>
-                  <button
-                    onClick={() => void submitForm()}
-                    disabled={saving}
-                    className="rounded-md border border-zinc-900 bg-zinc-900 px-4 py-2 text-sm text-white disabled:opacity-50"
-                  >
-                    {saving ? '保存中...' : '保存配置'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {previewOpen && (
-          <div className="fixed inset-0 z-40 flex justify-end bg-black/30">
-            <div className="h-full w-full max-w-[760px] overflow-y-auto bg-white p-6 shadow-2xl">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-zinc-900">测试计划预览</h2>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={downloadPlanScript}
-                    disabled={!previewPlan}
-                    className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 disabled:opacity-50"
-                  >
-                    下载脚本
-                  </button>
-                  <button
-                    onClick={() => setPreviewOpen(false)}
-                    className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs text-zinc-600"
-                  >
-                    关闭
-                  </button>
-                </div>
-              </div>
-
-              {previewLoading && <p className="text-sm text-zinc-500">加载中...</p>}
-
-              {!previewLoading && previewPlan && (
-                <div className="space-y-4">
-                  <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-sm">
-                    <p className="font-medium text-zinc-800">{previewPlan.planTitle}</p>
-                    <p className="mt-1 text-xs text-zinc-500">UID: {previewPlan.planUid} · v{previewPlan.planVersion}</p>
-                    <p className="mt-1 text-xs text-zinc-500">{new Date(previewPlan.createdAt).toLocaleString('zh-CN')}</p>
-                    <p className="mt-2 text-xs text-zinc-600">{previewPlan.planSummary}</p>
-                  </div>
-
-                  <div>
-                    <h3 className="mb-2 text-sm font-medium text-zinc-800">测试用例（简单/中等/复杂）</h3>
-                    <div className="space-y-2">
-                      {previewCases.map((c) => (
-                        <div key={c.caseUid} className="rounded border border-zinc-200 bg-white p-2.5 text-xs">
-                          <p className="font-medium text-zinc-800">[{c.tier}] {c.caseName}</p>
-                          <p className="mt-1 text-zinc-500">{c.expectedResult}</p>
-                        </div>
-                      ))}
-                      {previewCases.length === 0 && <p className="text-xs text-zinc-400">暂无用例</p>}
+                  ) : (
+                    <div className="rounded-[24px] border border-dashed border-slate-300 bg-white/84 px-4 py-5 text-sm leading-6 text-slate-500">
+                      当前项目不需要统一登录。后续如果发现该业务域必须认证，再在这里补录即可，所有任务会同步继承。
                     </div>
-                  </div>
-
-                  <div>
-                    <h3 className="mb-2 text-sm font-medium text-zinc-800">生成代码</h3>
-                    <pre className="max-h-[420px] overflow-auto rounded-lg bg-zinc-900 p-4 text-xs leading-relaxed text-zinc-100">
-{previewPlan.generatedFiles?.[0]?.content || previewPlan.planCode || '// 无代码'}
-                    </pre>
-                  </div>
+                  )}
                 </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {historyOpen && (
-          <div className="fixed inset-0 z-40 flex justify-end bg-black/30">
-            <div className="h-full w-full max-w-[820px] overflow-y-auto bg-white p-6 shadow-2xl">
-              <div className="mb-4 flex items-center justify-between">
-                <div>
-                  <h2 className="text-lg font-semibold text-zinc-900">执行历史日志</h2>
-                  <p className="text-xs text-zinc-500">{historyConfigName}</p>
-                </div>
-                <button
-                  onClick={() => setHistoryOpen(false)}
-                  className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs text-zinc-600"
-                >
-                  关闭
-                </button>
               </div>
+            </div>
 
-              {!historyLoading && (
-                <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 p-2.5">
-                  <input
-                    value={historyKeyword}
-                    onChange={(e) => setHistoryKeyword(e.target.value)}
-                    placeholder="按执行ID/计划ID/结果搜索"
-                    className="w-[260px] rounded-md border border-zinc-300 bg-white px-2.5 py-1.5 text-xs outline-none focus:border-zinc-800"
-                  />
-                  <select
-                    value={historyStatusFilter}
-                    onChange={(e) => setHistoryStatusFilter(e.target.value as 'all' | ExecutionRow['status'])}
-                    className="rounded-md border border-zinc-300 bg-white px-2.5 py-1.5 text-xs"
-                  >
-                    <option value="all">全部状态</option>
-                    <option value="queued">queued</option>
-                    <option value="running">running</option>
-                    <option value="passed">passed</option>
-                    <option value="failed">failed</option>
-                    <option value="canceled">canceled</option>
-                  </select>
-                  <select
-                    value={historyOrder}
-                    onChange={(e) => setHistoryOrder(e.target.value as 'desc' | 'asc')}
-                    className="rounded-md border border-zinc-300 bg-white px-2.5 py-1.5 text-xs"
-                  >
-                    <option value="desc">时间: 倒序</option>
-                    <option value="asc">时间: 正序</option>
-                  </select>
-                  <button
-                    onClick={exportHistoryJson}
-                    className="rounded-md border border-zinc-300 bg-white px-2.5 py-1.5 text-xs text-zinc-700 hover:bg-zinc-100"
-                  >
-                    导出 JSON
-                  </button>
-                  <button
-                    onClick={exportHistoryCsv}
-                    className="rounded-md border border-zinc-300 bg-white px-2.5 py-1.5 text-xs text-zinc-700 hover:bg-zinc-100"
-                  >
-                    导出 CSV
-                  </button>
-                  <select
-                    value={historyEventTypeFilter}
-                    onChange={(e) => setHistoryEventTypeFilter(e.target.value as EventTypeFilter)}
-                    className="rounded-md border border-zinc-300 bg-white px-2.5 py-1.5 text-xs"
-                  >
-                    <option value="all">事件: 全部(隐藏frame)</option>
-                    <option value="step">事件: step</option>
-                    <option value="log">事件: log</option>
-                    <option value="frame">事件: frame</option>
-                    <option value="status">事件: status</option>
-                    <option value="artifact">事件: artifact</option>
-                  </select>
-                  <select
-                    value={historyEventLogLevelFilter}
-                    onChange={(e) => setHistoryEventLogLevelFilter(e.target.value as EventLogLevelFilter)}
-                    className="rounded-md border border-zinc-300 bg-white px-2.5 py-1.5 text-xs"
-                  >
-                    <option value="all">级别: all</option>
-                    <option value="error">级别: error</option>
-                    <option value="warn">级别: warn</option>
-                    <option value="info">级别: info</option>
-                  </select>
-                  <span className="ml-auto text-xs text-zinc-500">共 {filteredHistoryRows.length} 条</span>
-                </div>
-              )}
-
-              {historyLoading && <p className="text-sm text-zinc-500">加载中...</p>}
-
-              {!historyLoading && filteredHistoryRows.length === 0 && <p className="text-sm text-zinc-400">暂无执行记录</p>}
-
-              {!historyLoading && filteredHistoryRows.length > 0 && (
-                <div className="space-y-3">
-                  {filteredHistoryRows.map((row) => (
-                    <div
-                      key={row.executionUid}
-                      className={`rounded-lg border p-3 ${
-                        row.status === 'failed'
-                          ? 'border-rose-300 bg-rose-50/50'
-                          : row.status === 'running'
-                            ? 'border-amber-300 bg-amber-50/40'
-                            : 'border-zinc-200 bg-zinc-50'
-                      }`}
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                          <p className="text-sm font-medium text-zinc-800">{row.executionUid}</p>
-                          <p className="text-xs text-zinc-500">计划: {row.planUid}</p>
-                        </div>
-                        <div className="text-right">
-                          <span className={`rounded-md px-2 py-1 text-xs ${statusTone(row.status)}`}>{row.status}</span>
-                          <p className="mt-1 text-xs text-zinc-500">{new Date(row.createdAt).toLocaleString('zh-CN')}</p>
-                        </div>
-                      </div>
-
-                      <div className="mt-2 grid grid-cols-1 gap-2 text-xs text-zinc-600 md:grid-cols-3">
-                        <p>开始: {row.startedAt ? new Date(row.startedAt).toLocaleString('zh-CN') : '-'}</p>
-                        <p>结束: {row.endedAt ? new Date(row.endedAt).toLocaleString('zh-CN') : '-'}</p>
-                        <p>耗时: {row.durationMs ? `${(row.durationMs / 1000).toFixed(1)}s` : '-'}</p>
-                      </div>
-
-                      {row.resultSummary && <p className="mt-2 text-xs text-zinc-700">结果: {row.resultSummary}</p>}
-                      {row.errorMessage && (
-                        <pre className="mt-2 max-h-[200px] overflow-auto rounded bg-rose-50 p-2 text-xs text-rose-700">{row.errorMessage}</pre>
-                      )}
-
-                      <div className="mt-2">
-                        <div className="flex flex-wrap items-center gap-3">
-                          <button
-                            onClick={() => void toggleHistoryEvents(row.executionUid)}
-                            className="text-xs text-zinc-600 underline-offset-2 hover:text-zinc-900 hover:underline"
-                          >
-                            {historyExpandedUid === row.executionUid ? '收起详细日志' : '展开详细日志'}
-                          </button>
-                          <a
-                            href={`/executions/${row.executionUid}`}
-                            className="text-xs text-zinc-600 underline-offset-2 hover:text-zinc-900 hover:underline"
-                          >
-                            查看该次任务完整详情
-                          </a>
-                        </div>
-                      </div>
-
-                      {historyExpandedUid === row.executionUid && (
-                        <div className="mt-2 rounded border border-zinc-200 bg-white p-2">
-                          {historyEventLoadingUid === row.executionUid && (
-                            <p className="text-xs text-zinc-500">正在加载详细日志...</p>
-                          )}
-                          {historyEventLoadingUid !== row.executionUid &&
-                            getFilteredEventsForExecution(row.executionUid).length === 0 && (
-                              <p className="text-xs text-zinc-400">该任务暂无详细事件日志</p>
-                            )}
-                          {historyEventLoadingUid !== row.executionUid &&
-                            getFilteredEventsForExecution(row.executionUid).length > 0 && (
-                              <div className="space-y-2">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <input
-                                    value={historyEventKeyword}
-                                    onChange={(e) => setHistoryEventKeyword(e.target.value)}
-                                    placeholder="筛选详细日志关键词"
-                                    className="w-[220px] rounded border border-zinc-300 bg-white px-2 py-1 text-xs outline-none focus:border-zinc-800"
-                                  />
-                                  <select
-                                    value={historyEventTimeRange}
-                                    onChange={(e) => setHistoryEventTimeRange(e.target.value as EventTimeRange)}
-                                    className="rounded border border-zinc-300 bg-white px-2 py-1 text-xs"
-                                  >
-                                    <option value="all">时间: 全部</option>
-                                    <option value="15m">时间: 近15分钟</option>
-                                    <option value="1h">时间: 近1小时</option>
-                                    <option value="24h">时间: 近24小时</option>
-                                  </select>
-                                  <button
-                                    onClick={() => exportExecutionEventsJson(row.executionUid)}
-                                    className="rounded border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-100"
-                                  >
-                                    导出明细 JSON
-                                  </button>
-                                  <button
-                                    onClick={() => exportExecutionEventsCsv(row.executionUid)}
-                                    className="rounded border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-100"
-                                  >
-                                    导出明细 CSV
-                                  </button>
-                                  <button
-                                    onClick={() => jumpToFirstErrorEvent(row.executionUid)}
-                                    disabled={!getVisibleEventsForExecution(row.executionUid).some((item) => isErrorEvent(item))}
-                                    className="rounded border border-rose-200 bg-rose-50 px-2 py-1 text-xs text-rose-700 hover:bg-rose-100"
-                                  >
-                                    定位首条 error
-                                  </button>
-                                  <span className="text-xs text-zinc-500">
-                                    当前筛选: {historyEventTypeFilter}/{historyEventLogLevelFilter}/{historyEventTimeRange}/{historyEventKeyword || '无关键词'} · {getFilteredEventsForExecution(row.executionUid).length} 条
-                                  </span>
-                                  {getHiddenFrameCountForExecution(row.executionUid) > 0 && (
-                                    <span className="text-xs text-zinc-400">
-                                      已隐藏 frame {getHiddenFrameCountForExecution(row.executionUid)} 条
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="max-h-[280px] space-y-1 overflow-auto">
-                                  {getVisibleEventsForExecution(row.executionUid).map((event, idx) => (
-                                  <div
-                                    id={buildEventDomId(row.executionUid, event, idx)}
-                                    key={`${event.createdAt}-${idx}`}
-                                    className={`rounded px-2 py-1 text-xs ${
-                                      isErrorEvent(event)
-                                        ? 'bg-rose-50 text-rose-700'
-                                        : 'bg-zinc-50 text-zinc-600'
-                                    }`}
-                                  >
-                                    <p className="font-medium text-zinc-700">
-                                      {new Date(event.createdAt).toLocaleTimeString('zh-CN')} · {renderEventLine(event)}
-                                    </p>
-                                  </div>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
+            <div className="flex items-center justify-end gap-3 border-t border-slate-200/80 px-6 py-5">
+              <button
+                onClick={() => {
+                  setOpenModal(false);
+                  resetForm();
+                }}
+                className="inline-flex h-11 items-center justify-center rounded-2xl border border-slate-200 bg-white px-5 text-sm text-slate-700"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => void submitProject()}
+                disabled={saving}
+                className="inline-flex h-11 items-center justify-center rounded-2xl bg-slate-950 px-5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {saving ? '保存中...' : isEditing ? '保存项目' : '创建项目'}
+              </button>
             </div>
           </div>
-        )}
-      </div>
-    </div>
+        </div>
+      )}
+    </main>
   );
 }

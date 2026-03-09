@@ -1,14 +1,11 @@
 import { createServer } from 'node:http';
-import { parse } from 'node:url';
 import next from 'next';
 import { WebSocketServer } from 'ws';
 
 const dev = process.env.NODE_ENV !== 'production';
 const port = parseInt(process.env.PORT || '3666', 10);
 
-// 先创建 HTTP 服务器，传给 Next.js 以支持 HMR WebSocket
-const server = createServer();
-const app = next({ dev, httpServer: server });
+const app = next({ dev });
 const handle = app.getRequestHandler();
 
 // WebSocket 会话管理
@@ -27,33 +24,43 @@ export function broadcastFrame(sessionId, base64Data) {
 globalThis.__broadcastFrame = broadcastFrame;
 
 app.prepare().then(() => {
-  // HTTP 请求交给 Next.js 处理
-  server.on('request', (req, res) => {
-    const parsedUrl = parse(req.url, true);
-    handle(req, res, parsedUrl);
+  const handleUpgrade = app.getUpgradeHandler();
+  const server = createServer(async (req, res) => {
+    try {
+      await handle(req, res);
+    } catch (error) {
+      console.error('request handling failed', error);
+      if (!res.headersSent) {
+        res.statusCode = 500;
+      }
+      res.end('internal server error');
+    }
   });
 
   // screencast WebSocket（仅处理 /ws/screencast 路径）
   const wss = new WebSocketServer({ noServer: true });
 
   server.on('upgrade', (req, socket, head) => {
-    const { pathname, query } = parse(req.url, true);
-    if (pathname === '/ws/screencast' && query.sessionId) {
+    const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+    const sessionId = url.searchParams.get('sessionId');
+
+    if (url.pathname === '/ws/screencast' && sessionId) {
       wss.handleUpgrade(req, socket, head, (ws) => {
-        const sid = query.sessionId;
-        if (!sessions.has(sid)) sessions.set(sid, new Set());
-        sessions.get(sid).add(ws);
+        if (!sessions.has(sessionId)) sessions.set(sessionId, new Set());
+        sessions.get(sessionId).add(ws);
 
         ws.on('close', () => {
-          const s = sessions.get(sid);
+          const s = sessions.get(sessionId);
           if (s) {
             s.delete(ws);
-            if (s.size === 0) sessions.delete(sid);
+            if (s.size === 0) sessions.delete(sessionId);
           }
         });
       });
+      return;
     }
-    // 其他 WebSocket 升级请求（如 _next/webpack-hmr）由 Next.js 自行处理
+
+    handleUpgrade(req, socket, head);
   });
 
   server.listen(port, () => {

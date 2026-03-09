@@ -6,6 +6,10 @@ reports/
 .DS_Store
 .env
 .next/
+dist/
+data/frames/
+tests/e2e/generated/*
+!tests/e2e/generated/.gitkeep
 
 # Termite Protocol — ephemeral runtime files
 .birth

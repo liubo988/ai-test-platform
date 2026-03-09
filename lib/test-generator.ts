@@ -63,7 +63,16 @@ function buildPrompt(
   parts.push(`\n## 用户需求\n${description}`);
 
   if (auth?.loginUrl) {
-    parts.push(`\n## 登录信息\n测试前需要先登录：\n- 登录页: ${auth.loginUrl}\n- 用户名通过 process.env.E2E_USERNAME 获取\n- 密码通过 process.env.E2E_PASSWORD 获取\n请在测试代码中包含登录步骤，使用 test.skip 在缺少凭证时跳过。`);
+    parts.push(`\n## 登录信息
+- 登录页: ${auth.loginUrl}
+- 用户名通过 process.env.E2E_USERNAME 获取
+- 密码通过 process.env.E2E_PASSWORD 获取
+- 登录方式说明: ${auth.loginDescription || '未提供，请优先选择可自动化的密码登录方式'}
+
+要求：
+1. 先根据“登录方式说明”判断应该切换到哪个登录 tab（如扫码登录 / 密码登录 / 短信登录）。
+2. 如果说明明确为扫码等无法自动化方式，或者缺少自动化凭证，请使用 test.skip 明确说明原因，禁止假通过。
+3. 如果存在多个登录 tab，优先显式点击对应 tab，再填写账号密码并登录。`);
   }
 
   if (edgeCases.length > 0) {

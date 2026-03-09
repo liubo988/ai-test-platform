@@ -55,6 +55,7 @@ export interface AuthConfig {
   loginUrl?: string;
   username?: string;
   password?: string;
+  loginDescription?: string;
 }
 
 function normalizeUrl(u: string): string {
@@ -66,10 +67,46 @@ function normalizeUrl(u: string): string {
   }
 }
 
+async function switchLoginModeIfNeeded(page: Page, auth: AuthConfig): Promise<void> {
+  const description = `${auth.loginDescription || ''}`.trim();
+  if (!description) return;
+
+  const modePatterns: RegExp[] = [];
+
+  if (/密码|password/i.test(description)) {
+    modePatterns.push(/密码登录|密码|Password Login|Password/i);
+  }
+
+  if (/短信|验证码|sms|otp/i.test(description)) {
+    modePatterns.push(/短信登录|验证码登录|SMS|OTP|短信/i);
+  }
+
+  if (/扫码|二维码|qr/i.test(description)) {
+    modePatterns.push(/扫码登录|二维码登录|扫码|二维码|QR/i);
+  }
+
+  for (const pattern of modePatterns) {
+    const tab = page.getByRole('tab', { name: pattern }).first();
+    if (await tab.isVisible({ timeout: 1200 }).catch(() => false)) {
+      await tab.click({ force: true });
+      await page.waitForTimeout(500);
+      return;
+    }
+
+    const textTab = page.getByText(pattern).first();
+    if (await textTab.isVisible({ timeout: 1200 }).catch(() => false)) {
+      await textTab.click({ force: true });
+      await page.waitForTimeout(500);
+      return;
+    }
+  }
+}
+
 async function performLogin(page: Page, auth: AuthConfig): Promise<void> {
   if (!auth.loginUrl || !auth.username || !auth.password) return;
 
   await page.goto(auth.loginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+  await switchLoginModeIfNeeded(page, auth);
 
   const passwordInput = page.getByPlaceholder(/请输入密码|Enter password|password/i);
 

@@ -9,6 +9,7 @@ import {
   getExecution,
   getLatestPlanByConfigUid,
   getPlanByUid,
+  getProjectByUid,
   getTestConfigByUid,
   insertExecutionArtifact,
   insertExecutionEvent,
@@ -59,20 +60,42 @@ function buildCoverageCases(description: string, planCode: string) {
   ].map((item) => ({ ...item, caseSteps: [...item.caseSteps, `生成代码摘要长度: ${planCode.length}`, `需求摘要: ${description.slice(0, 120)}`] }));
 }
 
+function buildAuthContext(
+  project: Awaited<ReturnType<typeof getProjectByUid>>,
+  config: Awaited<ReturnType<typeof getTestConfigByUid>>
+) {
+  if (project?.authRequired) {
+    return {
+      loginUrl: project.loginUrl,
+      username: project.loginUsername,
+      password: project.loginPasswordPlain,
+      loginDescription: project.loginDescription,
+    };
+  }
+
+  if (config?.legacyAuthRequired) {
+    return {
+      loginUrl: config.legacyLoginUrl,
+      username: config.legacyLoginUsername,
+      password: config.loginPasswordPlain,
+      loginDescription: '',
+    };
+  }
+
+  return undefined;
+}
+
 export async function generatePlanFromConfig(configUid: string): Promise<{ planUid: string; planVersion: number }> {
   const config = await getTestConfigByUid(configUid);
   if (!config) throw new Error('测试配置不存在');
+  const project = await getProjectByUid(config.projectUid);
+  if (!project) throw new Error('测试任务所属项目不存在');
 
-  const auth = config.authRequired
-    ? {
-        loginUrl: config.loginUrl,
-        username: config.loginUsername,
-        password: config.loginPasswordPlain,
-      }
-    : undefined;
+  const auth = buildAuthContext(project, config);
 
   const snapshot = await analyzePage(config.targetUrl, auth);
   await insertLlmConversation({
+    projectUid: config.projectUid,
     scene: 'plan_generation',
     refUid: configUid,
     role: 'system',
@@ -92,6 +115,7 @@ export async function generatePlanFromConfig(configUid: string): Promise<{ planU
     if (event.type === 'code') {
       generatedCode += event.content;
       await insertLlmConversation({
+        projectUid: config.projectUid,
         scene: 'plan_generation',
         refUid: configUid,
         role: 'assistant',
@@ -101,6 +125,7 @@ export async function generatePlanFromConfig(configUid: string): Promise<{ planU
     } else if (event.type === 'complete') {
       completedCode = event.content;
       await insertLlmConversation({
+        projectUid: config.projectUid,
         scene: 'plan_generation',
         refUid: configUid,
         role: 'assistant',
@@ -109,6 +134,7 @@ export async function generatePlanFromConfig(configUid: string): Promise<{ planU
       });
     } else {
       await insertLlmConversation({
+        projectUid: config.projectUid,
         scene: 'plan_generation',
         refUid: configUid,
         role: event.type === 'error' ? 'tool' : 'assistant',
@@ -128,6 +154,7 @@ export async function generatePlanFromConfig(configUid: string): Promise<{ planU
   const latestPlan = await getLatestPlanByConfigUid(configUid);
 
   const plan = await createTestPlan({
+    projectUid: config.projectUid,
     configUid,
     planTitle: `${config.name} - 自动测试计划`,
     planCode: generatedCode,
@@ -146,6 +173,7 @@ export async function generatePlanFromConfig(configUid: string): Promise<{ planU
 
   await createPlanCases(
     buildCoverageCases(config.featureDescription, generatedCode).map((item) => ({
+      projectUid: config.projectUid,
       planUid: plan.planUid,
       tier: item.tier,
       caseName: item.caseName,
@@ -156,6 +184,7 @@ export async function generatePlanFromConfig(configUid: string): Promise<{ planU
   );
 
   await insertLlmConversation({
+    projectUid: config.projectUid,
     scene: 'plan_generation',
     refUid: configUid,
     role: 'system',
@@ -175,21 +204,25 @@ export async function executePlan(planUid: string): Promise<{ executionUid: stri
 
   const existingRunning = await findRunningExecution(planUid);
   if (existingRunning) {
-    throw new Error(`该计划已有执行中的任务: ${existingRunning}`);
+    return { executionUid: existingRunning };
   }
 
   const config = await getTestConfigByUid(plan.configUid);
   if (!config) throw new Error('计划关联配置不存在');
+  const project = await getProjectByUid(config.projectUid);
+  if (!project) throw new Error('计划关联项目不存在');
 
   const workerSessionId = uid('ws');
   const executionUid = await createExecution({
     planUid: plan.planUid,
     configUid: plan.configUid,
+    projectUid: plan.projectUid || config.projectUid,
     workerSessionId,
     triggerSource: 'manual',
   });
 
   await insertLlmConversation({
+    projectUid: config.projectUid,
     scene: 'plan_execution',
     refUid: executionUid,
     role: 'system',
@@ -201,7 +234,7 @@ export async function executePlan(planUid: string): Promise<{ executionUid: stri
     level: 'info',
     message: `执行开始: ${plan.planTitle}`,
     at: new Date().toISOString(),
-  });
+  }, config.projectUid);
 
   void runExecutionInBackground({
     executionUid,
@@ -209,13 +242,8 @@ export async function executePlan(planUid: string): Promise<{ executionUid: stri
     planCode: plan.planCode,
     planUid: plan.planUid,
     planTitle: plan.planTitle,
-    auth: config.authRequired
-      ? {
-          loginUrl: config.loginUrl,
-          username: config.loginUsername,
-          password: config.loginPasswordPlain,
-        }
-      : undefined,
+    projectUid: config.projectUid,
+    auth: buildAuthContext(project, config),
   });
 
   return { executionUid };
@@ -229,11 +257,15 @@ export async function getExecutionDetail(executionUid: string) {
   const artifacts = await listExecutionArtifacts(executionUid);
   const plan = await getPlanByUid(execution.planUid);
   const planCases = plan ? await listPlanCases(plan.planUid) : [];
+  const config = await getTestConfigByUid(execution.configUid);
+  const project = config ? await getProjectByUid(config.projectUid) : null;
 
   return {
     execution,
     plan,
     planCases,
+    config,
+    project,
     events,
     conversations,
     artifacts,
@@ -250,10 +282,12 @@ async function runExecutionInBackground(input: {
   planCode: string;
   planUid: string;
   planTitle: string;
-  auth?: { loginUrl?: string; username?: string; password?: string };
+  projectUid: string;
+  auth?: { loginUrl?: string; username?: string; password?: string; loginDescription?: string };
 }) {
   try {
     await insertLlmConversation({
+      projectUid: input.projectUid,
       scene: 'plan_execution',
       refUid: input.executionUid,
       role: 'assistant',
@@ -268,7 +302,7 @@ async function runExecutionInBackground(input: {
           timestamp,
           approxBase64Bytes,
           channel: 'ws/screencast',
-        });
+        }, input.projectUid);
       },
       onStep: (step) => {
         void insertExecutionEvent(input.executionUid, 'step', {
@@ -277,7 +311,7 @@ async function runExecutionInBackground(input: {
           durationMs: step.duration,
           error: step.error || '',
           at: step.at || new Date().toISOString(),
-        });
+        }, input.projectUid);
       },
       onLog: (log) => {
         void insertExecutionEvent(input.executionUid, 'log', {
@@ -285,7 +319,7 @@ async function runExecutionInBackground(input: {
           message: log.message || '',
           meta: log.meta || null,
           at: log.at || new Date().toISOString(),
-        });
+        }, input.projectUid);
       },
     });
 
@@ -307,9 +341,10 @@ async function runExecutionInBackground(input: {
       durationMs: result.duration,
       resultSummary: summary,
       errorMessage: result.error || '',
-    });
+    }, input.projectUid);
 
     await insertLlmConversation({
+      projectUid: input.projectUid,
       scene: 'plan_execution',
       refUid: input.executionUid,
       role: result.success ? 'assistant' : 'tool',
@@ -325,12 +360,13 @@ async function runExecutionInBackground(input: {
         ? `执行成功: ${input.planTitle}，步骤通过 ${stepStats.passed}`
         : `执行失败: ${result.error || 'unknown error'}，失败步骤 ${stepStats.failed}`,
       at: new Date().toISOString(),
-    });
+    }, input.projectUid);
 
     if (result.success) {
       const artifactFileName = `gen-${Date.now()}.spec.ts`;
       await insertExecutionArtifact({
         executionUid: input.executionUid,
+        projectUid: input.projectUid,
         artifactType: 'generated_spec',
         storagePath: `db://executions/${input.executionUid}/${artifactFileName}`,
         meta: {
@@ -342,7 +378,7 @@ async function runExecutionInBackground(input: {
         type: 'generated_spec',
         path: `db://executions/${input.executionUid}/${artifactFileName}`,
         name: artifactFileName,
-      });
+      }, input.projectUid);
     }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
@@ -350,8 +386,9 @@ async function runExecutionInBackground(input: {
       endedAt: new Date(),
       resultSummary: '执行失败',
       errorMessage: message,
-    });
+    }, input.projectUid);
     await insertLlmConversation({
+      projectUid: input.projectUid,
       scene: 'plan_execution',
       refUid: input.executionUid,
       role: 'tool',
@@ -362,6 +399,6 @@ async function runExecutionInBackground(input: {
       level: 'error',
       message: `执行异常: ${message}`,
       at: new Date().toISOString(),
-    });
+    }, input.projectUid);
   }
 }

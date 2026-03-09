@@ -135,6 +135,9 @@ function runWorker(
   return new Promise((resolve) => {
     let settled = false;
     let frameIndex = 0;
+    let storedFrameCount = 0;
+    const FRAME_SAMPLE_INTERVAL = 10;
+    const MAX_STORED_FRAMES = 30;
     const steps: StepResult[] = [];
 
     const emitLog = (payload: WorkerLog) => {
@@ -178,10 +181,22 @@ function runWorker(
       });
     });
 
+    // Prepare frame storage directory & cleanup old frames
+    const framesRoot = path.join(ROOT, 'data', 'frames');
+    const framesDir = path.join(framesRoot, sessionId);
+    fs.mkdir(framesDir, { recursive: true }).catch(() => {});
+    void cleanupOldFrames(framesRoot);
+
     child.on('message', (msg: any) => {
       if (msg.type === 'frame') {
         frameIndex += 1;
         broadcastFrame(sessionId, msg.data);
+        // Persist sampled frames to disk for replay
+        if (typeof msg.data === 'string' && frameIndex % FRAME_SAMPLE_INTERVAL === 0 && storedFrameCount < MAX_STORED_FRAMES) {
+          storedFrameCount++;
+          const framePath = path.join(framesDir, `${String(frameIndex).padStart(6, '0')}.jpg`);
+          fs.writeFile(framePath, Buffer.from(msg.data, 'base64')).catch(() => {});
+        }
         if (hooks?.onFrame) {
           hooks.onFrame({
             sessionId,
@@ -278,4 +293,15 @@ function runWorker(
       }
     });
   });
+}
+
+async function cleanupOldFrames(framesRoot: string, maxAgeDays = 7) {
+  const dirs = await fs.readdir(framesRoot).catch(() => [] as string[]);
+  for (const dir of dirs) {
+    const dirPath = path.join(framesRoot, dir);
+    const stat = await fs.stat(dirPath).catch(() => null);
+    if (stat?.isDirectory() && Date.now() - stat.mtimeMs > maxAgeDays * 86400000) {
+      await fs.rm(dirPath, { recursive: true }).catch(() => {});
+    }
+  }
 }
