@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# field-pulse.sh — Health sensing
+# Checks environment health indicators and writes .field-breath.
+# Sensors: ALARM, WIP, build, signature ratio, signal counts, claim expiry.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+source "${SCRIPT_DIR}/field-lib.sh"
+
+# ── Sense: ALARM ─────────────────────────────────────────────────────
+
+alarm="false"
+if check_alarm; then
+  alarm="true"
+fi
+
+# ── Sense: WIP freshness ────────────────────────────────────────────
+
+wip=$(check_wip)
+
+# ── Sense: Build / test status ───────────────────────────────────────
+
+build=$(check_build)
+
+# ── Sense: Signature coverage ────────────────────────────────────────
+
+sig_ratio=$(termite_signature_ratio 20)
+
+# ── Sense: Signal counts ────────────────────────────────────────────
+
+active_count=0
+high_holes=0
+parked_count=0
+
+if has_db; then
+  source "${SCRIPT_DIR}/termite-db.sh"
+  active_count=$(db_signal_count "status NOT IN ('archived','done','completed')" 2>/dev/null || echo "0")
+  high_holes=$(db_signal_count "type='HOLE' AND weight>=${ESCALATE_THRESHOLD} AND status!='parked'" 2>/dev/null || echo "0")
+  parked_count=$(db_signal_count "status='parked'" 2>/dev/null || echo "0")
+elif has_signal_dir; then
+  active_count=$(count_active_signals)
+  high_holes=$(count_high_weight_holes)
+  parked_count=$(count_parked_signals)
+fi
+
+# ── Sense: Claim expiry ─────────────────────────────────────────────
+
+expired_claims=0
+if has_db; then
+  expired_claims=$(db_exec "SELECT COUNT(*) FROM claims WHERE datetime(claimed_at, '+' || ttl_hours || ' hours') < datetime('now');" 2>/dev/null || echo "0")
+elif [ -d "$CLAIMS_DIR" ]; then
+  now_epoch=$(date +%s)
+  for lock_file in "$CLAIMS_DIR"/*.lock; do
+    [ -f "$lock_file" ] || continue
+    claimed_at=$(yaml_read "$lock_file" "claimed_at")
+    ttl_h=$(yaml_read "$lock_file" "ttl_hours")
+    [ -z "$claimed_at" ] && continue
+    ttl_h="${ttl_h:-$CLAIM_TTL_HOURS}"
+    # Parse ISO timestamp
+    if claim_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$claimed_at" "+%s" 2>/dev/null) || \
+       claim_epoch=$(date -d "$claimed_at" "+%s" 2>/dev/null); then
+      expiry=$((claim_epoch + ttl_h * 3600))
+      if [ "$now_epoch" -gt "$expiry" ]; then
+        expired_claims=$((expired_claims + 1))
+      fi
+    fi
+  done
+fi
+
+# ── Sense: Signal concentration (adaptive decay) ───────────────────
+
+concentration=$(signal_concentration)
+case "$concentration" in
+  concentrated) effective_decay=$(awk "BEGIN { f=${DECAY_FACTOR}-0.02; if(f<0.90) f=0.90; printf \"%.4f\",f }") ;;
+  dispersed)    effective_decay=$(awk "BEGIN { f=${DECAY_FACTOR}+0.01; if(f>0.995) f=0.995; printf \"%.4f\",f }") ;;
+  *)            effective_decay="$DECAY_FACTOR" ;;
+esac
+
+# ── Sense: Blackboard freshness ─────────────────────────────────────
+
+bb_status="absent"
+if [ -f "$BLACKBOARD" ]; then
+  bb_mod=$(stat -f "%m" "$BLACKBOARD" 2>/dev/null || stat -c "%Y" "$BLACKBOARD" 2>/dev/null || echo 0)
+  bb_age=$(( ($(date +%s) - bb_mod) / 86400 ))
+  if [ "$bb_age" -lt "$WIP_FRESHNESS_DAYS" ]; then
+    bb_status="fresh"
+  else
+    bb_status="stale"
+  fi
+fi
+
+# ── Sense: Colony life phase ────────────────────────────────────────
+
+colony_phase="active"
+total_signals_ever=0
+active_rules=0
+
+if has_db; then
+  # Count total signals ever (current + archived)
+  total_signals_ever=$(db_exec "SELECT (SELECT COUNT(*) FROM signals) + (SELECT COUNT(*) FROM archive WHERE original_table='signals');" 2>/dev/null || echo "0")
+  active_rules=$(db_exec "SELECT COUNT(*) FROM rules;" 2>/dev/null || echo "0")
+elif has_signal_dir; then
+  total_signals_ever=0
+  for f in "$ACTIVE_DIR"/*.yaml; do [ -f "$f" ] && total_signals_ever=$((total_signals_ever + 1)); done
+  for f in "$ARCHIVE_DIR"/done-*/*.yaml "$ARCHIVE_DIR"/promoted/*.yaml; do [ -f "$f" ] && total_signals_ever=$((total_signals_ever + 1)); done
+  active_rules=0
+  for f in "$RULES_DIR"/*.yaml; do [ -f "$f" ] && active_rules=$((active_rules + 1)); done
+fi
+
+if [ "$total_signals_ever" -le 1 ] && [ "$active_rules" -eq 0 ]; then
+  colony_phase="genesis"
+elif [ "$active_count" -gt 0 ]; then
+  colony_phase="active"
+elif [ "$active_rules" -gt 0 ] && [ "$active_count" -eq 0 ] && [ "$total_signals_ever" -gt 3 ]; then
+  colony_phase="maintaining"
+elif [ "$active_count" -eq 0 ] && [ "$total_signals_ever" -gt 3 ] && [ "$active_rules" -eq 0 ]; then
+  colony_phase="idle"
+fi
+
+# ── Write colony state to DB ─────────────────────────────────────────
+
+if has_db; then
+  db_colony_pulse "$alarm" "$wip" "$build" "$sig_ratio" "$active_count" "$high_holes" "$parked_count" "$expired_claims"
+  db_colony_set "concentration" "$concentration"
+  db_colony_set "effective_decay" "$effective_decay"
+  db_colony_set "colony_phase" "$colony_phase"
+fi
+
+# ── Write .field-breath (always, for backward compat) ─────────────────
+
+cat > "$BREATH_FILE" <<EOF
+timestamp: $(now_iso)
+alarm: ${alarm}
+wip: ${wip}
+build: ${build}
+signature_ratio: ${sig_ratio}
+active_signals: ${active_count}
+high_weight_holes: ${high_holes}
+parked_signals: ${parked_count}
+expired_claims: ${expired_claims}
+blackboard: ${bb_status}
+concentration: ${concentration}
+effective_decay: ${effective_decay}
+colony_phase: ${colony_phase}
+branch: $(current_branch)
+commit: $(current_commit_short)
+EOF
+
+log_info "Pulse written: alarm=${alarm} wip=${wip} build=${build} signals=${active_count} holes=${high_holes} parked=${parked_count} phase=${colony_phase}"

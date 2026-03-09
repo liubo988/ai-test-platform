@@ -1,0 +1,39 @@
+name: Edge Case Intake
+about: 市场部反馈边缘用例收集
+labels: [edge-case, market-feedback]
+body:
+  - type: input
+    id: title
+    attributes:
+      label: 问题标题
+      placeholder: 例如：手机号含空格导致下单失败
+    validations:
+      required: true
+  - type: input
+    id: module
+    attributes:
+      label: 影响模块
+      placeholder: checkout
+    validations:
+      required: true
+  - type: textarea
+    id: input
+    attributes:
+      label: 输入数据
+      placeholder: '{"phone":"138 0013 8000"}'
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      placeholder: 自动去空格并通过校验
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: 严重级别
+      options: [low, medium, high, critical]
+    validations:
+      required: true

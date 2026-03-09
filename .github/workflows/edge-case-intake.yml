@@ -1,0 +1,48 @@
+name: Edge Case Intake
+
+on:
+  issues:
+    types: [opened, edited]
+
+jobs:
+  sync-edge-case:
+    if: contains(github.event.issue.labels.*.name, 'edge-case')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Append issue as edge case
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const file = path.join(process.cwd(), 'edge-cases', 'cases.json');
+          const cases = JSON.parse(fs.readFileSync(file, 'utf8'));
+          const nextId = `EC-${new Date().getFullYear()}-${String(cases.length + 1).padStart(4, '0')}`;
+          cases.push({
+            id: nextId,
+            title: process.env.ISSUE_TITLE,
+            module: 'checkout',
+            input: { raw: process.env.ISSUE_BODY || '' },
+            expected: 'TBD',
+            severity: 'medium',
+            source: `market-issue-${process.env.ISSUE_NUMBER}`,
+            status: 'new'
+          });
+          fs.writeFileSync(file, JSON.stringify(cases, null, 2));
+          NODE
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add edge-cases/cases.json
+          git commit -m "chore(edge-case): sync issue #${{ github.event.issue.number }}" || exit 0
+          git push

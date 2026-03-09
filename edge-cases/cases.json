@@ -1,0 +1,12 @@
+[
+  {
+    "id": "EC-2026-0001",
+    "title": "手机号含空格导致下单失败",
+    "module": "checkout",
+    "input": { "phone": "138 0013 8000" },
+    "expected": "自动去空格并通过校验",
+    "severity": "high",
+    "source": "market-issue-123",
+    "status": "new"
+  }
+]
