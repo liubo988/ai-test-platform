@@ -4,7 +4,7 @@ import next from 'next';
 import { WebSocketServer } from 'ws';
 
 const dev = process.env.NODE_ENV !== 'production';
-const port = parseInt(process.env.PORT || '3000', 10);
+const port = parseInt(process.env.PORT || '3666', 10);
 
 // 先创建 HTTP 服务器，传给 Next.js 以支持 HMR WebSocket
 const server = createServer();
