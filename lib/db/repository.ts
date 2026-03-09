@@ -414,12 +414,12 @@ export async function listProjects(params: { keyword?: string; status?: ProjectS
       (
         SELECT COUNT(*)
         FROM test_modules m
-        WHERE m.project_uid = p.project_uid AND m.status = 'active'
+        WHERE m.project_uid = p.project_uid AND m.status = p.status
       ) AS module_count,
       (
         SELECT COUNT(*)
         FROM test_configurations c
-        WHERE c.project_uid = p.project_uid AND c.status = 'active'
+        WHERE c.project_uid = p.project_uid AND c.status = p.status
       ) AS task_count,
       (
         SELECT COUNT(*)
@@ -490,12 +490,12 @@ export async function getProjectByUid(projectUid: string): Promise<(TestProjectR
       (
         SELECT COUNT(*)
         FROM test_modules m
-        WHERE m.project_uid = p.project_uid AND m.status = 'active'
+        WHERE m.project_uid = p.project_uid AND m.status = p.status
       ) AS module_count,
       (
         SELECT COUNT(*)
         FROM test_configurations c
-        WHERE c.project_uid = p.project_uid AND c.status = 'active'
+        WHERE c.project_uid = p.project_uid AND c.status = p.status
       ) AS task_count,
       (
         SELECT COUNT(*)
@@ -659,7 +659,7 @@ export async function listModulesByProject(projectUid: string, params?: { status
       (
         SELECT COUNT(*)
         FROM test_configurations c
-        WHERE c.module_uid = m.module_uid AND c.status = 'active'
+        WHERE c.module_uid = m.module_uid AND c.status = m.status
       ) AS task_count,
       (
         SELECT COUNT(*)
@@ -726,7 +726,7 @@ export async function getModuleByUid(moduleUid: string): Promise<TestModuleRecor
       (
         SELECT COUNT(*)
         FROM test_configurations c
-        WHERE c.module_uid = m.module_uid AND c.status = 'active'
+        WHERE c.module_uid = m.module_uid AND c.status = m.status
       ) AS task_count,
       (
         SELECT COUNT(*)
