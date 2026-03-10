@@ -17,6 +17,37 @@ CREATE TABLE IF NOT EXISTS test_projects (
   KEY idx_test_projects_status_updated (status, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS workspace_users (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_uid VARCHAR(64) NOT NULL,
+  display_name VARCHAR(128) NOT NULL,
+  email VARCHAR(255) NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_workspace_users_uid (user_uid),
+  UNIQUE KEY uk_workspace_users_email (email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS project_members (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  member_uid VARCHAR(64) NOT NULL,
+  project_uid VARCHAR(64) NOT NULL,
+  user_uid VARCHAR(64) NOT NULL,
+  role ENUM('owner', 'editor', 'viewer') NOT NULL DEFAULT 'viewer',
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_project_members_uid (member_uid),
+  UNIQUE KEY uk_project_members_project_user (project_uid, user_uid),
+  KEY idx_project_members_project_role (project_uid, role, created_at),
+  KEY idx_project_members_user_project (user_uid, project_uid),
+  CONSTRAINT fk_project_members_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
+    ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT fk_project_members_user_uid FOREIGN KEY (user_uid) REFERENCES workspace_users (user_uid)
+    ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS test_modules (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   module_uid VARCHAR(64) NOT NULL,
@@ -152,6 +183,25 @@ CREATE TABLE IF NOT EXISTS llm_conversations (
   UNIQUE KEY uk_llm_conversations_uid (conversation_uid),
   KEY idx_llm_conversations_project_scene_ref_time (project_uid, scene, ref_uid, created_at),
   CONSTRAINT fk_llm_conversations_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
+    ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS project_activity_logs (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  activity_uid VARCHAR(64) NOT NULL,
+  project_uid VARCHAR(64) NOT NULL,
+  entity_type VARCHAR(32) NOT NULL,
+  entity_uid VARCHAR(64) NOT NULL,
+  action_type VARCHAR(64) NOT NULL,
+  actor_label VARCHAR(128) NOT NULL DEFAULT 'system',
+  title VARCHAR(255) NOT NULL,
+  detail TEXT NULL,
+  meta JSON NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_project_activity_logs_uid (activity_uid),
+  KEY idx_project_activity_logs_project_time (project_uid, created_at),
+  CONSTRAINT fk_project_activity_logs_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
     ON UPDATE CASCADE ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

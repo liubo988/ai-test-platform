@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { archiveTestConfig, getTestConfigByUid, updateTestConfig } from '@/lib/db/repository';
+import { applyActorCookie, requireProjectRole, toErrorResponse } from '@/lib/server/project-actor';
 
 function toBoolean(input: unknown): boolean {
   return input === true || input === 'true' || input === 1 || input === '1';
@@ -22,15 +23,18 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ configUid:
     const { configUid } = await ctx.params;
     const item = await getTestConfigByUid(configUid);
     if (!item) return NextResponse.json({ error: '配置不存在' }, { status: 404 });
+    const { actor } = await requireProjectRole(_req, item.projectUid, ['owner', 'editor', 'viewer'], '当前操作者没有权限查看任务');
 
     const { loginPasswordPlain, ...safeItem } = item;
 
-    return NextResponse.json({
-      item: safeItem,
-    });
+    return applyActorCookie(
+      NextResponse.json({
+        item: safeItem,
+      }),
+      actor.userUid
+    );
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : '获取配置失败';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return toErrorResponse(error, '获取配置失败');
   }
 }
 
@@ -38,40 +42,48 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ configUid: 
   try {
     await ensureDbBootstrap();
     const { configUid } = await ctx.params;
+    const existing = await getTestConfigByUid(configUid);
+    if (!existing) return NextResponse.json({ error: '配置不存在' }, { status: 404 });
+    const { actor } = await requireProjectRole(req, existing.projectUid, ['owner', 'editor'], '当前操作者没有权限修改任务');
     const body = await req.json();
     if (!body?.name || !body?.targetUrl || !body?.featureDescription) {
       return NextResponse.json({ error: '缺少必要字段: name/targetUrl/featureDescription' }, { status: 400 });
     }
 
-    const item = await updateTestConfig(configUid, {
-      projectUid: body.projectUid ? String(body.projectUid) : undefined,
-      moduleUid: body.moduleUid ? String(body.moduleUid) : undefined,
-      sortOrder: toNumber(body.sortOrder, 100),
-      name: String(body.name),
-      targetUrl: String(body.targetUrl),
-      featureDescription: String(body.featureDescription),
-      authRequired: toOptionalBoolean(body.authRequired),
-      loginUrl: body.loginUrl === undefined ? undefined : String(body.loginUrl),
-      loginUsername: body.loginUsername === undefined ? undefined : String(body.loginUsername),
-      loginPassword: body.loginPassword ? String(body.loginPassword) : '',
-    });
+    const item = await updateTestConfig(
+      configUid,
+      {
+        projectUid: body.projectUid ? String(body.projectUid) : undefined,
+        moduleUid: body.moduleUid ? String(body.moduleUid) : undefined,
+        sortOrder: toNumber(body.sortOrder, 100),
+        name: String(body.name),
+        targetUrl: String(body.targetUrl),
+        featureDescription: String(body.featureDescription),
+        authRequired: toOptionalBoolean(body.authRequired),
+        loginUrl: body.loginUrl === undefined ? undefined : String(body.loginUrl),
+        loginUsername: body.loginUsername === undefined ? undefined : String(body.loginUsername),
+        loginPassword: body.loginPassword ? String(body.loginPassword) : '',
+      },
+      { actorLabel: actor.displayName }
+    );
 
     const { loginPasswordPlain, ...safeItem } = item as typeof item & { loginPasswordPlain?: string };
-    return NextResponse.json({ item: safeItem });
+    return applyActorCookie(NextResponse.json({ item: safeItem }), actor.userUid);
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : '更新配置失败';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return toErrorResponse(error, '更新配置失败');
   }
 }
 
-export async function DELETE(_req: NextRequest, ctx: { params: Promise<{ configUid: string }> }) {
+export async function DELETE(req: NextRequest, ctx: { params: Promise<{ configUid: string }> }) {
   try {
     await ensureDbBootstrap();
     const { configUid } = await ctx.params;
-    await archiveTestConfig(configUid);
-    return NextResponse.json({ ok: true });
+    const existing = await getTestConfigByUid(configUid);
+    if (!existing) return NextResponse.json({ error: '配置不存在' }, { status: 404 });
+    const { actor } = await requireProjectRole(req, existing.projectUid, ['owner', 'editor'], '当前操作者没有权限归档任务');
+    await archiveTestConfig(configUid, { actorLabel: actor.displayName });
+    return applyActorCookie(NextResponse.json({ ok: true }), actor.userUid);
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : '删除配置失败';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return toErrorResponse(error, '删除配置失败');
   }
 }

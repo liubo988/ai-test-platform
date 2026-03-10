@@ -14,6 +14,7 @@ import {
   insertExecutionArtifact,
   insertExecutionEvent,
   insertLlmConversation,
+  insertProjectActivityLog,
   listExecutionArtifacts,
   listExecutionEvents,
   listLlmConversations,
@@ -85,7 +86,7 @@ function buildAuthContext(
   return undefined;
 }
 
-export async function generatePlanFromConfig(configUid: string): Promise<{ planUid: string; planVersion: number }> {
+export async function generatePlanFromConfig(configUid: string, options?: { actorLabel?: string }): Promise<{ planUid: string; planVersion: number }> {
   const config = await getTestConfigByUid(configUid);
   if (!config) throw new Error('测试配置不存在');
   const project = await getProjectByUid(config.projectUid);
@@ -192,13 +193,31 @@ export async function generatePlanFromConfig(configUid: string): Promise<{ planU
     content: `计划生成完成: ${plan.planUid} v${plan.planVersion}（上一版本: ${latestPlan?.planVersion || 0}）`,
   });
 
+  await insertProjectActivityLog({
+    projectUid: config.projectUid,
+    entityType: 'plan',
+    entityUid: plan.planUid,
+    actionType: 'plan_generated',
+    actorLabel: options?.actorLabel,
+    title: `为任务「${config.name}」生成计划 v${plan.planVersion}`,
+    detail: `生成模型 ${process.env.OPENAI_MODEL || 'unknown'}，已覆盖简单/中等/复杂三层场景。`,
+    meta: {
+      configUid: config.configUid,
+      configName: config.name,
+      previousPlanVersion: latestPlan?.planVersion || 0,
+      planVersion: plan.planVersion,
+      generationModel: process.env.OPENAI_MODEL || 'unknown',
+      tiers: { simple: 1, medium: 1, complex: 1 },
+    },
+  });
+
   return {
     planUid: plan.planUid,
     planVersion: plan.planVersion,
   };
 }
 
-export async function executePlan(planUid: string): Promise<{ executionUid: string }> {
+export async function executePlan(planUid: string, options?: { actorLabel?: string }): Promise<{ executionUid: string }> {
   const plan = await getPlanByUid(planUid);
   if (!plan) throw new Error('测试计划不存在');
 
@@ -236,12 +255,32 @@ export async function executePlan(planUid: string): Promise<{ executionUid: stri
     at: new Date().toISOString(),
   }, config.projectUid);
 
+  await insertProjectActivityLog({
+    projectUid: config.projectUid,
+    entityType: 'execution',
+    entityUid: executionUid,
+    actionType: 'execution_started',
+    actorLabel: options?.actorLabel,
+    title: `开始执行任务「${config.name}」`,
+    detail: `计划 v${plan.planVersion} 已启动，执行会话 ${workerSessionId}。`,
+    meta: {
+      executionUid,
+      planUid: plan.planUid,
+      planVersion: plan.planVersion,
+      configUid: config.configUid,
+      configName: config.name,
+      triggerSource: 'manual',
+    },
+  });
+
   void runExecutionInBackground({
     executionUid,
     workerSessionId,
     planCode: plan.planCode,
     planUid: plan.planUid,
     planTitle: plan.planTitle,
+    configUid: config.configUid,
+    configName: config.name,
     projectUid: config.projectUid,
     auth: buildAuthContext(project, config),
   });
@@ -282,6 +321,8 @@ async function runExecutionInBackground(input: {
   planCode: string;
   planUid: string;
   planTitle: string;
+  configUid: string;
+  configName: string;
   projectUid: string;
   auth?: { loginUrl?: string; username?: string; password?: string; loginDescription?: string };
 }) {
@@ -343,6 +384,25 @@ async function runExecutionInBackground(input: {
       errorMessage: result.error || '',
     }, input.projectUid);
 
+    void insertProjectActivityLog({
+      projectUid: input.projectUid,
+      entityType: 'execution',
+      entityUid: input.executionUid,
+      actionType: result.success ? 'execution_passed' : 'execution_failed',
+      title: `${result.success ? '执行通过' : '执行失败'}「${input.configName}」`,
+      detail: result.success ? summary : `${summary}${result.error ? ` · ${result.error}` : ''}`,
+      meta: {
+        executionUid: input.executionUid,
+        planUid: input.planUid,
+        planTitle: input.planTitle,
+        configUid: input.configUid,
+        configName: input.configName,
+        durationMs: result.duration,
+        stepStats,
+        errorMessage: result.error || '',
+      },
+    }).catch(() => undefined);
+
     await insertLlmConversation({
       projectUid: input.projectUid,
       scene: 'plan_execution',
@@ -387,6 +447,22 @@ async function runExecutionInBackground(input: {
       resultSummary: '执行失败',
       errorMessage: message,
     }, input.projectUid);
+    void insertProjectActivityLog({
+      projectUid: input.projectUid,
+      entityType: 'execution',
+      entityUid: input.executionUid,
+      actionType: 'execution_failed',
+      title: `执行失败「${input.configName}」`,
+      detail: `执行发生异常：${message}`,
+      meta: {
+        executionUid: input.executionUid,
+        planUid: input.planUid,
+        planTitle: input.planTitle,
+        configUid: input.configUid,
+        configName: input.configName,
+        errorMessage: message,
+      },
+    }).catch(() => undefined);
     await insertLlmConversation({
       projectUid: input.projectUid,
       scene: 'plan_execution',

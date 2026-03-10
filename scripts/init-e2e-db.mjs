@@ -11,6 +11,9 @@ function must(name) {
 
 const schemaPath = path.join(process.cwd(), 'scripts', 'e2e-platform-schema.sql');
 const LEGACY_PROJECT_UID = 'proj_legacy_default';
+const DEFAULT_WORKSPACE_USER_UID = 'usr_default_owner';
+const DEFAULT_WORKSPACE_USER_NAME = '演示管理员';
+const DEFAULT_WORKSPACE_USER_EMAIL = 'owner@local.dev';
 
 function normalizeModuleName(value) {
   const raw = `${value || ''}`.trim();
@@ -37,11 +40,14 @@ async function main() {
   try {
     await connection.query(sql);
     await ensureProjectTables(connection);
+    await ensureCollaborationTables(connection);
     await ensureModuleTables(connection);
     await ensureConfigurationColumns(connection);
     await ensureDerivedProjectColumns(connection);
+    await ensureProjectActivityTables(connection);
     await ensureIndexes(connection);
     await migrateLegacyData(connection);
+    await seedDefaultProjectOwners(connection);
     console.log('E2E platform schema initialized.');
   } finally {
     await connection.end();
@@ -155,6 +161,56 @@ async function ensureModuleTables(connection) {
   await addColumnIfMissing(connection, 'test_modules', 'status', `status ENUM('active', 'archived') NOT NULL DEFAULT 'active'`);
 }
 
+async function ensureCollaborationTables(connection) {
+  const hasUsers = await tableExists(connection, 'workspace_users');
+  if (!hasUsers) {
+    await connection.query(`
+      CREATE TABLE workspace_users (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        user_uid VARCHAR(64) NOT NULL,
+        display_name VARCHAR(128) NOT NULL,
+        email VARCHAR(255) NOT NULL,
+        created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_workspace_users_uid (user_uid),
+        UNIQUE KEY uk_workspace_users_email (email)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+  }
+
+  const hasMembers = await tableExists(connection, 'project_members');
+  if (!hasMembers) {
+    await connection.query(`
+      CREATE TABLE project_members (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        member_uid VARCHAR(64) NOT NULL,
+        project_uid VARCHAR(64) NOT NULL,
+        user_uid VARCHAR(64) NOT NULL,
+        role ENUM('owner', 'editor', 'viewer') NOT NULL DEFAULT 'viewer',
+        created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+        PRIMARY KEY (id),
+        UNIQUE KEY uk_project_members_uid (member_uid),
+        UNIQUE KEY uk_project_members_project_user (project_uid, user_uid),
+        KEY idx_project_members_project_role (project_uid, role, created_at),
+        KEY idx_project_members_user_project (user_uid, project_uid),
+        CONSTRAINT fk_project_members_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
+          ON UPDATE CASCADE ON DELETE CASCADE,
+        CONSTRAINT fk_project_members_user_uid FOREIGN KEY (user_uid) REFERENCES workspace_users (user_uid)
+          ON UPDATE CASCADE ON DELETE RESTRICT
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+  }
+
+  await connection.query(
+    `INSERT INTO workspace_users (user_uid, display_name, email)
+     VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), email = VALUES(email)`,
+    [DEFAULT_WORKSPACE_USER_UID, DEFAULT_WORKSPACE_USER_NAME, DEFAULT_WORKSPACE_USER_EMAIL]
+  );
+}
+
 async function ensureConfigurationColumns(connection) {
   await addColumnIfMissing(connection, 'test_configurations', 'project_uid', `project_uid VARCHAR(64) NULL AFTER config_uid`);
   await addColumnIfMissing(connection, 'test_configurations', 'module_uid', `module_uid VARCHAR(64) NULL AFTER project_uid`);
@@ -169,6 +225,29 @@ async function ensureDerivedProjectColumns(connection) {
   await addColumnIfMissing(connection, 'llm_conversations', 'project_uid', `project_uid VARCHAR(64) NULL AFTER conversation_uid`);
   await addColumnIfMissing(connection, 'execution_stream_events', 'project_uid', `project_uid VARCHAR(64) NULL AFTER execution_uid`);
   await addColumnIfMissing(connection, 'execution_artifacts', 'project_uid', `project_uid VARCHAR(64) NULL AFTER execution_uid`);
+}
+
+async function ensureProjectActivityTables(connection) {
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS project_activity_logs (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      activity_uid VARCHAR(64) NOT NULL,
+      project_uid VARCHAR(64) NOT NULL,
+      entity_type VARCHAR(32) NOT NULL,
+      entity_uid VARCHAR(64) NOT NULL,
+      action_type VARCHAR(64) NOT NULL,
+      actor_label VARCHAR(128) NOT NULL DEFAULT 'system',
+      title VARCHAR(255) NOT NULL,
+      detail TEXT NULL,
+      meta JSON NULL,
+      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (id),
+      UNIQUE KEY uk_project_activity_logs_uid (activity_uid),
+      KEY idx_project_activity_logs_project_time (project_uid, created_at),
+      CONSTRAINT fk_project_activity_logs_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
+        ON UPDATE CASCADE ON DELETE RESTRICT
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
 }
 
 async function ensureIndexes(connection) {
@@ -213,6 +292,24 @@ async function ensureIndexes(connection) {
     'execution_artifacts',
     'idx_execution_artifacts_project_execution_time',
     `INDEX idx_execution_artifacts_project_execution_time (project_uid, execution_uid, created_at)`
+  );
+  await addIndexIfMissing(
+    connection,
+    'project_activity_logs',
+    'idx_project_activity_logs_project_time',
+    `INDEX idx_project_activity_logs_project_time (project_uid, created_at)`
+  );
+  await addIndexIfMissing(
+    connection,
+    'project_members',
+    'idx_project_members_project_role',
+    `INDEX idx_project_members_project_role (project_uid, role, created_at)`
+  );
+  await addIndexIfMissing(
+    connection,
+    'project_members',
+    'idx_project_members_user_project',
+    `INDEX idx_project_members_user_project (user_uid, project_uid)`
   );
 }
 
@@ -355,6 +452,26 @@ async function migrateLegacyData(connection) {
   await connection.query(`UPDATE llm_conversations SET project_uid = ? WHERE project_uid IS NULL OR project_uid = ''`, [legacyProjectUid]);
   await connection.query(`UPDATE execution_stream_events SET project_uid = ? WHERE project_uid IS NULL OR project_uid = ''`, [legacyProjectUid]);
   await connection.query(`UPDATE execution_artifacts SET project_uid = ? WHERE project_uid IS NULL OR project_uid = ''`, [legacyProjectUid]);
+}
+
+async function seedDefaultProjectOwners(connection) {
+  const [rows] = await connection.query(
+    `SELECT p.project_uid
+     FROM test_projects p
+     LEFT JOIN project_members pm
+       ON pm.project_uid = p.project_uid AND pm.role = 'owner'
+     WHERE pm.member_uid IS NULL`
+  );
+
+  for (const row of rows) {
+    await connection.query(
+      `INSERT INTO project_members
+        (member_uid, project_uid, user_uid, role)
+       VALUES (?, ?, ?, 'owner')
+       ON DUPLICATE KEY UPDATE role = VALUES(role)`,
+      [`mem_seed_${row.project_uid}`, row.project_uid, DEFAULT_WORKSPACE_USER_UID]
+    );
+  }
 }
 
 main().catch((err) => {

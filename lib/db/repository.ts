@@ -10,6 +10,9 @@ export type CoverageMode = 'all_tiers';
 export type Tier = 'simple' | 'medium' | 'complex';
 export type ExecutionStatus = 'queued' | 'running' | 'passed' | 'failed' | 'canceled';
 export type AuthSource = 'project' | 'task' | 'none';
+export type ProjectMemberRole = 'owner' | 'editor' | 'viewer';
+export type ProjectActorRole = ProjectMemberRole | 'none';
+export type ProjectActivityEntityType = 'project' | 'module' | 'config' | 'plan' | 'execution' | 'member';
 
 export interface TestProjectInput {
   name: string;
@@ -45,6 +48,25 @@ export interface TestProjectRecord {
   latestExecutionUid: string;
   latestExecutionStatus: string;
   lastExecutionAt: string;
+}
+
+export interface WorkspaceUserRecord {
+  userUid: string;
+  displayName: string;
+  email: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectMemberRecord {
+  memberUid: string;
+  projectUid: string;
+  userUid: string;
+  role: ProjectMemberRole;
+  displayName: string;
+  email: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface TestModuleInput {
@@ -158,6 +180,30 @@ export interface LlmConversationInput {
   content: string;
 }
 
+export interface ProjectActivityLogInput {
+  projectUid: string;
+  entityType: ProjectActivityEntityType;
+  entityUid: string;
+  actionType: string;
+  actorLabel?: string;
+  title: string;
+  detail?: string;
+  meta?: unknown;
+}
+
+export interface ProjectActivityLogRecord {
+  activityUid: string;
+  projectUid: string;
+  entityType: ProjectActivityEntityType;
+  entityUid: string;
+  actionType: string;
+  actorLabel: string;
+  title: string;
+  detail: string;
+  meta: unknown;
+  createdAt: string;
+}
+
 function safeJsonParse<T>(value: unknown, fallback: T): T {
   if (value === null || value === undefined) return fallback;
   if (typeof value === 'object') return value as T;
@@ -186,6 +232,130 @@ function toIso(value: unknown): string {
 function toPercent(numerator: number, denominator: number): number {
   if (!denominator) return 0;
   return Math.round((numerator / denominator) * 100);
+}
+
+const DEFAULT_WORKSPACE_USER_UID = 'usr_default_owner';
+const DEFAULT_WORKSPACE_USER_NAME = '演示管理员';
+const DEFAULT_WORKSPACE_USER_EMAIL = 'owner@local.dev';
+
+let projectActivityTableReady: Promise<void> | null = null;
+let projectCollaborationTablesReady: Promise<void> | null = null;
+
+async function ensureProjectActivityLogTable(): Promise<void> {
+  if (!projectActivityTableReady) {
+    projectActivityTableReady = (async () => {
+      const pool = getDbPool();
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS project_activity_logs (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          activity_uid VARCHAR(64) NOT NULL,
+          project_uid VARCHAR(64) NOT NULL,
+          entity_type VARCHAR(32) NOT NULL,
+          entity_uid VARCHAR(64) NOT NULL,
+          action_type VARCHAR(64) NOT NULL,
+          actor_label VARCHAR(128) NOT NULL DEFAULT 'system',
+          title VARCHAR(255) NOT NULL,
+          detail TEXT NULL,
+          meta JSON NULL,
+          created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+          PRIMARY KEY (id),
+          UNIQUE KEY uk_project_activity_logs_uid (activity_uid),
+          KEY idx_project_activity_logs_project_time (project_uid, created_at),
+          CONSTRAINT fk_project_activity_logs_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
+            ON UPDATE CASCADE ON DELETE RESTRICT
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
+    })().catch((error) => {
+      projectActivityTableReady = null;
+      throw error;
+    });
+  }
+
+  return projectActivityTableReady;
+}
+
+async function ensureProjectCollaborationTables(): Promise<void> {
+  if (!projectCollaborationTablesReady) {
+    projectCollaborationTablesReady = (async () => {
+      const pool = getDbPool();
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS workspace_users (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          user_uid VARCHAR(64) NOT NULL,
+          display_name VARCHAR(128) NOT NULL,
+          email VARCHAR(255) NOT NULL,
+          created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+          updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+          PRIMARY KEY (id),
+          UNIQUE KEY uk_workspace_users_uid (user_uid),
+          UNIQUE KEY uk_workspace_users_email (email)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS project_members (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          member_uid VARCHAR(64) NOT NULL,
+          project_uid VARCHAR(64) NOT NULL,
+          user_uid VARCHAR(64) NOT NULL,
+          role ENUM('owner', 'editor', 'viewer') NOT NULL DEFAULT 'viewer',
+          created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+          updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+          PRIMARY KEY (id),
+          UNIQUE KEY uk_project_members_uid (member_uid),
+          UNIQUE KEY uk_project_members_project_user (project_uid, user_uid),
+          KEY idx_project_members_project_role (project_uid, role, created_at),
+          KEY idx_project_members_user_project (user_uid, project_uid),
+          CONSTRAINT fk_project_members_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
+            ON UPDATE CASCADE ON DELETE CASCADE,
+          CONSTRAINT fk_project_members_user_uid FOREIGN KEY (user_uid) REFERENCES workspace_users (user_uid)
+            ON UPDATE CASCADE ON DELETE RESTRICT
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
+      await pool.execute<ResultSetHeader>(
+        `INSERT INTO workspace_users (user_uid, display_name, email)
+         VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           display_name = VALUES(display_name),
+           email = VALUES(email)`,
+        [DEFAULT_WORKSPACE_USER_UID, DEFAULT_WORKSPACE_USER_NAME, DEFAULT_WORKSPACE_USER_EMAIL]
+      );
+
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT p.project_uid
+         FROM test_projects p
+         LEFT JOIN project_members pm
+           ON pm.project_uid = p.project_uid AND pm.role = 'owner'
+         WHERE pm.member_uid IS NULL`
+      );
+
+      for (const row of rows) {
+        await pool.execute<ResultSetHeader>(
+          `INSERT INTO project_members (member_uid, project_uid, user_uid, role)
+           VALUES (?, ?, ?, 'owner')
+           ON DUPLICATE KEY UPDATE role = VALUES(role)`,
+          [uid('mem'), String(row.project_uid), DEFAULT_WORKSPACE_USER_UID]
+        );
+      }
+    })().catch((error) => {
+      projectCollaborationTablesReady = null;
+      throw error;
+    });
+  }
+
+  return projectCollaborationTablesReady;
+}
+
+function roleLabel(role: ProjectMemberRole): string {
+  switch (role) {
+    case 'owner':
+      return '负责人';
+    case 'editor':
+      return '编辑者';
+    case 'viewer':
+      return '查看者';
+    default:
+      return role;
+  }
 }
 
 function normalizeProjectRow(row: RowDataPacket): TestProjectRecord {
@@ -332,6 +502,44 @@ function normalizePlanRow(row: RowDataPacket): TestPlanRecord {
   };
 }
 
+function normalizeProjectActivityRow(row: RowDataPacket): ProjectActivityLogRecord {
+  return {
+    activityUid: String(row.activity_uid),
+    projectUid: String(row.project_uid),
+    entityType: row.entity_type as ProjectActivityEntityType,
+    entityUid: String(row.entity_uid),
+    actionType: String(row.action_type),
+    actorLabel: row.actor_label ? String(row.actor_label) : 'system',
+    title: String(row.title),
+    detail: row.detail ? String(row.detail) : '',
+    meta: safeJsonParse<unknown>(row.meta, {}),
+    createdAt: toIso(row.created_at),
+  };
+}
+
+function normalizeWorkspaceUserRow(row: RowDataPacket): WorkspaceUserRecord {
+  return {
+    userUid: String(row.user_uid),
+    displayName: String(row.display_name),
+    email: String(row.email),
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+  };
+}
+
+function normalizeProjectMemberRow(row: RowDataPacket): ProjectMemberRecord {
+  return {
+    memberUid: String(row.member_uid),
+    projectUid: String(row.project_uid),
+    userUid: String(row.user_uid),
+    role: row.role as ProjectMemberRole,
+    displayName: String(row.display_name),
+    email: String(row.email),
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+  };
+}
+
 async function lookupExecutionProjectUid(executionUid: string): Promise<string> {
   const pool = getDbPool();
   const [rows] = await pool.query<RowDataPacket[]>(
@@ -339,6 +547,78 @@ async function lookupExecutionProjectUid(executionUid: string): Promise<string> 
     [executionUid]
   );
   return rows[0]?.project_uid ? String(rows[0].project_uid) : '';
+}
+
+async function getWorkspaceUserByUid(userUid: string): Promise<WorkspaceUserRecord | null> {
+  await ensureProjectCollaborationTables();
+  const pool = getDbPool();
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT user_uid, display_name, email, created_at, updated_at
+     FROM workspace_users
+     WHERE user_uid = ?
+     LIMIT 1`,
+    [userUid]
+  );
+  const row = rows[0];
+  return row ? normalizeWorkspaceUserRow(row) : null;
+}
+
+async function getWorkspaceUserByEmail(email: string): Promise<WorkspaceUserRecord | null> {
+  await ensureProjectCollaborationTables();
+  const pool = getDbPool();
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT user_uid, display_name, email, created_at, updated_at
+     FROM workspace_users
+     WHERE email = ?
+     LIMIT 1`,
+    [email]
+  );
+  const row = rows[0];
+  return row ? normalizeWorkspaceUserRow(row) : null;
+}
+
+async function upsertWorkspaceUser(displayName: string, email: string): Promise<WorkspaceUserRecord> {
+  await ensureProjectCollaborationTables();
+  const pool = getDbPool();
+  const normalizedEmail = email.trim().toLowerCase();
+  const normalizedDisplayName = displayName.trim();
+  const existing = await getWorkspaceUserByEmail(normalizedEmail);
+
+  if (existing) {
+    if (existing.displayName !== normalizedDisplayName) {
+      await pool.execute<ResultSetHeader>(
+        `UPDATE workspace_users
+         SET display_name = ?
+         WHERE user_uid = ?`,
+        [normalizedDisplayName, existing.userUid]
+      );
+    }
+    const row = await getWorkspaceUserByUid(existing.userUid);
+    if (!row) throw new Error('更新成员失败');
+    return row;
+  }
+
+  const userUid = uid('usr');
+  await pool.execute<ResultSetHeader>(
+    `INSERT INTO workspace_users (user_uid, display_name, email)
+     VALUES (?, ?, ?)`,
+    [userUid, normalizedDisplayName, normalizedEmail]
+  );
+  const row = await getWorkspaceUserByUid(userUid);
+  if (!row) throw new Error('创建成员失败');
+  return row;
+}
+
+async function countProjectOwners(projectUid: string): Promise<number> {
+  await ensureProjectCollaborationTables();
+  const pool = getDbPool();
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT COUNT(*) AS cnt
+     FROM project_members
+     WHERE project_uid = ? AND role = 'owner'`,
+    [projectUid]
+  );
+  return Number(rows[0]?.cnt || 0);
 }
 
 async function ensureProjectNameAvailable(name: string, excludeProjectUid = ''): Promise<void> {
@@ -553,7 +833,257 @@ export async function getProjectByUid(projectUid: string): Promise<(TestProjectR
   };
 }
 
-export async function createTestProject(input: TestProjectInput): Promise<TestProjectRecord> {
+export async function ensureWorkspaceActor(userUid = ''): Promise<WorkspaceUserRecord> {
+  await ensureProjectCollaborationTables();
+  if (userUid.trim()) {
+    const existing = await getWorkspaceUserByUid(userUid.trim());
+    if (existing) return existing;
+  }
+
+  const fallback = await getWorkspaceUserByUid(DEFAULT_WORKSPACE_USER_UID);
+  if (!fallback) {
+    throw new Error('默认操作者不存在');
+  }
+  return fallback;
+}
+
+export async function listProjectMembers(projectUid: string): Promise<ProjectMemberRecord[]> {
+  await ensureProjectCollaborationTables();
+  const pool = getDbPool();
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT
+      pm.member_uid,
+      pm.project_uid,
+      pm.user_uid,
+      pm.role,
+      u.display_name,
+      u.email,
+      pm.created_at,
+      pm.updated_at
+     FROM project_members pm
+     JOIN workspace_users u ON u.user_uid = pm.user_uid
+     WHERE pm.project_uid = ?
+     ORDER BY FIELD(pm.role, 'owner', 'editor', 'viewer'), pm.created_at ASC, pm.id ASC`,
+    [projectUid]
+  );
+
+  return rows.map(normalizeProjectMemberRow);
+}
+
+export async function getProjectMemberByUserUid(projectUid: string, userUid: string): Promise<ProjectMemberRecord | null> {
+  await ensureProjectCollaborationTables();
+  const pool = getDbPool();
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT
+      pm.member_uid,
+      pm.project_uid,
+      pm.user_uid,
+      pm.role,
+      u.display_name,
+      u.email,
+      pm.created_at,
+      pm.updated_at
+     FROM project_members pm
+     JOIN workspace_users u ON u.user_uid = pm.user_uid
+     WHERE pm.project_uid = ? AND pm.user_uid = ?
+     LIMIT 1`,
+    [projectUid, userUid]
+  );
+
+  const row = rows[0];
+  return row ? normalizeProjectMemberRow(row) : null;
+}
+
+export async function getProjectMemberByUid(memberUid: string): Promise<ProjectMemberRecord | null> {
+  await ensureProjectCollaborationTables();
+  const pool = getDbPool();
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT
+      pm.member_uid,
+      pm.project_uid,
+      pm.user_uid,
+      pm.role,
+      u.display_name,
+      u.email,
+      pm.created_at,
+      pm.updated_at
+     FROM project_members pm
+     JOIN workspace_users u ON u.user_uid = pm.user_uid
+     WHERE pm.member_uid = ?
+     LIMIT 1`,
+    [memberUid]
+  );
+
+  const row = rows[0];
+  return row ? normalizeProjectMemberRow(row) : null;
+}
+
+export async function getProjectActorRole(projectUid: string, userUid: string): Promise<ProjectActorRole> {
+  const member = await getProjectMemberByUserUid(projectUid, userUid);
+  return member?.role || 'none';
+}
+
+export async function ensureProjectOwnerMembership(projectUid: string, userUid: string): Promise<ProjectMemberRecord> {
+  await ensureProjectCollaborationTables();
+  const project = await getProjectByUid(projectUid);
+  if (!project) throw new Error('项目不存在');
+
+  const actor = await ensureWorkspaceActor(userUid);
+  const existing = await getProjectMemberByUserUid(projectUid, actor.userUid);
+  const pool = getDbPool();
+
+  if (existing) {
+    if (existing.role !== 'owner') {
+      await pool.execute<ResultSetHeader>(
+        `UPDATE project_members
+         SET role = 'owner'
+         WHERE member_uid = ?`,
+        [existing.memberUid]
+      );
+      const row = await getProjectMemberByUid(existing.memberUid);
+      if (!row) throw new Error('更新负责人失败');
+      return row;
+    }
+    return existing;
+  }
+
+  const memberUid = uid('mem');
+  await pool.execute<ResultSetHeader>(
+    `INSERT INTO project_members (member_uid, project_uid, user_uid, role)
+     VALUES (?, ?, ?, 'owner')`,
+    [memberUid, projectUid, actor.userUid]
+  );
+  const row = await getProjectMemberByUid(memberUid);
+  if (!row) throw new Error('绑定项目负责人失败');
+  return row;
+}
+
+export async function addProjectMember(
+  projectUid: string,
+  input: { displayName: string; email: string; role: ProjectMemberRole },
+  options?: { actorLabel?: string }
+): Promise<ProjectMemberRecord> {
+  await ensureProjectCollaborationTables();
+  const project = await getProjectByUid(projectUid);
+  if (!project) throw new Error('项目不存在');
+
+  const displayName = input.displayName.trim();
+  const email = input.email.trim().toLowerCase();
+  if (!displayName || !email) {
+    throw new Error('请填写完整的成员姓名和邮箱');
+  }
+
+  const user = await upsertWorkspaceUser(displayName, email);
+  const existing = await getProjectMemberByUserUid(projectUid, user.userUid);
+  if (existing) {
+    throw new Error('该成员已经在项目中');
+  }
+
+  const pool = getDbPool();
+  const memberUid = uid('mem');
+  await pool.execute<ResultSetHeader>(
+    `INSERT INTO project_members (member_uid, project_uid, user_uid, role)
+     VALUES (?, ?, ?, ?)`,
+    [memberUid, projectUid, user.userUid, input.role]
+  );
+
+  const row = await getProjectMemberByUid(memberUid);
+  if (!row) throw new Error('添加成员失败');
+  await insertProjectActivityLog({
+    projectUid,
+    entityType: 'member',
+    entityUid: row.memberUid,
+    actionType: 'member_added',
+    actorLabel: options?.actorLabel,
+    title: `添加成员「${row.displayName}」`,
+    detail: `已将成员加入项目，并授予 ${roleLabel(row.role)} 权限。`,
+    meta: {
+      userUid: row.userUid,
+      email: row.email,
+      role: row.role,
+    },
+  });
+  return row;
+}
+
+export async function updateProjectMemberRole(
+  memberUid: string,
+  role: ProjectMemberRole,
+  options?: { actorLabel?: string }
+): Promise<ProjectMemberRecord> {
+  await ensureProjectCollaborationTables();
+  const member = await getProjectMemberByUid(memberUid);
+  if (!member) throw new Error('成员不存在');
+  if (member.role === role) return member;
+
+  if (member.role === 'owner' && role !== 'owner') {
+    const ownerCount = await countProjectOwners(member.projectUid);
+    if (ownerCount <= 1) {
+      throw new Error('项目至少需要保留一位负责人');
+    }
+  }
+
+  const pool = getDbPool();
+  await pool.execute<ResultSetHeader>(
+    `UPDATE project_members
+     SET role = ?
+     WHERE member_uid = ?`,
+    [role, memberUid]
+  );
+
+  const row = await getProjectMemberByUid(memberUid);
+  if (!row) throw new Error('更新成员角色失败');
+  await insertProjectActivityLog({
+    projectUid: row.projectUid,
+    entityType: 'member',
+    entityUid: row.memberUid,
+    actionType: 'member_role_updated',
+    actorLabel: options?.actorLabel,
+    title: `调整成员「${row.displayName}」权限`,
+    detail: `权限由 ${roleLabel(member.role)} 调整为 ${roleLabel(row.role)}。`,
+    meta: {
+      userUid: row.userUid,
+      previousRole: member.role,
+      currentRole: row.role,
+    },
+  });
+  return row;
+}
+
+export async function removeProjectMember(memberUid: string, options?: { actorLabel?: string }): Promise<void> {
+  await ensureProjectCollaborationTables();
+  const member = await getProjectMemberByUid(memberUid);
+  if (!member) throw new Error('成员不存在');
+
+  if (member.role === 'owner') {
+    const ownerCount = await countProjectOwners(member.projectUid);
+    if (ownerCount <= 1) {
+      throw new Error('项目至少需要保留一位负责人');
+    }
+  }
+
+  const pool = getDbPool();
+  await pool.execute<ResultSetHeader>(`DELETE FROM project_members WHERE member_uid = ?`, [memberUid]);
+  await insertProjectActivityLog({
+    projectUid: member.projectUid,
+    entityType: 'member',
+    entityUid: member.memberUid,
+    actionType: 'member_removed',
+    actorLabel: options?.actorLabel,
+    title: `移除成员「${member.displayName}」`,
+    detail: `成员已从项目移除，原角色为 ${roleLabel(member.role)}。`,
+    meta: {
+      userUid: member.userUid,
+      email: member.email,
+      role: member.role,
+    },
+  });
+}
+
+export async function createTestProject(
+  input: TestProjectInput,
+  options?: { actorLabel?: string; actorUserUid?: string }
+): Promise<TestProjectRecord> {
   const pool = getDbPool();
   const projectUid = uid('proj');
   const name = input.name.trim();
@@ -580,10 +1110,24 @@ export async function createTestProject(input: TestProjectInput): Promise<TestPr
 
   const row = await getProjectByUid(projectUid);
   if (!row) throw new Error('创建项目失败');
+  await ensureProjectOwnerMembership(projectUid, options?.actorUserUid || DEFAULT_WORKSPACE_USER_UID);
+  await insertProjectActivityLog({
+    projectUid,
+    entityType: 'project',
+    entityUid: projectUid,
+    actionType: 'project_created',
+    actorLabel: options?.actorLabel,
+    title: `创建项目「${row.name}」`,
+    detail: row.description || '已创建新的测试项目。',
+    meta: {
+      status: row.status,
+      authRequired: row.authRequired,
+    },
+  });
   return row;
 }
 
-export async function updateTestProject(projectUid: string, input: TestProjectInput): Promise<TestProjectRecord> {
+export async function updateTestProject(projectUid: string, input: TestProjectInput, options?: { actorLabel?: string }): Promise<TestProjectRecord> {
   const pool = getDbPool();
   const existing = await getProjectByUid(projectUid);
   if (!existing) throw new Error('项目不存在');
@@ -621,17 +1165,46 @@ export async function updateTestProject(projectUid: string, input: TestProjectIn
 
   const row = await getProjectByUid(projectUid);
   if (!row) throw new Error('更新项目失败');
+  await insertProjectActivityLog({
+    projectUid,
+    entityType: 'project',
+    entityUid: projectUid,
+    actionType: 'project_updated',
+    actorLabel: options?.actorLabel,
+    title: `更新项目「${row.name}」`,
+    detail: existing.name !== row.name ? `项目名称由「${existing.name}」更新为「${row.name}」。` : '已更新项目配置。',
+    meta: {
+      previousName: existing.name,
+      currentName: row.name,
+      authRequired: row.authRequired,
+    },
+  });
   return row;
 }
 
-export async function archiveTestProject(projectUid: string): Promise<void> {
+export async function archiveTestProject(projectUid: string, options?: { actorLabel?: string }): Promise<void> {
   const pool = getDbPool();
+  const existing = await getProjectByUid(projectUid);
+  if (!existing) throw new Error('项目不存在');
   await pool.execute<ResultSetHeader>(`UPDATE test_projects SET status = 'archived' WHERE project_uid = ?`, [projectUid]);
   await pool.execute<ResultSetHeader>(`UPDATE test_modules SET status = 'archived' WHERE project_uid = ?`, [projectUid]);
   await pool.execute<ResultSetHeader>(`UPDATE test_configurations SET status = 'archived' WHERE project_uid = ?`, [projectUid]);
+  await insertProjectActivityLog({
+    projectUid,
+    entityType: 'project',
+    entityUid: projectUid,
+    actionType: 'project_archived',
+    actorLabel: options?.actorLabel,
+    title: `归档项目「${existing.name}」`,
+    detail: `项目及其下属 ${existing.moduleCount} 个模块、${existing.taskCount} 个任务已归档。`,
+    meta: {
+      moduleCount: existing.moduleCount,
+      taskCount: existing.taskCount,
+    },
+  });
 }
 
-export async function restoreTestProject(projectUid: string): Promise<void> {
+export async function restoreTestProject(projectUid: string, options?: { actorLabel?: string }): Promise<void> {
   const pool = getDbPool();
   const project = await getProjectByUid(projectUid);
   if (!project) throw new Error('项目不存在');
@@ -639,6 +1212,19 @@ export async function restoreTestProject(projectUid: string): Promise<void> {
   await pool.execute<ResultSetHeader>(`UPDATE test_projects SET status = 'active' WHERE project_uid = ?`, [projectUid]);
   await pool.execute<ResultSetHeader>(`UPDATE test_modules SET status = 'active' WHERE project_uid = ?`, [projectUid]);
   await pool.execute<ResultSetHeader>(`UPDATE test_configurations SET status = 'active' WHERE project_uid = ?`, [projectUid]);
+  await insertProjectActivityLog({
+    projectUid,
+    entityType: 'project',
+    entityUid: projectUid,
+    actionType: 'project_restored',
+    actorLabel: options?.actorLabel,
+    title: `恢复项目「${project.name}」`,
+    detail: `项目及其下属 ${project.moduleCount} 个模块、${project.taskCount} 个任务已恢复。`,
+    meta: {
+      moduleCount: project.moduleCount,
+      taskCount: project.taskCount,
+    },
+  });
 }
 
 export async function listModulesByProject(projectUid: string, params?: { status?: ModuleStatus | 'all' }): Promise<TestModuleRecord[]> {
@@ -787,7 +1373,7 @@ export async function getModuleByUid(moduleUid: string): Promise<TestModuleRecor
   return normalizeModuleRow(row);
 }
 
-export async function createTestModule(projectUid: string, input: TestModuleInput): Promise<TestModuleRecord> {
+export async function createTestModule(projectUid: string, input: TestModuleInput, options?: { actorLabel?: string }): Promise<TestModuleRecord> {
   const pool = getDbPool();
   const moduleUid = uid('mod');
   const name = input.name.trim();
@@ -810,10 +1396,23 @@ export async function createTestModule(projectUid: string, input: TestModuleInpu
 
   const row = await getModuleByUid(moduleUid);
   if (!row) throw new Error('创建模块失败');
+  await insertProjectActivityLog({
+    projectUid,
+    entityType: 'module',
+    entityUid: row.moduleUid,
+    actionType: 'module_created',
+    actorLabel: options?.actorLabel,
+    title: `创建模块「${row.name}」`,
+    detail: row.description || `已新增模块，排序号 ${row.sortOrder}。`,
+    meta: {
+      status: row.status,
+      sortOrder: row.sortOrder,
+    },
+  });
   return row;
 }
 
-export async function updateTestModule(moduleUid: string, input: TestModuleInput): Promise<TestModuleRecord> {
+export async function updateTestModule(moduleUid: string, input: TestModuleInput, options?: { actorLabel?: string }): Promise<TestModuleRecord> {
   const pool = getDbPool();
   const existing = await getModuleByUid(moduleUid);
   if (!existing) throw new Error('模块不存在');
@@ -843,11 +1442,35 @@ export async function updateTestModule(moduleUid: string, input: TestModuleInput
 
   const row = await getModuleByUid(moduleUid);
   if (!row) throw new Error('更新模块失败');
+  const detailParts: string[] = [];
+  if (existing.name !== row.name) {
+    detailParts.push(`模块名称由「${existing.name}」更新为「${row.name}」`);
+  }
+  if (existing.sortOrder !== row.sortOrder) {
+    detailParts.push(`排序号由 ${existing.sortOrder} 调整为 ${row.sortOrder}`);
+  }
+  await insertProjectActivityLog({
+    projectUid: row.projectUid,
+    entityType: 'module',
+    entityUid: row.moduleUid,
+    actionType: 'module_updated',
+    actorLabel: options?.actorLabel,
+    title: `更新模块「${row.name}」`,
+    detail: detailParts.length > 0 ? `${detailParts.join('；')}。` : '已更新模块配置。',
+    meta: {
+      previousName: existing.name,
+      currentName: row.name,
+      previousSortOrder: existing.sortOrder,
+      currentSortOrder: row.sortOrder,
+    },
+  });
   return row;
 }
 
-export async function archiveTestModule(moduleUid: string): Promise<void> {
+export async function archiveTestModule(moduleUid: string, options?: { actorLabel?: string }): Promise<void> {
   const pool = getDbPool();
+  const module = await getModuleByUid(moduleUid);
+  if (!module) throw new Error('模块不存在');
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT COUNT(*) AS cnt FROM test_configurations WHERE module_uid = ? AND status = 'active'`,
     [moduleUid]
@@ -856,9 +1479,21 @@ export async function archiveTestModule(moduleUid: string): Promise<void> {
     throw new Error('该模块下还有任务，请先删除或移动任务后再归档模块');
   }
   await pool.execute<ResultSetHeader>(`UPDATE test_modules SET status = 'archived' WHERE module_uid = ?`, [moduleUid]);
+  await insertProjectActivityLog({
+    projectUid: module.projectUid,
+    entityType: 'module',
+    entityUid: module.moduleUid,
+    actionType: 'module_archived',
+    actorLabel: options?.actorLabel,
+    title: `归档模块「${module.name}」`,
+    detail: '模块已归档，当前无启用中的测试任务。',
+    meta: {
+      taskCount: module.taskCount,
+    },
+  });
 }
 
-export async function restoreTestModule(moduleUid: string): Promise<void> {
+export async function restoreTestModule(moduleUid: string, options?: { actorLabel?: string }): Promise<void> {
   const pool = getDbPool();
   const module = await getModuleByUid(moduleUid);
   if (!module) throw new Error('模块不存在');
@@ -870,6 +1505,18 @@ export async function restoreTestModule(moduleUid: string): Promise<void> {
 
   await pool.execute<ResultSetHeader>(`UPDATE test_modules SET status = 'active' WHERE module_uid = ?`, [moduleUid]);
   await pool.execute<ResultSetHeader>(`UPDATE test_configurations SET status = 'active' WHERE module_uid = ?`, [moduleUid]);
+  await insertProjectActivityLog({
+    projectUid: module.projectUid,
+    entityType: 'module',
+    entityUid: module.moduleUid,
+    actionType: 'module_restored',
+    actorLabel: options?.actorLabel,
+    title: `恢复模块「${module.name}」`,
+    detail: `模块及其下属 ${module.taskCount} 个任务已恢复。`,
+    meta: {
+      taskCount: module.taskCount,
+    },
+  });
 }
 
 export async function listTestConfigs(params: {
@@ -1035,7 +1682,7 @@ export async function getTestConfigByUid(configUid: string): Promise<(TestConfig
   };
 }
 
-export async function createTestConfig(input: TestConfigInput): Promise<TestConfigRecord> {
+export async function createTestConfig(input: TestConfigInput, options?: { actorLabel?: string }): Promise<TestConfigRecord> {
   const pool = getDbPool();
   const configUid = uid('cfg');
   const projectUid = input.projectUid?.trim();
@@ -1076,10 +1723,24 @@ export async function createTestConfig(input: TestConfigInput): Promise<TestConf
 
   const row = await getTestConfigByUid(configUid);
   if (!row) throw new Error('创建任务失败');
+  await insertProjectActivityLog({
+    projectUid,
+    entityType: 'config',
+    entityUid: row.configUid,
+    actionType: 'config_created',
+    actorLabel: options?.actorLabel,
+    title: `创建任务「${row.name}」`,
+    detail: `归属模块「${row.moduleName}」，目标地址 ${row.targetUrl}。`,
+    meta: {
+      moduleUid: row.moduleUid,
+      moduleName: row.moduleName,
+      targetUrl: row.targetUrl,
+    },
+  });
   return row;
 }
 
-export async function updateTestConfig(configUid: string, input: TestConfigInput): Promise<TestConfigRecord> {
+export async function updateTestConfig(configUid: string, input: TestConfigInput, options?: { actorLabel?: string }): Promise<TestConfigRecord> {
   const pool = getDbPool();
   const existing = await getTestConfigByUid(configUid);
   if (!existing) throw new Error('任务不存在');
@@ -1132,15 +1793,57 @@ export async function updateTestConfig(configUid: string, input: TestConfigInput
 
   const row = await getTestConfigByUid(configUid);
   if (!row) throw new Error('更新任务失败');
+  const detailParts: string[] = [];
+  if (existing.name !== row.name) {
+    detailParts.push(`任务名称由「${existing.name}」更新为「${row.name}」`);
+  }
+  if (existing.moduleUid !== row.moduleUid) {
+    detailParts.push(`已移动到模块「${row.moduleName}」`);
+  }
+  if (existing.targetUrl !== row.targetUrl) {
+    detailParts.push('已更新目标地址');
+  }
+  await insertProjectActivityLog({
+    projectUid: row.projectUid,
+    entityType: 'config',
+    entityUid: row.configUid,
+    actionType: 'config_updated',
+    actorLabel: options?.actorLabel,
+    title: `更新任务「${row.name}」`,
+    detail: detailParts.length > 0 ? `${detailParts.join('；')}。` : '已更新任务配置。',
+    meta: {
+      previousName: existing.name,
+      currentName: row.name,
+      previousModuleUid: existing.moduleUid,
+      currentModuleUid: row.moduleUid,
+      previousTargetUrl: existing.targetUrl,
+      currentTargetUrl: row.targetUrl,
+    },
+  });
   return row;
 }
 
-export async function archiveTestConfig(configUid: string): Promise<void> {
+export async function archiveTestConfig(configUid: string, options?: { actorLabel?: string }): Promise<void> {
   const pool = getDbPool();
+  const config = await getTestConfigByUid(configUid);
+  if (!config) throw new Error('任务不存在');
   await pool.execute<ResultSetHeader>(`UPDATE test_configurations SET status = 'archived' WHERE config_uid = ?`, [configUid]);
+  await insertProjectActivityLog({
+    projectUid: config.projectUid,
+    entityType: 'config',
+    entityUid: config.configUid,
+    actionType: 'config_archived',
+    actorLabel: options?.actorLabel,
+    title: `归档任务「${config.name}」`,
+    detail: `任务已从模块「${config.moduleName}」归档。`,
+    meta: {
+      moduleUid: config.moduleUid,
+      moduleName: config.moduleName,
+    },
+  });
 }
 
-export async function restoreTestConfig(configUid: string): Promise<void> {
+export async function restoreTestConfig(configUid: string, options?: { actorLabel?: string }): Promise<void> {
   const pool = getDbPool();
   const config = await getTestConfigByUid(configUid);
   if (!config) throw new Error('任务不存在');
@@ -1156,6 +1859,19 @@ export async function restoreTestConfig(configUid: string): Promise<void> {
   }
 
   await pool.execute<ResultSetHeader>(`UPDATE test_configurations SET status = 'active' WHERE config_uid = ?`, [configUid]);
+  await insertProjectActivityLog({
+    projectUid: config.projectUid,
+    entityType: 'config',
+    entityUid: config.configUid,
+    actionType: 'config_restored',
+    actorLabel: options?.actorLabel,
+    title: `恢复任务「${config.name}」`,
+    detail: `任务已恢复到模块「${config.moduleName}」。`,
+    meta: {
+      moduleUid: config.moduleUid,
+      moduleName: config.moduleName,
+    },
+  });
 }
 
 export async function getLatestPlanByConfigUid(configUid: string): Promise<TestPlanRecord | null> {
@@ -1467,6 +2183,43 @@ export async function listLlmConversations(scene: 'plan_generation' | 'plan_exec
     content: String(row.content),
     createdAt: toIso(row.created_at),
   }));
+}
+
+export async function insertProjectActivityLog(input: ProjectActivityLogInput): Promise<void> {
+  await ensureProjectActivityLogTable();
+  const pool = getDbPool();
+  await pool.execute<ResultSetHeader>(
+    `INSERT INTO project_activity_logs
+      (activity_uid, project_uid, entity_type, entity_uid, action_type, actor_label, title, detail, meta)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      uid('act'),
+      input.projectUid,
+      input.entityType,
+      input.entityUid,
+      input.actionType,
+      input.actorLabel?.trim() || 'system',
+      input.title,
+      input.detail?.trim() || null,
+      input.meta === undefined ? null : JSON.stringify(input.meta),
+    ]
+  );
+}
+
+export async function listProjectActivityLogs(projectUid: string, limit = 20): Promise<ProjectActivityLogRecord[]> {
+  await ensureProjectActivityLogTable();
+  const pool = getDbPool();
+  const safeLimit = Math.max(1, Math.min(100, limit));
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT activity_uid, project_uid, entity_type, entity_uid, action_type, actor_label, title, detail, meta, created_at
+     FROM project_activity_logs
+     WHERE project_uid = ?
+     ORDER BY created_at DESC, id DESC
+     LIMIT ?`,
+    [projectUid, safeLimit]
+  );
+
+  return rows.map(normalizeProjectActivityRow);
 }
 
 export async function getPlanByUid(planUid: string): Promise<TestPlanRecord | null> {
