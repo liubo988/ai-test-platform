@@ -3,6 +3,18 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import {
+  createScenarioStep,
+  hasScenarioContent,
+  normalizeFlowDefinition,
+  normalizeScenarioStepType,
+  normalizeTaskMode,
+  validateTaskConfigInput,
+  type FlowDefinition,
+  type ScenarioFlowStep,
+  type ScenarioStepType,
+  type TaskMode,
+} from '@/lib/task-flow';
 
 type ProjectStatus = 'active' | 'archived';
 type ModuleStatus = 'active' | 'archived';
@@ -63,6 +75,8 @@ type TaskItem = {
   name: string;
   targetUrl: string;
   featureDescription: string;
+  taskMode: TaskMode;
+  flowDefinition: FlowDefinition | null;
   authRequired: boolean;
   authSource: 'project' | 'task' | 'none';
   loginUrl: string;
@@ -103,8 +117,10 @@ type TaskFormState = {
   moduleUid: string;
   sortOrder: number;
   name: string;
+  taskMode: TaskMode;
   targetUrl: string;
   featureDescription: string;
+  flowDefinition: FlowDefinition;
 };
 
 type PlanPreview = {
@@ -123,6 +139,7 @@ type PlanCase = {
   caseUid: string;
   tier: 'simple' | 'medium' | 'complex';
   caseName: string;
+  caseSteps: string[];
   expectedResult: string;
 };
 
@@ -203,19 +220,74 @@ const defaultModuleForm: ModuleFormState = {
   sortOrder: 100,
 };
 
-const defaultTaskForm: TaskFormState = {
-  moduleUid: '',
-  sortOrder: 100,
-  name: '',
-  targetUrl: '',
-  featureDescription: '',
-};
-
 const defaultMemberForm: MemberFormState = {
   displayName: '',
   email: '',
   role: 'viewer',
 };
+
+const scenarioStepTypeOptions: Array<{ value: ScenarioStepType; label: string }> = [
+  { value: 'ui', label: '页面操作' },
+  { value: 'api', label: '接口校验' },
+  { value: 'assert', label: '断言检查' },
+  { value: 'extract', label: '变量提取' },
+  { value: 'cleanup', label: '收尾清理' },
+];
+
+function createDefaultFlowDefinition(entryUrl = ''): FlowDefinition {
+  return {
+    version: 1,
+    entryUrl,
+    sharedVariables: [],
+    expectedOutcome: '',
+    cleanupNotes: '',
+    steps: [createScenarioStep()],
+  };
+}
+
+function createDefaultTaskForm(moduleUid = ''): TaskFormState {
+  return {
+    moduleUid,
+    sortOrder: 100,
+    name: '',
+    taskMode: 'page',
+    targetUrl: '',
+    featureDescription: '',
+    flowDefinition: createDefaultFlowDefinition(),
+  };
+}
+
+function taskModeLabel(taskMode: TaskMode): string {
+  return taskMode === 'scenario' ? '业务流' : '单页面';
+}
+
+function stepTypeLabel(stepType: ScenarioStepType): string {
+  return scenarioStepTypeOptions.find((item) => item.value === stepType)?.label || '页面操作';
+}
+
+function normalizeTaskItem(item: TaskItem): TaskItem {
+  const taskMode = normalizeTaskMode(item?.taskMode);
+  const targetUrl = typeof item?.targetUrl === 'string' ? item.targetUrl : '';
+  const flowDefinition = normalizeFlowDefinition(item?.flowDefinition, targetUrl);
+
+  return {
+    ...item,
+    taskMode,
+    flowDefinition: taskMode === 'scenario' || hasScenarioContent(flowDefinition) ? flowDefinition : null,
+  };
+}
+
+function normalizeTaskFlowForForm(flowDefinition: FlowDefinition | null | undefined, targetUrl: string, taskMode: TaskMode): FlowDefinition {
+  const normalized = normalizeFlowDefinition(flowDefinition, targetUrl, {
+    preserveEmptySteps: taskMode === 'scenario',
+  });
+
+  return {
+    ...normalized,
+    entryUrl: targetUrl.trim() || normalized.entryUrl,
+    steps: taskMode === 'scenario' && normalized.steps.length === 0 ? [createScenarioStep()] : normalized.steps,
+  };
+}
 
 function statusDot(status?: string): string {
   switch (status) {
@@ -450,7 +522,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
 
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [editingTaskUid, setEditingTaskUid] = useState('');
-  const [taskForm, setTaskForm] = useState<TaskFormState>(defaultTaskForm);
+  const [taskForm, setTaskForm] = useState<TaskFormState>(() => createDefaultTaskForm());
   const [taskSaving, setTaskSaving] = useState(false);
 
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -500,10 +572,23 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   const filteredTasks = tasks.filter((item) => {
     const keyword = taskKeyword.trim().toLowerCase();
     if (!keyword) return true;
+    const scenarioKeyword = item.flowDefinition
+      ? [
+          item.flowDefinition.expectedOutcome,
+          item.flowDefinition.cleanupNotes,
+          item.flowDefinition.sharedVariables.join(' '),
+          item.flowDefinition.steps
+            .map((step) => [step.title, step.target, step.instruction, step.expectedResult, step.extractVariable].join(' '))
+            .join(' '),
+        ]
+          .join(' ')
+          .toLowerCase()
+      : '';
     return (
       item.name.toLowerCase().includes(keyword) ||
       item.targetUrl.toLowerCase().includes(keyword) ||
-      item.featureDescription.toLowerCase().includes(keyword)
+      item.featureDescription.toLowerCase().includes(keyword) ||
+      scenarioKeyword.includes(keyword)
     );
   });
   const totalPages = Math.max(1, Math.ceil(filteredTasks.length / PAGE_SIZE));
@@ -603,7 +688,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
       const res = await fetch(`/api/test-configs?${qs.toString()}`);
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || '加载任务失败');
-      setTasks(json.items || []);
+      setTasks(((json.items || []) as TaskItem[]).map(normalizeTaskItem));
       setError('');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '加载任务失败');
@@ -646,8 +731,75 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
 
   // ── form helpers ──
   function resetModuleForm() { setEditingModuleUid(''); setModuleForm(defaultModuleForm); }
-  function resetTaskForm() { setEditingTaskUid(''); setTaskForm({ ...defaultTaskForm, moduleUid: defaultTaskModuleUid }); }
+  function resetTaskForm() { setEditingTaskUid(''); setTaskForm(createDefaultTaskForm(defaultTaskModuleUid)); }
   function resetMemberForm() { setMemberForm(defaultMemberForm); }
+
+  function setTaskMode(taskMode: TaskMode) {
+    setTaskForm((current) => ({
+      ...current,
+      taskMode,
+      flowDefinition: normalizeTaskFlowForForm(current.flowDefinition, current.targetUrl, taskMode),
+    }));
+  }
+
+  function updateTaskTargetUrl(targetUrl: string) {
+    setTaskForm((current) => ({
+      ...current,
+      targetUrl,
+      flowDefinition: normalizeTaskFlowForForm(current.flowDefinition, targetUrl, current.taskMode),
+    }));
+  }
+
+  function updateTaskFlow(updater: (current: FlowDefinition) => FlowDefinition) {
+    setTaskForm((current) => {
+      const nextFlow = updater(normalizeTaskFlowForForm(current.flowDefinition, current.targetUrl, current.taskMode));
+      return {
+        ...current,
+        flowDefinition: normalizeTaskFlowForForm(nextFlow, current.targetUrl, current.taskMode),
+      };
+    });
+  }
+
+  function updateScenarioStep(stepUid: string, field: keyof ScenarioFlowStep, value: string) {
+    updateTaskFlow((current) => ({
+      ...current,
+      steps: current.steps.map((step) =>
+        step.stepUid === stepUid
+          ? {
+              ...step,
+              [field]: field === 'stepType' ? normalizeScenarioStepType(value) : value,
+            }
+          : step
+      ),
+    }));
+  }
+
+  function addScenarioStep() {
+    updateTaskFlow((current) => ({
+      ...current,
+      steps: [...current.steps, createScenarioStep()],
+    }));
+  }
+
+  function moveScenarioStep(stepUid: string, direction: -1 | 1) {
+    updateTaskFlow((current) => {
+      const index = current.steps.findIndex((step) => step.stepUid === stepUid);
+      if (index < 0) return current;
+      const nextIndex = index + direction;
+      if (nextIndex < 0 || nextIndex >= current.steps.length) return current;
+      const steps = [...current.steps];
+      const [step] = steps.splice(index, 1);
+      steps.splice(nextIndex, 0, step);
+      return { ...current, steps };
+    });
+  }
+
+  function removeScenarioStep(stepUid: string) {
+    updateTaskFlow((current) => ({
+      ...current,
+      steps: current.steps.filter((step) => step.stepUid !== stepUid),
+    }));
+  }
 
   function openProjectSettings() {
     if (!project) return;
@@ -688,7 +840,16 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
     if (!canEditContent) { setError(readOnlyHint || '当前操作者没有编辑权限'); return; }
     if (task.status !== 'active') { setError('请先恢复任务，再编辑'); return; }
     setEditingTaskUid(task.configUid);
-    setTaskForm({ moduleUid: task.moduleUid, sortOrder: task.sortOrder || 100, name: task.name, targetUrl: task.targetUrl, featureDescription: task.featureDescription });
+    const taskMode = normalizeTaskMode(task.taskMode);
+    setTaskForm({
+      moduleUid: task.moduleUid,
+      sortOrder: task.sortOrder || 100,
+      name: task.name,
+      taskMode,
+      targetUrl: task.targetUrl,
+      featureDescription: task.featureDescription,
+      flowDefinition: normalizeTaskFlowForForm(task.flowDefinition, task.targetUrl, taskMode),
+    });
     setTaskModalOpen(true);
   }
 
@@ -862,14 +1023,35 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
 
   async function submitTask() {
     if (!canEditContent) { setError(readOnlyHint || '当前操作者没有编辑权限'); return; }
-    if (!taskForm.moduleUid || !taskForm.name.trim() || !taskForm.targetUrl.trim() || !taskForm.featureDescription.trim()) {
-      setError('请填写完整的模块、任务名称、目标 URL 和任务描述'); return;
+    if (!taskForm.moduleUid || !taskForm.name.trim()) {
+      setError('请填写完整的模块和任务名称'); return;
+    }
+    const normalizedTaskMode = normalizeTaskMode(taskForm.taskMode);
+    const normalizedFlowDefinition = normalizeTaskFlowForForm(taskForm.flowDefinition, taskForm.targetUrl, normalizedTaskMode);
+    const validationError = validateTaskConfigInput({
+      taskMode: normalizedTaskMode,
+      targetUrl: taskForm.targetUrl,
+      featureDescription: taskForm.featureDescription,
+      flowDefinition: normalizedFlowDefinition,
+    });
+    if (validationError) {
+      setError(validationError);
+      return;
     }
     setTaskSaving(true); setError('');
     try {
       const res = await fetch(editingTaskUid ? `/api/test-configs/${editingTaskUid}` : '/api/test-configs', {
         method: editingTaskUid ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectUid, moduleUid: taskForm.moduleUid, sortOrder: taskForm.sortOrder, name: taskForm.name.trim(), targetUrl: taskForm.targetUrl.trim(), featureDescription: taskForm.featureDescription.trim() }),
+        body: JSON.stringify({
+          projectUid,
+          moduleUid: taskForm.moduleUid,
+          sortOrder: taskForm.sortOrder,
+          name: taskForm.name.trim(),
+          taskMode: normalizedTaskMode,
+          targetUrl: taskForm.targetUrl.trim(),
+          featureDescription: taskForm.featureDescription.trim(),
+          flowDefinition: normalizedTaskMode === 'scenario' ? normalizedFlowDefinition : null,
+        }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || '保存任务失败');
@@ -952,7 +1134,13 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
       const res = await fetch(`/api/test-plans/${planUid}`);
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || '加载测试计划失败');
-      setPreviewPlan(json.plan); setPreviewCases(json.cases || []);
+      setPreviewPlan(json.plan);
+      setPreviewCases(
+        ((json.cases || []) as Array<PlanCase & { caseSteps?: unknown }>).map((item) => ({
+          ...item,
+          caseSteps: Array.isArray(item.caseSteps) ? item.caseSteps.map((step) => String(step)) : [],
+        }))
+      );
     } catch (err: unknown) { setError(err instanceof Error ? err.message : '加载测试计划失败'); setPreviewOpen(false); }
     finally { setPreviewLoading(false); }
   }
@@ -1326,7 +1514,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                     <tr className="border-b border-slate-100 bg-gradient-to-b from-slate-50 to-slate-50/50">
                       <th className="w-[40px] px-3 py-3 text-center text-xs font-semibold text-slate-400">#</th>
                       <th className="w-[20%] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">任务名称</th>
-                      <th className="w-[28%] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">目标地址</th>
+                      <th className="w-[28%] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">入口 / 地址</th>
                       <th className="w-[8%] px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-slate-400">计划</th>
                       <th className="w-[10%] px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-slate-400">状态</th>
                       <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-400">操作</th>
@@ -1342,6 +1530,18 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                           <div className="min-w-0">
                             <div className="flex items-center gap-2">
                               <span className="truncate text-sm font-medium text-slate-800">{task.name}</span>
+                              <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${
+                                task.taskMode === 'scenario'
+                                  ? 'bg-sky-50 text-sky-700 ring-sky-200'
+                                  : 'bg-slate-100 text-slate-600 ring-slate-200'
+                              }`}>
+                                {taskModeLabel(task.taskMode)}
+                              </span>
+                              {task.taskMode === 'scenario' && (
+                                <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-700 ring-1 ring-blue-200">
+                                  {task.flowDefinition?.steps.length || 0} 步
+                                </span>
+                              )}
                               {task.status === 'archived' && (
                                 <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-200">
                                   已归档
@@ -1355,6 +1555,14 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                         </td>
                         <td className="px-4 py-3">
                           <span className="block truncate text-xs text-slate-500" title={task.targetUrl}>{task.targetUrl}</span>
+                          {task.taskMode === 'scenario' && task.flowDefinition && (
+                            <span
+                              className="mt-1 block truncate text-[11px] text-slate-400"
+                              title={task.flowDefinition.steps.map((step) => `${stepTypeLabel(step.stepType)}: ${step.title}`).join(' | ')}
+                            >
+                              {task.flowDefinition.steps.map((step) => step.title).filter(Boolean).slice(0, 3).join(' / ') || '未填写步骤标题'}
+                            </span>
+                          )}
                         </td>
                         <td className="px-4 py-3 text-center">
                           {task.latestPlanUid ? (
@@ -1704,12 +1912,12 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
 
       {taskModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-[680px] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+          <div className="w-full max-w-[860px] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
               <h2 className="text-base font-semibold text-slate-900">{editingTaskUid ? '编辑任务' : '新建任务'}</h2>
               <button onClick={() => { setTaskModalOpen(false); resetTaskForm(); }} className="text-sm text-slate-400 hover:text-slate-600">关闭</button>
             </div>
-            <div className="space-y-4 px-5 py-5">
+            <div className="max-h-[70vh] space-y-4 overflow-y-auto px-5 py-5">
               <div className="grid gap-4 md:grid-cols-2">
                 <div>
                   <label className="mb-1 block text-xs font-medium text-slate-600">所属模块</label>
@@ -1730,15 +1938,225 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                   placeholder="例如：新增商品主流程" className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-slate-400" />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">目标 URL</label>
-                <input value={taskForm.targetUrl} onChange={(e) => setTaskForm((c) => ({ ...c, targetUrl: e.target.value }))}
+                <label className="mb-2 block text-xs font-medium text-slate-600">任务模式</label>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <button
+                    type="button"
+                    onClick={() => setTaskMode('page')}
+                    className={`rounded-xl border px-4 py-3 text-left transition ${
+                      taskForm.taskMode === 'page'
+                        ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
+                        : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300'
+                    }`}
+                  >
+                    <div className="text-sm font-semibold">单页面任务</div>
+                    <p className={`mt-1 text-xs leading-5 ${taskForm.taskMode === 'page' ? 'text-slate-200' : 'text-slate-500'}`}>
+                      适合单个页面内的表单、列表、详情等核心路径验证。
+                    </p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTaskMode('scenario')}
+                    className={`rounded-xl border px-4 py-3 text-left transition ${
+                      taskForm.taskMode === 'scenario'
+                        ? 'border-sky-600 bg-sky-600 text-white shadow-sm'
+                        : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300'
+                    }`}
+                  >
+                    <div className="text-sm font-semibold">业务流任务</div>
+                    <p className={`mt-1 text-xs leading-5 ${taskForm.taskMode === 'scenario' ? 'text-sky-100' : 'text-slate-500'}`}>
+                      适合跨页面、跨接口、多步骤串联的完整业务链路。
+                    </p>
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">{taskForm.taskMode === 'scenario' ? '业务流入口 URL' : '目标 URL'}</label>
+                <input value={taskForm.targetUrl} onChange={(e) => updateTaskTargetUrl(e.target.value)}
                   placeholder="https://example.com/path" className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-slate-400" />
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600">任务描述</label>
                 <textarea value={taskForm.featureDescription} onChange={(e) => setTaskForm((c) => ({ ...c, featureDescription: e.target.value }))}
-                  rows={5} placeholder="描述测试目标、关键路径、断言和风险点。" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm leading-6 outline-none focus:border-slate-400" />
+                  rows={taskForm.taskMode === 'scenario' ? 4 : 5}
+                  placeholder={taskForm.taskMode === 'scenario' ? '描述这条业务流的业务背景、关键断点、需要覆盖的风险和最终目标。' : '描述测试目标、关键路径、断言和风险点。'}
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm leading-6 outline-none focus:border-slate-400" />
               </div>
+              {taskForm.taskMode === 'scenario' && (
+                <div className="space-y-4 rounded-2xl border border-sky-100 bg-sky-50/50 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-semibold text-slate-900">业务流定义</h3>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">按实际执行顺序描述关键页面、接口、断言和变量传递。</p>
+                    </div>
+                    <div className="rounded-full bg-white px-3 py-1 text-[11px] font-medium text-sky-700 ring-1 ring-sky-200">
+                      {taskForm.flowDefinition.steps.length} 个步骤
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-slate-600">期望业务结果</label>
+                      <textarea
+                        value={taskForm.flowDefinition.expectedOutcome}
+                        onChange={(e) => updateTaskFlow((current) => ({ ...current, expectedOutcome: e.target.value }))}
+                        rows={3}
+                        placeholder="例如：创建商品后生成订单，订单详情中商品信息一致。"
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-sky-400"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-slate-600">共享变量</label>
+                      <textarea
+                        value={taskForm.flowDefinition.sharedVariables.join('\n')}
+                        onChange={(e) =>
+                          updateTaskFlow((current) => ({
+                            ...current,
+                            sharedVariables: e.target.value
+                              .split(/[,\n]/)
+                              .map((item) => item.trim())
+                              .filter(Boolean),
+                          }))
+                        }
+                        rows={3}
+                        placeholder={'例如：productId\norderId'}
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-sky-400"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-600">收尾说明</label>
+                    <textarea
+                      value={taskForm.flowDefinition.cleanupNotes}
+                      onChange={(e) => updateTaskFlow((current) => ({ ...current, cleanupNotes: e.target.value }))}
+                      rows={2}
+                      placeholder="例如：删除测试数据、回滚状态、释放锁定资源。"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-sky-400"
+                    />
+                  </div>
+
+                  <div className="space-y-3">
+                    {taskForm.flowDefinition.steps.map((step, index) => (
+                      <div key={step.stepUid} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="flex h-7 min-w-7 items-center justify-center rounded-full bg-slate-900 px-2 text-[11px] font-semibold text-white">
+                              {index + 1}
+                            </span>
+                            <div>
+                              <div className="text-sm font-medium text-slate-800">{step.title || `步骤 ${index + 1}`}</div>
+                              <div className="text-[11px] text-slate-400">{stepTypeLabel(step.stepType)}</div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => moveScenarioStep(step.stepUid, -1)}
+                              disabled={index === 0}
+                              className="h-7 rounded-md border border-slate-200 px-2 text-[11px] text-slate-500 disabled:opacity-40"
+                            >
+                              上移
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => moveScenarioStep(step.stepUid, 1)}
+                              disabled={index === taskForm.flowDefinition.steps.length - 1}
+                              className="h-7 rounded-md border border-slate-200 px-2 text-[11px] text-slate-500 disabled:opacity-40"
+                            >
+                              下移
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => removeScenarioStep(step.stepUid)}
+                              className="h-7 rounded-md border border-rose-200 bg-rose-50 px-2 text-[11px] text-rose-600"
+                            >
+                              删除
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 grid gap-4 md:grid-cols-2">
+                          <div>
+                            <label className="mb-1 block text-xs font-medium text-slate-600">步骤类型</label>
+                            <select
+                              value={step.stepType}
+                              onChange={(e) => updateScenarioStep(step.stepUid, 'stepType', e.target.value)}
+                              className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-sky-400"
+                            >
+                              {scenarioStepTypeOptions.map((item) => (
+                                <option key={item.value} value={item.value}>{item.label}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="mb-1 block text-xs font-medium text-slate-600">步骤标题</label>
+                            <input
+                              value={step.title}
+                              onChange={(e) => updateScenarioStep(step.stepUid, 'title', e.target.value)}
+                              placeholder="例如：提交商品创建表单"
+                              className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-sky-400"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="mt-4 grid gap-4 md:grid-cols-2">
+                          <div>
+                            <label className="mb-1 block text-xs font-medium text-slate-600">
+                              {step.stepType === 'api' ? '接口地址' : step.stepType === 'ui' ? '页面 / 元素地址' : '目标对象'}
+                            </label>
+                            <input
+                              value={step.target}
+                              onChange={(e) => updateScenarioStep(step.stepUid, 'target', e.target.value)}
+                              placeholder={step.stepType === 'api' ? '/api/orders/{{orderId}}' : '/products/new'}
+                              className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-sky-400"
+                            />
+                          </div>
+                          <div>
+                            <label className="mb-1 block text-xs font-medium text-slate-600">输出变量</label>
+                            <input
+                              value={step.extractVariable}
+                              onChange={(e) => updateScenarioStep(step.stepUid, 'extractVariable', e.target.value)}
+                              placeholder="例如：productId"
+                              className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-sky-400"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="mt-4">
+                          <label className="mb-1 block text-xs font-medium text-slate-600">动作说明</label>
+                          <textarea
+                            value={step.instruction}
+                            onChange={(e) => updateScenarioStep(step.stepUid, 'instruction', e.target.value)}
+                            rows={3}
+                            placeholder="说明这个步骤要执行什么动作、如何与上一步衔接。"
+                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm leading-6 outline-none focus:border-sky-400"
+                          />
+                        </div>
+
+                        <div className="mt-4">
+                          <label className="mb-1 block text-xs font-medium text-slate-600">预期结果</label>
+                          <textarea
+                            value={step.expectedResult}
+                            onChange={(e) => updateScenarioStep(step.stepUid, 'expectedResult', e.target.value)}
+                            rows={2}
+                            placeholder="例如：接口返回 200，页面提示保存成功，变量被正确提取。"
+                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm leading-6 outline-none focus:border-sky-400"
+                          />
+                        </div>
+                      </div>
+                    ))}
+
+                    <button
+                      type="button"
+                      onClick={addScenarioStep}
+                      className="flex h-10 w-full items-center justify-center rounded-xl border border-dashed border-sky-300 bg-white text-sm font-medium text-sky-700 transition hover:border-sky-400 hover:bg-sky-50"
+                    >
+                      新增步骤
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
             <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-3">
               <button onClick={() => { setTaskModalOpen(false); resetTaskForm(); }} className="h-9 rounded-lg border border-slate-200 px-4 text-sm text-slate-600">取消</button>
@@ -1778,6 +2196,16 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                           <span className="text-[10px] font-medium uppercase text-slate-400">{c.tier}</span>
                           <p className="mt-1 text-sm font-medium text-slate-800">{c.caseName}</p>
                           <p className="mt-1 text-xs text-slate-500">{c.expectedResult}</p>
+                          {c.caseSteps.length > 0 && (
+                            <ol className="mt-2 space-y-1 text-[11px] leading-5 text-slate-600">
+                              {c.caseSteps.map((step, index) => (
+                                <li key={`${c.caseUid}-${index}`} className="flex gap-2">
+                                  <span className="min-w-4 text-slate-400">{index + 1}.</span>
+                                  <span>{step}</span>
+                                </li>
+                              ))}
+                            </ol>
+                          )}
                         </div>
                       ))}
                     </div>

@@ -4,8 +4,14 @@ import { WebSocketServer } from 'ws';
 
 const dev = process.env.NODE_ENV !== 'production';
 const port = parseInt(process.env.PORT || '3666', 10);
+const distDir = process.env.NEXT_DIST_DIR?.trim();
+const useWebpack = process.env.NEXT_FORCE_WEBPACK === '1';
 
-const app = next({ dev });
+const app = next({
+  dev,
+  webpack: useWebpack,
+  conf: distDir ? { distDir } : undefined,
+});
 const handle = app.getRequestHandler();
 
 // WebSocket 会话管理

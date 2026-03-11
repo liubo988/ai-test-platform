@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS test_configurations (
   name VARCHAR(255) NOT NULL,
   target_url TEXT NOT NULL,
   feature_description TEXT NOT NULL,
+  task_mode ENUM('page', 'scenario') NOT NULL DEFAULT 'page',
+  flow_definition JSON NULL,
   auth_required TINYINT(1) NOT NULL DEFAULT 0,
   login_url TEXT NULL,
   login_username VARCHAR(255) NULL,

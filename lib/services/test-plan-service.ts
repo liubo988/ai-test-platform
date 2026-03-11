@@ -1,5 +1,5 @@
-import { analyzePage } from '@/lib/page-analyzer';
-import { generateTest } from '@/lib/test-generator';
+import { analyzePage, type AuthConfig, type PageSnapshot } from '@/lib/page-analyzer';
+import { generateTest, type GenerateTestContext } from '@/lib/test-generator';
 import { executeTest } from '@/lib/test-executor';
 import {
   createExecution,
@@ -22,44 +22,8 @@ import {
   updateExecutionStatus,
 } from '@/lib/db/repository';
 import { uid } from '@/lib/db/ids';
-
-function buildCoverageCases(description: string, planCode: string) {
-  return [
-    {
-      tier: 'simple' as const,
-      caseName: '简单流程: 核心路径 Smoke',
-      caseSteps: [
-        '打开目标页面并完成必要登录',
-        '完成核心业务提交动作',
-        '验证成功提示或关键结果展示',
-      ],
-      expectedResult: '核心业务路径可稳定通过',
-      sortOrder: 10,
-    },
-    {
-      tier: 'medium' as const,
-      caseName: '中等流程: 常见分支与校验',
-      caseSteps: [
-        '输入边界值和常见错误值',
-        '验证前端/后端校验提示',
-        '验证修正输入后可继续成功提交',
-      ],
-      expectedResult: '分支行为符合预期且错误提示准确',
-      sortOrder: 20,
-    },
-    {
-      tier: 'complex' as const,
-      caseName: '复杂流程: 跨页面和回归高风险路径',
-      caseSteps: [
-        '跨页面执行完整业务链路',
-        '校验权限和异常状态的兜底处理',
-        '验证关键数据最终一致性',
-      ],
-      expectedResult: '复杂链路稳定，关键数据和状态一致',
-      sortOrder: 30,
-    },
-  ].map((item) => ({ ...item, caseSteps: [...item.caseSteps, `生成代码摘要长度: ${planCode.length}`, `需求摘要: ${description.slice(0, 120)}`] }));
-}
+import { buildCoverageCasesFromTask } from '@/lib/plan-cases';
+import { buildFlowSummary, collectScenarioSnapshotTargets } from '@/lib/task-flow';
 
 function buildAuthContext(
   project: Awaited<ReturnType<typeof getProjectByUid>>,
@@ -86,6 +50,70 @@ function buildAuthContext(
   return undefined;
 }
 
+type TestConfigWithSecrets = NonNullable<Awaited<ReturnType<typeof getTestConfigByUid>>>;
+
+async function analyzeSnapshotTargets(targets: string[], auth?: AuthConfig): Promise<PageSnapshot[]> {
+  const snapshots: PageSnapshot[] = [];
+
+  for (const [index, target] of targets.entries()) {
+    try {
+      snapshots.push(await analyzePage(target, auth));
+    } catch (error) {
+      if (index === 0) throw error;
+    }
+  }
+
+  return snapshots;
+}
+
+async function buildGenerationInput(config: TestConfigWithSecrets, auth?: AuthConfig): Promise<{
+  snapshot: PageSnapshot;
+  promptDescription: string;
+  promptContext: GenerateTestContext;
+}> {
+  const taskMode = config.taskMode === 'scenario' ? 'scenario' : 'page';
+  const snapshotTargets =
+    taskMode === 'scenario' ? collectScenarioSnapshotTargets(config.targetUrl, config.flowDefinition, 4) : [config.targetUrl];
+  const snapshots = await analyzeSnapshotTargets(snapshotTargets.length > 0 ? snapshotTargets : [config.targetUrl], auth);
+  const snapshot = snapshots[0];
+  const flowSummary =
+    taskMode === 'scenario'
+      ? buildFlowSummary(config.flowDefinition, {
+          includeInstruction: true,
+          includeExpectedResult: true,
+          includeExtractVariable: true,
+        })
+      : '';
+
+  const promptDescription =
+    taskMode === 'scenario'
+      ? [
+          config.featureDescription.trim(),
+          `业务流入口: ${config.targetUrl}`,
+          config.flowDefinition?.sharedVariables.length ? `共享变量: ${config.flowDefinition.sharedVariables.join(', ')}` : '',
+          config.flowDefinition?.expectedOutcome ? `期望业务结果: ${config.flowDefinition.expectedOutcome}` : '',
+          config.flowDefinition?.cleanupNotes ? `收尾说明: ${config.flowDefinition.cleanupNotes}` : '',
+          flowSummary ? `步骤摘要:\n${flowSummary}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n\n')
+      : config.featureDescription.trim();
+
+  return {
+    snapshot,
+    promptDescription,
+    promptContext: {
+      taskMode,
+      scenarioEntryUrl: taskMode === 'scenario' ? config.targetUrl : undefined,
+      scenarioSummary: flowSummary || undefined,
+      expectedOutcome: config.flowDefinition?.expectedOutcome || undefined,
+      sharedVariables: config.flowDefinition?.sharedVariables || [],
+      cleanupNotes: config.flowDefinition?.cleanupNotes || undefined,
+      relatedSnapshots: snapshots.slice(1),
+    },
+  };
+}
+
 export async function generatePlanFromConfig(configUid: string, options?: { actorLabel?: string }): Promise<{ planUid: string; planVersion: number }> {
   const config = await getTestConfigByUid(configUid);
   if (!config) throw new Error('测试配置不存在');
@@ -93,15 +121,17 @@ export async function generatePlanFromConfig(configUid: string, options?: { acto
   if (!project) throw new Error('测试任务所属项目不存在');
 
   const auth = buildAuthContext(project, config);
-
-  const snapshot = await analyzePage(config.targetUrl, auth);
+  const { snapshot, promptDescription, promptContext } = await buildGenerationInput(config, auth);
   await insertLlmConversation({
     projectUid: config.projectUid,
     scene: 'plan_generation',
     refUid: configUid,
     role: 'system',
     messageType: 'status',
-    content: `开始生成测试计划，目标页面: ${snapshot.title}`,
+    content:
+      config.taskMode === 'scenario'
+        ? `开始生成业务流测试计划，入口页面: ${snapshot.title}，共 ${config.flowDefinition?.steps.length || 0} 步`
+        : `开始生成测试计划，目标页面: ${snapshot.title}`,
   });
 
   let generatedCode = '';
@@ -112,7 +142,7 @@ export async function generatePlanFromConfig(configUid: string, options?: { acto
     return eventType;
   };
 
-  for await (const event of generateTest(snapshot, config.featureDescription, auth)) {
+  for await (const event of generateTest(snapshot, promptDescription, auth, promptContext)) {
     if (event.type === 'code') {
       generatedCode += event.content;
       await insertLlmConversation({
@@ -159,9 +189,9 @@ export async function generatePlanFromConfig(configUid: string, options?: { acto
     configUid,
     planTitle: `${config.name} - 自动测试计划`,
     planCode: generatedCode,
-    planSummary: `覆盖简单/中等/复杂三层，自动生成于 ${new Date().toLocaleString('zh-CN')}`,
+    planSummary: `${config.taskMode === 'scenario' ? `业务流 ${config.flowDefinition?.steps.length || 0} 步，` : ''}覆盖简单/中等/复杂三层，自动生成于 ${new Date().toLocaleString('zh-CN')}`,
     generationModel: process.env.OPENAI_MODEL || 'unknown',
-    generationPrompt: config.featureDescription,
+    generationPrompt: promptDescription,
     generatedFiles: [
       {
         name: generatedFileName,
@@ -173,7 +203,12 @@ export async function generatePlanFromConfig(configUid: string, options?: { acto
   });
 
   await createPlanCases(
-    buildCoverageCases(config.featureDescription, generatedCode).map((item) => ({
+    buildCoverageCasesFromTask({
+      taskMode: config.taskMode,
+      targetUrl: config.targetUrl,
+      featureDescription: config.featureDescription,
+      flowDefinition: config.flowDefinition,
+    }).map((item) => ({
       projectUid: config.projectUid,
       planUid: plan.planUid,
       tier: item.tier,
@@ -296,8 +331,10 @@ export async function getExecutionDetail(executionUid: string) {
   const artifacts = await listExecutionArtifacts(executionUid);
   const plan = await getPlanByUid(execution.planUid);
   const planCases = plan ? await listPlanCases(plan.planUid) : [];
-  const config = await getTestConfigByUid(execution.configUid);
-  const project = config ? await getProjectByUid(config.projectUid) : null;
+  const configRecord = await getTestConfigByUid(execution.configUid);
+  const projectRecord = configRecord ? await getProjectByUid(configRecord.projectUid) : null;
+  const config = configRecord ? (({ loginPasswordPlain: _ignored, ...rest }) => rest)(configRecord) : null;
+  const project = projectRecord ? (({ loginPasswordPlain: _ignored, ...rest }) => rest)(projectRecord) : null;
 
   return {
     execution,

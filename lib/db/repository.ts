@@ -2,6 +2,14 @@ import { type ResultSetHeader, type RowDataPacket } from 'mysql2/promise';
 import { getDbPool } from './client';
 import { decryptSecret, encryptSecret } from './crypto';
 import { uid } from './ids';
+import {
+  type FlowDefinition,
+  type TaskMode,
+  buildFlowSummary,
+  hasScenarioContent,
+  normalizeFlowDefinition,
+  normalizeTaskMode,
+} from '../task-flow';
 
 export type ProjectStatus = 'active' | 'archived';
 export type ModuleStatus = 'active' | 'archived';
@@ -102,6 +110,8 @@ export interface TestConfigInput {
   name: string;
   targetUrl: string;
   featureDescription: string;
+  taskMode?: TaskMode;
+  flowDefinition?: FlowDefinition | null;
   authRequired?: boolean;
   loginUrl?: string;
   loginUsername?: string;
@@ -118,6 +128,8 @@ export interface TestConfigRecord {
   name: string;
   targetUrl: string;
   featureDescription: string;
+  taskMode: TaskMode;
+  flowDefinition: FlowDefinition | null;
   authRequired: boolean;
   authSource: AuthSource;
   loginUrl: string;
@@ -240,6 +252,43 @@ const DEFAULT_WORKSPACE_USER_EMAIL = 'owner@local.dev';
 
 let projectActivityTableReady: Promise<void> | null = null;
 let projectCollaborationTablesReady: Promise<void> | null = null;
+let testConfigurationScenarioColumnsReady: Promise<void> | null = null;
+
+async function addColumnIfMissing(tableName: string, columnName: string, ddl: string): Promise<void> {
+  const pool = getDbPool();
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT COUNT(*) AS cnt
+     FROM information_schema.columns
+     WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+    [tableName, columnName]
+  );
+
+  if (Number(rows[0]?.cnt || 0) === 0) {
+    await pool.query(`ALTER TABLE ${tableName} ADD COLUMN ${ddl}`);
+  }
+}
+
+async function ensureTestConfigurationScenarioColumns(): Promise<void> {
+  if (!testConfigurationScenarioColumnsReady) {
+    testConfigurationScenarioColumnsReady = (async () => {
+      await addColumnIfMissing(
+        'test_configurations',
+        'task_mode',
+        `task_mode ENUM('page', 'scenario') NOT NULL DEFAULT 'page' AFTER feature_description`
+      );
+      await addColumnIfMissing(
+        'test_configurations',
+        'flow_definition',
+        `flow_definition JSON NULL AFTER task_mode`
+      );
+    })().catch((error) => {
+      testConfigurationScenarioColumnsReady = null;
+      throw error;
+    });
+  }
+
+  return testConfigurationScenarioColumnsReady;
+}
 
 async function ensureProjectActivityLogTable(): Promise<void> {
   if (!projectActivityTableReady) {
@@ -457,6 +506,10 @@ function resolveAuthFromRow(row: RowDataPacket): {
 
 function normalizeConfigRow(row: RowDataPacket): TestConfigRecord {
   const resolvedAuth = resolveAuthFromRow(row);
+  const targetUrl = row.target_url ? String(row.target_url) : '';
+  const taskMode = normalizeTaskMode(row.task_mode);
+  const normalizedFlow = normalizeFlowDefinition(row.flow_definition, targetUrl);
+  const flowDefinition = taskMode === 'scenario' || hasScenarioContent(normalizedFlow) ? normalizedFlow : null;
 
   return {
     configUid: String(row.config_uid),
@@ -466,8 +519,10 @@ function normalizeConfigRow(row: RowDataPacket): TestConfigRecord {
     moduleName: row.module_display_name ? String(row.module_display_name) : row.module_name ? String(row.module_name) : 'general',
     sortOrder: Number(row.sort_order || 100),
     name: String(row.name),
-    targetUrl: String(row.target_url),
+    targetUrl,
     featureDescription: String(row.feature_description),
+    taskMode,
+    flowDefinition,
     authRequired: resolvedAuth.authRequired,
     authSource: resolvedAuth.source,
     loginUrl: resolvedAuth.loginUrl,
@@ -950,10 +1005,11 @@ export async function ensureProjectOwnerMembership(projectUid: string, userUid: 
   const memberUid = uid('mem');
   await pool.execute<ResultSetHeader>(
     `INSERT INTO project_members (member_uid, project_uid, user_uid, role)
-     VALUES (?, ?, ?, 'owner')`,
+     VALUES (?, ?, ?, 'owner')
+     ON DUPLICATE KEY UPDATE role = VALUES(role)`,
     [memberUid, projectUid, actor.userUid]
   );
-  const row = await getProjectMemberByUid(memberUid);
+  const row = await getProjectMemberByUserUid(projectUid, actor.userUid);
   if (!row) throw new Error('绑定项目负责人失败');
   return row;
 }
@@ -1527,6 +1583,7 @@ export async function listTestConfigs(params: {
   projectUid?: string;
   moduleUid?: string;
 }) {
+  await ensureTestConfigurationScenarioColumns();
   const pool = getDbPool();
   const page = Math.max(1, params.page || 1);
   const pageSize = Math.min(100, Math.max(1, params.pageSize || 20));
@@ -1625,6 +1682,7 @@ export async function listTestConfigs(params: {
 }
 
 export async function getTestConfigByUid(configUid: string): Promise<(TestConfigRecord & { loginPasswordPlain: string }) | null> {
+  await ensureTestConfigurationScenarioColumns();
   const pool = getDbPool();
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT
@@ -1683,10 +1741,12 @@ export async function getTestConfigByUid(configUid: string): Promise<(TestConfig
 }
 
 export async function createTestConfig(input: TestConfigInput, options?: { actorLabel?: string }): Promise<TestConfigRecord> {
+  await ensureTestConfigurationScenarioColumns();
   const pool = getDbPool();
   const configUid = uid('cfg');
   const projectUid = input.projectUid?.trim();
   const moduleUid = input.moduleUid?.trim();
+  const taskMode = normalizeTaskMode(input.taskMode);
 
   if (!projectUid || !moduleUid) {
     throw new Error('创建任务必须指定项目和模块');
@@ -1700,11 +1760,12 @@ export async function createTestConfig(input: TestConfigInput, options?: { actor
 
   const legacyAuthRequired = !!input.authRequired;
   const encryptedPassword = legacyAuthRequired ? encryptSecret(input.loginPassword || '') : null;
+  const normalizedFlow = taskMode === 'scenario' ? normalizeFlowDefinition(input.flowDefinition, input.targetUrl) : null;
 
   await pool.execute<ResultSetHeader>(
     `INSERT INTO test_configurations
-      (config_uid, project_uid, module_uid, sort_order, module_name, name, target_url, feature_description, auth_required, login_url, login_username, login_password_enc, coverage_mode, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'all_tiers', 'active')`,
+      (config_uid, project_uid, module_uid, sort_order, module_name, name, target_url, feature_description, task_mode, flow_definition, auth_required, login_url, login_username, login_password_enc, coverage_mode, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'all_tiers', 'active')`,
     [
       configUid,
       projectUid,
@@ -1714,6 +1775,8 @@ export async function createTestConfig(input: TestConfigInput, options?: { actor
       input.name.trim(),
       input.targetUrl.trim(),
       input.featureDescription.trim(),
+      taskMode,
+      normalizedFlow ? JSON.stringify(normalizedFlow) : null,
       legacyAuthRequired ? 1 : 0,
       legacyAuthRequired ? (input.loginUrl?.trim() || null) : null,
       legacyAuthRequired ? (input.loginUsername?.trim() || null) : null,
@@ -1730,17 +1793,21 @@ export async function createTestConfig(input: TestConfigInput, options?: { actor
     actionType: 'config_created',
     actorLabel: options?.actorLabel,
     title: `创建任务「${row.name}」`,
-    detail: `归属模块「${row.moduleName}」，目标地址 ${row.targetUrl}。`,
+    detail: `归属模块「${row.moduleName}」，${row.taskMode === 'scenario' ? '业务流入口' : '目标地址'} ${row.targetUrl}${row.taskMode === 'scenario' ? `，共 ${row.flowDefinition?.steps.length || 0} 步` : ''}。`,
     meta: {
       moduleUid: row.moduleUid,
       moduleName: row.moduleName,
       targetUrl: row.targetUrl,
+      taskMode: row.taskMode,
+      flowSteps: row.flowDefinition?.steps.length || 0,
+      flowSummary: row.taskMode === 'scenario' ? buildFlowSummary(row.flowDefinition) : '',
     },
   });
   return row;
 }
 
 export async function updateTestConfig(configUid: string, input: TestConfigInput, options?: { actorLabel?: string }): Promise<TestConfigRecord> {
+  await ensureTestConfigurationScenarioColumns();
   const pool = getDbPool();
   const existing = await getTestConfigByUid(configUid);
   if (!existing) throw new Error('任务不存在');
@@ -1760,6 +1827,12 @@ export async function updateTestConfig(configUid: string, input: TestConfigInput
   const nextLegacyLoginUrl = nextLegacyAuthRequired ? input.loginUrl?.trim() ?? existing.legacyLoginUrl : '';
   const nextLegacyLoginUsername = nextLegacyAuthRequired ? input.loginUsername?.trim() ?? existing.legacyLoginUsername : '';
   const encryptedPassword = nextLegacyAuthRequired ? encryptSecret(input.loginPassword || existing.loginPasswordPlain) : null;
+  const nextTaskMode = normalizeTaskMode(input.taskMode ?? existing.taskMode);
+  const nextTargetUrl = input.targetUrl.trim();
+  const nextFlowDefinition =
+    nextTaskMode === 'scenario'
+      ? normalizeFlowDefinition(input.flowDefinition ?? existing.flowDefinition, nextTargetUrl)
+      : null;
 
   await pool.execute<ResultSetHeader>(
     `UPDATE test_configurations
@@ -1770,6 +1843,8 @@ export async function updateTestConfig(configUid: string, input: TestConfigInput
          name = ?,
          target_url = ?,
          feature_description = ?,
+         task_mode = ?,
+         flow_definition = ?,
          auth_required = ?,
          login_url = ?,
          login_username = ?,
@@ -1781,8 +1856,10 @@ export async function updateTestConfig(configUid: string, input: TestConfigInput
       Number.isFinite(input.sortOrder) ? Number(input.sortOrder) : existing.sortOrder,
       module.name,
       input.name.trim(),
-      input.targetUrl.trim(),
+      nextTargetUrl,
       input.featureDescription.trim(),
+      nextTaskMode,
+      nextFlowDefinition ? JSON.stringify(nextFlowDefinition) : null,
       nextLegacyAuthRequired ? 1 : 0,
       nextLegacyAuthRequired ? (nextLegacyLoginUrl || null) : null,
       nextLegacyAuthRequired ? (nextLegacyLoginUsername || null) : null,
@@ -1803,6 +1880,16 @@ export async function updateTestConfig(configUid: string, input: TestConfigInput
   if (existing.targetUrl !== row.targetUrl) {
     detailParts.push('已更新目标地址');
   }
+  if (existing.taskMode !== row.taskMode) {
+    detailParts.push(row.taskMode === 'scenario' ? '已切换为业务流任务' : '已切换为单页面任务');
+  }
+  if (row.taskMode === 'scenario') {
+    const previousFlowSteps = existing.flowDefinition?.steps.length || 0;
+    const currentFlowSteps = row.flowDefinition?.steps.length || 0;
+    if (previousFlowSteps !== currentFlowSteps) {
+      detailParts.push(`业务流步骤更新为 ${currentFlowSteps} 步`);
+    }
+  }
   await insertProjectActivityLog({
     projectUid: row.projectUid,
     entityType: 'config',
@@ -1818,6 +1905,11 @@ export async function updateTestConfig(configUid: string, input: TestConfigInput
       currentModuleUid: row.moduleUid,
       previousTargetUrl: existing.targetUrl,
       currentTargetUrl: row.targetUrl,
+      previousTaskMode: existing.taskMode,
+      currentTaskMode: row.taskMode,
+      previousFlowSteps: existing.flowDefinition?.steps.length || 0,
+      currentFlowSteps: row.flowDefinition?.steps.length || 0,
+      flowSummary: row.taskMode === 'scenario' ? buildFlowSummary(row.flowDefinition) : '',
     },
   });
   return row;

@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { getExecutionDetail } from '@/lib/services/test-plan-service';
+import { applyActorCookie, requireProjectRole, toErrorResponse } from '@/lib/server/project-actor';
 
-export async function GET(_req: NextRequest, ctx: { params: Promise<{ executionUid: string }> }) {
+export async function GET(req: NextRequest, ctx: { params: Promise<{ executionUid: string }> }) {
   try {
     await ensureDbBootstrap();
     const { executionUid } = await ctx.params;
@@ -10,28 +11,9 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ executionU
     if (!detail) {
       return NextResponse.json({ error: '执行任务不存在' }, { status: 404 });
     }
-
-    const safeConfig = detail.config
-      ? {
-          ...detail.config,
-          loginPasswordPlain: undefined,
-        }
-      : null;
-
-    const safeProject = detail.project
-      ? {
-          ...detail.project,
-          loginPasswordPlain: undefined,
-        }
-      : null;
-
-    return NextResponse.json({
-      ...detail,
-      config: safeConfig,
-      project: safeProject,
-    });
+    const { actor } = await requireProjectRole(req, detail.execution.projectUid, ['owner', 'editor', 'viewer'], '当前操作者没有权限查看执行详情');
+    return applyActorCookie(NextResponse.json(detail), actor.userUid);
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : '获取执行详情失败';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return toErrorResponse(error, '获取执行详情失败');
   }
 }

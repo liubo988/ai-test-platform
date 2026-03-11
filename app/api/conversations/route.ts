@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
-import { listLlmConversations } from '@/lib/db/repository';
+import { getExecution, getTestConfigByUid, listLlmConversations } from '@/lib/db/repository';
+import { applyActorCookie, requireProjectRole, toErrorResponse } from '@/lib/server/project-actor';
 
 export async function GET(req: NextRequest) {
   try {
@@ -17,10 +18,18 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'scene 仅支持 plan_generation/plan_execution' }, { status: 400 });
     }
 
+    const projectUid =
+      scene === 'plan_generation'
+        ? (await getTestConfigByUid(refUid))?.projectUid || ''
+        : (await getExecution(refUid))?.projectUid || '';
+    if (!projectUid) {
+      return NextResponse.json({ error: scene === 'plan_generation' ? '任务不存在' : '执行任务不存在' }, { status: 404 });
+    }
+    const { actor } = await requireProjectRole(req, projectUid, ['owner', 'editor', 'viewer'], '当前操作者没有权限查看对话记录');
+
     const items = await listLlmConversations(scene, refUid);
-    return NextResponse.json({ items });
+    return applyActorCookie(NextResponse.json({ items }), actor.userUid);
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : '获取对话失败';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return toErrorResponse(error, '获取对话失败');
   }
 }

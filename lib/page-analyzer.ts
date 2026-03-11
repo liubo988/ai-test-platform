@@ -1,4 +1,4 @@
-import { chromium, type Page, type Browser } from 'playwright';
+import { chromium, type Locator, type Page, type Browser } from 'playwright';
 
 export interface PageSnapshot {
   url: string;
@@ -67,18 +67,26 @@ function normalizeUrl(u: string): string {
   }
 }
 
+export function isSmsPasswordLoginDescription(description: string): boolean {
+  return /(短信|验证码|获取验证码|sms|otp)/i.test(description);
+}
+
+function getUsernameInput(page: Page): Locator {
+  return page.getByPlaceholder(/请输入手机号|手机号|手机号码|请输入邮箱|Enter your phone|Enter phone or email|username/i).first();
+}
+
 async function switchLoginModeIfNeeded(page: Page, auth: AuthConfig): Promise<void> {
   const description = `${auth.loginDescription || ''}`.trim();
   if (!description) return;
 
   const modePatterns: RegExp[] = [];
 
-  if (/密码|password/i.test(description)) {
-    modePatterns.push(/密码登录|密码|Password Login|Password/i);
+  if (isSmsPasswordLoginDescription(description)) {
+    modePatterns.push(/短信登录|验证码登录|SMS|OTP|短信/i);
   }
 
-  if (/短信|验证码|sms|otp/i.test(description)) {
-    modePatterns.push(/短信登录|验证码登录|SMS|OTP|短信/i);
+  if (/密码登录|Password Login|Password/i.test(description) && !isSmsPasswordLoginDescription(description)) {
+    modePatterns.push(/密码登录|密码|Password Login|Password/i);
   }
 
   if (/扫码|二维码|qr/i.test(description)) {
@@ -102,30 +110,85 @@ async function switchLoginModeIfNeeded(page: Page, auth: AuthConfig): Promise<vo
   }
 }
 
+async function resolveSecretInput(page: Page, auth: AuthConfig): Promise<Locator> {
+  const description = `${auth.loginDescription || ''}`.trim();
+  const prefersSmsCodeInput = isSmsPasswordLoginDescription(description);
+
+  if (prefersSmsCodeInput) {
+    const groupedCodeInput = page
+      .locator('.ant-input-group')
+      .filter({ has: page.getByRole('button', { name: /获取验证码/i }).first() })
+      .locator('input')
+      .first();
+
+    if (await groupedCodeInput.isVisible({ timeout: 2000 }).catch(() => false)) {
+      return groupedCodeInput;
+    }
+
+    const codeInput = page.getByPlaceholder(/请输入验证码|验证码|短信验证码|code/i).first();
+    if (await codeInput.isVisible({ timeout: 2000 }).catch(() => false)) {
+      return codeInput;
+    }
+  }
+
+  const passwordInput = page.getByPlaceholder(/请输入密码|Enter password|password/i).first();
+  if (await passwordInput.isVisible({ timeout: 2000 }).catch(() => false)) {
+    return passwordInput;
+  }
+
+  if (!prefersSmsCodeInput) {
+    const passwordTab = page.getByText(/密码登录|Password Login/i).first();
+    if (await passwordTab.isVisible({ timeout: 1500 }).catch(() => false)) {
+      await passwordTab.click({ force: true });
+      await page.waitForTimeout(500);
+      if (await passwordInput.isVisible({ timeout: 2000 }).catch(() => false)) {
+        return passwordInput;
+      }
+    }
+  }
+
+  return prefersSmsCodeInput
+    ? page.getByPlaceholder(/请输入验证码|验证码|短信验证码|code/i).first()
+    : passwordInput;
+}
+
+async function isLikelyLoginPage(page: Page): Promise<boolean> {
+  const usernameInput = getUsernameInput(page);
+  const loginButton = page.getByRole('button', { name: /登\s*录|登录|Login|Sign in/i }).first();
+  const verificationInput = page.getByPlaceholder(/请输入验证码|验证码|短信验证码|请输入密码|Enter password|password/i).first();
+
+  const [usernameVisible, loginVisible, verificationVisible] = await Promise.all([
+    usernameInput.isVisible({ timeout: 800 }).catch(() => false),
+    loginButton.isVisible({ timeout: 800 }).catch(() => false),
+    verificationInput.isVisible({ timeout: 800 }).catch(() => false),
+  ]);
+
+  return usernameVisible && loginVisible && verificationVisible;
+}
+
 async function performLogin(page: Page, auth: AuthConfig): Promise<void> {
   if (!auth.loginUrl || !auth.username || !auth.password) return;
 
   await page.goto(auth.loginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
   await switchLoginModeIfNeeded(page, auth);
+  const usernameInput = getUsernameInput(page);
+  await usernameInput.waitFor({ state: 'visible', timeout: 10_000 });
+  await usernameInput.fill(auth.username);
 
-  const passwordInput = page.getByPlaceholder(/请输入密码|Enter password|password/i);
+  const secretInput = await resolveSecretInput(page, auth);
+  await secretInput.waitFor({ state: 'visible', timeout: 10_000 });
+  await secretInput.fill(auth.password);
 
-  if (!(await passwordInput.isVisible({ timeout: 3000 }).catch(() => false))) {
-    const passwordTab = page.getByText(/密码登录|Password Login/i).first();
-    if (await passwordTab.isVisible().catch(() => false)) {
-      await passwordTab.click({ force: true });
-    }
-    await passwordInput.waitFor({ state: 'visible', timeout: 10_000 });
+  const loginButton = page.getByRole('button', { name: /登\s*录|登录|Login|Sign in/i }).first();
+  await loginButton.waitFor({ state: 'visible', timeout: 10_000 });
+  await loginButton.click();
+
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+  await page.waitForTimeout(1500);
+
+  if (await isLikelyLoginPage(page)) {
+    throw new Error(`登录后仍停留在登录页，请检查登录说明或凭证: ${auth.loginDescription || '未提供登录说明'}`);
   }
-
-  await page
-    .getByPlaceholder(/请输入手机号|请输入邮箱|Enter your phone|Enter phone or email|username/i)
-    .fill(auth.username);
-  await passwordInput.fill(auth.password);
-  await page.getByRole('button', { name: /登录|Login|Sign in/i }).click();
-
-  await page.waitForURL((url) => !url.pathname.includes('login'), { timeout: 20_000 }).catch(() => {});
-  await page.waitForTimeout(2000);
 }
 
 export async function analyzePage(url: string, auth?: AuthConfig): Promise<PageSnapshot> {
@@ -137,15 +200,15 @@ export async function analyzePage(url: string, auth?: AuthConfig): Promise<PageS
     // 目标 URL 与登录 URL 不同时，先登录再跳转；相同则直接分析（测试登录页本身）
     const isSamePage = auth?.loginUrl && normalizeUrl(auth.loginUrl) === normalizeUrl(url);
     if (auth?.loginUrl && auth?.username && auth?.password && !isSamePage) {
-      try {
-        await performLogin(page, auth);
-      } catch {
-        // 登录失败不阻塞页面分析，继续分析当前页面状态
-      }
+      await performLogin(page, auth);
     }
 
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
     await page.waitForTimeout(2000);
+
+    if (auth?.loginUrl && auth?.username && auth?.password && !isSamePage && (await isLikelyLoginPage(page))) {
+      throw new Error('跳转到目标页面后仍处于登录页，无法分析真实业务页面');
+    }
 
     const title = await page.title();
 

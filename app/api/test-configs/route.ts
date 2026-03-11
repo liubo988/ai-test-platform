@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { createTestConfig, getModuleByUid, listTestConfigs } from '@/lib/db/repository';
 import { applyActorCookie, requireProjectRole, toErrorResponse } from '@/lib/server/project-actor';
+import { normalizeFlowDefinition, normalizeTaskMode, validateTaskConfigInput } from '@/lib/task-flow';
 
 function toBoolean(input: unknown): boolean {
   return input === true || input === 'true' || input === 1 || input === '1';
@@ -50,11 +51,19 @@ export async function POST(req: NextRequest) {
   try {
     await ensureDbBootstrap();
     const body = await req.json();
-    if (!body?.projectUid || !body?.moduleUid || !body?.name || !body?.targetUrl || !body?.featureDescription) {
-      return NextResponse.json({ error: '缺少必要字段: projectUid/moduleUid/name/targetUrl/featureDescription' }, { status: 400 });
+    if (!body?.projectUid || !body?.moduleUid || !body?.name) {
+      return NextResponse.json({ error: '缺少必要字段: projectUid/moduleUid/name' }, { status: 400 });
     }
+    const validationError = validateTaskConfigInput({
+      taskMode: body.taskMode,
+      targetUrl: body.targetUrl,
+      featureDescription: body.featureDescription,
+      flowDefinition: body.flowDefinition,
+    });
+    if (validationError) return NextResponse.json({ error: validationError }, { status: 400 });
     const projectUid = String(body.projectUid);
     const { actor } = await requireProjectRole(req, projectUid, ['owner', 'editor'], '当前操作者没有权限创建任务');
+    const taskMode = normalizeTaskMode(body.taskMode);
 
     const record = await createTestConfig(
       {
@@ -64,6 +73,8 @@ export async function POST(req: NextRequest) {
         name: String(body.name),
         targetUrl: String(body.targetUrl),
         featureDescription: String(body.featureDescription),
+        taskMode,
+        flowDefinition: taskMode === 'scenario' ? normalizeFlowDefinition(body.flowDefinition, String(body.targetUrl)) : null,
         authRequired: toOptionalBoolean(body.authRequired),
         loginUrl: body.loginUrl ? String(body.loginUrl) : '',
         loginUsername: body.loginUsername ? String(body.loginUsername) : '',

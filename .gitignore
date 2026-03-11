@@ -6,6 +6,8 @@ reports/
 .DS_Store
 .env
 .next/
+.next-e2e*/
+output/*
 dist/
 data/frames/
 tests/e2e/generated/*

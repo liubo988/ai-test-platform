@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { archiveTestConfig, getTestConfigByUid, updateTestConfig } from '@/lib/db/repository';
 import { applyActorCookie, requireProjectRole, toErrorResponse } from '@/lib/server/project-actor';
+import { normalizeFlowDefinition, normalizeTaskMode, validateTaskConfigInput } from '@/lib/task-flow';
 
 function toBoolean(input: unknown): boolean {
   return input === true || input === 'true' || input === 1 || input === '1';
@@ -46,9 +47,15 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ configUid: 
     if (!existing) return NextResponse.json({ error: '配置不存在' }, { status: 404 });
     const { actor } = await requireProjectRole(req, existing.projectUid, ['owner', 'editor'], '当前操作者没有权限修改任务');
     const body = await req.json();
-    if (!body?.name || !body?.targetUrl || !body?.featureDescription) {
-      return NextResponse.json({ error: '缺少必要字段: name/targetUrl/featureDescription' }, { status: 400 });
-    }
+    if (!body?.name) return NextResponse.json({ error: '缺少必要字段: name' }, { status: 400 });
+    const validationError = validateTaskConfigInput({
+      taskMode: body.taskMode ?? existing.taskMode,
+      targetUrl: body.targetUrl,
+      featureDescription: body.featureDescription,
+      flowDefinition: body.flowDefinition ?? existing.flowDefinition,
+    });
+    if (validationError) return NextResponse.json({ error: validationError }, { status: 400 });
+    const taskMode = normalizeTaskMode(body.taskMode ?? existing.taskMode);
 
     const item = await updateTestConfig(
       configUid,
@@ -59,6 +66,8 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ configUid: 
         name: String(body.name),
         targetUrl: String(body.targetUrl),
         featureDescription: String(body.featureDescription),
+        taskMode,
+        flowDefinition: taskMode === 'scenario' ? normalizeFlowDefinition(body.flowDefinition ?? existing.flowDefinition, String(body.targetUrl)) : null,
         authRequired: toOptionalBoolean(body.authRequired),
         loginUrl: body.loginUrl === undefined ? undefined : String(body.loginUrl),
         loginUsername: body.loginUsername === undefined ? undefined : String(body.loginUsername),

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import BrowserView from '@/components/BrowserView';
+import { buildFlowSummary, type FlowDefinition, type TaskMode } from '@/lib/task-flow';
 
 type ExecutionStatus = 'queued' | 'running' | 'passed' | 'failed' | 'canceled';
 
@@ -55,6 +56,8 @@ type ExecutionDetail = {
     moduleName: string;
     targetUrl: string;
     featureDescription: string;
+    taskMode: TaskMode;
+    flowDefinition: FlowDefinition | null;
     authSource: 'project' | 'task' | 'none';
     loginDescription: string;
   } | null;
@@ -271,6 +274,7 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
 
   const { execution, plan, config, project, artifacts } = detail;
   const generatedSpec = artifacts.find((item) => item.artifactType === 'generated_spec');
+  const flowSummary = config?.taskMode === 'scenario' ? buildFlowSummary(config.flowDefinition) : '';
 
   return (
     <div className="space-y-5">
@@ -341,7 +345,26 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
 
             <div className="space-y-2.5">
               <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3.5 py-2.5">
-                <p className="text-[10px] uppercase tracking-[0.18em] text-slate-400">目标 URL</p>
+                <p className="text-[10px] uppercase tracking-[0.18em] text-slate-400">任务模式</p>
+                <div className="mt-1.5 flex items-center gap-2">
+                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ${
+                    config?.taskMode === 'scenario'
+                      ? 'bg-sky-50 text-sky-700 ring-sky-200'
+                      : 'bg-slate-100 text-slate-600 ring-slate-200'
+                  }`}>
+                    {config?.taskMode === 'scenario' ? '业务流任务' : '单页面任务'}
+                  </span>
+                  {config?.taskMode === 'scenario' && (
+                    <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 ring-1 ring-blue-200">
+                      {config?.flowDefinition?.steps.length || 0} 步
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3.5 py-2.5">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-slate-400">
+                  {config?.taskMode === 'scenario' ? '业务流入口 URL' : '目标 URL'}
+                </p>
                 <p className="mt-1.5 break-all text-xs leading-5 text-slate-800">{config?.targetUrl || '-'}</p>
               </div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3.5 py-2.5">
@@ -357,6 +380,35 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
                 <p className="text-[10px] uppercase tracking-[0.18em] text-slate-400">任务描述</p>
                 <p className="mt-1.5 text-xs leading-5 text-slate-600">{config?.featureDescription || '暂无任务描述。'}</p>
               </div>
+              {config?.taskMode === 'scenario' && config.flowDefinition && (
+                <div className="rounded-2xl border border-sky-100 bg-sky-50/50 px-3.5 py-3">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-sky-500">业务流上下文</p>
+                  {config.flowDefinition.expectedOutcome && (
+                    <p className="mt-1.5 text-xs leading-5 text-slate-700">
+                      <span className="font-medium text-slate-900">期望结果：</span>
+                      {config.flowDefinition.expectedOutcome}
+                    </p>
+                  )}
+                  {config.flowDefinition.sharedVariables.length > 0 && (
+                    <p className="mt-1 text-xs leading-5 text-slate-700">
+                      <span className="font-medium text-slate-900">共享变量：</span>
+                      {config.flowDefinition.sharedVariables.join(', ')}
+                    </p>
+                  )}
+                  {config.flowDefinition.cleanupNotes && (
+                    <p className="mt-1 text-xs leading-5 text-slate-700">
+                      <span className="font-medium text-slate-900">收尾说明：</span>
+                      {config.flowDefinition.cleanupNotes}
+                    </p>
+                  )}
+                  {flowSummary && (
+                    <div className="mt-2 rounded-xl border border-sky-100 bg-white/80 px-3 py-2">
+                      <p className="text-[10px] uppercase tracking-[0.18em] text-slate-400">步骤摘要</p>
+                      <p className="mt-1 whitespace-pre-wrap text-[11px] leading-5 text-slate-600">{flowSummary}</p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </section>
 

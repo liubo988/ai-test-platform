@@ -216,6 +216,8 @@ async function ensureConfigurationColumns(connection) {
   await addColumnIfMissing(connection, 'test_configurations', 'module_uid', `module_uid VARCHAR(64) NULL AFTER project_uid`);
   await addColumnIfMissing(connection, 'test_configurations', 'sort_order', `sort_order INT NOT NULL DEFAULT 100 AFTER module_uid`);
   await addColumnIfMissing(connection, 'test_configurations', 'module_name', `module_name VARCHAR(128) NOT NULL DEFAULT 'general' AFTER sort_order`);
+  await addColumnIfMissing(connection, 'test_configurations', 'task_mode', `task_mode ENUM('page', 'scenario') NOT NULL DEFAULT 'page' AFTER feature_description`);
+  await addColumnIfMissing(connection, 'test_configurations', 'flow_definition', `flow_definition JSON NULL AFTER task_mode`);
 }
 
 async function ensureDerivedProjectColumns(connection) {

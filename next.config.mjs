@@ -1,5 +1,8 @@
 /** @type {import('next').NextConfig} */
+const distDir = process.env.NEXT_DIST_DIR?.trim();
+
 const nextConfig = {
+  ...(distDir ? { distDir } : {}),
   webpack: (config, { isServer, dev }) => {
     if (isServer) {
       config.externals.push('playwright', '@playwright/test');
@@ -13,9 +16,7 @@ const nextConfig = {
           ? [prevIgnored]
           : [];
       const ignoredList = ignoredListRaw.filter(
-        (item) =>
-          (typeof item === 'string' && item.trim().length > 0) ||
-          item instanceof RegExp
+        (item) => typeof item === 'string' && item.trim().length > 0
       );
 
       config.watchOptions = {
@@ -26,6 +27,7 @@ const nextConfig = {
           '**/edge-cases/**',
           '**/reports/**',
           '**/.next/**',
+          '**/.next-e2e/**',
         ],
       };
     }
