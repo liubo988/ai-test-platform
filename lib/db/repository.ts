@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { type ResultSetHeader, type RowDataPacket } from 'mysql2/promise';
 import { getDbPool } from './client';
 import { decryptSecret, encryptSecret } from './crypto';
@@ -10,6 +11,12 @@ import {
   normalizeFlowDefinition,
   normalizeTaskMode,
 } from '../task-flow';
+import {
+  buildKnowledgeChunksFromManual,
+  normalizeKnowledgeText,
+  type CapabilityType,
+  type KnowledgeChunkCandidate,
+} from '../project-knowledge';
 
 export type ProjectStatus = 'active' | 'archived';
 export type ModuleStatus = 'active' | 'archived';
@@ -20,7 +27,17 @@ export type ExecutionStatus = 'queued' | 'running' | 'passed' | 'failed' | 'canc
 export type AuthSource = 'project' | 'task' | 'none';
 export type ProjectMemberRole = 'owner' | 'editor' | 'viewer';
 export type ProjectActorRole = ProjectMemberRole | 'none';
-export type ProjectActivityEntityType = 'project' | 'module' | 'config' | 'plan' | 'execution' | 'member';
+export type ProjectActivityEntityType =
+  | 'project'
+  | 'module'
+  | 'config'
+  | 'plan'
+  | 'execution'
+  | 'member'
+  | 'knowledge'
+  | 'capability';
+export type KnowledgeStatus = 'active' | 'archived';
+export type ProjectKnowledgeSourceType = 'manual' | 'notes' | 'execution' | 'system';
 
 export interface TestProjectInput {
   name: string;
@@ -73,6 +90,87 @@ export interface ProjectMemberRecord {
   role: ProjectMemberRole;
   displayName: string;
   email: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectKnowledgeDocumentInput {
+  name: string;
+  sourceType?: ProjectKnowledgeSourceType;
+  sourcePath?: string;
+  sourceHash?: string;
+  status?: KnowledgeStatus;
+  meta?: unknown;
+  content?: string;
+  chunks?: KnowledgeChunkCandidate[];
+}
+
+export interface ProjectKnowledgeDocumentRecord {
+  documentUid: string;
+  projectUid: string;
+  name: string;
+  sourceType: ProjectKnowledgeSourceType;
+  sourcePath: string;
+  sourceHash: string;
+  status: KnowledgeStatus;
+  chunkCount: number;
+  meta: unknown;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectKnowledgeChunkRecord {
+  chunkUid: string;
+  documentUid: string;
+  projectUid: string;
+  heading: string;
+  content: string;
+  keywords: string[];
+  sourceLineStart: number;
+  sourceLineEnd: number;
+  tokenEstimate: number;
+  sortOrder: number;
+  meta: unknown;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectCapabilityInput {
+  slug: string;
+  name: string;
+  description: string;
+  capabilityType: CapabilityType;
+  entryUrl?: string;
+  triggerPhrases?: string[];
+  preconditions?: string[];
+  steps?: string[];
+  assertions?: string[];
+  cleanupNotes?: string;
+  dependsOn?: string[];
+  sortOrder?: number;
+  status?: KnowledgeStatus;
+  sourceDocumentUid?: string;
+  meta?: unknown;
+}
+
+export interface ProjectCapabilityRecord {
+  capabilityUid: string;
+  projectUid: string;
+  slug: string;
+  name: string;
+  description: string;
+  capabilityType: CapabilityType;
+  entryUrl: string;
+  triggerPhrases: string[];
+  preconditions: string[];
+  steps: string[];
+  assertions: string[];
+  cleanupNotes: string;
+  dependsOn: string[];
+  sortOrder: number;
+  status: KnowledgeStatus;
+  sourceDocumentUid: string;
+  meta: unknown;
   createdAt: string;
   updatedAt: string;
 }
@@ -246,13 +344,31 @@ function toPercent(numerator: number, denominator: number): number {
   return Math.round((numerator / denominator) * 100);
 }
 
+function stableHash(value: string): string {
+  return createHash('sha1').update(value).digest('hex');
+}
+
 const DEFAULT_WORKSPACE_USER_UID = 'usr_default_owner';
 const DEFAULT_WORKSPACE_USER_NAME = '演示管理员';
 const DEFAULT_WORKSPACE_USER_EMAIL = 'owner@local.dev';
+const STALE_QUEUED_EXECUTION_MINUTES = 1;
+const STALE_RUNNING_EXECUTION_MINUTES = 3;
+const STALE_EXECUTION_RECONCILE_INTERVAL_MS = 15_000;
 
 let projectActivityTableReady: Promise<void> | null = null;
 let projectCollaborationTablesReady: Promise<void> | null = null;
 let testConfigurationScenarioColumnsReady: Promise<void> | null = null;
+let projectKnowledgeTablesReady: Promise<void> | null = null;
+const staleExecutionReconcileAt = new Map<string, number>();
+
+type ExecutionReconcileScope = {
+  executionUid?: string;
+  planUid?: string;
+  configUid?: string;
+  projectUid?: string;
+  moduleUid?: string;
+  force?: boolean;
+};
 
 async function addColumnIfMissing(tableName: string, columnName: string, ddl: string): Promise<void> {
   const pool = getDbPool();
@@ -394,6 +510,97 @@ async function ensureProjectCollaborationTables(): Promise<void> {
   return projectCollaborationTablesReady;
 }
 
+async function ensureProjectKnowledgeTables(): Promise<void> {
+  if (!projectKnowledgeTablesReady) {
+    projectKnowledgeTablesReady = (async () => {
+      const pool = getDbPool();
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS project_knowledge_documents (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          document_uid VARCHAR(64) NOT NULL,
+          project_uid VARCHAR(64) NOT NULL,
+          name VARCHAR(255) NOT NULL,
+          source_type ENUM('manual', 'notes', 'execution', 'system') NOT NULL DEFAULT 'manual',
+          source_path TEXT NULL,
+          source_hash VARCHAR(64) NULL,
+          status ENUM('active', 'archived') NOT NULL DEFAULT 'active',
+          meta JSON NULL,
+          created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+          updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+          PRIMARY KEY (id),
+          UNIQUE KEY uk_project_knowledge_documents_uid (document_uid),
+          UNIQUE KEY uk_project_knowledge_documents_project_name (project_uid, name),
+          KEY idx_project_knowledge_documents_project_status_updated (project_uid, status, updated_at),
+          CONSTRAINT fk_project_knowledge_documents_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
+            ON UPDATE CASCADE ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS project_knowledge_chunks (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          chunk_uid VARCHAR(64) NOT NULL,
+          document_uid VARCHAR(64) NOT NULL,
+          project_uid VARCHAR(64) NOT NULL,
+          heading VARCHAR(255) NOT NULL,
+          content TEXT NOT NULL,
+          keywords_json JSON NULL,
+          source_line_start INT NOT NULL DEFAULT 0,
+          source_line_end INT NOT NULL DEFAULT 0,
+          token_estimate INT NOT NULL DEFAULT 0,
+          sort_order INT NOT NULL DEFAULT 0,
+          meta JSON NULL,
+          created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+          updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+          PRIMARY KEY (id),
+          UNIQUE KEY uk_project_knowledge_chunks_uid (chunk_uid),
+          KEY idx_project_knowledge_chunks_project_document_sort (project_uid, document_uid, sort_order),
+          CONSTRAINT fk_project_knowledge_chunks_document_uid FOREIGN KEY (document_uid) REFERENCES project_knowledge_documents (document_uid)
+            ON UPDATE CASCADE ON DELETE CASCADE,
+          CONSTRAINT fk_project_knowledge_chunks_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
+            ON UPDATE CASCADE ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS project_capabilities (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          capability_uid VARCHAR(64) NOT NULL,
+          project_uid VARCHAR(64) NOT NULL,
+          slug VARCHAR(128) NOT NULL,
+          name VARCHAR(255) NOT NULL,
+          description TEXT NOT NULL,
+          capability_type ENUM('auth', 'navigation', 'action', 'assertion', 'query', 'composite') NOT NULL,
+          entry_url TEXT NULL,
+          trigger_phrases_json JSON NULL,
+          preconditions_json JSON NULL,
+          steps_json JSON NULL,
+          assertions_json JSON NULL,
+          cleanup_notes TEXT NULL,
+          depends_on_json JSON NULL,
+          sort_order INT NOT NULL DEFAULT 100,
+          status ENUM('active', 'archived') NOT NULL DEFAULT 'active',
+          source_document_uid VARCHAR(64) NULL,
+          meta JSON NULL,
+          created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+          updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+          PRIMARY KEY (id),
+          UNIQUE KEY uk_project_capabilities_uid (capability_uid),
+          UNIQUE KEY uk_project_capabilities_project_slug (project_uid, slug),
+          KEY idx_project_capabilities_project_status_sort (project_uid, status, sort_order, updated_at),
+          CONSTRAINT fk_project_capabilities_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
+            ON UPDATE CASCADE ON DELETE CASCADE,
+          CONSTRAINT fk_project_capabilities_source_document_uid FOREIGN KEY (source_document_uid) REFERENCES project_knowledge_documents (document_uid)
+            ON UPDATE CASCADE ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
+    })().catch((error) => {
+      projectKnowledgeTablesReady = null;
+      throw error;
+    });
+  }
+
+  return projectKnowledgeTablesReady;
+}
+
 function roleLabel(role: ProjectMemberRole): string {
   switch (role) {
     case 'owner':
@@ -456,6 +663,64 @@ function normalizeModuleRow(row: RowDataPacket): TestModuleRecord {
     latestExecutionUid: row.latest_execution_uid ? String(row.latest_execution_uid) : '',
     latestExecutionStatus: row.latest_execution_status ? String(row.latest_execution_status) : '',
     lastExecutionAt: toIso(row.last_execution_at),
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+  };
+}
+
+function normalizeProjectKnowledgeDocumentRow(row: RowDataPacket): ProjectKnowledgeDocumentRecord {
+  return {
+    documentUid: String(row.document_uid),
+    projectUid: String(row.project_uid),
+    name: String(row.name),
+    sourceType: row.source_type as ProjectKnowledgeSourceType,
+    sourcePath: row.source_path ? String(row.source_path) : '',
+    sourceHash: row.source_hash ? String(row.source_hash) : '',
+    status: row.status as KnowledgeStatus,
+    chunkCount: Number(row.chunk_count || 0),
+    meta: safeJsonParse<unknown>(row.meta, {}),
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+  };
+}
+
+function normalizeProjectKnowledgeChunkRow(row: RowDataPacket): ProjectKnowledgeChunkRecord {
+  return {
+    chunkUid: String(row.chunk_uid),
+    documentUid: String(row.document_uid),
+    projectUid: String(row.project_uid),
+    heading: String(row.heading),
+    content: String(row.content),
+    keywords: safeJsonParse<string[]>(row.keywords_json, []),
+    sourceLineStart: Number(row.source_line_start || 0),
+    sourceLineEnd: Number(row.source_line_end || 0),
+    tokenEstimate: Number(row.token_estimate || 0),
+    sortOrder: Number(row.sort_order || 0),
+    meta: safeJsonParse<unknown>(row.meta, {}),
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+  };
+}
+
+function normalizeProjectCapabilityRow(row: RowDataPacket): ProjectCapabilityRecord {
+  return {
+    capabilityUid: String(row.capability_uid),
+    projectUid: String(row.project_uid),
+    slug: String(row.slug),
+    name: String(row.name),
+    description: String(row.description),
+    capabilityType: row.capability_type as CapabilityType,
+    entryUrl: row.entry_url ? String(row.entry_url) : '',
+    triggerPhrases: safeJsonParse<string[]>(row.trigger_phrases_json, []),
+    preconditions: safeJsonParse<string[]>(row.preconditions_json, []),
+    steps: safeJsonParse<string[]>(row.steps_json, []),
+    assertions: safeJsonParse<string[]>(row.assertions_json, []),
+    cleanupNotes: row.cleanup_notes ? String(row.cleanup_notes) : '',
+    dependsOn: safeJsonParse<string[]>(row.depends_on_json, []),
+    sortOrder: Number(row.sort_order || 100),
+    status: row.status as KnowledgeStatus,
+    sourceDocumentUid: row.source_document_uid ? String(row.source_document_uid) : '',
+    meta: safeJsonParse<unknown>(row.meta, {}),
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
   };
@@ -724,7 +989,165 @@ async function requireModule(moduleUid: string) {
   return module;
 }
 
+async function getProjectKnowledgeDocumentByName(
+  projectUid: string,
+  name: string
+): Promise<ProjectKnowledgeDocumentRecord | null> {
+  await ensureProjectKnowledgeTables();
+  const pool = getDbPool();
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT
+      d.*,
+      (
+        SELECT COUNT(*)
+        FROM project_knowledge_chunks c
+        WHERE c.document_uid = d.document_uid
+      ) AS chunk_count
+     FROM project_knowledge_documents d
+     WHERE d.project_uid = ? AND d.name = ?
+     LIMIT 1`,
+    [projectUid, name]
+  );
+  const row = rows[0];
+  return row ? normalizeProjectKnowledgeDocumentRow(row) : null;
+}
+
+async function getProjectCapabilityBySlug(projectUid: string, slug: string): Promise<ProjectCapabilityRecord | null> {
+  await ensureProjectKnowledgeTables();
+  const pool = getDbPool();
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT *
+     FROM project_capabilities
+     WHERE project_uid = ? AND slug = ?
+     LIMIT 1`,
+    [projectUid, slug]
+  );
+  const row = rows[0];
+  return row ? normalizeProjectCapabilityRow(row) : null;
+}
+
+export async function getProjectCapabilityByUid(capabilityUid: string): Promise<ProjectCapabilityRecord | null> {
+  await ensureProjectKnowledgeTables();
+  const pool = getDbPool();
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT *
+     FROM project_capabilities
+     WHERE capability_uid = ?
+     LIMIT 1`,
+    [capabilityUid]
+  );
+  const row = rows[0];
+  return row ? normalizeProjectCapabilityRow(row) : null;
+}
+
+function buildExecutionReconcileScopeKey(scope: ExecutionReconcileScope): string {
+  if (scope.executionUid) return `execution:${scope.executionUid}`;
+  if (scope.planUid) return `plan:${scope.planUid}`;
+  if (scope.configUid) return `config:${scope.configUid}`;
+  if (scope.moduleUid) return `module:${scope.moduleUid}`;
+  if (scope.projectUid) return `project:${scope.projectUid}`;
+  return 'global';
+}
+
+export async function reconcileStaleExecutions(scope: ExecutionReconcileScope = {}): Promise<number> {
+  const key = buildExecutionReconcileScopeKey(scope);
+  const nowMs = Date.now();
+  const lastAt = staleExecutionReconcileAt.get(key) || 0;
+  const shouldThrottle = !scope.force && key === 'global';
+
+  if (shouldThrottle && nowMs - lastAt < STALE_EXECUTION_RECONCILE_INTERVAL_MS) {
+    return 0;
+  }
+
+  const pool = getDbPool();
+  const where: string[] = [`e.status IN ('queued', 'running')`];
+  const args: unknown[] = [];
+
+  if (scope.executionUid) {
+    where.push('e.execution_uid = ?');
+    args.push(scope.executionUid);
+  }
+  if (scope.planUid) {
+    where.push('e.plan_uid = ?');
+    args.push(scope.planUid);
+  }
+  if (scope.configUid) {
+    where.push('e.config_uid = ?');
+    args.push(scope.configUid);
+  }
+  if (scope.projectUid) {
+    where.push('e.project_uid = ?');
+    args.push(scope.projectUid);
+  }
+  if (scope.moduleUid) {
+    where.push('c.module_uid = ?');
+    args.push(scope.moduleUid);
+  }
+
+  args.push(STALE_QUEUED_EXECUTION_MINUTES, STALE_RUNNING_EXECUTION_MINUTES);
+
+  try {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT
+        e.execution_uid,
+        e.project_uid,
+        e.status,
+        e.created_at,
+        e.started_at
+       FROM test_executions e
+       LEFT JOIN test_configurations c ON c.config_uid = e.config_uid
+       WHERE ${where.join(' AND ')}
+         AND (
+           (e.status = 'queued' AND e.created_at < DATE_SUB(UTC_TIMESTAMP(3), INTERVAL ? MINUTE))
+           OR
+           (e.status = 'running' AND COALESCE(e.started_at, e.created_at) < DATE_SUB(UTC_TIMESTAMP(3), INTERVAL ? MINUTE))
+         )
+       ORDER BY e.created_at ASC
+       LIMIT 200`,
+      args
+    );
+
+    const endedAt = new Date();
+    let updatedCount = 0;
+
+    for (const row of rows) {
+      const status = String(row.status || '') as ExecutionStatus;
+      const createdAt = row.created_at ? new Date(String(row.created_at)) : endedAt;
+      const startedAt = row.started_at ? new Date(String(row.started_at)) : createdAt;
+      const beganAt = status === 'running' ? startedAt : createdAt;
+      const beganAtMs = Number.isNaN(beganAt.getTime()) ? endedAt.getTime() : beganAt.getTime();
+      const durationMs = Math.max(0, endedAt.getTime() - beganAtMs);
+      const errorMessage = status === 'queued' ? '执行未启动：排队状态超时' : '执行超时：worker 无响应';
+      const resultSummary = status === 'queued' ? '执行失败（排队超时）' : '执行失败（执行超时）';
+
+      await updateExecutionStatus(
+        String(row.execution_uid),
+        'failed',
+        {
+          endedAt,
+          durationMs,
+          resultSummary,
+          errorMessage,
+        },
+        row.project_uid ? String(row.project_uid) : undefined
+      );
+      updatedCount += 1;
+    }
+
+    if (shouldThrottle) {
+      staleExecutionReconcileAt.set(key, nowMs);
+    }
+    return updatedCount;
+  } catch (error) {
+    if (shouldThrottle) {
+      staleExecutionReconcileAt.delete(key);
+    }
+    throw error;
+  }
+}
+
 export async function listProjects(params: { keyword?: string; status?: ProjectStatus; page?: number; pageSize?: number }) {
+  await reconcileStaleExecutions();
   const pool = getDbPool();
   const page = Math.max(1, params.page || 1);
   const pageSize = Math.min(100, Math.max(1, params.pageSize || 20));
@@ -818,6 +1241,7 @@ export async function listProjects(params: { keyword?: string; status?: ProjectS
 }
 
 export async function getProjectByUid(projectUid: string): Promise<(TestProjectRecord & { loginPasswordPlain: string }) | null> {
+  await reconcileStaleExecutions({ projectUid });
   const pool = getDbPool();
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT
@@ -1283,7 +1707,506 @@ export async function restoreTestProject(projectUid: string, options?: { actorLa
   });
 }
 
+export async function listProjectKnowledgeDocuments(
+  projectUid: string,
+  params?: { status?: KnowledgeStatus | 'all' }
+): Promise<ProjectKnowledgeDocumentRecord[]> {
+  await ensureProjectKnowledgeTables();
+  await requireProject(projectUid);
+  const pool = getDbPool();
+  const status = params?.status || 'active';
+  const where: string[] = ['d.project_uid = ?'];
+  const args: unknown[] = [projectUid];
+
+  if (status !== 'all') {
+    where.push('d.status = ?');
+    args.push(status);
+  }
+
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT
+      d.*,
+      (
+        SELECT COUNT(*)
+        FROM project_knowledge_chunks c
+        WHERE c.document_uid = d.document_uid
+      ) AS chunk_count
+     FROM project_knowledge_documents d
+     WHERE ${where.join(' AND ')}
+     ORDER BY d.updated_at DESC, d.created_at DESC`,
+    args
+  );
+
+  return rows.map(normalizeProjectKnowledgeDocumentRow);
+}
+
+export async function getProjectKnowledgeDocumentByUid(documentUid: string): Promise<ProjectKnowledgeDocumentRecord | null> {
+  await ensureProjectKnowledgeTables();
+  const pool = getDbPool();
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT
+      d.*,
+      (
+        SELECT COUNT(*)
+        FROM project_knowledge_chunks c
+        WHERE c.document_uid = d.document_uid
+      ) AS chunk_count
+     FROM project_knowledge_documents d
+     WHERE d.document_uid = ?
+     LIMIT 1`,
+    [documentUid]
+  );
+
+  const row = rows[0];
+  return row ? normalizeProjectKnowledgeDocumentRow(row) : null;
+}
+
+export async function listProjectKnowledgeChunks(
+  projectUid: string,
+  params?: {
+    documentUid?: string;
+    documentStatus?: KnowledgeStatus | 'all';
+    limit?: number;
+  }
+): Promise<ProjectKnowledgeChunkRecord[]> {
+  await ensureProjectKnowledgeTables();
+  await requireProject(projectUid);
+  const pool = getDbPool();
+  const where: string[] = ['c.project_uid = ?'];
+  const args: unknown[] = [projectUid];
+  const documentStatus = params?.documentStatus || 'active';
+  const limit = Math.max(1, Math.min(2000, params?.limit || 500));
+
+  if (params?.documentUid) {
+    where.push('c.document_uid = ?');
+    args.push(params.documentUid);
+  }
+
+  if (documentStatus !== 'all') {
+    where.push('d.status = ?');
+    args.push(documentStatus);
+  }
+
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT c.*
+     FROM project_knowledge_chunks c
+     JOIN project_knowledge_documents d ON d.document_uid = c.document_uid
+     WHERE ${where.join(' AND ')}
+     ORDER BY d.updated_at DESC, c.sort_order ASC, c.id ASC
+     LIMIT ?`,
+    [...args, limit]
+  );
+
+  return rows.map(normalizeProjectKnowledgeChunkRow);
+}
+
+export async function replaceProjectKnowledgeDocument(
+  projectUid: string,
+  input: ProjectKnowledgeDocumentInput,
+  options?: { actorLabel?: string }
+): Promise<{ document: ProjectKnowledgeDocumentRecord; chunks: ProjectKnowledgeChunkRecord[] }> {
+  await ensureProjectKnowledgeTables();
+  await requireProject(projectUid);
+  const pool = getDbPool();
+  const name = input.name.trim();
+
+  if (!name) {
+    throw new Error('知识文档名称不能为空');
+  }
+
+  const normalizedContent = input.content ? normalizeKnowledgeText(input.content) : '';
+  const chunkCandidates = input.chunks && input.chunks.length > 0 ? input.chunks : buildKnowledgeChunksFromManual(normalizedContent);
+  const preparedChunks = chunkCandidates
+    .map((chunk, index) => ({
+      heading: chunk.heading.trim() || '概述',
+      content: chunk.content.trim(),
+      keywords: Array.from(new Set((chunk.keywords || []).map((item) => item.trim()).filter(Boolean))).slice(0, 20),
+      sourceLineStart: Number(chunk.sourceLineStart || 0),
+      sourceLineEnd: Number(chunk.sourceLineEnd || 0),
+      tokenEstimate: Number(chunk.tokenEstimate || Math.ceil(chunk.content.length / 2)),
+      sortOrder: index + 1,
+    }))
+    .filter((chunk) => chunk.content);
+
+  if (preparedChunks.length === 0) {
+    throw new Error('知识文档缺少可导入内容');
+  }
+
+  const existing = await getProjectKnowledgeDocumentByName(projectUid, name);
+  const documentUid = existing?.documentUid || uid('kdoc');
+  const sourceHash =
+    input.sourceHash?.trim() ||
+    stableHash(
+      JSON.stringify({
+        projectUid,
+        name,
+        sourcePath: input.sourcePath?.trim() || '',
+        sourceType: input.sourceType || 'manual',
+        content: normalizedContent,
+        chunks: preparedChunks,
+      })
+    );
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    if (existing) {
+      await connection.execute<ResultSetHeader>(
+        `UPDATE project_knowledge_documents
+         SET source_type = ?,
+             source_path = ?,
+             source_hash = ?,
+             status = ?,
+             meta = ?
+         WHERE document_uid = ?`,
+        [
+          input.sourceType || 'manual',
+          input.sourcePath?.trim() || null,
+          sourceHash,
+          input.status || 'active',
+          input.meta === undefined ? null : JSON.stringify(input.meta),
+          documentUid,
+        ]
+      );
+      await connection.execute<ResultSetHeader>(
+        `DELETE FROM project_knowledge_chunks WHERE document_uid = ?`,
+        [documentUid]
+      );
+    } else {
+      await connection.execute<ResultSetHeader>(
+        `INSERT INTO project_knowledge_documents
+          (document_uid, project_uid, name, source_type, source_path, source_hash, status, meta)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          documentUid,
+          projectUid,
+          name,
+          input.sourceType || 'manual',
+          input.sourcePath?.trim() || null,
+          sourceHash,
+          input.status || 'active',
+          input.meta === undefined ? null : JSON.stringify(input.meta),
+        ]
+      );
+    }
+
+    for (const chunk of preparedChunks) {
+      await connection.execute<ResultSetHeader>(
+        `INSERT INTO project_knowledge_chunks
+          (chunk_uid, document_uid, project_uid, heading, content, keywords_json, source_line_start, source_line_end, token_estimate, sort_order, meta)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        [
+          uid('kch'),
+          documentUid,
+          projectUid,
+          chunk.heading,
+          chunk.content,
+          chunk.keywords.length > 0 ? JSON.stringify(chunk.keywords) : null,
+          chunk.sourceLineStart,
+          chunk.sourceLineEnd,
+          chunk.tokenEstimate,
+          chunk.sortOrder,
+        ]
+      );
+    }
+
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+
+  const document = await getProjectKnowledgeDocumentByUid(documentUid);
+  if (!document) {
+    throw new Error('写入知识文档失败');
+  }
+  const chunks = await listProjectKnowledgeChunks(projectUid, {
+    documentUid,
+    documentStatus: 'all',
+    limit: preparedChunks.length + 5,
+  });
+
+  await insertProjectActivityLog({
+    projectUid,
+    entityType: 'knowledge',
+    entityUid: documentUid,
+    actionType: existing ? 'knowledge_updated' : 'knowledge_imported',
+    actorLabel: options?.actorLabel,
+    title: `${existing ? '更新' : '导入'}知识文档「${document.name}」`,
+    detail: `已写入 ${chunks.length} 个知识块。`,
+    meta: {
+      sourceType: document.sourceType,
+      sourcePath: document.sourcePath,
+      chunkCount: chunks.length,
+      sourceHash: document.sourceHash,
+    },
+  });
+
+  return { document, chunks };
+}
+
+export async function archiveProjectKnowledgeDocument(documentUid: string, options?: { actorLabel?: string }): Promise<void> {
+  await ensureProjectKnowledgeTables();
+  const pool = getDbPool();
+  const document = await getProjectKnowledgeDocumentByUid(documentUid);
+  if (!document) throw new Error('知识文档不存在');
+
+  await pool.execute<ResultSetHeader>(`UPDATE project_knowledge_documents SET status = 'archived' WHERE document_uid = ?`, [documentUid]);
+  await insertProjectActivityLog({
+    projectUid: document.projectUid,
+    entityType: 'knowledge',
+    entityUid: document.documentUid,
+    actionType: 'knowledge_archived',
+    actorLabel: options?.actorLabel,
+    title: `归档知识文档「${document.name}」`,
+    detail: `知识文档已归档，不再参与 recipe 证据检索。`,
+    meta: {
+      sourceType: document.sourceType,
+      sourcePath: document.sourcePath,
+      chunkCount: document.chunkCount,
+    },
+  });
+}
+
+export async function restoreProjectKnowledgeDocument(documentUid: string, options?: { actorLabel?: string }): Promise<void> {
+  await ensureProjectKnowledgeTables();
+  const pool = getDbPool();
+  const document = await getProjectKnowledgeDocumentByUid(documentUid);
+  if (!document) throw new Error('知识文档不存在');
+
+  const project = await getProjectByUid(document.projectUid);
+  if (!project || project.status !== 'active') {
+    throw new Error('请先恢复所属项目');
+  }
+
+  await pool.execute<ResultSetHeader>(`UPDATE project_knowledge_documents SET status = 'active' WHERE document_uid = ?`, [documentUid]);
+  await insertProjectActivityLog({
+    projectUid: document.projectUid,
+    entityType: 'knowledge',
+    entityUid: document.documentUid,
+    actionType: 'knowledge_restored',
+    actorLabel: options?.actorLabel,
+    title: `恢复知识文档「${document.name}」`,
+    detail: `知识文档已恢复，可重新参与 recipe 证据检索。`,
+    meta: {
+      sourceType: document.sourceType,
+      sourcePath: document.sourcePath,
+      chunkCount: document.chunkCount,
+    },
+  });
+}
+
+export async function listProjectCapabilities(
+  projectUid: string,
+  params?: { status?: KnowledgeStatus | 'all'; capabilityType?: CapabilityType | 'all' }
+): Promise<ProjectCapabilityRecord[]> {
+  await ensureProjectKnowledgeTables();
+  await requireProject(projectUid);
+  const pool = getDbPool();
+  const where: string[] = ['project_uid = ?'];
+  const args: unknown[] = [projectUid];
+  const status = params?.status || 'active';
+  const capabilityType = params?.capabilityType || 'all';
+
+  if (status !== 'all') {
+    where.push('status = ?');
+    args.push(status);
+  }
+
+  if (capabilityType !== 'all') {
+    where.push('capability_type = ?');
+    args.push(capabilityType);
+  }
+
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT *
+     FROM project_capabilities
+     WHERE ${where.join(' AND ')}
+     ORDER BY sort_order ASC, updated_at DESC, id ASC`,
+    args
+  );
+
+  return rows.map(normalizeProjectCapabilityRow);
+}
+
+export async function upsertProjectCapability(
+  projectUid: string,
+  input: ProjectCapabilityInput,
+  options?: { actorLabel?: string }
+): Promise<ProjectCapabilityRecord> {
+  await ensureProjectKnowledgeTables();
+  await requireProject(projectUid);
+  const pool = getDbPool();
+  const slug = input.slug.trim().toLowerCase();
+  const name = input.name.trim();
+  const description = input.description.trim();
+
+  if (!slug || !name || !description) {
+    throw new Error('能力缺少必要字段: slug/name/description');
+  }
+
+  if (input.sourceDocumentUid) {
+    const sourceDocument = await getProjectKnowledgeDocumentByUid(input.sourceDocumentUid);
+    if (!sourceDocument || sourceDocument.projectUid !== projectUid) {
+      throw new Error('能力关联的知识文档不存在');
+    }
+  }
+
+  const existing = await getProjectCapabilityBySlug(projectUid, slug);
+  const capabilityUid = existing?.capabilityUid || uid('cap');
+
+  if (existing) {
+    await pool.execute<ResultSetHeader>(
+      `UPDATE project_capabilities
+       SET name = ?,
+           description = ?,
+           capability_type = ?,
+           entry_url = ?,
+           trigger_phrases_json = ?,
+           preconditions_json = ?,
+           steps_json = ?,
+           assertions_json = ?,
+           cleanup_notes = ?,
+           depends_on_json = ?,
+           sort_order = ?,
+           status = ?,
+           source_document_uid = ?,
+           meta = ?
+       WHERE capability_uid = ?`,
+      [
+        name,
+        description,
+        input.capabilityType,
+        input.entryUrl?.trim() || null,
+        input.triggerPhrases?.length ? JSON.stringify(input.triggerPhrases) : null,
+        input.preconditions?.length ? JSON.stringify(input.preconditions) : null,
+        input.steps?.length ? JSON.stringify(input.steps) : null,
+        input.assertions?.length ? JSON.stringify(input.assertions) : null,
+        input.cleanupNotes?.trim() || null,
+        input.dependsOn?.length ? JSON.stringify(input.dependsOn) : null,
+        Number.isFinite(input.sortOrder) ? Number(input.sortOrder) : existing.sortOrder,
+        input.status || 'active',
+        input.sourceDocumentUid?.trim() || null,
+        input.meta === undefined ? null : JSON.stringify(input.meta),
+        capabilityUid,
+      ]
+    );
+  } else {
+    await pool.execute<ResultSetHeader>(
+      `INSERT INTO project_capabilities
+        (capability_uid, project_uid, slug, name, description, capability_type, entry_url, trigger_phrases_json, preconditions_json, steps_json, assertions_json, cleanup_notes, depends_on_json, sort_order, status, source_document_uid, meta)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        capabilityUid,
+        projectUid,
+        slug,
+        name,
+        description,
+        input.capabilityType,
+        input.entryUrl?.trim() || null,
+        input.triggerPhrases?.length ? JSON.stringify(input.triggerPhrases) : null,
+        input.preconditions?.length ? JSON.stringify(input.preconditions) : null,
+        input.steps?.length ? JSON.stringify(input.steps) : null,
+        input.assertions?.length ? JSON.stringify(input.assertions) : null,
+        input.cleanupNotes?.trim() || null,
+        input.dependsOn?.length ? JSON.stringify(input.dependsOn) : null,
+        Number.isFinite(input.sortOrder) ? Number(input.sortOrder) : 100,
+        input.status || 'active',
+        input.sourceDocumentUid?.trim() || null,
+        input.meta === undefined ? null : JSON.stringify(input.meta),
+      ]
+    );
+  }
+
+  const row = await getProjectCapabilityBySlug(projectUid, slug);
+  if (!row) {
+    throw new Error('写入能力失败');
+  }
+
+  await insertProjectActivityLog({
+    projectUid,
+    entityType: 'capability',
+    entityUid: row.capabilityUid,
+    actionType: existing ? 'capability_updated' : 'capability_created',
+    actorLabel: options?.actorLabel,
+    title: `${existing ? '更新' : '创建'}能力「${row.name}」`,
+    detail: `能力标识 ${row.slug}，类型 ${row.capabilityType}。`,
+    meta: {
+      slug: row.slug,
+      capabilityType: row.capabilityType,
+      sortOrder: row.sortOrder,
+      dependsOn: row.dependsOn,
+    },
+  });
+
+  return row;
+}
+
+export async function upsertProjectCapabilities(
+  projectUid: string,
+  inputs: ProjectCapabilityInput[],
+  options?: { actorLabel?: string }
+): Promise<ProjectCapabilityRecord[]> {
+  const results: ProjectCapabilityRecord[] = [];
+  for (const input of inputs) {
+    results.push(await upsertProjectCapability(projectUid, input, options));
+  }
+  return results;
+}
+
+export async function archiveProjectCapability(capabilityUid: string, options?: { actorLabel?: string }): Promise<void> {
+  await ensureProjectKnowledgeTables();
+  const pool = getDbPool();
+  const capability = await getProjectCapabilityByUid(capabilityUid);
+  if (!capability) throw new Error('能力不存在');
+
+  await pool.execute<ResultSetHeader>(`UPDATE project_capabilities SET status = 'archived' WHERE capability_uid = ?`, [capabilityUid]);
+  await insertProjectActivityLog({
+    projectUid: capability.projectUid,
+    entityType: 'capability',
+    entityUid: capability.capabilityUid,
+    actionType: 'capability_archived',
+    actorLabel: options?.actorLabel,
+    title: `归档能力「${capability.name}」`,
+    detail: `能力 ${capability.slug} 已归档，不再参与 recipe 编排。`,
+    meta: {
+      slug: capability.slug,
+      capabilityType: capability.capabilityType,
+    },
+  });
+}
+
+export async function restoreProjectCapability(capabilityUid: string, options?: { actorLabel?: string }): Promise<void> {
+  await ensureProjectKnowledgeTables();
+  const pool = getDbPool();
+  const capability = await getProjectCapabilityByUid(capabilityUid);
+  if (!capability) throw new Error('能力不存在');
+
+  const project = await getProjectByUid(capability.projectUid);
+  if (!project || project.status !== 'active') {
+    throw new Error('请先恢复所属项目');
+  }
+
+  await pool.execute<ResultSetHeader>(`UPDATE project_capabilities SET status = 'active' WHERE capability_uid = ?`, [capabilityUid]);
+  await insertProjectActivityLog({
+    projectUid: capability.projectUid,
+    entityType: 'capability',
+    entityUid: capability.capabilityUid,
+    actionType: 'capability_restored',
+    actorLabel: options?.actorLabel,
+    title: `恢复能力「${capability.name}」`,
+    detail: `能力 ${capability.slug} 已恢复，可重新参与 recipe 编排。`,
+    meta: {
+      slug: capability.slug,
+      capabilityType: capability.capabilityType,
+    },
+  });
+}
+
 export async function listModulesByProject(projectUid: string, params?: { status?: ModuleStatus | 'all' }): Promise<TestModuleRecord[]> {
+  await reconcileStaleExecutions({ projectUid });
   const pool = getDbPool();
   const status = params?.status || 'active';
 
@@ -1361,6 +2284,7 @@ export async function listModulesByProject(projectUid: string, params?: { status
 }
 
 export async function getModuleByUid(moduleUid: string): Promise<TestModuleRecord | null> {
+  await reconcileStaleExecutions({ moduleUid });
   const pool = getDbPool();
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT
@@ -1584,6 +2508,10 @@ export async function listTestConfigs(params: {
   moduleUid?: string;
 }) {
   await ensureTestConfigurationScenarioColumns();
+  await reconcileStaleExecutions({
+    projectUid: params.projectUid,
+    moduleUid: params.moduleUid,
+  });
   const pool = getDbPool();
   const page = Math.max(1, params.page || 1);
   const pageSize = Math.min(100, Math.max(1, params.pageSize || 20));
@@ -1683,6 +2611,7 @@ export async function listTestConfigs(params: {
 
 export async function getTestConfigByUid(configUid: string): Promise<(TestConfigRecord & { loginPasswordPlain: string }) | null> {
   await ensureTestConfigurationScenarioColumns();
+  await reconcileStaleExecutions({ configUid });
   const pool = getDbPool();
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT
@@ -2074,22 +3003,12 @@ export async function createExecution(input: { planUid: string; configUid: strin
 }
 
 export async function findRunningExecution(planUid: string): Promise<string | null> {
+  await reconcileStaleExecutions({ planUid, force: true });
   const pool = getDbPool();
-  const STALE_MINUTES = 3; // worker 超时 120s + 60s 缓冲
-
-  // 将超时的 running 状态自动标记为 failed
-  await pool.execute<ResultSetHeader>(
-    `UPDATE test_executions
-     SET status = 'failed', error_message = '执行超时：worker 无响应', ended_at = NOW(3)
-     WHERE plan_uid = ? AND status = 'running'
-       AND started_at < DATE_SUB(NOW(3), INTERVAL ? MINUTE)`,
-    [planUid, STALE_MINUTES]
-  );
-
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT execution_uid
      FROM test_executions
-     WHERE plan_uid = ? AND status = 'running'
+     WHERE plan_uid = ? AND status IN ('queued', 'running')
      ORDER BY created_at DESC
      LIMIT 1`,
     [planUid]
@@ -2189,6 +3108,7 @@ export async function getExecution(executionUid: string): Promise<{
   workerSessionId: string;
   createdAt: string;
 } | null> {
+  await reconcileStaleExecutions({ executionUid });
   const pool = getDbPool();
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT * FROM test_executions WHERE execution_uid = ? LIMIT 1`,
@@ -2217,6 +3137,7 @@ export async function listExecutionsByConfigUid(configUid: string, limit = 30): 
   Array<{
     executionUid: string;
     planUid: string;
+    planVersion: number;
     projectUid: string;
     status: ExecutionStatus;
     startedAt: string;
@@ -2228,15 +3149,22 @@ export async function listExecutionsByConfigUid(configUid: string, limit = 30): 
     createdAt: string;
   }>
 > {
+  await reconcileStaleExecutions({ configUid });
   const pool = getDbPool();
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT * FROM test_executions WHERE config_uid = ? ORDER BY created_at DESC LIMIT ?`,
+    `SELECT e.*, p.plan_version
+     FROM test_executions e
+     LEFT JOIN test_plans p ON p.plan_uid = e.plan_uid
+     WHERE e.config_uid = ?
+     ORDER BY e.created_at DESC
+     LIMIT ?`,
     [configUid, Math.max(1, Math.min(100, limit))]
   );
 
   return rows.map((row) => ({
     executionUid: String(row.execution_uid),
     planUid: String(row.plan_uid),
+    planVersion: Number(row.plan_version || 0),
     projectUid: row.project_uid ? String(row.project_uid) : '',
     status: row.status as ExecutionStatus,
     startedAt: toIso(row.started_at),

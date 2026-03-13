@@ -12,53 +12,130 @@ interface Props {
 export default function BrowserView({ sessionId, isActive, compact = false, hideHeader = false }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const hasReceivedFramesRef = useRef(false);
+  const generationRef = useRef(0);
   const [connected, setConnected] = useState(false);
   const [frameCount, setFrameCount] = useState(0);
   const [hasReceivedFrames, setHasReceivedFrames] = useState(false);
   const lastRender = useRef(0);
 
   useEffect(() => {
-    if (!isActive) {
-      // 断开 WebSocket 但不清空画布（保留最后一帧）
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
+    const clearReconnectTimer = () => {
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
       }
+    };
+
+    const closeSocket = (socket: WebSocket | null) => {
+      if (!socket) return;
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onclose = null;
+      socket.onerror = null;
+
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.close(1000, 'inactive');
+        return;
+      }
+
+      if (socket.readyState === WebSocket.CONNECTING) {
+        socket.addEventListener(
+          'open',
+          () => {
+            socket.close(1000, 'stale');
+          },
+          { once: true }
+        );
+      }
+    };
+
+    if (!sessionId || !isActive) {
+      clearReconnectTimer();
+      closeSocket(wsRef.current);
+      wsRef.current = null;
       setConnected(false);
       return;
     }
 
-    // 新测试开始时重置帧计数
     setFrameCount(0);
     setHasReceivedFrames(false);
+    hasReceivedFramesRef.current = false;
+    lastRender.current = 0;
 
-    const wsUrl = `ws://${window.location.host}/ws/screencast?sessionId=${sessionId}`;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+    let disposed = false;
+    const generation = generationRef.current + 1;
+    generationRef.current = generation;
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/screencast?sessionId=${encodeURIComponent(sessionId)}`;
 
-    ws.onopen = () => setConnected(true);
-    ws.onclose = () => setConnected(false);
-
-    ws.onmessage = (event) => {
-      const now = Date.now();
-      if (now - lastRender.current < 33) return; // ~30fps
-      lastRender.current = now;
-
-      try {
-        const { type, data } = JSON.parse(event.data);
-        if (type === 'frame') {
-          renderFrame(data);
-          setFrameCount((c) => c + 1);
-          setHasReceivedFrames(true);
-        }
-      } catch {
-        // ignore bad frame payloads
-      }
+    const scheduleReconnect = () => {
+      if (disposed) return;
+      clearReconnectTimer();
+      reconnectTimerRef.current = window.setTimeout(() => {
+        openSocket();
+      }, 1200);
     };
 
+    const openSocket = () => {
+      if (disposed) return;
+      const socket = new WebSocket(wsUrl);
+      wsRef.current = socket;
+      setConnected(false);
+
+      socket.onopen = () => {
+        if (disposed || generationRef.current !== generation || wsRef.current !== socket) {
+          closeSocket(socket);
+          return;
+        }
+        setConnected(true);
+      };
+
+      socket.onclose = () => {
+        if (wsRef.current === socket) {
+          wsRef.current = null;
+        }
+        if (disposed || generationRef.current !== generation) return;
+        setConnected(false);
+        scheduleReconnect();
+      };
+
+      socket.onerror = () => {
+        // Let onclose drive reconnects.
+      };
+
+      socket.onmessage = (event) => {
+        const now = Date.now();
+        if (now - lastRender.current < 33) return;
+        lastRender.current = now;
+
+        try {
+          const { type, data } = JSON.parse(event.data);
+          if (type === 'frame') {
+            renderFrame(data);
+            setFrameCount((count) => count + 1);
+            if (!hasReceivedFramesRef.current) {
+              hasReceivedFramesRef.current = true;
+              setHasReceivedFrames(true);
+            }
+          }
+        } catch {
+          // Ignore malformed frame payloads.
+        }
+      };
+    };
+
+    openSocket();
+
     return () => {
-      ws.close();
+      disposed = true;
+      generationRef.current += 1;
+      clearReconnectTimer();
+      const socket = wsRef.current;
       wsRef.current = null;
+      closeSocket(socket);
+      setConnected(false);
     };
   }, [sessionId, isActive]);
 
@@ -73,8 +150,15 @@ export default function BrowserView({ sessionId, isActive, compact = false, hide
     img.src = `data:image/jpeg;base64,${base64}`;
   };
 
-  // 只在从未收到过帧数据且未执行时显示遮罩
-  const showOverlay = !isActive && !hasReceivedFrames;
+  const overlayMessage = (() => {
+    if (!sessionId) return '暂无执行会话';
+    if (isActive && !connected && !hasReceivedFrames) return '正在连接实时画面...';
+    if (isActive && connected && !hasReceivedFrames) return '已连接，正在等待浏览器首帧...';
+    if (isActive && !connected && hasReceivedFrames) return '实时画面已断开，正在重连...';
+    if (!isActive && !hasReceivedFrames) return '点击「执行测试」后显示浏览器实时画面';
+    return '';
+  })();
+  const showOverlay = Boolean(overlayMessage);
 
   return (
     <div className={compact ? 'rounded-lg bg-zinc-950 p-2' : 'bg-white rounded-lg shadow p-5'}>
@@ -95,7 +179,7 @@ export default function BrowserView({ sessionId, isActive, compact = false, hide
         <canvas ref={canvasRef} width={1280} height={720} className="w-full h-auto" />
         {showOverlay && (
           <div className="absolute inset-0 flex items-center justify-center bg-gray-900/80 text-gray-400 text-sm">
-            点击「执行测试」后显示浏览器实时画面
+            {overlayMessage}
           </div>
         )}
       </div>

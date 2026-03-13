@@ -45,6 +45,7 @@ async function main() {
     await ensureConfigurationColumns(connection);
     await ensureDerivedProjectColumns(connection);
     await ensureProjectActivityTables(connection);
+    await ensureProjectKnowledgeTables(connection);
     await ensureIndexes(connection);
     await migrateLegacyData(connection);
     await seedDefaultProjectOwners(connection);
@@ -248,6 +249,89 @@ async function ensureProjectActivityTables(connection) {
       KEY idx_project_activity_logs_project_time (project_uid, created_at),
       CONSTRAINT fk_project_activity_logs_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
         ON UPDATE CASCADE ON DELETE RESTRICT
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+}
+
+async function ensureProjectKnowledgeTables(connection) {
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS project_knowledge_documents (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      document_uid VARCHAR(64) NOT NULL,
+      project_uid VARCHAR(64) NOT NULL,
+      name VARCHAR(255) NOT NULL,
+      source_type ENUM('manual', 'notes', 'execution', 'system') NOT NULL DEFAULT 'manual',
+      source_path TEXT NULL,
+      source_hash VARCHAR(64) NULL,
+      status ENUM('active', 'archived') NOT NULL DEFAULT 'active',
+      meta JSON NULL,
+      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (id),
+      UNIQUE KEY uk_project_knowledge_documents_uid (document_uid),
+      UNIQUE KEY uk_project_knowledge_documents_project_name (project_uid, name),
+      KEY idx_project_knowledge_documents_project_status_updated (project_uid, status, updated_at),
+      CONSTRAINT fk_project_knowledge_documents_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
+        ON UPDATE CASCADE ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS project_knowledge_chunks (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      chunk_uid VARCHAR(64) NOT NULL,
+      document_uid VARCHAR(64) NOT NULL,
+      project_uid VARCHAR(64) NOT NULL,
+      heading VARCHAR(255) NOT NULL,
+      content TEXT NOT NULL,
+      keywords_json JSON NULL,
+      source_line_start INT NOT NULL DEFAULT 0,
+      source_line_end INT NOT NULL DEFAULT 0,
+      token_estimate INT NOT NULL DEFAULT 0,
+      sort_order INT NOT NULL DEFAULT 0,
+      meta JSON NULL,
+      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (id),
+      UNIQUE KEY uk_project_knowledge_chunks_uid (chunk_uid),
+      KEY idx_project_knowledge_chunks_project_document_sort (project_uid, document_uid, sort_order),
+      CONSTRAINT fk_project_knowledge_chunks_document_uid FOREIGN KEY (document_uid) REFERENCES project_knowledge_documents (document_uid)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+      CONSTRAINT fk_project_knowledge_chunks_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
+        ON UPDATE CASCADE ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS project_capabilities (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      capability_uid VARCHAR(64) NOT NULL,
+      project_uid VARCHAR(64) NOT NULL,
+      slug VARCHAR(128) NOT NULL,
+      name VARCHAR(255) NOT NULL,
+      description TEXT NOT NULL,
+      capability_type ENUM('auth', 'navigation', 'action', 'assertion', 'query', 'composite') NOT NULL,
+      entry_url TEXT NULL,
+      trigger_phrases_json JSON NULL,
+      preconditions_json JSON NULL,
+      steps_json JSON NULL,
+      assertions_json JSON NULL,
+      cleanup_notes TEXT NULL,
+      depends_on_json JSON NULL,
+      sort_order INT NOT NULL DEFAULT 100,
+      status ENUM('active', 'archived') NOT NULL DEFAULT 'active',
+      source_document_uid VARCHAR(64) NULL,
+      meta JSON NULL,
+      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (id),
+      UNIQUE KEY uk_project_capabilities_uid (capability_uid),
+      UNIQUE KEY uk_project_capabilities_project_slug (project_uid, slug),
+      KEY idx_project_capabilities_project_status_sort (project_uid, status, sort_order, updated_at),
+      CONSTRAINT fk_project_capabilities_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+      CONSTRAINT fk_project_capabilities_source_document_uid FOREIGN KEY (source_document_uid) REFERENCES project_knowledge_documents (document_uid)
+        ON UPDATE CASCADE ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 }

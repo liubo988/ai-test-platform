@@ -3,6 +3,13 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import BrowserView from '@/components/BrowserView';
+import { describeExecutionOutcome, type ExecutionOutcomeTone } from '@/lib/execution-outcome';
+import {
+  buildIntentCapabilityPreset,
+  buildIntentCapabilityWorkbenchHref,
+  createIntentCapabilityLaunchToken,
+  stashIntentCapabilityPreset,
+} from '@/lib/intent-capability-preset';
 import { buildFlowSummary, type FlowDefinition, type TaskMode } from '@/lib/task-flow';
 
 type ExecutionStatus = 'queued' | 'running' | 'passed' | 'failed' | 'canceled';
@@ -94,6 +101,32 @@ function messageTone(kind: ConversationItem['messageType']): string {
   return 'border-slate-200 bg-white text-slate-700';
 }
 
+function outcomeTone(tone: ExecutionOutcomeTone): string {
+  switch (tone) {
+    case 'emerald':
+      return 'bg-emerald-50 text-emerald-700 ring-emerald-200';
+    case 'amber':
+      return 'bg-amber-50 text-amber-700 ring-amber-200';
+    case 'rose':
+      return 'bg-rose-50 text-rose-700 ring-rose-200';
+    default:
+      return 'bg-slate-100 text-slate-700 ring-slate-200';
+  }
+}
+
+function outcomeHintTone(tone: ExecutionOutcomeTone): string {
+  switch (tone) {
+    case 'emerald':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-800';
+    case 'amber':
+      return 'border-amber-200 bg-amber-50 text-amber-800';
+    case 'rose':
+      return 'border-rose-200 bg-rose-50 text-rose-800';
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-700';
+  }
+}
+
 function renderEventLine(event: EventItem): string {
   const payload = (event.payload || {}) as Record<string, unknown>;
   if (event.eventType === 'step') {
@@ -113,7 +146,9 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
   const [events, setEvents] = useState<EventItem[]>([]);
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [error, setError] = useState('');
+  const [actionNotice, setActionNotice] = useState('');
   const [showEvents, setShowEvents] = useState(false);
+  const [repairing, setRepairing] = useState(false);
 
   // Replay state
   const [replayMode, setReplayMode] = useState(false);
@@ -244,6 +279,35 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
     () => events.filter((item) => item.eventType !== 'frame').slice(-120),
     [events]
   );
+  const capabilityLaunch = useMemo(() => {
+    const config = detail?.config;
+    const project = detail?.project;
+    if (!config || !project) return null;
+
+    const preset = buildIntentCapabilityPreset({
+      sourceLabel: `执行「${config.name}」`,
+      name: config.name,
+      targetUrl: config.targetUrl,
+      featureDescription: config.featureDescription,
+      taskMode: config.taskMode,
+      flowDefinition: config.flowDefinition,
+      authSource: config.authSource,
+    });
+    const token = createIntentCapabilityLaunchToken({
+      projectUid: project.projectUid,
+      preset,
+    });
+
+    return {
+      preset,
+      token,
+      href: buildIntentCapabilityWorkbenchHref({
+        projectUid: project.projectUid,
+        moduleUid: config.moduleUid,
+        token,
+      }),
+    };
+  }, [detail?.config, detail?.project]);
 
   function downloadGeneratedSpec() {
     if (!generatedSpec) return;
@@ -264,6 +328,31 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
     URL.revokeObjectURL(url);
   }
 
+  async function launchAiRepair() {
+    setRepairing(true);
+    setActionNotice('');
+    setError('');
+    try {
+      const res = await fetch(`/api/test-executions/${executionUid}/repair`, {
+        method: 'POST',
+      });
+      const json = (await res.json()) as { executionUid?: string; runPath?: string; error?: string };
+      if (!res.ok) {
+        throw new Error(json.error || '启动 AI 纠错失败');
+      }
+
+      const runPath = json.runPath || (json.executionUid ? `/runs/${json.executionUid}` : '');
+      setActionNotice(`AI 纠错已启动，正在打开新的修复运行 ${json.executionUid || ''}`.trim());
+      if (runPath && typeof window !== 'undefined') {
+        window.open(runPath, '_blank', 'noopener,noreferrer');
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '启动 AI 纠错失败');
+    } finally {
+      setRepairing(false);
+    }
+  }
+
   if (!detail) {
     return (
       <div className="rounded-[28px] border border-white/70 bg-white/80 p-6 text-sm text-slate-500 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur-xl">
@@ -274,7 +363,14 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
 
   const { execution, plan, config, project, artifacts } = detail;
   const generatedSpec = artifacts.find((item) => item.artifactType === 'generated_spec');
+  const screencastActive = execution.status === 'queued' || execution.status === 'running';
   const flowSummary = config?.taskMode === 'scenario' ? buildFlowSummary(config.flowDefinition) : '';
+  const executionOutcome = describeExecutionOutcome({
+    status: execution.status,
+    resultSummary: execution.resultSummary,
+    errorMessage: execution.errorMessage,
+  });
+  const canAiRepair = execution.status === 'failed' && executionOutcome.repairRecommended;
 
   return (
     <div className="space-y-5">
@@ -293,6 +389,11 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
                 {config.moduleName}
               </span>
             )}
+            {execution.status === 'failed' && (
+              <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ring-1 ${outcomeTone(executionOutcome.tone)}`}>
+                {executionOutcome.shortLabel}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-3 text-xs text-slate-500">
@@ -302,6 +403,15 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
               <span className="h-3 w-px bg-slate-200" />
               <span>{execution.durationMs ? `${(execution.durationMs / 1000).toFixed(1)}s` : '-'}</span>
             </div>
+            {canAiRepair && (
+              <button
+                onClick={() => void launchAiRepair()}
+                disabled={repairing}
+                className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {repairing ? 'AI纠错中...' : 'AI纠错并重跑'}
+              </button>
+            )}
             {project && (
               <Link
                 href={`/projects/${project.projectUid}${config?.moduleUid ? `?module=${config.moduleUid}` : ''}`}
@@ -315,6 +425,7 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
         {(plan?.planSummary || execution.resultSummary) && (
           <p className="mt-2 text-sm leading-6 text-slate-500">{plan?.planSummary || execution.resultSummary}</p>
         )}
+        {actionNotice && <p className="mt-2 text-xs text-blue-600">{actionNotice}</p>}
       </section>
 
       <section className="grid gap-5 xl:grid-cols-[3fr_7fr]">
@@ -380,6 +491,51 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
                 <p className="text-[10px] uppercase tracking-[0.18em] text-slate-400">任务描述</p>
                 <p className="mt-1.5 text-xs leading-5 text-slate-600">{config?.featureDescription || '暂无任务描述。'}</p>
               </div>
+              {execution.status === 'failed' && (execution.errorMessage || executionOutcome.hint) && (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 px-3.5 py-2.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[10px] uppercase tracking-[0.18em] text-rose-500">本次失败类型</p>
+                      <p className="mt-1 text-xs font-medium text-rose-800">{executionOutcome.title}</p>
+                    </div>
+                    {canAiRepair ? (
+                      <button
+                        onClick={() => void launchAiRepair()}
+                        disabled={repairing}
+                        className="rounded-lg border border-rose-200 bg-white px-2.5 py-1 text-[11px] font-medium text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {repairing ? 'AI纠错中...' : 'AI纠错'}
+                      </button>
+                    ) : (
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${outcomeTone(executionOutcome.tone)}`}>
+                        AI纠错不适用
+                      </span>
+                    )}
+                  </div>
+                  {execution.errorMessage && (
+                    <p className="mt-1.5 whitespace-pre-wrap break-words text-[11px] leading-5 text-rose-700">
+                      {execution.errorMessage}
+                    </p>
+                  )}
+                  <div className={`mt-2 rounded-xl border px-3 py-2 ${outcomeHintTone(executionOutcome.tone)}`}>
+                    <p className="text-[11px] leading-5">
+                      <span className="font-medium">建议：</span>
+                      {executionOutcome.hint}
+                    </p>
+                  </div>
+                </div>
+              )}
+              {execution.status === 'passed' && capabilityLaunch && (
+                <Link
+                  href={capabilityLaunch.href}
+                  onClick={() => {
+                    stashIntentCapabilityPreset(capabilityLaunch.token, capabilityLaunch.preset);
+                  }}
+                  className="inline-flex h-9 items-center justify-center rounded-xl border border-blue-200 bg-blue-50 px-3 text-xs font-medium text-blue-700 transition hover:bg-blue-100"
+                >
+                  沉淀为稳定能力
+                </Link>
+              )}
               {config?.taskMode === 'scenario' && config.flowDefinition && (
                 <div className="rounded-2xl border border-sky-100 bg-sky-50/50 px-3.5 py-3">
                   <p className="text-[10px] uppercase tracking-[0.18em] text-sky-500">业务流上下文</p>
@@ -582,7 +738,7 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
                 </div>
               </div>
             ) : (
-              <BrowserView sessionId={execution.workerSessionId} isActive={execution.status === 'running'} hideHeader compact />
+              <BrowserView sessionId={execution.workerSessionId} isActive={screencastActive} hideHeader compact />
             )}
           </section>
         </div>

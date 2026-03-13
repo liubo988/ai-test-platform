@@ -1,7 +1,11 @@
+import { createResponsesRequest, getOpenAIHeaders } from './openai-responses.js';
+
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
 const OPENAI_API_KEY = process.env.AZURE_OPENAI_API_KEY || process.env.OPENAI_API_KEY || '';
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4-turbo';
 const IS_AZURE = OPENAI_BASE_URL.includes('.openai.azure.com');
+const RESPONSES_RETRY_DELAY_MS = Number(process.env.OPENAI_RETRY_DELAY_MS || 350);
+const RESPONSES_MAX_ATTEMPTS = Math.max(1, Number(process.env.OPENAI_RESPONSES_MAX_ATTEMPTS || 2));
 
 // gpt-5.3-codex 等 Codex 模型只支持 Responses API，不支持 Chat Completions
 const USE_RESPONSES_API = OPENAI_MODEL.includes('codex');
@@ -12,11 +16,16 @@ interface StreamChunk {
 }
 
 function getHeaders(): Record<string, string> {
-  if (IS_AZURE) {
-    return { 'api-key': OPENAI_API_KEY, 'Content-Type': 'application/json' };
-  }
-  return { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' };
+  return getOpenAIHeaders({ apiKey: OPENAI_API_KEY, isAzure: IS_AZURE });
 }
+
+const RESPONSES_REQUEST_OPTIONS = {
+  baseUrl: OPENAI_BASE_URL,
+  apiKey: OPENAI_API_KEY,
+  isAzure: IS_AZURE,
+  retryDelayMs: RESPONSES_RETRY_DELAY_MS,
+  maxAttempts: RESPONSES_MAX_ATTEMPTS,
+};
 
 /** 流式调用 LLM — 自动选择 Responses API 或 Chat Completions API */
 export async function* callLLMStream(prompt: string, systemPrompt?: string): AsyncGenerator<StreamChunk> {
@@ -29,24 +38,16 @@ export async function* callLLMStream(prompt: string, systemPrompt?: string): Asy
 
 /** Responses API 流式调用（gpt-5.3-codex 等） */
 async function* callLLMStreamResponses(prompt: string, systemPrompt?: string): AsyncGenerator<StreamChunk> {
-  const url = `${OPENAI_BASE_URL}/responses`;
-
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: getHeaders(),
-    body: JSON.stringify({
+  const resp = await createResponsesRequest(
+    {
       model: OPENAI_MODEL,
       instructions: systemPrompt || 'You are a senior Playwright E2E testing expert.',
       input: prompt,
       stream: true,
       temperature: 0.3,
-    }),
-  });
-
-  if (!resp.ok) {
-    const errText = await resp.text();
-    throw new Error(`LLM 请求失败: ${resp.status} ${errText}`);
-  }
+    },
+    RESPONSES_REQUEST_OPTIONS
+  );
 
   const reader = resp.body?.getReader();
   if (!reader) throw new Error('LLM 响应无可读流');
@@ -139,26 +140,15 @@ export async function callLLM(prompt: string, systemPrompt?: string): Promise<st
 
 /** Responses API 非流式调用 */
 async function callLLMResponses(prompt: string, systemPrompt?: string): Promise<string> {
-  const url = `${OPENAI_BASE_URL}/responses`;
-
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: getHeaders(),
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      instructions: systemPrompt || 'You are a helpful assistant.',
-      input: prompt,
-      temperature: 0.3,
-    }),
-  });
-
-  if (!resp.ok) {
-    const errText = await resp.text();
-    throw new Error(`LLM 请求失败: ${resp.status} ${errText}`);
-  }
+  const resp = await createResponsesRequest({
+    model: OPENAI_MODEL,
+    instructions: systemPrompt || 'You are a helpful assistant.',
+    input: prompt,
+    temperature: 0.3,
+  }, RESPONSES_REQUEST_OPTIONS);
 
   const data = await resp.json();
-  return data?.output?.[0]?.content?.[0]?.text || '';
+  return data?.output_text || data?.output?.[0]?.content?.[0]?.text || '';
 }
 
 /** Chat Completions API 非流式调用 */

@@ -1,8 +1,19 @@
 'use client';
 
-import { useEffect, useState, type CSSProperties } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useEffect, useMemo, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import ProjectIntentWorkbench, { type IntentTaskDraft } from './ProjectIntentWorkbench';
+import {
+  buildIntentCapabilityPreset,
+  buildIntentCapabilityWorkbenchHref,
+  clearStashedIntentCapabilityPreset,
+  createIntentCapabilityLaunchToken,
+  parseIntentCapabilityPreset,
+  readStashedIntentCapabilityPreset,
+  stashIntentCapabilityPreset,
+  type IntentCapabilityPreset,
+} from '@/lib/intent-capability-preset';
 import {
   createScenarioStep,
   hasScenarioContent,
@@ -146,6 +157,7 @@ type PlanCase = {
 type ExecutionRow = {
   executionUid: string;
   planUid: string;
+  planVersion: number;
   projectUid: string;
   status: 'queued' | 'running' | 'passed' | 'failed' | 'canceled';
   startedAt: string;
@@ -497,8 +509,14 @@ function contentStatusLabel(status: ContentStatusFilter): string {
 const ALL_MODULES_UID = '__all__';
 
 export default function ProjectWorkspace({ projectUid }: { projectUid: string }) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const initialModuleUid = searchParams.get('module') || ALL_MODULES_UID;
+  const intentPresetRaw = searchParams.get('capabilityPreset');
+  const intentToken = searchParams.get('intentToken') || intentPresetRaw || '';
+  const rawIntentView = searchParams.get('intentView');
+  const intentView: 'recipe' | 'knowledge' | 'capability' =
+    rawIntentView === 'recipe' ? 'recipe' : rawIntentView === 'knowledge' ? 'knowledge' : 'capability';
   const [project, setProject] = useState<ProjectItem | null>(null);
   const [modules, setModules] = useState<ModuleItem[]>([]);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
@@ -509,7 +527,9 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   const [contentStatusFilter, setContentStatusFilter] = useState<ContentStatusFilter>('active');
   const [taskKeyword, setTaskKeyword] = useState('');
   const [error, setError] = useState('');
+  const [actionNotice, setActionNotice] = useState('');
   const [actioningUid, setActioningUid] = useState('');
+  const [restoringPlanUid, setRestoringPlanUid] = useState('');
 
   const [projectModalOpen, setProjectModalOpen] = useState(false);
   const [projectForm, setProjectForm] = useState<ProjectFormState>(defaultProjectForm);
@@ -556,7 +576,17 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   const [memberSaving, setMemberSaving] = useState(false);
   const [memberActioningUid, setMemberActioningUid] = useState('');
   const [switchingActor, setSwitchingActor] = useState(false);
+  const [stashedIntentPreset, setStashedIntentPreset] = useState<IntentCapabilityPreset | null>(null);
   const PAGE_SIZE = 10;
+  const intentLaunchPreset = useMemo(() => {
+    const capabilityPreset = parseIntentCapabilityPreset(intentPresetRaw) || stashedIntentPreset;
+    if (!capabilityPreset || !intentToken) return null;
+    return {
+      token: intentToken,
+      view: intentView,
+      capabilityPreset,
+    };
+  }, [intentPresetRaw, intentToken, intentView, stashedIntentPreset]);
 
   const activeModule = modules.find((item) => item.moduleUid === activeModuleUid) || null;
   const projectArchived = project?.status === 'archived';
@@ -567,6 +597,15 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   const canManageMembers = currentRole === 'owner';
   const readOnlyHint = loadingMembers ? '' : permissionHint(currentRole);
   const creationLocked = projectArchived || contentStatusFilter === 'archived' || !canEditContent;
+  const taskCreationBlockedReason = !canEditContent
+    ? readOnlyHint || '当前操作者没有编辑权限'
+    : projectArchived
+      ? '请先恢复项目，再创建测试任务'
+      : contentStatusFilter === 'archived'
+        ? '当前正在查看归档内容，请切换到启用中或全部内容后再创建任务'
+        : modules.length === 0
+          ? '请先创建模块，再创建测试任务'
+          : '';
   const defaultTaskModuleUid =
     (activeModule?.status === 'active' ? activeModule.moduleUid : '') || activeModules[0]?.moduleUid || '';
   const filteredTasks = tasks.filter((item) => {
@@ -604,6 +643,9 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
       item.errorMessage.toLowerCase().includes(keyword)
     );
   });
+  const previewPlanTask = previewPlan ? tasks.find((item) => item.configUid === previewPlan.configUid) || null : null;
+  const previewPlanIsCurrent = Boolean(previewPlan && previewPlanTask && previewPlanTask.latestPlanUid === previewPlan.planUid);
+  const previewPlanCanRestore = Boolean(canEditContent && previewPlan && previewPlanTask && !previewPlanIsCurrent);
 
   // ── data loading ──
   async function loadProject() {
@@ -619,7 +661,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
         if (json.item.status === 'archived') {
           setContentStatusFilter((current) => (current === 'active' ? 'archived' : current));
         }
-        setProjectForm({
+      setProjectForm({
           name: json.item.name,
           description: json.item.description,
           coverImageUrl: json.item.coverImageUrl || '',
@@ -631,6 +673,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
         });
       }
       setError('');
+      setActionNotice('');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '加载项目失败');
     } finally {
@@ -717,12 +760,35 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
     void loadActivityLogs();
   }
 
+  function consumeIntentLaunchPreset(token: string) {
+    if (!intentLaunchPreset || token !== intentLaunchPreset.token) return;
+    clearStashedIntentCapabilityPreset(token);
+    setStashedIntentPreset(null);
+    const nextParams = new URLSearchParams(searchParams.toString());
+    nextParams.delete('capabilityPreset');
+    nextParams.delete('intentToken');
+    nextParams.delete('intentView');
+    const nextUrl = nextParams.toString() ? `/projects/${projectUid}?${nextParams.toString()}` : `/projects/${projectUid}`;
+    router.replace(nextUrl, { scroll: false });
+  }
+
   useEffect(() => { void loadProject(); }, [projectUid]);
   useEffect(() => { void loadMembers(); }, [projectUid]);
   useEffect(() => { void loadModules(); }, [projectUid, contentStatusFilter]);
   useEffect(() => { if (!activeModuleUid) return; void loadTasks(activeModuleUid); }, [projectUid, activeModuleUid, contentStatusFilter]);
   useEffect(() => { void loadActivityLogs(); }, [projectUid]);
   useEffect(() => { setCurrentPage(1); }, [contentStatusFilter, activeModuleUid]);
+  useEffect(() => {
+    if (intentPresetRaw) {
+      setStashedIntentPreset(null);
+      return;
+    }
+    if (!intentToken) {
+      setStashedIntentPreset(null);
+      return;
+    }
+    setStashedIntentPreset(readStashedIntentCapabilityPreset(intentToken));
+  }, [intentPresetRaw, intentToken]);
   useEffect(() => {
     if (currentPage !== safePage) {
       setCurrentPage(safePage);
@@ -828,12 +894,32 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   }
 
   function openCreateTask() {
-    if (!canEditContent) { setError(readOnlyHint || '当前操作者没有编辑权限'); return; }
-    if (projectArchived) { setError('请先恢复项目，再创建测试任务'); return; }
-    if (contentStatusFilter === 'archived') { setError('当前正在查看归档内容，请切换到启用中或全部内容后再创建任务'); return; }
-    if (!defaultTaskModuleUid && modules.length === 0) { setError('请先创建模块，再创建测试任务'); return; }
+    if (taskCreationBlockedReason) { setError(taskCreationBlockedReason); return; }
     if (!defaultTaskModuleUid) { setError('当前没有可用的启用中模块，请先恢复模块'); return; }
     resetTaskForm(); setTaskModalOpen(true);
+  }
+
+  function applyIntentTaskDraft(draft: IntentTaskDraft) {
+    if (taskCreationBlockedReason) { setError(taskCreationBlockedReason); return; }
+    const moduleUid = activeModules.some((item) => item.moduleUid === draft.moduleUid) ? draft.moduleUid : defaultTaskModuleUid;
+    if (!moduleUid) {
+      setError('当前没有可用的启用中模块，请先恢复模块');
+      return;
+    }
+
+    const taskMode = normalizeTaskMode(draft.taskMode);
+    setEditingTaskUid('');
+    setTaskForm({
+      moduleUid,
+      sortOrder: draft.sortOrder || 100,
+      name: draft.name,
+      taskMode,
+      targetUrl: draft.targetUrl,
+      featureDescription: draft.featureDescription,
+      flowDefinition: normalizeTaskFlowForForm(draft.flowDefinition, draft.targetUrl, taskMode),
+    });
+    setError('');
+    setTaskModalOpen(true);
   }
 
   function openEditTask(task: TaskItem) {
@@ -1145,6 +1231,48 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
     finally { setPreviewLoading(false); }
   }
 
+  function openPlanPreviewFromHistory(planUid?: string) {
+    setHistoryOpen(false);
+    void openPlanPreviewByUid(planUid);
+  }
+
+  async function restorePlanAsCurrent(planUid: string, options?: { closeHistory?: boolean }) {
+    if (!canEditContent) { setError(readOnlyHint || '当前操作者没有编辑权限'); return; }
+    setRestoringPlanUid(planUid);
+    setError('');
+    try {
+      const savedModuleUid = activeModuleUid;
+      const res = await fetch(`/api/test-plans/${planUid}/restore`, { method: 'POST' });
+      const json = (await res.json()) as {
+        planUid?: string;
+        planVersion?: number;
+        sourcePlanUid?: string;
+        sourcePlanVersion?: number;
+        reusedCurrent?: boolean;
+        error?: string;
+      };
+      if (!res.ok) throw new Error(json.error || '切换当前任务脚本失败');
+
+      await loadTasks(savedModuleUid);
+      await loadModules();
+      await loadProject();
+      await loadActivityLogs();
+      setActiveModuleUid(savedModuleUid);
+      if (options?.closeHistory) setHistoryOpen(false);
+      await openPlanPreviewByUid(json.planUid);
+      setActionNotice(
+        json.reusedCurrent
+          ? `脚本 v${json.sourcePlanVersion || '-'} 已经是当前版本。`
+          : `已基于历史脚本 v${json.sourcePlanVersion || '-'} 创建新的当前版本 v${json.planVersion || '-'}。`
+      );
+    } catch (err: unknown) {
+      setActionNotice('');
+      setError(err instanceof Error ? err.message : '切换当前任务脚本失败');
+    } finally {
+      setRestoringPlanUid('');
+    }
+  }
+
   async function openExecutionHistory(task: TaskItem) {
     setHistoryOpen(true); setHistoryLoading(true); setHistoryTaskName(task.name);
     setHistoryKeyword(''); setHistoryEventKeyword(''); setHistoryExpandedUid(''); setHistoryEventMap({}); setHistoryEventLoadingUid('');
@@ -1278,6 +1406,16 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
           <button onClick={openProjectSettings} className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-600 transition hover:bg-slate-50">
             项目设置
           </button>
+          <ProjectIntentWorkbench
+            projectUid={projectUid}
+            activeModules={activeModules.map((item) => ({ moduleUid: item.moduleUid, name: item.name }))}
+            defaultTaskModuleUid={defaultTaskModuleUid}
+            canEditContent={canEditContent}
+            creationBlockedReason={taskCreationBlockedReason || (!defaultTaskModuleUid ? '当前没有可用的启用中模块，请先恢复模块' : '')}
+            onApplyTaskDraft={applyIntentTaskDraft}
+            launchPreset={intentLaunchPreset}
+            onLaunchPresetConsumed={consumeIntentLaunchPreset}
+          />
           {projectArchived ? (
             <button
               onClick={() => void restoreProject()}
@@ -1311,7 +1449,11 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
         <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</div>
       )}
 
-      {!error && readOnlyHint && (
+      {!error && actionNotice && (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{actionNotice}</div>
+      )}
+
+      {!error && !actionNotice && readOnlyHint && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">{readOnlyHint}</div>
       )}
 
@@ -1521,7 +1663,36 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100/80">
-                    {paginatedTasks.map((task, idx) => (
+                    {paginatedTasks.map((task, idx) => {
+                      const capabilityLaunch =
+                        task.status === 'active' && canEditContent && task.latestExecutionStatus === 'passed'
+                          ? (() => {
+                              const preset = buildIntentCapabilityPreset({
+                                sourceLabel: `任务「${task.name}」`,
+                                name: task.name,
+                                targetUrl: task.targetUrl,
+                                featureDescription: task.featureDescription,
+                                taskMode: task.taskMode,
+                                flowDefinition: task.flowDefinition,
+                                authSource: task.authSource,
+                              });
+                              const token = createIntentCapabilityLaunchToken({
+                                projectUid: task.projectUid,
+                                preset,
+                              });
+                              return {
+                                preset,
+                                token,
+                                href: buildIntentCapabilityWorkbenchHref({
+                                  projectUid: task.projectUid,
+                                  moduleUid: task.moduleUid,
+                                  token,
+                                }),
+                              };
+                            })()
+                          : null;
+
+                      return (
                       <tr key={task.configUid} className={`group transition-colors hover:bg-slate-50/70 ${task.status === 'archived' ? 'bg-amber-50/20' : ''}`}>
                         <td className="px-3 py-3 text-center text-xs tabular-nums text-slate-400">
                           {(safePage - 1) * PAGE_SIZE + idx + 1}
@@ -1618,6 +1789,18 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                             >
                               <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6l4 2m6-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                             </button>
+                            {capabilityLaunch && (
+                              <Link
+                                href={capabilityLaunch.href}
+                                onClick={() => {
+                                  stashIntentCapabilityPreset(capabilityLaunch.token, capabilityLaunch.preset);
+                                }}
+                                title="沉淀为稳定能力"
+                                className="inline-flex h-7 items-center rounded-md border border-blue-200 bg-blue-50 px-2.5 text-[11px] font-medium text-blue-700 transition hover:bg-blue-100"
+                              >
+                                沉淀能力
+                              </Link>
+                            )}
                             {task.status === 'active' && canEditContent && (
                               <>
                                 <button
@@ -1641,7 +1824,8 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                           </div>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -2175,6 +2359,15 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
               <h2 className="text-base font-semibold text-slate-900">测试计划预览</h2>
               <div className="flex items-center gap-2">
+                {previewPlanCanRestore && previewPlan && (
+                  <button
+                    onClick={() => void restorePlanAsCurrent(previewPlan.planUid)}
+                    disabled={restoringPlanUid === previewPlan.planUid}
+                    className="h-8 rounded-lg border border-emerald-200 bg-emerald-50 px-3 text-xs font-medium text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50"
+                  >
+                    {restoringPlanUid === previewPlan.planUid ? '恢复中...' : '恢复为当前脚本'}
+                  </button>
+                )}
                 <button onClick={downloadPlanScript} disabled={!previewPlan} className="h-8 rounded-lg border border-slate-200 px-3 text-xs text-slate-600 disabled:opacity-50">下载脚本</button>
                 <button onClick={() => setPreviewOpen(false)} className="text-sm text-slate-400 hover:text-slate-600">关闭</button>
               </div>
@@ -2186,6 +2379,9 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                   <div className="flex items-center gap-2">
                     <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-500">{previewPlan.planUid}</span>
                     <span className="rounded bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700">v{previewPlan.planVersion}</span>
+                    {previewPlanIsCurrent && (
+                      <span className="rounded bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">当前脚本</span>
+                    )}
                   </div>
                   <h3 className="text-lg font-semibold text-slate-900">{previewPlan.planTitle}</h3>
                   <p className="text-sm text-slate-500">{previewPlan.planSummary}</p>
@@ -2314,6 +2510,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                           <div>
                             <div className="flex flex-wrap items-center gap-2">
                               <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ring-1 ${statusTone(row.status)}`}>{row.status}</span>
+                              <span className="rounded bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">脚本 v{row.planVersion || '-'}</span>
                               <span className="text-[11px] text-slate-400">{row.executionUid}</span>
                               {errorCount > 0 && <span className="text-[11px] text-rose-600">{errorCount} 条异常</span>}
                             </div>
@@ -2325,6 +2522,21 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                             </div>
                           </div>
                           <div className="flex flex-shrink-0 gap-2">
+                            <button
+                              onClick={() => openPlanPreviewFromHistory(row.planUid)}
+                              className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+                            >
+                              查看脚本
+                            </button>
+                            {canEditContent && row.status === 'passed' && (
+                              <button
+                                onClick={() => void restorePlanAsCurrent(row.planUid, { closeHistory: true })}
+                                disabled={restoringPlanUid === row.planUid}
+                                className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                              >
+                                {restoringPlanUid === row.planUid ? '恢复中...' : '恢复脚本'}
+                              </button>
+                            )}
                             <a href={`/runs/${row.executionUid}`}
                               className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-100">
                               查看详情

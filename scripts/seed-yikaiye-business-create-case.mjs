@@ -186,9 +186,12 @@ test('创建商机：无附件提交并在商机列表校验落库', async ({ pa
   await page.waitForTimeout(1000);
 
   const sourceRow = page.locator('.ant-form-item').filter({ has: page.locator('label[title="商机来源"]') }).first();
-  await sourceRow.locator('.ant-select-selection').first().click({ force: true });
-  await page.waitForTimeout(300);
-  await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').getByText('抖音', { exact: true }).first().click();
+  await __e2e.selectAntdOption(page, sourceRow, {
+    label: '抖音',
+    searchText: '抖音',
+    tree: true,
+    settleMs: 300,
+  });
 
   await page.locator('#createBusinessBaseInfo_contactInfo\\[0\\]\\.people').fill(contactName);
   await page.locator('#createBusinessBaseInfo_contactInfo\\[0\\]\\.way\\[0\\]\\.itmValue').fill(contactPhone);
@@ -199,18 +202,17 @@ test('创建商机：无附件提交并在商机列表校验落库', async ({ pa
   const productRow = page.locator('.ant-form-item').filter({ has: page.locator('label[title="意向产品"]') }).first();
   await companyRow.waitFor({ timeout: 15000 });
 
-  await companyRow.locator('.ant-select-selection').click();
-  await page.waitForTimeout(300);
-  await companyRow.locator('input.ant-select-search__field').fill(COMPANY_KEYWORD);
-  await page.waitForTimeout(2500);
-  const companyDropdown = page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').last();
-  await companyDropdown.getByText(COMPANY_NAME, { exact: true }).first().click();
+  await __e2e.selectAntdOption(page, companyRow, {
+    label: COMPANY_NAME,
+    searchText: COMPANY_KEYWORD,
+  });
   await page.waitForTimeout(800);
 
-  await productRow.locator('.ant-select-selection').click();
-  await page.waitForTimeout(1000);
-  const productDropdown = page.locator('.ant-select-dropdown--multiple:not(.ant-select-dropdown-hidden)').last();
-  await productDropdown.getByText(PRODUCT_NAME, { exact: true }).click();
+  await __e2e.selectAntdOption(page, productRow, {
+    label: PRODUCT_NAME,
+    searchText: PRODUCT_NAME,
+    tree: true,
+  });
   await page.waitForTimeout(600);
   await page.mouse.click(1200, 120);
 

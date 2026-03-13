@@ -10,7 +10,7 @@
     "start:web": "NODE_ENV=production node server.mjs",
     "test": "vitest run",
     "test:unit": "vitest run tests/unit",
-    "test:integration": "vitest run tests/integration",
+    "test:integration": "vitest run tests/integration --testTimeout=20000 --hookTimeout=30000",
     "test:e2e": "playwright test",
     "test:smoke": "npm run test:unit && playwright test --grep @smoke",
     "test:all": "npm run test:unit && npm run test:integration && npm run test:e2e",
@@ -19,7 +19,8 @@
     "edge:report": "node scripts/edge-report.mjs",
     "qa": "node scripts/qa.mjs",
     "test:api:product": "node scripts/api-product-regression.mjs",
-    "db:init": "node --env-file-if-exists=.env scripts/init-e2e-db.mjs"
+    "db:init": "node --env-file-if-exists=.env scripts/init-e2e-db.mjs",
+    "knowledge:import:gbs": "node --env-file-if-exists=.env scripts/import-gbs-manual-knowledge.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createResponsesRequest } from '../lib/openai-responses.js';
 
 const root = process.cwd();
 const casesPath = path.join(root, 'edge-cases', 'cases.json');
@@ -8,6 +9,8 @@ const outDir = path.join(root, 'tests', 'integration', 'generated');
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
 const OPENAI_API_KEY = process.env.AZURE_OPENAI_API_KEY || process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'api-proxy-codex/gpt-5.3-codex';
+const RESPONSES_RETRY_DELAY_MS = Number(process.env.OPENAI_RETRY_DELAY_MS || 350);
+const RESPONSES_MAX_ATTEMPTS = Math.max(1, Number(process.env.OPENAI_RESPONSES_MAX_ATTEMPTS || 2));
 
 if (!fs.existsSync(casesPath)) {
   console.error('cases.json not found');
@@ -48,7 +51,13 @@ function extractCode(text) {
   return fenced ? fenced[1].trim() : text.trim();
 }
 
-const isAzure = OPENAI_BASE_URL.includes('.openai.azure.com');
+const RESPONSES_REQUEST_OPTIONS = {
+  baseUrl: OPENAI_BASE_URL,
+  apiKey: OPENAI_API_KEY,
+  isAzure: OPENAI_BASE_URL.includes('.openai.azure.com'),
+  retryDelayMs: RESPONSES_RETRY_DELAY_MS,
+  maxAttempts: RESPONSES_MAX_ATTEMPTS,
+};
 
 async function generateWithOpenAI(moduleName, moduleCases) {
   const prompt = [
@@ -65,30 +74,15 @@ async function generateWithOpenAI(moduleName, moduleCases) {
     `Edge cases JSON:\n${JSON.stringify(moduleCases, null, 2)}`,
   ].join('\n');
 
-  const headers = isAzure
-    ? { 'api-key': OPENAI_API_KEY, 'Content-Type': 'application/json' }
-    : { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' };
-
-  // gpt-5.3-codex only supports the Responses API, not Chat Completions
-  const url = `${OPENAI_BASE_URL}/responses`;
-
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      temperature: 0.1,
-      instructions: 'You are a senior SDET generating high-quality Vitest tests.',
-      input: prompt,
-    }),
-  });
-
-  if (!resp.ok) {
-    throw new Error(`LLM request failed: ${resp.status} ${await resp.text()}`);
-  }
+  const resp = await createResponsesRequest({
+    model: OPENAI_MODEL,
+    temperature: 0.1,
+    instructions: 'You are a senior SDET generating high-quality Vitest tests.',
+    input: prompt,
+  }, RESPONSES_REQUEST_OPTIONS);
 
   const data = await resp.json();
-  const content = data?.output?.[0]?.content?.[0]?.text;
+  const content = data?.output_text || data?.output?.[0]?.content?.[0]?.text;
   const code = extractCode(content);
   if (!code.includes('describe(') || !code.includes('it(')) {
     throw new Error('LLM returned non-test content');

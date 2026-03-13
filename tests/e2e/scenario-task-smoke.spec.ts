@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { expect, test, type Page, type Route } from '@playwright/test';
+import { deriveCapabilitiesFromKnowledgeDocument } from '../../lib/knowledge-capability-deriver';
+import { buildKnowledgeChunksFromManual, draftRecipeFromRequirement } from '../../lib/project-knowledge';
 
 type Actor = {
   userUid: string;
@@ -83,6 +85,58 @@ type FlowDefinition = {
   steps: ScenarioStep[];
 };
 
+type KnowledgeDocument = {
+  documentUid: string;
+  projectUid: string;
+  name: string;
+  sourceType: 'manual' | 'notes' | 'execution' | 'system';
+  sourcePath: string;
+  sourceHash: string;
+  status: 'active' | 'archived';
+  chunkCount: number;
+  meta: unknown;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type KnowledgeChunk = {
+  chunkUid: string;
+  documentUid: string;
+  projectUid: string;
+  heading: string;
+  content: string;
+  keywords: string[];
+  sourceLineStart: number;
+  sourceLineEnd: number;
+  tokenEstimate: number;
+  sortOrder: number;
+  meta: unknown;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type Capability = {
+  capabilityUid: string;
+  projectUid: string;
+  slug: string;
+  name: string;
+  description: string;
+  capabilityType: 'auth' | 'navigation' | 'action' | 'assertion' | 'query' | 'composite';
+  entryUrl: string;
+  triggerPhrases: string[];
+  preconditions: string[];
+  steps: string[];
+  assertions: string[];
+  cleanupNotes: string;
+  dependsOn: string[];
+  sortOrder: number;
+  status: 'active' | 'archived';
+  sourceDocumentUid: string;
+  meta: unknown;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type Task = {
   configUid: string;
   projectUid: string;
@@ -137,7 +191,7 @@ type PlanCase = {
 type ActivityItem = {
   activityUid: string;
   projectUid: string;
-  entityType: 'config' | 'plan';
+  entityType: 'config' | 'plan' | 'knowledge' | 'capability';
   entityUid: string;
   actionType: string;
   actorLabel: string;
@@ -153,6 +207,9 @@ type MockState = {
   project: Project;
   modules: Module[];
   tasks: Task[];
+  knowledgeDocuments: KnowledgeDocument[];
+  knowledgeChunks: KnowledgeChunk[];
+  capabilities: Capability[];
   plan: Plan | null;
   planCases: PlanCase[];
   activity: ActivityItem[];
@@ -296,6 +353,9 @@ function makeState(): MockState {
       },
     ],
     tasks: [],
+    knowledgeDocuments: [],
+    knowledgeChunks: [],
+    capabilities: [],
     plan: null,
     planCases: [],
     activity: [],
@@ -419,6 +479,366 @@ async function installApiMocks(page: Page) {
 
     if (method === 'GET' && pathname === `/api/projects/${projectUid}/activity`) {
       return jsonResponse(route, { items: state.activity.slice(0, Number(url.searchParams.get('limit') || 12)) });
+    }
+
+    if (method === 'GET' && pathname === `/api/projects/${projectUid}/knowledge`) {
+      const status = url.searchParams.get('status') || 'active';
+      const documentUid = url.searchParams.get('documentUid') || '';
+      const includeChunks = url.searchParams.get('includeChunks') === 'true' || Boolean(documentUid);
+      const limit = Number(url.searchParams.get('limit') || 200);
+      const documents = state.knowledgeDocuments.filter((item) => status === 'all' || item.status === status);
+      const chunks = includeChunks
+        ? state.knowledgeChunks
+            .filter((item) => {
+              if (documentUid && item.documentUid !== documentUid) return false;
+              const document = state.knowledgeDocuments.find((doc) => doc.documentUid === item.documentUid);
+              return status === 'all' || document?.status === status;
+            })
+            .slice(0, limit)
+        : [];
+
+      return jsonResponse(route, { documents, chunks });
+    }
+
+    if (method === 'POST' && pathname === `/api/projects/${projectUid}/knowledge`) {
+      const body = request.postDataJSON() as {
+        name?: string;
+        sourceType?: KnowledgeDocument['sourceType'];
+        sourcePath?: string;
+        content?: string;
+      };
+
+      const name = String(body.name || '').trim();
+      const content = String(body.content || '');
+      if (!name) return jsonResponse(route, { error: '缺少必要字段: name' }, 400);
+      if (!content.trim()) return jsonResponse(route, { error: '缺少知识内容: content/chunks' }, 400);
+
+      const existing = state.knowledgeDocuments.find((item) => item.name === name) || null;
+      const documentUid = existing?.documentUid || `kdoc_${state.knowledgeDocuments.length + 1}`;
+      const preparedChunks = buildKnowledgeChunksFromManual(content).map((item, index) => ({
+        chunkUid: `kch_${documentUid}_${index + 1}`,
+        documentUid,
+        projectUid,
+        heading: item.heading,
+        content: item.content,
+        keywords: item.keywords,
+        sourceLineStart: item.sourceLineStart,
+        sourceLineEnd: item.sourceLineEnd,
+        tokenEstimate: item.tokenEstimate,
+        sortOrder: index + 1,
+        meta: null,
+        createdAt: now,
+        updatedAt: now,
+      }));
+
+      const document: KnowledgeDocument = {
+        documentUid,
+        projectUid,
+        name,
+        sourceType: body.sourceType || 'manual',
+        sourcePath: String(body.sourcePath || ''),
+        sourceHash: `hash_${documentUid}`,
+        status: 'active',
+        chunkCount: preparedChunks.length,
+        meta: null,
+        createdAt: existing?.createdAt || now,
+        updatedAt: now,
+      };
+
+      state.knowledgeDocuments = [document, ...state.knowledgeDocuments.filter((item) => item.documentUid !== documentUid)];
+      state.knowledgeChunks = [
+        ...preparedChunks,
+        ...state.knowledgeChunks.filter((item) => item.documentUid !== documentUid),
+      ];
+      pushActivity(state, {
+        projectUid,
+        entityType: 'knowledge',
+        entityUid: documentUid,
+        actionType: existing ? 'knowledge_updated' : 'knowledge_imported',
+        actorLabel: state.actor.displayName,
+        title: `${existing ? '更新' : '导入'}知识文档「${name}」`,
+        detail: `已写入 ${preparedChunks.length} 个知识块。`,
+        meta: {
+          chunkCount: preparedChunks.length,
+        },
+      });
+
+      return jsonResponse(route, { document, chunks: preparedChunks }, 201);
+    }
+
+    const deriveCapabilityMatch = pathname.match(new RegExp(`^/api/projects/${projectUid}/knowledge/([^/]+)/derive-capabilities$`));
+    if (method === 'POST' && deriveCapabilityMatch) {
+      const documentUid = deriveCapabilityMatch[1];
+      const existingDocument = state.knowledgeDocuments.find((item) => item.documentUid === documentUid) || null;
+      if (!existingDocument) return jsonResponse(route, { error: '知识文档不存在' }, 404);
+      const body = request.postDataJSON() as { chunkUid?: string } | null;
+      const selectedChunks = state.knowledgeChunks.filter((item) => {
+        if (item.documentUid !== documentUid) return false;
+        if (body?.chunkUid && item.chunkUid !== body.chunkUid) return false;
+        return true;
+      });
+      if (selectedChunks.length === 0) return jsonResponse(route, { error: '未找到可沉淀的知识块' }, 404);
+
+      const derived = deriveCapabilitiesFromKnowledgeDocument({
+        document: existingDocument,
+        chunks: selectedChunks,
+        projectLoginUrl: state.project.loginUrl,
+        existingCapabilities: state.capabilities,
+      });
+
+      const items: Capability[] = [];
+      for (const input of derived.items) {
+        const existing = state.capabilities.find((item) => item.slug === input.slug) || null;
+        const capabilityUid = existing?.capabilityUid || `cap_${state.capabilities.length + items.length + 1}`;
+        const capability: Capability = {
+          capabilityUid,
+          projectUid,
+          slug: input.slug,
+          name: input.name,
+          description: input.description,
+          capabilityType: input.capabilityType,
+          entryUrl: input.entryUrl,
+          triggerPhrases: input.triggerPhrases,
+          preconditions: input.preconditions,
+          steps: input.steps,
+          assertions: input.assertions,
+          cleanupNotes: input.cleanupNotes,
+          dependsOn: input.dependsOn,
+          sortOrder: input.sortOrder,
+          status: 'active',
+          sourceDocumentUid: input.sourceDocumentUid,
+          meta: input.meta,
+          createdAt: existing?.createdAt || now,
+          updatedAt: now,
+        };
+        state.capabilities = [capability, ...state.capabilities.filter((item) => item.slug !== capability.slug)];
+        items.push(capability);
+      }
+
+      return jsonResponse(route, { items, skipped: derived.skipped, summary: derived.summary }, 201);
+    }
+
+    const knowledgeMatch = pathname.match(new RegExp(`^/api/projects/${projectUid}/knowledge/([^/]+)$`));
+    if (method === 'DELETE' && knowledgeMatch) {
+      const documentUid = knowledgeMatch[1];
+      const existing = state.knowledgeDocuments.find((item) => item.documentUid === documentUid) || null;
+      if (!existing) return jsonResponse(route, { error: '知识文档不存在' }, 404);
+
+      existing.status = 'archived';
+      existing.updatedAt = now;
+      pushActivity(state, {
+        projectUid,
+        entityType: 'knowledge',
+        entityUid: documentUid,
+        actionType: 'knowledge_archived',
+        actorLabel: state.actor.displayName,
+        title: `归档知识文档「${existing.name}」`,
+        detail: `知识文档已归档，不再参与 recipe 证据检索。`,
+        meta: {
+          sourceType: existing.sourceType,
+          sourcePath: existing.sourcePath,
+          chunkCount: existing.chunkCount,
+        },
+      });
+      return jsonResponse(route, { ok: true });
+    }
+
+    const knowledgeRestoreMatch = pathname.match(new RegExp(`^/api/projects/${projectUid}/knowledge/([^/]+)/restore$`));
+    if (method === 'POST' && knowledgeRestoreMatch) {
+      const documentUid = knowledgeRestoreMatch[1];
+      const existing = state.knowledgeDocuments.find((item) => item.documentUid === documentUid) || null;
+      if (!existing) return jsonResponse(route, { error: '知识文档不存在' }, 404);
+
+      existing.status = 'active';
+      existing.updatedAt = now;
+      pushActivity(state, {
+        projectUid,
+        entityType: 'knowledge',
+        entityUid: documentUid,
+        actionType: 'knowledge_restored',
+        actorLabel: state.actor.displayName,
+        title: `恢复知识文档「${existing.name}」`,
+        detail: `知识文档已恢复，可重新参与 recipe 证据检索。`,
+        meta: {
+          sourceType: existing.sourceType,
+          sourcePath: existing.sourcePath,
+          chunkCount: existing.chunkCount,
+        },
+      });
+      return jsonResponse(route, { ok: true });
+    }
+
+    if (method === 'GET' && pathname === `/api/projects/${projectUid}/capabilities`) {
+      const status = url.searchParams.get('status') || 'active';
+      const items = state.capabilities
+        .filter((item) => status === 'all' || item.status === status)
+        .sort((left, right) => left.sortOrder - right.sortOrder);
+      return jsonResponse(route, { items });
+    }
+
+    if (method === 'POST' && pathname === `/api/projects/${projectUid}/capabilities`) {
+      const payload = request.postDataJSON() as { items?: Array<Partial<Capability>> } | Partial<Capability>;
+      const inputs = Array.isArray((payload as { items?: unknown[] }).items)
+        ? ((payload as { items: Array<Partial<Capability>> }).items || [])
+        : [payload as Partial<Capability>];
+
+      const items: Capability[] = [];
+      for (const input of inputs) {
+        const slug = String(input.slug || '').trim().toLowerCase();
+        const name = String(input.name || '').trim();
+        const description = String(input.description || '').trim();
+        if (!slug || !name || !description) {
+          return jsonResponse(route, { error: '能力缺少必要字段: slug/name/description' }, 400);
+        }
+
+        const existing = state.capabilities.find((item) => item.slug === slug) || null;
+        const capabilityUid = existing?.capabilityUid || `cap_${state.capabilities.length + items.length + 1}`;
+        const capability: Capability = {
+          capabilityUid,
+          projectUid,
+          slug,
+          name,
+          description,
+          capabilityType: (input.capabilityType as Capability['capabilityType']) || 'action',
+          entryUrl: String(input.entryUrl || ''),
+          triggerPhrases: Array.isArray(input.triggerPhrases) ? input.triggerPhrases.map(String) : [],
+          preconditions: Array.isArray(input.preconditions) ? input.preconditions.map(String) : [],
+          steps: Array.isArray(input.steps) ? input.steps.map(String) : [],
+          assertions: Array.isArray(input.assertions) ? input.assertions.map(String) : [],
+          cleanupNotes: String(input.cleanupNotes || ''),
+          dependsOn: Array.isArray(input.dependsOn) ? input.dependsOn.map(String) : [],
+          sortOrder: Number.isFinite(Number(input.sortOrder)) ? Number(input.sortOrder) : existing?.sortOrder || 100,
+          status: 'active',
+          sourceDocumentUid: String(input.sourceDocumentUid || ''),
+          meta: null,
+          createdAt: existing?.createdAt || now,
+          updatedAt: now,
+        };
+
+        state.capabilities = [
+          capability,
+          ...state.capabilities.filter((item) => item.slug !== slug),
+        ];
+        items.push(capability);
+        pushActivity(state, {
+          projectUid,
+          entityType: 'capability',
+          entityUid: capabilityUid,
+          actionType: existing ? 'capability_updated' : 'capability_created',
+          actorLabel: state.actor.displayName,
+          title: `${existing ? '更新' : '创建'}能力「${name}」`,
+          detail: `能力标识 ${slug}，类型 ${capability.capabilityType}。`,
+          meta: {
+            slug,
+            capabilityType: capability.capabilityType,
+          },
+        });
+      }
+
+      return jsonResponse(route, { items }, 201);
+    }
+
+    const capabilityMatch = pathname.match(new RegExp(`^/api/projects/${projectUid}/capabilities/([^/]+)$`));
+    if (method === 'DELETE' && capabilityMatch) {
+      const capabilityUid = capabilityMatch[1];
+      const existing = state.capabilities.find((item) => item.capabilityUid === capabilityUid) || null;
+      if (!existing) return jsonResponse(route, { error: '能力不存在' }, 404);
+
+      existing.status = 'archived';
+      existing.updatedAt = now;
+      pushActivity(state, {
+        projectUid,
+        entityType: 'capability',
+        entityUid: capabilityUid,
+        actionType: 'capability_archived',
+        actorLabel: state.actor.displayName,
+        title: `归档能力「${existing.name}」`,
+        detail: `能力 ${existing.slug} 已归档，不再参与 recipe 编排。`,
+        meta: {
+          slug: existing.slug,
+          capabilityType: existing.capabilityType,
+        },
+      });
+      return jsonResponse(route, { ok: true });
+    }
+
+    const capabilityRestoreMatch = pathname.match(new RegExp(`^/api/projects/${projectUid}/capabilities/([^/]+)/restore$`));
+    if (method === 'POST' && capabilityRestoreMatch) {
+      const capabilityUid = capabilityRestoreMatch[1];
+      const existing = state.capabilities.find((item) => item.capabilityUid === capabilityUid) || null;
+      if (!existing) return jsonResponse(route, { error: '能力不存在' }, 404);
+
+      existing.status = 'active';
+      existing.updatedAt = now;
+      pushActivity(state, {
+        projectUid,
+        entityType: 'capability',
+        entityUid: capabilityUid,
+        actionType: 'capability_restored',
+        actorLabel: state.actor.displayName,
+        title: `恢复能力「${existing.name}」`,
+        detail: `能力 ${existing.slug} 已恢复，可重新参与 recipe 编排。`,
+        meta: {
+          slug: existing.slug,
+          capabilityType: existing.capabilityType,
+        },
+      });
+      return jsonResponse(route, { ok: true });
+    }
+
+    if (method === 'POST' && pathname === `/api/projects/${projectUid}/draft-recipe`) {
+      const body = request.postDataJSON() as { requirement?: string; includeAuthCapability?: boolean; knowledgeLimit?: number };
+      const requirement = String(body.requirement || '').trim();
+      if (!requirement) return jsonResponse(route, { error: '缺少必要字段: requirement' }, 400);
+      const activeCapabilities = state.capabilities.filter((item) => item.status === 'active');
+      const activeDocumentUids = new Set(
+        state.knowledgeDocuments.filter((item) => item.status === 'active').map((item) => item.documentUid)
+      );
+      const activeKnowledgeChunks = state.knowledgeChunks.filter((item) => activeDocumentUids.has(item.documentUid));
+      if (activeCapabilities.length === 0 && activeKnowledgeChunks.length === 0) {
+        return jsonResponse(route, { error: '项目还没有知识或能力数据，请先导入手册和能力库' }, 409);
+      }
+
+      const recipe = draftRecipeFromRequirement({
+        requirement,
+        includeAuthCapability: body.includeAuthCapability ?? state.project.authRequired,
+        capabilities: activeCapabilities.map((item) => ({
+          slug: item.slug,
+          name: item.name,
+          description: item.description,
+          capabilityType: item.capabilityType,
+          entryUrl: item.entryUrl,
+          triggerPhrases: item.triggerPhrases,
+          preconditions: item.preconditions,
+          steps: item.steps,
+          assertions: item.assertions,
+          cleanupNotes: item.cleanupNotes,
+          dependsOn: item.dependsOn,
+          sortOrder: item.sortOrder,
+          meta: item.meta,
+        })),
+        knowledgeChunks: activeKnowledgeChunks
+          .slice(0, Number(body.knowledgeLimit || 800))
+          .map((item) => ({
+            heading: item.heading,
+            content: item.content,
+            keywords: item.keywords,
+            sourceLineStart: item.sourceLineStart,
+            sourceLineEnd: item.sourceLineEnd,
+            tokenEstimate: item.tokenEstimate,
+          })),
+      });
+
+      return jsonResponse(route, {
+        recipe,
+        project: {
+          projectUid: state.project.projectUid,
+          name: state.project.name,
+          authRequired: state.project.authRequired,
+        },
+        capabilityCount: activeCapabilities.length,
+        knowledgeChunkCount: activeKnowledgeChunks.length,
+      });
     }
 
     if (method === 'GET' && pathname === '/api/test-configs') {
@@ -644,4 +1064,339 @@ test('smoke: scenario task flow renders structured plan preview @smoke', async (
 
   await expect(page.locator('pre')).toContainText("test('跨页面下单流程'");
   await expect(page.locator('pre')).toContainText('// 创建商品: 商品创建成功并返回 productId。');
+});
+
+test('smoke: intent workbench imports context and creates a scenario task draft @smoke', async ({ page }) => {
+  test.setTimeout(120_000);
+  await installApiMocks(page);
+
+  await page.goto(`${appOrigin}/projects/${projectUid}`, { waitUntil: 'domcontentloaded' });
+
+  await expect(page.getByRole('heading', { name: 'Scenario Smoke Project' })).toBeVisible();
+
+  await page.getByRole('button', { name: '需求编排', exact: true }).click();
+  const workbench = page.locator('div.fixed.inset-0.z-50').last();
+  await expect(workbench.getByRole('heading', { name: '需求编排工作台' })).toBeVisible();
+
+  await workbench.getByRole('button', { name: '知识文档', exact: true }).click();
+  await expect(workbench.getByRole('heading', { name: '知识文档', exact: true })).toBeVisible();
+
+  await workbench.getByLabel('知识文档名称').fill('GBS 商机列表手册');
+  await workbench.getByLabel('知识来源路径').fill('tmp/manuals/gbs-business-list.txt');
+  await workbench.getByLabel('知识文档内容').fill(
+    [
+      '商机列表',
+      '支持按手机号、联系人姓名检索商机。',
+      '搜索结果会展示商机ID、手机号和商机进展。',
+      '',
+      '新增商机',
+      '提交后可在商机列表中查询落库结果。',
+    ].join('\n')
+  );
+  await workbench.getByRole('button', { name: '导入知识' }).click();
+
+  await expect(workbench.getByText('知识文档「GBS 商机列表手册」已导入')).toBeVisible();
+  await expect(workbench.getByText('当前预览：GBS 商机列表手册')).toBeVisible();
+  await expect(workbench.getByText('支持按手机号、联系人姓名检索商机。')).toBeVisible();
+
+  await workbench.getByRole('button', { name: '稳定能力', exact: true }).click();
+  await expect(workbench.getByRole('heading', { name: '稳定能力', exact: true })).toBeVisible();
+  await workbench.getByRole('button', { name: '新增稳定能力' }).click();
+  await workbench.getByRole('button', { name: '命中与前置', exact: true }).click();
+  await workbench.getByRole('button', { name: '动作与断言', exact: true }).click();
+
+  await workbench.getByLabel('能力标识').fill('navigation.business-list-page');
+  await workbench.getByLabel('能力类型').selectOption('navigation');
+  await workbench.getByLabel('能力名称').fill('打开商机列表页');
+  await workbench.getByLabel('能力入口地址').fill('https://uat.example.com/#/business/list');
+  await workbench.getByLabel('能力描述').fill('进入商机列表页并准备执行检索。');
+  await workbench.getByLabel('能力触发短语').fill('商机列表\n打开商机列表');
+  await workbench.getByLabel('能力前置条件').fill('已登录系统');
+  await workbench.getByLabel('能力动作步骤').fill('进入商机列表页');
+  await workbench.getByLabel('能力断言结果').fill('商机列表页加载完成');
+  await workbench.getByRole('button', { name: '保存能力' }).click();
+
+  await expect(workbench.getByText('能力「打开商机列表页」已保存')).toBeVisible();
+
+  await workbench.getByRole('button', { name: '知识文档', exact: true }).click();
+  await workbench.getByRole('button', { name: '设为能力来源', exact: true }).click();
+  await workbench.getByRole('button', { name: '命中与前置', exact: true }).click();
+  await workbench.getByRole('button', { name: '动作与断言', exact: true }).click();
+  await workbench.getByRole('button', { name: '清理与依赖', exact: true }).click();
+  await workbench.getByLabel('能力标识').fill('business.list-search-by-phone');
+  await workbench.getByLabel('能力类型').selectOption('query');
+  await workbench.getByLabel('能力名称').fill('商机列表按手机号检索');
+  await workbench.getByLabel('能力入口地址').fill('https://uat.example.com/#/business/list');
+  await workbench.getByLabel('能力描述').fill('按手机号查询商机并读取落库结果。');
+  await workbench.getByLabel('能力触发短语').fill('按手机号\n手机号校验落库\n校验落库');
+  await workbench.getByLabel('能力前置条件').fill('已打开商机列表页');
+  await workbench.getByLabel('能力动作步骤').fill('输入手机号并搜索\n读取商机ID、手机号和商机进展');
+  await workbench.getByLabel('能力断言结果').fill('列表展示商机ID和手机号\n商机进展符合预期');
+  await workbench.getByLabel('能力清理说明').fill('记录商机ID供人工清理');
+  await workbench.getByLabel('能力依赖标识').fill('navigation.business-list-page');
+  await workbench.getByRole('button', { name: '保存能力' }).click();
+
+  await expect(workbench.getByText('能力「商机列表按手机号检索」已保存')).toBeVisible();
+
+  await workbench.getByRole('button', { name: '需求编排', exact: true }).click();
+  await workbench.getByLabel('需求描述').fill('在商机列表按手机号校验落库结果');
+  await workbench.getByRole('button', { name: '生成 recipe' }).click();
+
+  await expect(workbench.getByText('编排结果')).toBeVisible();
+  await expect(workbench).toContainText('打开商机列表页');
+  await expect(workbench).toContainText('商机列表按手机号检索');
+  await expect(workbench.getByText('手册证据')).toBeVisible();
+
+  await workbench.getByRole('button', { name: '写入任务草稿' }).click();
+
+  await expect(page.getByRole('heading', { name: '新建任务' })).toBeVisible();
+  await expect(page.getByPlaceholder('例如：新增商品主流程')).toHaveValue('在商机列表按手机号校验落库结果');
+  await expect(page.getByText('业务流定义')).toBeVisible();
+  await expect(page.getByText('2 个步骤')).toBeVisible();
+  await expect(page.getByPlaceholder('https://example.com/path')).toHaveValue('https://uat.example.com/#/business/list');
+
+  await page.getByRole('button', { name: '创建', exact: true }).click();
+
+  await expect(page.getByRole('heading', { name: '新建任务' })).toHaveCount(0);
+
+  const taskRow = page.locator('tr').filter({ hasText: '在商机列表按手机号校验落库结果' });
+  await expect(taskRow).toContainText('业务流');
+  await expect(taskRow).toContainText('2 步');
+  await expect(taskRow).toContainText('打开商机列表页 / 商机列表按手机号检索');
+});
+
+test('smoke: intent workbench auto-derives stable capabilities from knowledge chunks @smoke', async ({ page }) => {
+  test.setTimeout(120_000);
+  await installApiMocks(page);
+
+  await page.goto(`${appOrigin}/projects/${projectUid}`, { waitUntil: 'domcontentloaded' });
+
+  await page.getByRole('button', { name: '需求编排', exact: true }).click();
+  const workbench = page.locator('div.fixed.inset-0.z-50').last();
+  await workbench.getByRole('button', { name: '知识文档', exact: true }).click();
+
+  await workbench.getByLabel('知识文档名称').fill('GBS 自动沉淀手册');
+  await workbench.getByLabel('知识文档内容').fill(
+    [
+      '商机列表',
+      '支持按手机号、联系人姓名检索商机。',
+      '搜索结果会展示商机ID、手机号和商机进展。',
+    ].join('\n')
+  );
+  await workbench.getByRole('button', { name: '导入知识' }).click();
+  await expect(workbench.getByText('知识文档「GBS 自动沉淀手册」已导入')).toBeVisible();
+
+  await workbench.getByRole('button', { name: '自动沉淀能力' }).click();
+
+  await expect(workbench.getByText(/已沉淀 \d+ 条能力|没有新增可沉淀能力/)).toBeVisible();
+  await expect(workbench).toContainText('进入商机列表页');
+  await expect(workbench).toContainText('知识提炼');
+});
+
+test('smoke: intent workbench blocks incomplete recipe drafts when requirement coverage has gaps @smoke', async ({ page }) => {
+  test.setTimeout(120_000);
+  await installApiMocks(page);
+
+  await page.goto(`${appOrigin}/projects/${projectUid}`, { waitUntil: 'domcontentloaded' });
+
+  await page.getByRole('button', { name: '需求编排', exact: true }).click();
+  const workbench = page.locator('div.fixed.inset-0.z-50').last();
+  await expect(workbench.getByRole('heading', { name: '需求编排工作台' })).toBeVisible();
+
+  await workbench.getByRole('button', { name: '稳定能力', exact: true }).click();
+  await workbench.getByRole('button', { name: '新增稳定能力' }).click();
+  await workbench.getByRole('button', { name: '命中与前置', exact: true }).click();
+  await workbench.getByRole('button', { name: '动作与断言', exact: true }).click();
+  await workbench.getByLabel('能力标识').fill('business.create-core');
+  await workbench.getByLabel('能力类型').selectOption('action');
+  await workbench.getByLabel('能力名称').fill('创建商机主链路');
+  await workbench.getByLabel('能力入口地址').fill('https://uat.example.com/#/business/create');
+  await workbench.getByLabel('能力描述').fill('填写商机最小必填并提交。');
+  await workbench.getByLabel('能力触发短语').fill('创建商机\n商机提交');
+  await workbench.getByLabel('能力前置条件').fill('已进入创建商机页');
+  await workbench.getByLabel('能力动作步骤').fill('填写最小必填并提交');
+  await workbench.getByLabel('能力断言结果').fill('提交成功');
+  await workbench.getByRole('button', { name: '保存能力' }).click();
+
+  await expect(workbench.getByText('能力「创建商机主链路」已保存')).toBeVisible();
+
+  await workbench.getByRole('button', { name: '需求编排', exact: true }).click();
+  await workbench.getByLabel('需求描述').fill('创建商机并生成订单');
+  await workbench.getByRole('button', { name: '生成 recipe' }).click();
+
+  await expect(workbench.getByText('编排结果')).toBeVisible();
+  await expect(workbench).toContainText('未命中的需求片段：生成订单');
+  await expect(workbench).toContainText('已覆盖 · 创建商机');
+  await expect(workbench).toContainText('未覆盖 · 生成订单');
+  await expect(workbench.getByRole('button', { name: '写入任务草稿' })).toBeDisabled();
+});
+
+test('smoke: intent workbench edits an existing capability and reuses it for recipe matching @smoke', async ({ page }) => {
+  test.setTimeout(120_000);
+  await installApiMocks(page);
+
+  await page.goto(`${appOrigin}/projects/${projectUid}`, { waitUntil: 'domcontentloaded' });
+
+  await page.getByRole('button', { name: '需求编排', exact: true }).click();
+  const workbench = page.locator('div.fixed.inset-0.z-50').last();
+  await expect(workbench.getByRole('heading', { name: '需求编排工作台' })).toBeVisible();
+
+  await workbench.getByRole('button', { name: '知识文档', exact: true }).click();
+
+  await workbench.getByLabel('知识文档名称').fill('GBS 商机列表更新手册');
+  await workbench.getByLabel('知识文档内容').fill(
+    [
+      '商机列表',
+      '支持按手机号和联系人姓名检索商机。',
+      '搜索结果会展示商机ID和联系人姓名。',
+    ].join('\n')
+  );
+  await workbench.getByRole('button', { name: '导入知识' }).click();
+  await expect(workbench.getByText('知识文档「GBS 商机列表更新手册」已导入')).toBeVisible();
+
+  await workbench.getByRole('button', { name: '稳定能力', exact: true }).click();
+  await workbench.getByRole('button', { name: '新增稳定能力' }).click();
+  await workbench.getByRole('button', { name: '命中与前置', exact: true }).click();
+  await workbench.getByRole('button', { name: '动作与断言', exact: true }).click();
+
+  await workbench.getByLabel('能力标识').fill('business.list-search');
+  await workbench.getByLabel('能力类型').selectOption('query');
+  await workbench.getByLabel('能力名称').fill('商机列表检索');
+  await workbench.getByLabel('能力入口地址').fill('https://uat.example.com/#/business/list');
+  await workbench.getByLabel('能力描述').fill('按手机号检索商机。');
+  await workbench.getByLabel('能力触发短语').fill('按手机号检索');
+  await workbench.getByLabel('能力前置条件').fill('已打开商机列表页');
+  await workbench.getByLabel('能力动作步骤').fill('输入手机号并搜索');
+  await workbench.getByLabel('能力断言结果').fill('列表展示匹配商机');
+  await workbench.getByRole('button', { name: '保存能力' }).click();
+  await expect(workbench.getByText('能力「商机列表检索」已保存')).toBeVisible();
+
+  await workbench.getByRole('button', { name: '编辑能力 商机列表检索' }).click();
+
+  await workbench.getByLabel('能力名称').fill('商机列表联合检索');
+  await workbench.getByLabel('能力描述').fill('按手机号和联系人姓名联合检索商机。');
+  await workbench.getByLabel('能力触发短语').fill('联系人姓名检索\n联合检索');
+  await workbench.getByLabel('能力动作步骤').fill('输入联系人姓名并搜索');
+  await workbench.getByLabel('能力断言结果').fill('列表展示匹配商机与联系人姓名');
+  await workbench.getByRole('button', { name: '更新能力' }).click();
+
+  await expect(workbench.getByText('能力「商机列表联合检索」已保存')).toBeVisible();
+  await expect(workbench).toContainText('商机列表联合检索');
+  await expect(workbench).toContainText('按手机号和联系人姓名联合检索商机。');
+
+  await workbench.getByRole('button', { name: '需求编排', exact: true }).click();
+  await workbench.getByLabel('需求描述').fill('按联系人姓名检索商机');
+  await workbench.getByRole('button', { name: '生成 recipe' }).click();
+
+  await expect(workbench.getByText('编排结果')).toBeVisible();
+  await expect(workbench).toContainText('商机列表联合检索');
+  await expect(workbench.getByText('列表展示匹配商机与联系人姓名')).toBeVisible();
+});
+
+test('smoke: archived capability is excluded from recipe until restored @smoke', async ({ page }) => {
+  test.setTimeout(120_000);
+  await installApiMocks(page);
+
+  await page.goto(`${appOrigin}/projects/${projectUid}`, { waitUntil: 'domcontentloaded' });
+
+  await page.getByRole('button', { name: '需求编排', exact: true }).click();
+  const workbench = page.locator('div.fixed.inset-0.z-50').last();
+  await workbench.getByRole('button', { name: '知识文档', exact: true }).click();
+
+  await workbench.getByLabel('知识文档名称').fill('GBS 归档能力手册');
+  await workbench.getByLabel('知识文档内容').fill(
+    [
+      '商机列表',
+      '支持按手机号检索商机。',
+      '结果会展示商机ID。',
+    ].join('\n')
+  );
+  await workbench.getByRole('button', { name: '导入知识' }).click();
+  await expect(workbench.getByText('知识文档「GBS 归档能力手册」已导入')).toBeVisible();
+
+  await workbench.getByRole('button', { name: '稳定能力', exact: true }).click();
+  await workbench.getByRole('button', { name: '新增稳定能力' }).click();
+  await workbench.getByRole('button', { name: '命中与前置', exact: true }).click();
+  await workbench.getByRole('button', { name: '动作与断言', exact: true }).click();
+
+  await workbench.getByLabel('能力标识').fill('business.archive-check');
+  await workbench.getByLabel('能力类型').selectOption('query');
+  await workbench.getByLabel('能力名称').fill('归档前商机检索能力');
+  await workbench.getByLabel('能力入口地址').fill('https://uat.example.com/#/business/list');
+  await workbench.getByLabel('能力描述').fill('按手机号检索商机。');
+  await workbench.getByLabel('能力触发短语').fill('按手机号检索');
+  await workbench.getByLabel('能力动作步骤').fill('输入手机号并搜索');
+  await workbench.getByLabel('能力断言结果').fill('列表展示商机ID');
+  await workbench.getByRole('button', { name: '保存能力' }).click();
+  await expect(workbench.getByText('能力「归档前商机检索能力」已保存')).toBeVisible();
+
+  page.once('dialog', (dialog) => dialog.accept());
+  await workbench.getByRole('button', { name: '归档能力 归档前商机检索能力' }).click();
+
+  await expect(workbench.getByText('能力「归档前商机检索能力」已归档')).toBeVisible();
+  await expect(workbench).toContainText('0 启用 / 1 总计');
+  await expect(workbench).toContainText('默认隐藏 1 个已归档能力');
+
+  await workbench.getByRole('button', { name: '需求编排', exact: true }).click();
+  await workbench.getByLabel('需求描述').fill('按手机号检索商机');
+  await workbench.getByRole('button', { name: '生成 recipe' }).click();
+
+  await expect(workbench.getByText('编排结果')).toBeVisible();
+  await expect(workbench.getByText('当前 recipe 选中 0 个能力。')).toBeVisible();
+
+  await workbench.getByRole('button', { name: '稳定能力', exact: true }).click();
+  await workbench.getByRole('button', { name: '查看已归档 1 项' }).click();
+  await workbench.getByRole('button', { name: '恢复能力 归档前商机检索能力' }).click();
+
+  await expect(workbench.getByText('能力「归档前商机检索能力」已恢复')).toBeVisible();
+  await expect(workbench).toContainText('1 启用 / 1 总计');
+
+  await workbench.getByRole('button', { name: '需求编排', exact: true }).click();
+  await workbench.getByRole('button', { name: '生成 recipe' }).click();
+  await expect(workbench).toContainText('归档前商机检索能力');
+});
+
+test('smoke: archived knowledge is excluded from recipe evidence until restored @smoke', async ({ page }) => {
+  test.setTimeout(120_000);
+  await installApiMocks(page);
+
+  await page.goto(`${appOrigin}/projects/${projectUid}`, { waitUntil: 'domcontentloaded' });
+
+  await page.getByRole('button', { name: '需求编排', exact: true }).click();
+  const workbench = page.locator('div.fixed.inset-0.z-50').last();
+  await workbench.getByRole('button', { name: '知识文档', exact: true }).click();
+
+  await workbench.getByLabel('知识文档名称').fill('GBS 归档知识手册');
+  await workbench.getByLabel('知识文档内容').fill(
+    [
+      '商机列表',
+      '支持按手机号检索商机。',
+      '搜索结果展示商机ID与手机号。',
+    ].join('\n')
+  );
+  await workbench.getByRole('button', { name: '导入知识' }).click();
+  await expect(workbench.getByText('知识文档「GBS 归档知识手册」已导入')).toBeVisible();
+
+  page.once('dialog', (dialog) => dialog.accept());
+  await workbench.getByRole('button', { name: '归档知识文档 GBS 归档知识手册' }).click();
+
+  await expect(workbench.getByText('知识文档「GBS 归档知识手册」已归档')).toBeVisible();
+  await expect(workbench).toContainText('0');
+
+  await workbench.getByRole('button', { name: '需求编排', exact: true }).click();
+  await workbench.getByLabel('需求描述').fill('按手机号检索商机');
+  await workbench.getByRole('button', { name: '生成 recipe' }).click();
+  await expect(workbench.getByText('项目还没有知识或能力数据，请先导入手册和能力库')).toBeVisible();
+
+  await workbench.getByRole('button', { name: '知识文档', exact: true }).click();
+  await workbench.getByRole('button', { name: '恢复知识文档 GBS 归档知识手册' }).click();
+
+  await expect(workbench.getByText('知识文档「GBS 归档知识手册」已恢复')).toBeVisible();
+
+  await workbench.getByRole('button', { name: '需求编排', exact: true }).click();
+  await workbench.getByRole('button', { name: '生成 recipe' }).click();
+  await expect(workbench.getByText('编排结果')).toBeVisible();
+  await expect(workbench.getByText('当前 recipe 选中 0 个能力。')).toBeVisible();
+  await expect(workbench.getByText('手册证据')).toBeVisible();
+  await expect(workbench.getByText('支持按手机号检索商机。')).toBeVisible();
 });

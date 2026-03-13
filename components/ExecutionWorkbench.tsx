@@ -1,7 +1,15 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import BrowserView from '@/components/BrowserView';
+import {
+  buildIntentCapabilityPreset,
+  buildIntentCapabilityWorkbenchHref,
+  createIntentCapabilityLaunchToken,
+  stashIntentCapabilityPreset,
+} from '@/lib/intent-capability-preset';
+import { type FlowDefinition, type TaskMode } from '@/lib/task-flow';
 
 type ExecutionStatus = 'queued' | 'running' | 'passed' | 'failed' | 'canceled';
 
@@ -31,6 +39,7 @@ type ExecutionDetail = {
     executionUid: string;
     planUid: string;
     configUid: string;
+    projectUid: string;
     status: ExecutionStatus;
     startedAt: string;
     endedAt: string;
@@ -45,6 +54,22 @@ type ExecutionDetail = {
     planTitle: string;
     planVersion: number;
     planSummary: string;
+  } | null;
+  config: {
+    configUid: string;
+    projectUid: string;
+    moduleUid: string;
+    moduleName: string;
+    name: string;
+    targetUrl: string;
+    featureDescription: string;
+    taskMode: TaskMode;
+    flowDefinition: FlowDefinition | null;
+    authSource: 'project' | 'task' | 'none';
+  } | null;
+  project: {
+    projectUid: string;
+    name: string;
   } | null;
   planCases: Array<{ caseUid: string; tier: string; caseName: string; expectedResult: string }>;
   events: EventItem[];
@@ -151,6 +176,35 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
   }, [executionUid]);
 
   const frameCount = useMemo(() => events.filter((e) => e.eventType === 'frame').length, [events]);
+  const capabilityLaunch = useMemo(() => {
+    const config = detail?.config;
+    const project = detail?.project;
+    if (!config || !project) return null;
+
+    const preset = buildIntentCapabilityPreset({
+      sourceLabel: `执行「${config.name}」`,
+      name: config.name,
+      targetUrl: config.targetUrl,
+      featureDescription: config.featureDescription,
+      taskMode: config.taskMode,
+      flowDefinition: config.flowDefinition,
+      authSource: config.authSource,
+    });
+    const token = createIntentCapabilityLaunchToken({
+      projectUid: project.projectUid,
+      preset,
+    });
+
+    return {
+      preset,
+      token,
+      href: buildIntentCapabilityWorkbenchHref({
+        projectUid: project.projectUid,
+        moduleUid: config.moduleUid,
+        token,
+      }),
+    };
+  }, [detail?.config, detail?.project]);
 
   const downloadGeneratedSpec = () => {
     if (!generatedSpec) return;
@@ -179,7 +233,8 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
     );
   }
 
-  const { execution, plan, artifacts } = detail;
+  const { execution, plan, config, project, artifacts } = detail;
+  const screencastActive = execution.status === 'queued' || execution.status === 'running';
   const generatedSpec = artifacts.find((item) => item.artifactType === 'generated_spec');
 
   return (
@@ -189,7 +244,9 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
           <div>
             <p className="text-xs uppercase tracking-[0.18em] text-zinc-400">Execution</p>
             <h1 className="mt-2 text-2xl font-semibold text-zinc-900">执行工作台</h1>
-            <p className="mt-1 text-sm text-zinc-500">任务: {execution.executionUid}</p>
+            <p className="mt-1 text-sm text-zinc-500">
+              {project?.name ? `${project.name} / ` : ''}{config?.name || execution.executionUid}
+            </p>
           </div>
           <div className="text-right">
             <span className={`rounded-md px-2.5 py-1 text-xs ${statusTone(execution.status)}`}>{execution.status}</span>
@@ -201,9 +258,22 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
 
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <div className="min-h-[560px] rounded-2xl border border-zinc-200 bg-white p-5 shadow-[0_6px_20px_rgba(0,0,0,0.04)]">
-          <div className="mb-3 flex items-center justify-between">
+          <div className="mb-3 flex items-center justify-between gap-2">
             <h2 className="text-base font-semibold text-zinc-900">执行中的 LLM 对话</h2>
-            <span className="text-xs text-zinc-500">{conversations.length} 条</span>
+            <div className="flex items-center gap-2">
+              {execution.status === 'passed' && capabilityLaunch && (
+                <Link
+                  href={capabilityLaunch.href}
+                  onClick={() => {
+                    stashIntentCapabilityPreset(capabilityLaunch.token, capabilityLaunch.preset);
+                  }}
+                  className="rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 transition hover:bg-blue-100"
+                >
+                  沉淀为稳定能力
+                </Link>
+              )}
+              <span className="text-xs text-zinc-500">{conversations.length} 条</span>
+            </div>
           </div>
           <div className="max-h-[500px] space-y-2 overflow-y-auto pr-1">
             {conversations.length === 0 && <p className="text-sm text-zinc-400">暂无对话内容</p>}
@@ -225,7 +295,7 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
               <h2 className="text-base font-semibold text-zinc-900">浏览器实时画面</h2>
               <span className="text-xs text-zinc-500">帧事件: {frameCount}</span>
             </div>
-            <BrowserView sessionId={execution.workerSessionId} isActive={execution.status === 'running'} hideHeader compact />
+            <BrowserView sessionId={execution.workerSessionId} isActive={screencastActive} hideHeader compact />
           </div>
 
           <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-[0_6px_20px_rgba(0,0,0,0.04)]">

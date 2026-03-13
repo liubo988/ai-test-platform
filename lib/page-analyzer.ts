@@ -1,4 +1,6 @@
-import { chromium, type Locator, type Page, type Browser } from 'playwright';
+import { chromium, type Locator, type Page, type Browser, type Frame } from 'playwright';
+
+type SnapshotRoot = Page | Frame;
 
 export interface PageSnapshot {
   url: string;
@@ -8,7 +10,24 @@ export interface PageSnapshot {
   tooltipElements: TooltipElement[];
   links: LinkInfo[];
   headings: HeadingInfo[];
+  bodyTextExcerpt?: string;
+  frames?: FrameSnapshot[];
   screenshot: string; // base64 JPEG
+}
+
+export interface FrameSnapshot {
+  name: string;
+  url: string;
+  elementId?: string;
+  elementName?: string;
+  elementClassName?: string;
+  selectorHint?: string;
+  forms: FormInfo[];
+  buttons: ButtonInfo[];
+  tooltipElements: TooltipElement[];
+  links: LinkInfo[];
+  headings: HeadingInfo[];
+  bodyTextExcerpt: string;
 }
 
 interface TooltipElement {
@@ -50,6 +69,15 @@ interface HeadingInfo {
   level: string;
   text: string;
 }
+
+type SurfaceSnapshot = {
+  forms: FormInfo[];
+  buttons: ButtonInfo[];
+  tooltipElements: TooltipElement[];
+  links: LinkInfo[];
+  headings: HeadingInfo[];
+  bodyTextExcerpt: string;
+};
 
 export interface AuthConfig {
   loginUrl?: string;
@@ -191,6 +219,195 @@ async function performLogin(page: Page, auth: AuthConfig): Promise<void> {
   }
 }
 
+function excerptText(value: string, maxLength = 2400): string {
+  const normalized = value.replace(/\s+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  if (normalized.length <= maxLength) return normalized;
+  return normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd();
+}
+
+function toFrameSelectorHint(input: { id?: string; name?: string; src?: string; frameUrl?: string }): string {
+  const id = `${input.id || ''}`.trim();
+  if (id) {
+    return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(id) ? `#${id}` : `iframe[id="${id.replace(/"/g, '\\"')}"]`;
+  }
+
+  const name = `${input.name || ''}`.trim();
+  if (name) {
+    return `iframe[name="${name.replace(/"/g, '\\"')}"]`;
+  }
+
+  const rawUrl = `${input.src || input.frameUrl || ''}`.trim();
+  if (!rawUrl) return '';
+
+  try {
+    const parsed = new URL(rawUrl);
+    const path = parsed.pathname.split('/').filter(Boolean).pop() || '';
+    if (path) {
+      return `iframe[src*="${path.replace(/"/g, '\\"')}"]`;
+    }
+  } catch {
+    // ignore malformed url and fall back to empty selector hint
+  }
+
+  return '';
+}
+
+function fieldKey(field: FieldInfo): string {
+  return [field.type, field.name, field.id, field.placeholder, field.label, field.required ? '1' : '0'].join('|');
+}
+
+async function collectSurfaceSnapshot(
+  root: SnapshotRoot,
+  hostPage: Page,
+  options: { enableHoverTooltips?: boolean } = {}
+): Promise<SurfaceSnapshot> {
+  const forms: FormInfo[] = await root.$$eval('form', (formEls) =>
+    formEls.map((f) => ({
+      action: f.getAttribute('action') || '',
+      method: f.getAttribute('method') || 'GET',
+      fields: Array.from(f.querySelectorAll('input, select, textarea')).map((el) => {
+        const input = el as HTMLInputElement;
+        const labelEl = input.labels?.[0] || input.closest('label');
+        return {
+          type: input.type || el.tagName.toLowerCase(),
+          name: input.name || '',
+          id: input.id || '',
+          placeholder: input.placeholder || '',
+          required: input.required || false,
+          label: labelEl?.textContent?.trim() || '',
+        };
+      }),
+    }))
+  );
+
+  const standaloneFields: FieldInfo[] = await root.$$eval('input, select, textarea', (els) =>
+    els.slice(0, 80).map((el) => {
+      const input = el as HTMLInputElement;
+      const labelEl = input.labels?.[0] || input.closest('label');
+      return {
+        type: input.type || el.tagName.toLowerCase(),
+        name: input.name || '',
+        id: input.id || '',
+        placeholder: input.placeholder || '',
+        required: input.required || false,
+        label: labelEl?.textContent?.trim() || '',
+      };
+    })
+  );
+
+  const existingFieldKeys = new Set(forms.flatMap((form) => form.fields.map(fieldKey)));
+  const rootOnlyFields = standaloneFields.filter((item) => !existingFieldKeys.has(fieldKey(item)));
+  if (rootOnlyFields.length > 0) {
+    forms.push({
+      action: '[page-root]',
+      method: 'GET',
+      fields: rootOnlyFields,
+    });
+  }
+
+  const buttons: ButtonInfo[] = await root.$$eval(
+    'button, [role="button"], input[type="submit"], [class*="btn"], [class*="icon"][onclick], [class*="icon"][class*="click"]',
+    (els) =>
+      els.slice(0, 50).map((el) => {
+        const text = el.textContent?.trim() || '';
+        const ariaLabel = el.getAttribute('aria-label') || '';
+        const title = el.getAttribute('title') || '';
+        const hasIcon = !!el.querySelector('svg, i, span[class*="icon"], img');
+        const isIconOnly = hasIcon && text.length <= 2;
+        return {
+          text,
+          id: el.id || '',
+          type: (el as HTMLButtonElement).type || '',
+          ariaLabel,
+          title,
+          className: el.className?.toString?.()?.slice(0, 100) || '',
+          isIconOnly,
+        };
+      })
+  );
+
+  const tooltipElements: TooltipElement[] = await root.$$eval(
+    '[title]:not(head *), [aria-label]:not(head *)',
+    (els) =>
+      els
+        .slice(0, 30)
+        .map((el) => ({
+          tag: el.tagName.toLowerCase(),
+          text: el.textContent?.trim()?.slice(0, 50) || '',
+          title: el.getAttribute('title') || '',
+          ariaLabel: el.getAttribute('aria-label') || '',
+          role: el.getAttribute('role') || '',
+          className: el.className?.toString?.()?.slice(0, 80) || '',
+        }))
+        .filter((e) => e.title || e.ariaLabel)
+  );
+
+  if (options.enableHoverTooltips) {
+    try {
+      const iconBtns = await root
+        .locator(
+          'button:has(svg), button:has(i), [role="button"]:has(svg), [role="button"]:has(i), .ant-btn-icon-only, [class*="icon-btn"], [class*="iconBtn"]'
+        )
+        .all();
+      for (const btn of iconBtns.slice(0, 15)) {
+        try {
+          await btn.hover({ timeout: 2000 });
+          await hostPage.waitForTimeout(500);
+          const tooltip = hostPage
+            .locator('.ant-tooltip-inner, .ant-popover-inner-content, [role="tooltip"], .el-tooltip__popper, .tippy-content')
+            .first();
+          if (await tooltip.isVisible({ timeout: 1000 }).catch(() => false)) {
+            const tipText = (await tooltip.textContent())?.trim() || '';
+            if (tipText) {
+              const btnClass = (await btn.getAttribute('class')) || '';
+              tooltipElements.push({
+                tag: 'icon-button',
+                text: tipText,
+                title: `[hover-tooltip] ${tipText}`,
+                ariaLabel: '',
+                role: 'button',
+                className: btnClass.slice(0, 80),
+              });
+            }
+          }
+        } catch {
+          // ignore per-button hover failures
+        }
+      }
+      await hostPage.mouse.move(0, 0);
+      await hostPage.waitForTimeout(300);
+    } catch {
+      // ignore tooltip scan failure
+    }
+  }
+
+  const links: LinkInfo[] = await root.$$eval('a[href]', (els) =>
+    els.slice(0, 20).map((el) => ({
+      text: el.textContent?.trim() || '',
+      href: el.getAttribute('href') || '',
+    }))
+  );
+
+  const headings: HeadingInfo[] = await root.$$eval('h1,h2,h3', (els) =>
+    els.map((el) => ({ level: el.tagName, text: el.textContent?.trim() || '' }))
+  );
+
+  const bodyTextExcerpt = await root
+    .locator('body')
+    .innerText()
+    .then((value) => excerptText(value))
+    .catch(() => '');
+
+  return {
+    forms,
+    buttons,
+    tooltipElements,
+    links,
+    headings,
+    bodyTextExcerpt,
+  };
+}
+
 export async function analyzePage(url: string, auth?: AuthConfig): Promise<PageSnapshot> {
   const browser: Browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 }, locale: 'zh-CN' });
@@ -211,113 +428,69 @@ export async function analyzePage(url: string, auth?: AuthConfig): Promise<PageS
     }
 
     const title = await page.title();
+    const mainSurface = await collectSurfaceSnapshot(page, page, { enableHoverTooltips: true });
+    const frames: FrameSnapshot[] = [];
 
-    const forms: FormInfo[] = await page.$$eval('form', (formEls) =>
-      formEls.map((f) => ({
-        action: f.getAttribute('action') || '',
-        method: f.getAttribute('method') || 'GET',
-        fields: Array.from(f.querySelectorAll('input, select, textarea')).map((el) => {
-          const input = el as HTMLInputElement;
-          const labelEl = input.labels?.[0] || input.closest('label');
-          return {
-            type: input.type || el.tagName.toLowerCase(),
-            name: input.name || '',
-            id: input.id || '',
-            placeholder: input.placeholder || '',
-            required: input.required || false,
-            label: labelEl?.textContent?.trim() || '',
-          };
-        }),
-      }))
-    );
-
-    const buttons: ButtonInfo[] = await page.$$eval(
-      'button, [role="button"], input[type="submit"], [class*="btn"], [class*="icon"][onclick], [class*="icon"][class*="click"]',
-      (els) =>
-        els.slice(0, 50).map((el) => {
-          const text = el.textContent?.trim() || '';
-          const ariaLabel = el.getAttribute('aria-label') || '';
-          const title = el.getAttribute('title') || '';
-          const hasIcon = !!el.querySelector('svg, i, span[class*="icon"], img');
-          const isIconOnly = hasIcon && text.length <= 2;
-          return {
-            text,
-            id: el.id || '',
-            type: (el as HTMLButtonElement).type || '',
-            ariaLabel,
-            title,
-            className: el.className?.toString?.()?.slice(0, 100) || '',
-            isIconOnly,
-          };
-        })
-    );
-
-    // 抓取带 title/aria-label 的可点击元素（图标按钮、悬浮提示等）
-    const tooltipElements: TooltipElement[] = await page.$$eval(
-      '[title]:not(head *), [aria-label]:not(head *)',
-      (els) =>
-        els.slice(0, 30).map((el) => ({
-          tag: el.tagName.toLowerCase(),
-          text: el.textContent?.trim()?.slice(0, 50) || '',
-          title: el.getAttribute('title') || '',
-          ariaLabel: el.getAttribute('aria-label') || '',
-          role: el.getAttribute('role') || '',
-          className: el.className?.toString?.()?.slice(0, 80) || '',
-        })).filter((e) => e.title || e.ariaLabel)
-    );
-
-    // hover 图标按钮，捕获 Ant Design / Element UI 等框架的动态 tooltip
-    try {
-      const iconBtns = await page.locator(
-        'button:has(svg), button:has(i), [role="button"]:has(svg), [role="button"]:has(i), .ant-btn-icon-only, [class*="icon-btn"], [class*="iconBtn"]'
-      ).all();
-      for (const btn of iconBtns.slice(0, 15)) {
-        try {
-          await btn.hover({ timeout: 2000 });
-          await page.waitForTimeout(500);
-          // 检查是否出现了 tooltip
-          const tooltip = page.locator('.ant-tooltip-inner, .ant-popover-inner-content, [role="tooltip"], .el-tooltip__popper, .tippy-content').first();
-          if (await tooltip.isVisible({ timeout: 1000 }).catch(() => false)) {
-            const tipText = (await tooltip.textContent())?.trim() || '';
-            if (tipText) {
-              const btnClass = await btn.getAttribute('class') || '';
-              tooltipElements.push({
-                tag: 'icon-button',
-                text: tipText,
-                title: `[hover-tooltip] ${tipText}`,
-                ariaLabel: '',
-                role: 'button',
-                className: btnClass.slice(0, 80),
-              });
-            }
-          }
-        } catch {
-          // 单个按钮 hover 失败不影响其他
+    for (const frame of page.frames().slice(1)) {
+      if (!frame.url() || frame.url() === 'about:blank') continue;
+      try {
+        await frame.waitForLoadState('domcontentloaded').catch(() => {});
+        await page.waitForTimeout(600);
+        const frameElement = await frame.frameElement().catch(() => null);
+        const frameMeta = frameElement
+          ? await frameElement
+              .evaluate((el) => ({
+                id: (el as HTMLIFrameElement).id || '',
+                name: (el as HTMLIFrameElement).name || '',
+                className: (el as HTMLIFrameElement).className || '',
+                src: (el as HTMLIFrameElement).src || '',
+              }))
+              .catch(() => ({ id: '', name: '', className: '', src: '' }))
+          : { id: '', name: '', className: '', src: '' };
+        const surface = await collectSurfaceSnapshot(frame, page);
+        if (
+          surface.forms.length === 0 &&
+          surface.buttons.length === 0 &&
+          surface.headings.length === 0 &&
+          !surface.bodyTextExcerpt
+        ) {
+          continue;
         }
+        frames.push({
+          name: frame.name(),
+          url: frame.url(),
+          elementId: frameMeta.id || '',
+          elementName: frameMeta.name || '',
+          elementClassName: frameMeta.className || '',
+          selectorHint: toFrameSelectorHint({
+            id: frameMeta.id,
+            name: frameMeta.name || frame.name(),
+            src: frameMeta.src,
+            frameUrl: frame.url(),
+          }),
+          ...surface,
+        });
+      } catch {
+        // ignore frame analysis failures so the main page can still be used
       }
-      // hover 到空白处关闭 tooltip
-      await page.mouse.move(0, 0);
-      await page.waitForTimeout(300);
-    } catch {
-      // hover 扫描整体失败不影响分析
     }
-
-    const links: LinkInfo[] = await page.$$eval('a[href]', (els) =>
-      els.slice(0, 20).map((el) => ({
-        text: el.textContent?.trim() || '',
-        href: el.getAttribute('href') || '',
-      }))
-    );
-
-    const headings: HeadingInfo[] = await page.$$eval('h1,h2,h3', (els) =>
-      els.map((el) => ({ level: el.tagName, text: el.textContent?.trim() || '' }))
-    );
 
     const screenshotBuffer = await page.screenshot({ type: 'jpeg', quality: 75, fullPage: false });
     const screenshot = screenshotBuffer.toString('base64');
 
     await browser.close();
-    return { url, title, forms, buttons, tooltipElements, links, headings, screenshot };
+    return {
+      url,
+      title,
+      forms: mainSurface.forms,
+      buttons: mainSurface.buttons,
+      tooltipElements: mainSurface.tooltipElements,
+      links: mainSurface.links,
+      headings: mainSurface.headings,
+      bodyTextExcerpt: mainSurface.bodyTextExcerpt,
+      frames,
+      screenshot,
+    };
   } catch (err: any) {
     await browser.close();
     throw new Error(`页面分析失败: ${err.message}`);
