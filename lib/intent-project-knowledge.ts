@@ -64,6 +64,19 @@ export interface IntentProjectKnowledgeResolution {
   capabilitySlugs: string[];
 }
 
+export type IntentProjectKnowledgeRuleProbationStatus = 'watching' | 'promoted' | 'degraded';
+
+export interface IntentProjectKnowledgeRuleProbation {
+  status: IntentProjectKnowledgeRuleProbationStatus;
+  observedRuns: number;
+  observedPassRate: number;
+  remainingRuns: number;
+  sourceAuditId: string;
+  sourceTitle: string;
+  backupPath: string | null;
+  recommendation: string;
+}
+
 export interface IntentProjectKnowledgeRulePerformance {
   runCount: number;
   passedRuns: number;
@@ -71,6 +84,7 @@ export interface IntentProjectKnowledgeRulePerformance {
   canceledRuns: number;
   passRate: number;
   rollbackCandidateCount: number;
+  probation?: IntentProjectKnowledgeRuleProbation;
 }
 
 export interface IntentProjectKnowledgeMatchFeedback {
@@ -78,7 +92,7 @@ export interface IntentProjectKnowledgeMatchFeedback {
   passRate: number;
   rollbackCandidateCount: number;
   scoreAdjustment: number;
-  status: 'preferred' | 'neutral' | 'deprioritized';
+  status: 'preferred' | 'neutral' | 'probationary' | 'deprioritized';
   reasons: string[];
 }
 
@@ -559,6 +573,47 @@ function scorePassRateAdjustment(performance: IntentProjectKnowledgeRulePerforma
   return { adjustment: 0, reasons: [] };
 }
 
+function scoreProbationAdjustment(
+  performance: IntentProjectKnowledgeRulePerformance
+): {
+  adjustment: number;
+  reasons: string[];
+  status: 'neutral' | 'probationary' | 'deprioritized';
+} {
+  const probation = performance.probation;
+  if (!probation) {
+    return { adjustment: 0, reasons: [], status: 'neutral' };
+  }
+
+  if (probation.status === 'degraded') {
+    return {
+      adjustment: -10,
+      reasons: [
+        `新规则观察期已判定为降级，已观察 ${probation.observedRuns} 次，通过率 ${probation.observedPassRate}%`,
+      ],
+      status: 'deprioritized',
+    };
+  }
+
+  if (probation.status === 'watching') {
+    return {
+      adjustment: -2,
+      reasons: [
+        probation.observedRuns > 0
+          ? `新规则仍在观察期，已观察 ${probation.observedRuns} 次，通过率 ${probation.observedPassRate}%`
+          : `新规则刚进入观察期，还需 ${probation.remainingRuns} 次终态运行后再转正`,
+      ],
+      status: 'probationary',
+    };
+  }
+
+  return {
+    adjustment: 1,
+    reasons: [`新规则已完成观察期并转正，最近通过率 ${probation.observedPassRate}%`],
+    status: 'neutral',
+  };
+}
+
 function applyIntentProjectKnowledgePerformanceFeedback(
   match: IntentProjectKnowledgeMatchResult,
   performanceByRuleId?: Record<string, IntentProjectKnowledgeRulePerformance>
@@ -578,17 +633,23 @@ function applyIntentProjectKnowledgePerformanceFeedback(
   const passRate = scorePassRateAdjustment(performance);
   adjustment += passRate.adjustment;
   reasons.push(...passRate.reasons);
+  const probation = scoreProbationAdjustment(performance);
+  adjustment += probation.adjustment;
+  reasons.push(...probation.reasons);
 
-  if (performance.rollbackCandidateCount > 0) {
+  if (performance.rollbackCandidateCount > 0 && performance.probation?.status !== 'degraded') {
     adjustment -= Math.min(2, performance.rollbackCandidateCount) * 8;
     reasons.push(`曾 ${performance.rollbackCandidateCount} 次进入可疑回滚候选`);
   }
 
   const finalScore = Math.max(0, baseScore + adjustment);
   const deprioritized =
-    performance.rollbackCandidateCount > 0
+    probation.status === 'deprioritized'
+      ? true
+      : performance.rollbackCandidateCount > 0
       ? finalScore < baseScore
       : performance.runCount >= 5 && performance.passRate <= 35 && adjustment < 0 && finalScore <= 4;
+  const status = deprioritized ? 'deprioritized' : probation.status === 'probationary' ? 'probationary' : adjustment > 0 ? 'preferred' : 'neutral';
 
   return {
     ...match,
@@ -599,7 +660,7 @@ function applyIntentProjectKnowledgePerformanceFeedback(
       passRate: performance.passRate,
       rollbackCandidateCount: performance.rollbackCandidateCount,
       scoreAdjustment: adjustment,
-      status: deprioritized ? 'deprioritized' : adjustment > 0 ? 'preferred' : 'neutral',
+      status,
       reasons,
     },
   };

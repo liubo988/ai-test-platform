@@ -410,4 +410,140 @@ describe('intent-project-knowledge', () => {
     expect(patched.steps[0].preferredHelpers).toContain('__e2e.waitForApiResponse');
     expect(patched.steps[0].preferredHelpers).not.toContain('__e2e.assertToastVisible');
   });
+
+  it('keeps watching probation rules active but ranks them behind stable rules', () => {
+    fs.writeFileSync(
+      knowledgeFile,
+      JSON.stringify(
+        {
+          version: 1,
+          rules: [
+            {
+              id: 'checkout.stable',
+              title: '稳定结算规则',
+              match: {
+                urlIncludes: ['/checkout'],
+              },
+              promptNotes: ['优先等待 checkout submit 接口。'],
+              capabilitySlugs: ['assert.wait-for-api-response'],
+              addGlobalRules: ['先等接口后断言成功页。'],
+              addPreferredPrimitives: [],
+              addOutputContract: [],
+              stepPatches: [
+                {
+                  whenStepTypes: ['ui'],
+                  stepTextIncludes: ['提交订单'],
+                  addPreferredHelpers: ['__e2e.waitForApiResponse'],
+                },
+              ],
+            },
+            {
+              id: 'checkout.new-probation',
+              title: '新结算观察期规则',
+              match: {
+                urlIncludes: ['/checkout'],
+              },
+              promptNotes: ['新规则先观察，不立刻完全放量。'],
+              capabilitySlugs: ['assert.watch-submit-state'],
+              addGlobalRules: ['提交后补充校验按钮 loading 与接口返回。'],
+              addPreferredPrimitives: [],
+              addOutputContract: [],
+              stepPatches: [
+                {
+                  whenStepTypes: ['ui'],
+                  stepTextIncludes: ['提交订单'],
+                  addPreferredHelpers: ['__e2e.observeSubmitState'],
+                },
+              ],
+            },
+          ],
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const baseDsl = buildIntentActionDSL({
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/checkout',
+      featureDescription: '填写手机号后提交订单',
+      expectedOutcome: '成功页出现',
+      steps: [
+        {
+          stepUid: 'step_1',
+          stepType: 'ui',
+          title: '提交订单',
+          target: 'https://example.com/checkout',
+          instruction: '点击提交订单按钮',
+          expectedResult: '成功页出现',
+          extractVariable: '',
+        },
+      ],
+    });
+
+    const resolution = resolveIntentProjectKnowledge(
+      {
+        snapshot: {
+          url: 'https://example.com/checkout',
+          title: 'Checkout',
+          buttons: [],
+          headings: [{ level: 'H1', text: 'Checkout' }],
+          bodyTextExcerpt: '提交订单 成功页',
+          frames: [],
+        },
+        description: '填写手机号并提交订单，最后看到成功页',
+        dsl: baseDsl,
+      },
+      {
+        rulePerformanceById: {
+          'checkout.stable': {
+            runCount: 6,
+            passedRuns: 5,
+            failedRuns: 1,
+            canceledRuns: 0,
+            passRate: 83.3,
+            rollbackCandidateCount: 0,
+          },
+          'checkout.new-probation': {
+            runCount: 1,
+            passedRuns: 1,
+            failedRuns: 0,
+            canceledRuns: 0,
+            passRate: 100,
+            rollbackCandidateCount: 0,
+            probation: {
+              status: 'watching',
+              observedRuns: 2,
+              observedPassRate: 50,
+              remainingRuns: 4,
+              sourceAuditId: 'audit_merge_new_checkout_rule',
+              sourceTitle: '合并 1 条项目知识规则',
+              backupPath: 'reports/intent-e2e.project-knowledge.backups/checkout.json',
+              recommendation: '继续观察后续 4 次终态运行，再决定是否转正。',
+            },
+          },
+        },
+      }
+    );
+    const patched = applyIntentProjectKnowledgeToDsl(baseDsl, resolution);
+    const rendered = renderIntentProjectKnowledge(resolution);
+
+    expect(resolution.matches.map((item) => item.ruleId)).toEqual(['checkout.stable', 'checkout.new-probation']);
+    expect(resolution.deprioritizedMatches).toEqual([]);
+    expect(resolution.matches[0]?.feedback).toMatchObject({
+      status: 'preferred',
+      runCount: 6,
+    });
+    expect(resolution.matches[1]?.feedback).toMatchObject({
+      status: 'probationary',
+      runCount: 1,
+      scoreAdjustment: -2,
+      rollbackCandidateCount: 0,
+    });
+    expect(resolution.matches[1]?.feedback?.reasons.join('；')).toContain('新规则仍在观察期');
+    expect(patched.steps[0].preferredHelpers).toContain('__e2e.waitForApiResponse');
+    expect(patched.steps[0].preferredHelpers).toContain('__e2e.observeSubmitState');
+    expect(rendered).toContain('新规则仍在观察期');
+  });
 });

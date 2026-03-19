@@ -132,7 +132,7 @@ ${rendered}` : '';
 function formatPlanningKnowledgeHitMessage(prefix: string, planning: ResolvedPromptPlanningContext): string {
   if (planning.knowledge.matches.length === 0) {
     return planning.knowledge.deprioritizedMatches.length > 0
-      ? `${prefix}未启用项目知识规则；另有 ${planning.knowledge.deprioritizedMatches.length} 条规则因历史表现或回滚风险被降权跳过。`
+      ? `${prefix}未启用项目知识规则；另有 ${planning.knowledge.deprioritizedMatches.length} 条规则因历史表现、观察期或回滚风险被降权跳过。`
       : `${prefix}未命中项目知识规则，继续使用通用 DSL。`;
   }
 
@@ -141,7 +141,7 @@ function formatPlanningKnowledgeHitMessage(prefix: string, planning: ResolvedPro
     .map((item) => item.title)
     .join(' / ')}`;
   return planning.knowledge.deprioritizedMatches.length > 0
-    ? `${hitText}；另有 ${planning.knowledge.deprioritizedMatches.length} 条规则因历史表现或回滚风险被降权跳过。`
+    ? `${hitText}；另有 ${planning.knowledge.deprioritizedMatches.length} 条规则因历史表现、观察期或回滚风险被降权跳过。`
     : hitText;
 }
 

@@ -1,4 +1,8 @@
-import { listIntentProjectKnowledgeAuditEntries, type IntentProjectKnowledgeAuditEntry } from '@/lib/intent-project-knowledge';
+import {
+  listIntentProjectKnowledgeAuditEntries,
+  type IntentProjectKnowledgeAuditEntry,
+  type IntentProjectKnowledgeRuleProbation,
+} from '@/lib/intent-project-knowledge';
 import { listIntentE2ERunSnapshots, type IntentE2ERunSnapshotRecord } from '@/lib/db/repository';
 
 export interface IntentE2EInsightSummary {
@@ -58,6 +62,28 @@ export interface IntentE2ERulePerformance {
   canceledRuns: number;
   passRate: number;
   rollbackCandidateCount: number;
+  probation?: IntentProjectKnowledgeRuleProbation;
+}
+
+export type IntentE2EInsightProbationStatus = 'watching' | 'promoted' | 'degraded';
+
+export interface IntentE2EInsightProbationRule {
+  auditId: string;
+  occurredAt: string;
+  projectUid: string;
+  title: string;
+  backupPath: string | null;
+  addedRuleIds: string[];
+  beforeRuns: number;
+  beforePassRate: number;
+  observedRuns: number;
+  observedPassedRuns: number;
+  observedFailedRuns: number;
+  observedCanceledRuns: number;
+  observedPassRate: number;
+  remainingRuns: number;
+  status: IntentE2EInsightProbationStatus;
+  recommendation: string;
 }
 
 export interface IntentE2EInsightsResult {
@@ -70,6 +96,7 @@ export interface IntentE2EInsightsResult {
   topRules: IntentE2EInsightRuleStat[];
   topHelpers: IntentE2EInsightHelperStat[];
   failureClasses: IntentE2EInsightFailureClassStat[];
+  probationRules: IntentE2EInsightProbationRule[];
   rollbackCandidates: IntentE2EInsightRollbackCandidate[];
 }
 
@@ -260,6 +287,74 @@ function buildFailureClassStats(runs: InsightRunRecord[]): IntentE2EInsightFailu
     .slice(0, 5);
 }
 
+function buildProbationRules(
+  runs: InsightRunRecord[],
+  audits: IntentProjectKnowledgeAuditEntry[],
+  observationWindow = 6
+): IntentE2EInsightProbationRule[] {
+  const terminalRuns = [...runs].sort((a, b) => a.finishedAtMs - b.finishedAtMs);
+  const baselineWindow = 5;
+  const decisionRuns = 3;
+
+  return audits
+    .filter((audit) => audit.operation === 'merge' && audit.comparison.addedRuleIds.length > 0)
+    .map((audit) => {
+      const occurredAtMs = toTimestamp(audit.occurredAt);
+      const scopedRuns = terminalRuns.filter((run) => !audit.projectUid || run.projectUid === audit.projectUid);
+      const beforeWindow = scopedRuns.filter((run) => run.finishedAtMs && run.finishedAtMs < occurredAtMs).slice(-baselineWindow);
+      const observedWindow = scopedRuns.filter((run) => run.finishedAtMs && run.finishedAtMs > occurredAtMs).slice(0, observationWindow);
+      const beforePassedRuns = beforeWindow.filter((run) => run.status === 'passed').length;
+      const observedPassedRuns = observedWindow.filter((run) => run.status === 'passed').length;
+      const observedFailedRuns = observedWindow.filter((run) => run.status === 'failed').length;
+      const observedCanceledRuns = observedWindow.filter((run) => run.status === 'canceled').length;
+      const beforePassRate = toPercent(beforePassedRuns, beforeWindow.length);
+      const observedPassRate = toPercent(observedPassedRuns, observedWindow.length);
+      const passRateDelta = Math.round((beforePassRate - observedPassRate) * 10) / 10;
+      const remainingRuns = Math.max(0, observationWindow - observedWindow.length);
+
+      let status: IntentE2EInsightProbationStatus = 'watching';
+      if (
+        observedWindow.length >= decisionRuns &&
+        (observedPassRate <= 35 || (beforeWindow.length >= decisionRuns && passRateDelta >= 15))
+      ) {
+        status = 'degraded';
+      } else if (observedWindow.length >= observationWindow) {
+        status = 'promoted';
+      }
+
+      const recommendation =
+        status === 'degraded'
+          ? `观察期内最近 ${observedWindow.length} 次运行通过率为 ${observedPassRate}%（合并前基线 ${beforePassRate}%）；建议先自动降权 ${audit.comparison.addedRuleIds.slice(0, 2).join(' / ') || audit.title}，必要时回滚到 ${audit.backupPath || '最近备份'}。`
+          : status === 'promoted'
+          ? `新增规则已完成观察期，最近 ${observedWindow.length} 次运行通过率为 ${observedPassRate}%；可视为已转正。`
+          : `新增规则仍在观察期，已观察 ${observedWindow.length} / ${observationWindow} 次终态运行；若通过率继续下滑，会自动降权并提示回滚。`;
+
+      return {
+        auditId: audit.auditId,
+        occurredAt: audit.occurredAt,
+        projectUid: audit.projectUid,
+        title: audit.title,
+        backupPath: audit.backupPath,
+        addedRuleIds: [...audit.comparison.addedRuleIds],
+        beforeRuns: beforeWindow.length,
+        beforePassRate,
+        observedRuns: observedWindow.length,
+        observedPassedRuns,
+        observedFailedRuns,
+        observedCanceledRuns,
+        observedPassRate,
+        remainingRuns,
+        status,
+        recommendation,
+      } satisfies IntentE2EInsightProbationRule;
+    })
+    .sort((a, b) => {
+      const statusRank = { degraded: 0, watching: 1, promoted: 2 } satisfies Record<IntentE2EInsightProbationStatus, number>;
+      return statusRank[a.status] - statusRank[b.status] || Date.parse(b.occurredAt) - Date.parse(a.occurredAt);
+    })
+    .slice(0, 6);
+}
+
 function buildRollbackCandidates(
   runs: InsightRunRecord[],
   audits: IntentProjectKnowledgeAuditEntry[],
@@ -273,8 +368,9 @@ function buildRollbackCandidates(
     .filter((audit) => audit.operation === 'merge' && audit.backupPath && audit.comparison.addedRuleIds.length > 0)
     .map((audit) => {
       const occurredAtMs = toTimestamp(audit.occurredAt);
-      const beforeWindow = terminalRuns.filter((run) => run.finishedAtMs && run.finishedAtMs < occurredAtMs).slice(-windowSize);
-      const afterWindow = terminalRuns.filter((run) => run.finishedAtMs && run.finishedAtMs > occurredAtMs).slice(0, windowSize);
+      const scopedRuns = terminalRuns.filter((run) => !audit.projectUid || run.projectUid === audit.projectUid);
+      const beforeWindow = scopedRuns.filter((run) => run.finishedAtMs && run.finishedAtMs < occurredAtMs).slice(-windowSize);
+      const afterWindow = scopedRuns.filter((run) => run.finishedAtMs && run.finishedAtMs > occurredAtMs).slice(0, windowSize);
       const beforePassedRuns = beforeWindow.filter((run) => run.status === 'passed').length;
       const afterPassedRuns = afterWindow.filter((run) => run.status === 'passed').length;
       const beforePassRate = toPercent(beforePassedRuns, beforeWindow.length);
@@ -308,8 +404,10 @@ export function buildIntentE2ERulePerformanceMapFromData(
   const terminalRuns = runSnapshots
     .map(normalizeTerminalRun)
     .filter((item): item is InsightRunRecord => Boolean(item));
+  const probationRules = buildProbationRules(terminalRuns, audits, 6);
   const rollbackCandidates = buildRollbackCandidates(terminalRuns, audits, Math.max(1, audits.length || 1));
   const rollbackCounts = new Map<string, number>();
+  const probationByRuleId = new Map<string, IntentProjectKnowledgeRuleProbation>();
   const stats = new Map<
     string,
     {
@@ -324,6 +422,23 @@ export function buildIntentE2ERulePerformanceMapFromData(
   for (const candidate of rollbackCandidates) {
     for (const ruleId of candidate.addedRuleIds) {
       rollbackCounts.set(ruleId, (rollbackCounts.get(ruleId) || 0) + 1);
+    }
+  }
+
+  for (const probation of probationRules) {
+    for (const ruleId of probation.addedRuleIds) {
+      if (probationByRuleId.has(ruleId)) continue;
+
+      probationByRuleId.set(ruleId, {
+        status: probation.status,
+        observedRuns: probation.observedRuns,
+        observedPassRate: probation.observedPassRate,
+        remainingRuns: probation.remainingRuns,
+        sourceAuditId: probation.auditId,
+        sourceTitle: probation.title,
+        backupPath: probation.backupPath,
+        recommendation: probation.recommendation,
+      });
     }
   }
 
@@ -349,7 +464,7 @@ export function buildIntentE2ERulePerformanceMapFromData(
     });
   }
 
-  return [...stats.entries()].reduce<Record<string, IntentE2ERulePerformance>>((acc, [ruleId, current]) => {
+  const entries = [...stats.entries()].reduce<Record<string, IntentE2ERulePerformance>>((acc, [ruleId, current]) => {
     acc[ruleId] = {
       ruleId,
       title: current.title || ruleId,
@@ -359,9 +474,29 @@ export function buildIntentE2ERulePerformanceMapFromData(
       canceledRuns: current.canceledRunIds.size,
       passRate: toPercent(current.passedRunIds.size, current.runIds.size),
       rollbackCandidateCount: rollbackCounts.get(ruleId) || 0,
+      probation: probationByRuleId.get(ruleId),
     };
     return acc;
   }, {});
+
+  for (const probation of probationRules) {
+    for (const ruleId of probation.addedRuleIds) {
+      if (entries[ruleId]) continue;
+      entries[ruleId] = {
+        ruleId,
+        title: ruleId,
+        runCount: 0,
+        passedRuns: 0,
+        failedRuns: 0,
+        canceledRuns: 0,
+        passRate: 0,
+        rollbackCandidateCount: rollbackCounts.get(ruleId) || 0,
+        probation: probationByRuleId.get(ruleId),
+      };
+    }
+  }
+
+  return entries;
 }
 
 export function buildIntentE2EInsightsFromData(
@@ -379,6 +514,7 @@ export function buildIntentE2EInsightsFromData(
   const canceledRuns = terminalRuns.filter((run) => run.status === 'canceled').length;
   const knowledgeHitRuns = terminalRuns.filter((run) => run.matchedRuleIds.length > 0).length;
   const suggestedHelperReuseRuns = terminalRuns.filter((run) => run.usedSuggestedHelpers.length > 0).length;
+  const probationRules = buildProbationRules(terminalRuns, audits, 6);
 
   return {
     scope: {
@@ -400,6 +536,7 @@ export function buildIntentE2EInsightsFromData(
     topRules: buildRuleStats(terminalRuns),
     topHelpers: buildHelperStats(terminalRuns),
     failureClasses: buildFailureClassStats(terminalRuns),
+    probationRules,
     rollbackCandidates: buildRollbackCandidates(terminalRuns, audits),
   };
 }

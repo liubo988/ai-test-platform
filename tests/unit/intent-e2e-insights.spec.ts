@@ -192,6 +192,7 @@ describe('intent-e2e insights', () => {
       { failureClass: 'env_transient', count: 1 },
       { failureClass: 'selector_drift', count: 1 },
     ]);
+    expect(result.probationRules).toEqual([]);
     expect(result.rollbackCandidates).toEqual([]);
   });
 
@@ -324,6 +325,15 @@ describe('intent-e2e insights', () => {
     });
 
     expect(result.rollbackCandidates).toHaveLength(1);
+    expect(result.probationRules[0]).toMatchObject({
+      auditId: 'audit_merge_1',
+      status: 'degraded',
+      observedRuns: 4,
+      observedPassedRuns: 1,
+      observedFailedRuns: 3,
+      observedPassRate: 25,
+      remainingRuns: 2,
+    });
     expect(result.rollbackCandidates[0]).toMatchObject({
       auditId: 'audit_merge_1',
       projectUid: 'proj_checkout',
@@ -447,6 +457,12 @@ describe('intent-e2e insights', () => {
       failedRuns: 2,
       passRate: 33.3,
       rollbackCandidateCount: 1,
+      probation: {
+        status: 'degraded',
+        observedRuns: 3,
+        observedPassRate: 33.3,
+        remainingRuns: 3,
+      },
     });
   });
 });

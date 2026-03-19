@@ -476,6 +476,25 @@ type IntentE2EInsightRollbackCandidate = {
   recommendation: string;
 };
 
+type IntentE2EInsightProbationRule = {
+  auditId: string;
+  occurredAt: string;
+  projectUid: string;
+  title: string;
+  backupPath: string | null;
+  addedRuleIds: string[];
+  beforeRuns: number;
+  beforePassRate: number;
+  observedRuns: number;
+  observedPassedRuns: number;
+  observedFailedRuns: number;
+  observedCanceledRuns: number;
+  observedPassRate: number;
+  remainingRuns: number;
+  status: 'watching' | 'promoted' | 'degraded';
+  recommendation: string;
+};
+
 type IntentE2EInsightsResponse = {
   scope: {
     projectUid: string;
@@ -486,6 +505,7 @@ type IntentE2EInsightsResponse = {
   topRules: IntentE2EInsightRuleStat[];
   topHelpers: IntentE2EInsightHelperStat[];
   failureClasses: IntentE2EInsightFailureClassStat[];
+  probationRules: IntentE2EInsightProbationRule[];
   rollbackCandidates: IntentE2EInsightRollbackCandidate[];
   error?: string;
 };
@@ -808,6 +828,28 @@ function formatActorLabel(actorLabel: string): string {
   if (!actorLabel || actorLabel === 'system') return '系统';
   if (actorLabel === 'web') return 'Web';
   return actorLabel;
+}
+
+function probationStatusLabel(status: IntentE2EInsightProbationRule['status']): string {
+  switch (status) {
+    case 'degraded':
+      return '已降级';
+    case 'promoted':
+      return '已转正';
+    default:
+      return '观察中';
+  }
+}
+
+function probationStatusTone(status: IntentE2EInsightProbationRule['status']): string {
+  switch (status) {
+    case 'degraded':
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+    case 'promoted':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    default:
+      return 'border-sky-200 bg-sky-50 text-sky-700';
+  }
 }
 
 function projectKnowledgeOperationLabel(operation: ProjectKnowledgeAuditItem['operation'] | 'merge' | 'restore'): string {
@@ -2297,6 +2339,22 @@ export default function IntentE2EWorkbench({
     await restoreProjectKnowledgeBackup(candidate.backupPath, candidate.projectUid || workspaceProjectUid);
   }
 
+  async function restoreProbationRule(candidate: IntentE2EInsightProbationRule) {
+    if (!candidate.backupPath || knowledgeDraftBusy) return;
+    const scopeLabel = candidate.projectUid || workspaceProjectUid || '当前规则集';
+    const confirmed = confirm(
+      [
+        `确认回滚观察期规则？`,
+        `范围：${scopeLabel}`,
+        `合并：${candidate.title}`,
+        `观察期通过率：${formatRatePercent(candidate.observedPassRate)}`,
+        `备份：${candidate.backupPath}`,
+      ].join('\n')
+    );
+    if (!confirmed) return;
+    await restoreProjectKnowledgeBackup(candidate.backupPath, candidate.projectUid || workspaceProjectUid);
+  }
+
   async function refreshIntentE2EInsights(options?: { silent?: boolean }) {
     if (insightsLoading) return;
 
@@ -3319,6 +3377,88 @@ export default function IntentE2EWorkbench({
                         <p className="mt-1 text-[11px] text-violet-700">实际复用了推荐 helper 的运行占比。</p>
                       </div>
                     </div>
+
+                    {insights.probationRules.length > 0 && (
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium text-slate-900">新规则观察期</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                              新 merge 的规则会先进入观察期；观察中轻微降权，观察期内明显拉低通过率会自动降级，并可直接回滚。
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
+                            {insights.probationRules.length} 条规则批次
+                          </span>
+                        </div>
+
+                        <div className="mt-4 space-y-3">
+                          {insights.probationRules.map((item) => (
+                            <div key={item.auditId} className="rounded-2xl border border-white/80 bg-white px-4 py-4">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="font-medium text-slate-900">{item.title}</p>
+                                    <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${probationStatusTone(item.status)}`}>
+                                      {probationStatusLabel(item.status)}
+                                    </span>
+                                  </div>
+                                  <p className="mt-2 text-xs leading-5 text-slate-500">
+                                    {formatDateTime(item.occurredAt)}
+                                    {item.projectUid ? ` · ${item.projectUid}` : ''}
+                                    {item.beforeRuns > 0 ? ` · 基线 ${formatRatePercent(item.beforePassRate)}` : ''}
+                                  </p>
+                                </div>
+                                {item.status === 'degraded' && item.backupPath && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void restoreProbationRule(item)}
+                                    disabled={knowledgeDraftBusy}
+                                    className="inline-flex h-9 items-center justify-center rounded-2xl border border-rose-200 bg-rose-50 px-3 text-[11px] font-medium text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {knowledgeBackupRestoring ? '回滚中…' : '回滚观察期规则'}
+                                  </button>
+                                )}
+                              </div>
+
+                              <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">observed</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{item.observedRuns}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    通过 {item.observedPassedRuns} · 失败 {item.observedFailedRuns} · 取消 {item.observedCanceledRuns}
+                                  </p>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">pass rate</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{formatRatePercent(item.observedPassRate)}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    {item.beforeRuns > 0 ? `基线 ${formatRatePercent(item.beforePassRate)}` : '暂无稳定基线'}
+                                  </p>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">remaining</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{item.remainingRuns}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    {item.status === 'promoted' ? '观察期已完成' : item.status === 'degraded' ? '已自动转入降级保护' : '还需更多终态运行样本'}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <p className="mt-3 text-xs leading-6 text-slate-600">{item.recommendation}</p>
+                              <div className="mt-2 space-y-1 text-[11px] text-slate-500">
+                                <p>观察规则：{summarizeIdList(item.addedRuleIds)}</p>
+                                {item.backupPath && (
+                                  <p className="break-all">
+                                    关联备份：<span className="font-mono">{item.backupPath}</span>
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
                     {insights.rollbackCandidates.length > 0 ? (
                       <div className="mt-4 space-y-3">
