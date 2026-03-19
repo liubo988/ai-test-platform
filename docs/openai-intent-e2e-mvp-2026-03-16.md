@@ -1,5 +1,44 @@
 # OpenAI 意图驱动 E2E MVP 迭代文档（2026-03-16）
 
+## 2026-03-19 第十四次更新（项目工作台 / 需求编排 smoke 已对齐当前 UI，构建与前置检查回归已收口）
+本次不是继续堆功能，而是把上一轮大改之后的联调缺口和回归面真正收口：
+- 已修正 `intent-e2e` 前置检查的阻断分支：当前当 `precheckPageAccess()` 返回 `blocked` 时，会直接给出结构化 `final_result` 和失败归类，不再错误地继续读取 `storageState` 并进入 `analyzePage`
+- 已补上 OpenAI Responses API 的重试兜底：遇到 `"type 'reasoning' was provided without its required following item"` 这类上游瞬时错误时，会自动重试，避免 CLI / repair 链路被单次异常打断
+- 已兼容 Next 16 的生产构建约束：`/intent-e2e` 和 `/projects/[projectUid]` 页面中依赖 `useSearchParams()` 的工作台入口已包进 `Suspense`，`npm run build:web` 可稳定通过
+- 已修正需求编排工作台的已归档能力目录展示，恢复动作重新可达；此前目录只展示 active 能力，导致“归档后无法恢复”在 UI 层形成真空
+- 已同步更新 `scenario-task-smoke` 的 API mock 与交互断言，使其对齐当前“AI 生成 / 手动新建 / 需求编排草稿 / 能力弹框分组”这套真实界面，而不是停留在旧版文案与布局
+- 本轮最终验证结果：`npm run build`、`npm run build:web`、`npm run test:integration`、`npm run test:e2e` 全部通过；其中 `product-create.spec.ts` 因缺少 `E2E_USERNAME / E2E_PASSWORD` 按预期跳过
+
+新增 / 更新关键文件：
+- `lib/ai/intent-e2e-service.ts`
+- `lib/openai-responses.js`
+- `lib/llm-client.ts`
+- `app/intent-e2e/page.tsx`
+- `app/projects/[projectUid]/page.tsx`
+- `components/ProjectIntentWorkbench.tsx`
+- `tests/e2e/scenario-task-smoke.spec.ts`
+- `tests/unit/intent-e2e-service.spec.ts`
+- `tests/unit/llm-client.spec.ts`
+- `README.md`
+- `docs/openai-intent-e2e-mvp-2026-03-16.md`
+
+当前状态更新：
+- P0：后端最小闭环，已完成
+- P1：前端工作台第一版，已完成
+- P1.5：流式执行反馈，已完成
+- P1.8：服务端 runId / 断线恢复 / 服务端停止，已完成
+- P2.1：动作约束 DSL，已完成
+- P2.3：高频动作库 + 新 runtime helper，已完成
+- P2.4：修复记忆（失败聚类 + 策略回写），已完成
+- P2.5：项目知识驱动裁剪，已完成
+- P2.6：repair memory 反推项目规则草稿，已完成
+- P2.7：工作台项目知识草稿面板，已完成
+- P2.8：候选规则一键合并回项目知识文件，已完成
+- P2.9：合并前自动备份 + 变更预览，已完成
+- P3.0：从 backup 一键回滚项目知识规则，已完成
+- P3.1：项目工作台 / 需求编排联调收口（前置检查阻断 / Next 16 build / smoke 对齐），已完成
+- 下一步建议优先做：补 restore / knowledge merge 的收益对比与审计、把更多高频业务流沉淀成正式 capability / workflow 资产、再决定是否接真实账号 E2E 用例进 CI
+
 ## 2026-03-16 第十三次更新（项目知识规则已支持从 backup 一键回滚）
 本次把“可回退”也接到工作台里，保证你让 AI 自动沉淀项目规则时，始终还能一键撤回：
 - 已新增备份列表接口：`GET /api/intent-e2e/project-knowledge/backups`
@@ -665,4 +704,3 @@ LLM_MAX_PLAN_STEPS=8
 - 用户附加截图时，AI 能把截图信息吸收到 `successCriteria / visualAnchors`
 - 系统能自动生成脚本并执行
 - 执行失败后，系统至少能自动 repair 1~2 次
-

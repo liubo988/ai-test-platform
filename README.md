@@ -56,6 +56,13 @@ npm run edge:generate
 同时可读取当前服务端默认配置：
 - `GET /api/llm/config`
 
+### 最近一次联调验证（2026-03-19）
+- 已修正 `intent-e2e` 前置检查的阻断分支：`precheckPageAccess()` 返回 `blocked` 时会直接产出结构化终态结果，不再继续走页面分析。
+- 已兼容 Next 16 生产构建要求：`/intent-e2e` 与 `/projects/[projectUid]` 页面中依赖 `useSearchParams()` 的工作台已包进 `Suspense`，`npm run build:web` 可稳定通过。
+- 已补上 OpenAI Responses API 的重试兜底：当上游返回 `reasoning item was provided without its required following item` 时会自动重试。
+- 已修正需求编排工作台中的已归档能力目录展示，恢复操作可直接在 UI 中完成。
+- 当前验证结果：`npm run build`、`npm run build:web`、`npm run test:integration`、`npm run test:e2e` 均已通过；`product-create.spec.ts` 仅因缺少真实账号环境变量而按预期跳过。
+
 ### 工作台能力
 在 `/intent-e2e` 页面里可以直接：
 - 输入一句测试目标
