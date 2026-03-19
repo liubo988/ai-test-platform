@@ -3,6 +3,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import ProjectIntentTaskCreateDialog, {
+  type ProjectIntentDraftSeed,
+  type ProjectIntentTaskCreateItem,
+} from './ProjectIntentTaskCreateDialog';
 import ProjectIntentWorkbench, { type IntentTaskDraft } from './ProjectIntentWorkbench';
 import {
   buildIntentCapabilityPreset,
@@ -26,11 +30,11 @@ import {
   type ScenarioStepType,
   type TaskMode,
 } from '@/lib/task-flow';
+import type { IntentImportStatus } from '@/lib/intent-e2e-import';
 
 type ProjectStatus = 'active' | 'archived';
 type ModuleStatus = 'active' | 'archived';
 type ConfigStatus = 'active' | 'archived';
-type ContentStatusFilter = 'active' | 'archived' | 'all';
 
 type ProjectItem = {
   projectUid: string;
@@ -105,6 +109,71 @@ type TaskItem = {
   latestPlanVersion: number;
   latestExecutionUid: string;
   latestExecutionStatus: string;
+  latestPlanImportedFromRunId?: string;
+  latestPlanImportedStatus?: IntentImportStatus | '';
+  sourceIntentDraftUid?: string;
+  sourceIntentDraftTitle?: string;
+  sourceIntentDraftImportedAt?: string;
+};
+
+type IntentDraftItem = {
+  intentDraftUid: string;
+  projectUid: string;
+  moduleUid: string;
+  moduleName: string;
+  title: string;
+  input: string;
+  targetUrlHint: string;
+  taskMode: TaskMode;
+  targetUrl: string;
+  featureDescription: string;
+  flowStepCount: number;
+  attachmentCount: number;
+  planReady: boolean;
+  planError: string;
+  status: 'active' | 'imported' | 'archived';
+  importedConfigUid: string;
+  importedPlanUid: string;
+  importedAt: string;
+  createdAt: string;
+  updatedAt: string;
+  workspacePath: string;
+};
+
+type IntentDraftDetail = IntentDraftItem & {
+  attachments: Array<{ name?: string; dataUrl: string; purpose?: string }>;
+  llmConfig: Record<string, unknown>;
+  scenarioCard: {
+    title: string;
+    taskMode: TaskMode;
+    targetUrl: string;
+    featureDescription: string;
+    flowDefinition: FlowDefinition;
+    successCriteria: string[];
+    visualAnchors: string[];
+    notes: string[];
+  } | null;
+  scenarioLlmMeta: unknown;
+  planTitle: string;
+  planCode: string;
+  planSummary: string;
+  generationModel: string;
+  generationPrompt: string;
+  generatedFiles: Array<{ name: string; content: string; language: string }>;
+};
+
+type IntentDraftTestRunResponse = {
+  runId?: string;
+  run?: {
+    runId?: string;
+  };
+  error?: string;
+};
+
+type IntentDraftMutationResponse = {
+  item?: IntentDraftItem;
+  ok?: boolean;
+  error?: string;
 };
 
 type ProjectFormState = {
@@ -133,6 +202,8 @@ type TaskFormState = {
   featureDescription: string;
   flowDefinition: FlowDefinition;
 };
+
+type TaskFormEntrySource = 'manual' | 'intent';
 
 type PlanPreview = {
   planUid: string;
@@ -166,6 +237,7 @@ type ExecutionRow = {
   resultSummary: string;
   errorMessage: string;
   createdAt: string;
+  intentImportedFromRunId?: string;
 };
 
 type ExecutionEvent = {
@@ -177,7 +249,7 @@ type ExecutionEvent = {
 type ActivityItem = {
   activityUid: string;
   projectUid: string;
-  entityType: 'project' | 'module' | 'config' | 'plan' | 'execution' | 'member';
+  entityType: 'project' | 'module' | 'config' | 'plan' | 'execution' | 'member' | 'intent_draft';
   entityUid: string;
   actionType: string;
   actorLabel: string;
@@ -281,12 +353,127 @@ function normalizeTaskItem(item: TaskItem): TaskItem {
   const taskMode = normalizeTaskMode(item?.taskMode);
   const targetUrl = typeof item?.targetUrl === 'string' ? item.targetUrl : '';
   const flowDefinition = normalizeFlowDefinition(item?.flowDefinition, targetUrl);
+  const latestPlanImportedStatus =
+    item?.latestPlanImportedStatus === 'passed' || item?.latestPlanImportedStatus === 'failed'
+      ? item.latestPlanImportedStatus
+      : '';
 
   return {
     ...item,
     taskMode,
     flowDefinition: taskMode === 'scenario' || hasScenarioContent(flowDefinition) ? flowDefinition : null,
+    latestPlanImportedFromRunId: typeof item?.latestPlanImportedFromRunId === 'string' ? item.latestPlanImportedFromRunId : '',
+    latestPlanImportedStatus,
+    sourceIntentDraftUid: typeof item?.sourceIntentDraftUid === 'string' ? item.sourceIntentDraftUid : '',
+    sourceIntentDraftTitle: typeof item?.sourceIntentDraftTitle === 'string' ? item.sourceIntentDraftTitle : '',
+    sourceIntentDraftImportedAt: typeof item?.sourceIntentDraftImportedAt === 'string' ? item.sourceIntentDraftImportedAt : '',
   };
+}
+
+function normalizeExecutionRow(item: ExecutionRow): ExecutionRow {
+  return {
+    ...item,
+    intentImportedFromRunId: typeof item?.intentImportedFromRunId === 'string' ? item.intentImportedFromRunId : '',
+  };
+}
+
+function normalizeIntentDraftItem(item: IntentDraftItem): IntentDraftItem {
+  return {
+    ...item,
+    taskMode: normalizeTaskMode(item?.taskMode),
+    targetUrl: typeof item?.targetUrl === 'string' ? item.targetUrl : '',
+    featureDescription: typeof item?.featureDescription === 'string' ? item.featureDescription : '',
+    input: typeof item?.input === 'string' ? item.input : '',
+    targetUrlHint: typeof item?.targetUrlHint === 'string' ? item.targetUrlHint : '',
+    planError: typeof item?.planError === 'string' ? item.planError : '',
+    importedConfigUid: typeof item?.importedConfigUid === 'string' ? item.importedConfigUid : '',
+    importedPlanUid: typeof item?.importedPlanUid === 'string' ? item.importedPlanUid : '',
+    status:
+      item?.status === 'imported' || item?.status === 'archived'
+        ? item.status
+        : 'active',
+  };
+}
+
+function normalizeIntentDraftDetail(item: IntentDraftDetail): IntentDraftDetail {
+  const normalizedItem = normalizeIntentDraftItem(item);
+  return {
+    ...item,
+    ...normalizedItem,
+    attachments: Array.isArray(item?.attachments) ? item.attachments : [],
+    llmConfig: item?.llmConfig && typeof item.llmConfig === 'object' ? item.llmConfig : {},
+    scenarioCard:
+      item?.scenarioCard && typeof item.scenarioCard === 'object'
+        ? {
+            ...item.scenarioCard,
+            taskMode: normalizeTaskMode(item.scenarioCard.taskMode),
+            flowDefinition: normalizeFlowDefinition(item.scenarioCard.flowDefinition, item.scenarioCard.targetUrl),
+            successCriteria: Array.isArray(item.scenarioCard.successCriteria) ? item.scenarioCard.successCriteria : [],
+            visualAnchors: Array.isArray(item.scenarioCard.visualAnchors) ? item.scenarioCard.visualAnchors : [],
+            notes: Array.isArray(item.scenarioCard.notes) ? item.scenarioCard.notes : [],
+          }
+        : null,
+    planTitle: typeof item?.planTitle === 'string' ? item.planTitle : '',
+    planCode: typeof item?.planCode === 'string' ? item.planCode : '',
+    planSummary: typeof item?.planSummary === 'string' ? item.planSummary : '',
+    generationModel: typeof item?.generationModel === 'string' ? item.generationModel : '',
+    generationPrompt: typeof item?.generationPrompt === 'string' ? item.generationPrompt : '',
+    generatedFiles: Array.isArray(item?.generatedFiles) ? item.generatedFiles : [],
+  };
+}
+
+function toIntentDraftSeed(detail: IntentDraftDetail): ProjectIntentDraftSeed {
+  return {
+    intentDraftUid: detail.intentDraftUid,
+    moduleUid: detail.moduleUid,
+    title: detail.title,
+    input: detail.input,
+    targetUrl: detail.targetUrl,
+    targetUrlHint: detail.targetUrlHint,
+    attachments: detail.attachments,
+    llmConfig: detail.llmConfig,
+    status: detail.status,
+  };
+}
+
+function compactRunId(runId: string): string {
+  if (!runId) return '-';
+  if (runId.length <= 28) return runId;
+  return `${runId.slice(0, 18)}...${runId.slice(-6)}`;
+}
+
+function intentImportTone(status?: IntentImportStatus | '' | string): string {
+  return status === 'failed'
+    ? 'bg-amber-50 text-amber-800 ring-amber-200'
+    : 'bg-violet-50 text-violet-700 ring-violet-200';
+}
+
+function intentImportStatusLabel(status?: IntentImportStatus | '' | string): string {
+  if (status === 'failed') return '导入失败';
+  if (status === 'passed') return '导入通过';
+  return 'Intent 导入';
+}
+
+function intentDraftStatusTone(status: IntentDraftItem['status']): string {
+  switch (status) {
+    case 'imported':
+      return 'bg-emerald-50 text-emerald-700 ring-emerald-200';
+    case 'archived':
+      return 'bg-amber-50 text-amber-700 ring-amber-200';
+    default:
+      return 'bg-sky-50 text-sky-700 ring-sky-200';
+  }
+}
+
+function intentDraftStatusLabel(status: IntentDraftItem['status']): string {
+  switch (status) {
+    case 'imported':
+      return '已导入';
+    case 'archived':
+      return '已归档';
+    default:
+      return '待导入';
+  }
 }
 
 function normalizeTaskFlowForForm(flowDefinition: FlowDefinition | null | undefined, targetUrl: string, taskMode: TaskMode): FlowDefinition {
@@ -420,6 +607,8 @@ function activityEntityLabel(entityType: ActivityItem['entityType']): string {
       return '执行';
     case 'member':
       return '成员';
+    case 'intent_draft':
+      return '意图草稿';
     default:
       return '活动';
   }
@@ -456,6 +645,20 @@ function formatActorLabel(actorLabel: string): string {
   if (actorLabel === 'web') return 'Web';
   if (actorLabel === 'console') return 'Console';
   return actorLabel;
+}
+
+function activityIntentImportedRunId(meta: unknown): string {
+  if (!meta || typeof meta !== 'object') return '';
+  const importedFromRunId = (meta as { importedFromRunId?: unknown }).importedFromRunId;
+  return typeof importedFromRunId === 'string' ? importedFromRunId : '';
+}
+
+function activityIntentImportedStatus(item: ActivityItem): IntentImportStatus | '' {
+  const runId = activityIntentImportedRunId(item.meta);
+  if (!runId) return '';
+  if (item.actionType === 'plan_imported_failed' || item.actionType === 'execution_failed') return 'failed';
+  if (item.actionType === 'plan_imported_passed' || item.actionType === 'execution_passed') return 'passed';
+  return '';
 }
 
 function memberRoleLabel(role: ProjectActorRole): string {
@@ -495,17 +698,6 @@ function permissionHint(role: ProjectActorRole): string {
   }
 }
 
-function contentStatusLabel(status: ContentStatusFilter): string {
-  switch (status) {
-    case 'archived':
-      return '已归档内容';
-    case 'all':
-      return '全部内容';
-    default:
-      return '启用中内容';
-  }
-}
-
 const ALL_MODULES_UID = '__all__';
 
 export default function ProjectWorkspace({ projectUid }: { projectUid: string }) {
@@ -520,11 +712,12 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   const [project, setProject] = useState<ProjectItem | null>(null);
   const [modules, setModules] = useState<ModuleItem[]>([]);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
+  const [intentDrafts, setIntentDrafts] = useState<IntentDraftItem[]>([]);
   const [activeModuleUid, setActiveModuleUid] = useState(initialModuleUid);
   const [loadingProject, setLoadingProject] = useState(true);
   const [loadingModules, setLoadingModules] = useState(true);
   const [loadingTasks, setLoadingTasks] = useState(false);
-  const [contentStatusFilter, setContentStatusFilter] = useState<ContentStatusFilter>('active');
+  const [loadingIntentDrafts, setLoadingIntentDrafts] = useState(false);
   const [taskKeyword, setTaskKeyword] = useState('');
   const [error, setError] = useState('');
   const [actionNotice, setActionNotice] = useState('');
@@ -541,14 +734,26 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   const [moduleSaving, setModuleSaving] = useState(false);
 
   const [taskModalOpen, setTaskModalOpen] = useState(false);
+  const [intentTaskModalOpen, setIntentTaskModalOpen] = useState(false);
   const [editingTaskUid, setEditingTaskUid] = useState('');
   const [taskForm, setTaskForm] = useState<TaskFormState>(() => createDefaultTaskForm());
+  const [taskFormEntrySource, setTaskFormEntrySource] = useState<TaskFormEntrySource>('manual');
   const [taskSaving, setTaskSaving] = useState(false);
 
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewPlan, setPreviewPlan] = useState<PlanPreview | null>(null);
   const [previewCases, setPreviewCases] = useState<PlanCase[]>([]);
+  const [intentDraftsModalOpen, setIntentDraftsModalOpen] = useState(false);
+  const [intentDraftDetailOpen, setIntentDraftDetailOpen] = useState(false);
+  const [intentDraftDetailLoading, setIntentDraftDetailLoading] = useState(false);
+  const [intentDraftDetail, setIntentDraftDetail] = useState<IntentDraftDetail | null>(null);
+  const [intentDraftActioningUid, setIntentDraftActioningUid] = useState('');
+  const [intentDraftTestingUid, setIntentDraftTestingUid] = useState('');
+  const [intentDraftEditingUid, setIntentDraftEditingUid] = useState('');
+  const [intentDraftDeletingUid, setIntentDraftDeletingUid] = useState('');
+  const [intentDraftEditorOpen, setIntentDraftEditorOpen] = useState(false);
+  const [intentDraftEditorSeed, setIntentDraftEditorSeed] = useState<ProjectIntentDraftSeed | null>(null);
 
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -596,16 +801,14 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   const canEditContent = currentRole === 'owner' || currentRole === 'editor';
   const canManageMembers = currentRole === 'owner';
   const readOnlyHint = loadingMembers ? '' : permissionHint(currentRole);
-  const creationLocked = projectArchived || contentStatusFilter === 'archived' || !canEditContent;
+  const creationLocked = projectArchived || !canEditContent;
   const taskCreationBlockedReason = !canEditContent
     ? readOnlyHint || '当前操作者没有编辑权限'
     : projectArchived
       ? '请先恢复项目，再创建测试任务'
-      : contentStatusFilter === 'archived'
-        ? '当前正在查看归档内容，请切换到启用中或全部内容后再创建任务'
-        : modules.length === 0
-          ? '请先创建模块，再创建测试任务'
-          : '';
+      : modules.length === 0
+        ? '请先创建模块，再创建测试任务'
+        : '';
   const defaultTaskModuleUid =
     (activeModule?.status === 'active' ? activeModule.moduleUid : '') || activeModules[0]?.moduleUid || '';
   const filteredTasks = tasks.filter((item) => {
@@ -627,7 +830,9 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
       item.name.toLowerCase().includes(keyword) ||
       item.targetUrl.toLowerCase().includes(keyword) ||
       item.featureDescription.toLowerCase().includes(keyword) ||
-      scenarioKeyword.includes(keyword)
+      scenarioKeyword.includes(keyword) ||
+      (item.latestPlanImportedFromRunId || '').toLowerCase().includes(keyword) ||
+      (item.latestPlanImportedFromRunId ? 'intent intent-e2e 意图导入'.includes(keyword) : false)
     );
   });
   const totalPages = Math.max(1, Math.ceil(filteredTasks.length / PAGE_SIZE));
@@ -640,12 +845,21 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
       item.executionUid.toLowerCase().includes(keyword) ||
       item.planUid.toLowerCase().includes(keyword) ||
       item.resultSummary.toLowerCase().includes(keyword) ||
-      item.errorMessage.toLowerCase().includes(keyword)
+      item.errorMessage.toLowerCase().includes(keyword) ||
+      (item.intentImportedFromRunId || '').toLowerCase().includes(keyword) ||
+      (item.intentImportedFromRunId ? 'intent intent-e2e 意图导入'.includes(keyword) : false)
     );
   });
   const previewPlanTask = previewPlan ? tasks.find((item) => item.configUid === previewPlan.configUid) || null : null;
   const previewPlanIsCurrent = Boolean(previewPlan && previewPlanTask && previewPlanTask.latestPlanUid === previewPlan.planUid);
   const previewPlanCanRestore = Boolean(canEditContent && previewPlan && previewPlanTask && !previewPlanIsCurrent);
+  const taskModalTitle = editingTaskUid ? '编辑任务' : taskFormEntrySource === 'intent' ? '需求编排草稿' : '手动新建任务';
+  const taskModalHint = editingTaskUid
+    ? '这里维护的是已存在任务。保存后会更新项目工作台中的任务定义。'
+    : taskFormEntrySource === 'intent'
+      ? '当前内容来自需求编排工作台回填。你可以在保存前继续微调模块、描述、URL 和业务流步骤。'
+      : '这是手动录入入口。若只想输入一句需求，建议使用上方“AI 生成”入口。';
+  const taskSubmitLabel = taskSaving ? '保存中...' : editingTaskUid ? '保存' : taskFormEntrySource === 'intent' ? '保存到工作台' : '创建';
 
   // ── data loading ──
   async function loadProject() {
@@ -658,9 +872,6 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
       setCurrentActor(json.currentActor || null);
       setCurrentRole((json.currentRole || 'none') as ProjectActorRole);
       if (json.item) {
-        if (json.item.status === 'archived') {
-          setContentStatusFilter((current) => (current === 'active' ? 'archived' : current));
-        }
       setProjectForm({
           name: json.item.name,
           description: json.item.description,
@@ -702,7 +913,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   async function loadModules() {
     setLoadingModules(true);
     try {
-      const res = await fetch(`/api/projects/${projectUid}/modules?status=${contentStatusFilter}`);
+      const res = await fetch(`/api/projects/${projectUid}/modules?status=active`);
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || '加载模块失败');
       const nextItems = (json.items || []) as ModuleItem[];
@@ -725,7 +936,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
     if (!moduleUid) { setTasks([]); return; }
     setLoadingTasks(true);
     try {
-      const qsParams: Record<string, string> = { projectUid, page: '1', pageSize: '100', status: contentStatusFilter };
+      const qsParams: Record<string, string> = { projectUid, page: '1', pageSize: '100', status: 'active' };
       if (moduleUid !== ALL_MODULES_UID) qsParams.moduleUid = moduleUid;
       const qs = new URLSearchParams(qsParams);
       const res = await fetch(`/api/test-configs?${qs.toString()}`);
@@ -737,6 +948,22 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
       setError(err instanceof Error ? err.message : '加载任务失败');
     } finally {
       setLoadingTasks(false);
+    }
+  }
+
+  async function loadIntentDrafts() {
+    setLoadingIntentDrafts(true);
+    try {
+      const qs = new URLSearchParams({ limit: '100', status: 'all' });
+      const res = await fetch(`/api/projects/${projectUid}/intent-drafts?${qs.toString()}`);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || '加载意图草稿失败');
+      setIntentDrafts(((json.items || []) as IntentDraftItem[]).map(normalizeIntentDraftItem).filter((item) => item.status !== 'archived'));
+      setError('');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '加载意图草稿失败');
+    } finally {
+      setLoadingIntentDrafts(false);
     }
   }
 
@@ -774,10 +1001,11 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
 
   useEffect(() => { void loadProject(); }, [projectUid]);
   useEffect(() => { void loadMembers(); }, [projectUid]);
-  useEffect(() => { void loadModules(); }, [projectUid, contentStatusFilter]);
-  useEffect(() => { if (!activeModuleUid) return; void loadTasks(activeModuleUid); }, [projectUid, activeModuleUid, contentStatusFilter]);
+  useEffect(() => { void loadModules(); }, [projectUid]);
+  useEffect(() => { if (!activeModuleUid) return; void loadTasks(activeModuleUid); }, [projectUid, activeModuleUid]);
+  useEffect(() => { void loadIntentDrafts(); }, [projectUid]);
   useEffect(() => { void loadActivityLogs(); }, [projectUid]);
-  useEffect(() => { setCurrentPage(1); }, [contentStatusFilter, activeModuleUid]);
+  useEffect(() => { setCurrentPage(1); }, [activeModuleUid]);
   useEffect(() => {
     if (intentPresetRaw) {
       setStashedIntentPreset(null);
@@ -797,7 +1025,11 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
 
   // ── form helpers ──
   function resetModuleForm() { setEditingModuleUid(''); setModuleForm(defaultModuleForm); }
-  function resetTaskForm() { setEditingTaskUid(''); setTaskForm(createDefaultTaskForm(defaultTaskModuleUid)); }
+  function resetTaskForm(source: TaskFormEntrySource = 'manual') {
+    setEditingTaskUid('');
+    setTaskForm(createDefaultTaskForm(defaultTaskModuleUid));
+    setTaskFormEntrySource(source);
+  }
   function resetMemberForm() { setMemberForm(defaultMemberForm); }
 
   function setTaskMode(taskMode: TaskMode) {
@@ -881,7 +1113,6 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   function openCreateModule() {
     if (!canEditContent) { setError(readOnlyHint || '当前操作者没有编辑权限'); return; }
     if (projectArchived) { setError('请先恢复项目，再新增模块'); return; }
-    if (contentStatusFilter === 'archived') { setError('当前正在查看归档内容，请切换到启用中或全部内容后再新增模块'); return; }
     resetModuleForm(); setModuleModalOpen(true);
   }
 
@@ -896,7 +1127,285 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   function openCreateTask() {
     if (taskCreationBlockedReason) { setError(taskCreationBlockedReason); return; }
     if (!defaultTaskModuleUid) { setError('当前没有可用的启用中模块，请先恢复模块'); return; }
-    resetTaskForm(); setTaskModalOpen(true);
+    resetTaskForm('manual');
+    setTaskModalOpen(true);
+  }
+
+  function openIntentTaskWorkbench() {
+    if (taskCreationBlockedReason) { setError(taskCreationBlockedReason); return; }
+    if (!defaultTaskModuleUid) { setError('当前没有可用的启用中模块，请先恢复模块'); return; }
+    setError('');
+    setActionNotice('');
+    setIntentTaskModalOpen(true);
+  }
+
+  function openIntentDraftsModal() {
+    setIntentDraftsModalOpen(true);
+    void loadIntentDrafts();
+  }
+
+  async function fetchIntentDraftDetail(intentDraftUid: string): Promise<IntentDraftDetail> {
+    const res = await fetch(`/api/projects/${projectUid}/intent-drafts/${intentDraftUid}`, { cache: 'no-store' });
+    const json = (await res.json().catch(() => null)) as { item?: IntentDraftDetail; error?: string } | null;
+    if (!res.ok || !json?.item) {
+      throw new Error(json?.error || '加载意图草稿详情失败');
+    }
+    return normalizeIntentDraftDetail(json.item);
+  }
+
+  async function openIntentDraftDetail(intentDraftUid: string) {
+    if (!intentDraftUid) return;
+    setIntentDraftsModalOpen(false);
+    setIntentDraftDetailOpen(true);
+    setIntentDraftDetailLoading(true);
+    setIntentDraftDetail(null);
+    setError('');
+    try {
+      setIntentDraftDetail(await fetchIntentDraftDetail(intentDraftUid));
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '加载意图草稿详情失败');
+      setIntentDraftDetailOpen(false);
+    } finally {
+      setIntentDraftDetailLoading(false);
+    }
+  }
+
+  async function openEditIntentDraft(intentDraftUid: string) {
+    if (!canEditContent) {
+      setError(readOnlyHint || '当前操作者没有编辑权限');
+      return;
+    }
+    if (!intentDraftUid) return;
+
+    setIntentDraftEditingUid(intentDraftUid);
+    setError('');
+    setActionNotice('');
+    try {
+      const detail = await fetchIntentDraftDetail(intentDraftUid);
+      if (detail.status !== 'active') {
+        throw new Error('只有待导入的意图草稿可以修改');
+      }
+      setIntentDraftEditorSeed(toIntentDraftSeed(detail));
+      setIntentDraftEditorOpen(true);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '加载意图草稿详情失败');
+    } finally {
+      setIntentDraftEditingUid('');
+    }
+  }
+
+  async function deleteIntentDraft(draft: IntentDraftItem | IntentDraftDetail) {
+    if (!canEditContent) {
+      setError(readOnlyHint || '当前操作者没有编辑权限');
+      return;
+    }
+    if (draft.status === 'archived') {
+      setError('该意图草稿已删除');
+      return;
+    }
+
+    const confirmMessage =
+      draft.status === 'imported'
+        ? `确认删除意图草稿「${draft.title}」？删除后会从草稿列表隐藏，但不影响已导入的正式任务。`
+        : `确认删除意图草稿「${draft.title}」？删除后会从当前草稿列表移除。`;
+    if (!confirm(confirmMessage)) return;
+
+    setIntentDraftDeletingUid(draft.intentDraftUid);
+    setError('');
+    setActionNotice('');
+    try {
+      const res = await fetch(`/api/projects/${projectUid}/intent-drafts/${draft.intentDraftUid}`, { method: 'DELETE' });
+      const json = (await res.json().catch(() => null)) as IntentDraftMutationResponse | null;
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || '删除意图草稿失败');
+      }
+
+      if (intentDraftDetail?.intentDraftUid === draft.intentDraftUid) {
+        setIntentDraftDetail(null);
+        setIntentDraftDetailOpen(false);
+      }
+      if (intentDraftEditorSeed?.intentDraftUid === draft.intentDraftUid) {
+        setIntentDraftEditorSeed(null);
+        setIntentDraftEditorOpen(false);
+      }
+
+      await loadIntentDrafts();
+      await loadActivityLogs();
+      setActionNotice(
+        draft.status === 'imported'
+          ? `已删除意图草稿「${draft.title}」，不影响已导入的正式任务。`
+          : `已删除意图草稿「${draft.title}」。`
+      );
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '删除意图草稿失败');
+    } finally {
+      setIntentDraftDeletingUid('');
+    }
+  }
+
+  async function runIntentDraftTestFlow(draft: IntentDraftItem | IntentDraftDetail) {
+    if (!canEditContent) {
+      setError(readOnlyHint || '当前操作者没有编辑权限');
+      return;
+    }
+    if (draft.status !== 'active') {
+      setError('当前草稿已不可直接发起测试流程');
+      return;
+    }
+
+    setIntentDraftTestingUid(draft.intentDraftUid);
+    setError('');
+    setActionNotice('');
+
+    try {
+      const detail = 'attachments' in draft ? normalizeIntentDraftDetail(draft) : await fetchIntentDraftDetail(draft.intentDraftUid);
+      const inputText = detail.input.trim() || detail.featureDescription.trim() || detail.title.trim();
+      if (!inputText) {
+        throw new Error('当前意图草稿缺少可执行的目标描述');
+      }
+
+      const payload = {
+        input: inputText,
+        targetUrl: detail.targetUrl.trim() || detail.targetUrlHint.trim(),
+        projectUid: detail.projectUid || projectUid,
+        attachments: detail.attachments.map((item) => ({
+          name: item.name,
+          dataUrl: item.dataUrl,
+          purpose: item.purpose,
+        })),
+        llmConfig: Object.keys(detail.llmConfig || {}).length > 0 ? detail.llmConfig : undefined,
+      };
+
+      const res = await fetch('/api/intent-e2e/runs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const json = (await res.json().catch(() => null)) as IntentDraftTestRunResponse | null;
+      const runId = json?.runId || json?.run?.runId || '';
+      if (!res.ok || !runId) {
+        throw new Error(json?.error || '启动意图测试流程失败');
+      }
+
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.setItem('intent-e2e:last-run-id', runId);
+      }
+
+      const nextParams = new URLSearchParams();
+      nextParams.set('projectUid', detail.projectUid || projectUid);
+      if (detail.moduleUid || draft.moduleUid) {
+        nextParams.set('moduleUid', detail.moduleUid || draft.moduleUid);
+      }
+      nextParams.set('draftUid', detail.intentDraftUid);
+      nextParams.set('runId', runId);
+      setIntentDraftDetailOpen(false);
+      setIntentDraftsModalOpen(false);
+      router.push(`/intent-e2e?${nextParams.toString()}`);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '启动意图测试流程失败');
+    } finally {
+      setIntentDraftTestingUid('');
+    }
+  }
+
+  async function importIntentDraft(draft: IntentDraftItem) {
+    if (!canEditContent) { setError(readOnlyHint || '当前操作者没有编辑权限'); return; }
+    if (draft.status === 'imported') {
+      setError('该意图草稿已经导入过正式任务');
+      return;
+    }
+    setIntentDraftActioningUid(draft.intentDraftUid);
+    setError('');
+    setActionNotice('');
+    try {
+      const res = await fetch(`/api/projects/${projectUid}/intent-drafts/${draft.intentDraftUid}/import`, { method: 'POST' });
+      const json = await res.json();
+      if (!res.ok || !json.item) throw new Error(json.error || '导入意图草稿失败');
+      const item = json.item as {
+        moduleUid: string;
+        configUid: string;
+        configName: string;
+        planCreated: boolean;
+        planUid: string;
+        planVersion: number;
+        planError: string;
+      };
+
+      await loadProject();
+      await loadModules();
+      await loadIntentDrafts();
+      if (item.moduleUid) {
+        setActiveModuleUid(item.moduleUid);
+        await loadTasks(item.moduleUid);
+      } else if (activeModuleUid) {
+        await loadTasks(activeModuleUid);
+      }
+      await loadActivityLogs();
+      if (intentDraftDetail?.intentDraftUid === draft.intentDraftUid) {
+        await openIntentDraftDetail(draft.intentDraftUid);
+      }
+
+      if (item.planCreated && item.planUid) {
+        await openPlanPreviewByUid(item.planUid);
+        setActionNotice(`已将意图草稿「${item.configName}」导入正式任务，并写入脚本 v${item.planVersion}。后续请通过任务卡片上的“执行”按钮运行测试。`);
+        return;
+      }
+
+      setActionNotice(`已将意图草稿「${item.configName}」导入正式任务，但没有可导入脚本：${item.planError || '未知原因'}。可后续在任务卡片里点击“生成”补脚本。`);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '导入意图草稿失败');
+    } finally {
+      setIntentDraftActioningUid('');
+    }
+  }
+
+  async function handleIntentTaskCreated(item: ProjectIntentTaskCreateItem) {
+    const nextModuleUid = item.moduleUid || defaultTaskModuleUid;
+    setIntentTaskModalOpen(false);
+    setError('');
+    setActionNotice('');
+
+    try {
+      if (nextModuleUid) {
+        setActiveModuleUid(nextModuleUid);
+      }
+      await loadIntentDrafts();
+      await loadActivityLogs();
+      await openIntentDraftDetail(item.intentDraftUid);
+
+      if (item.planReady) {
+        setActionNotice(`已生成意图草稿「${item.title}」和首版脚本。确认后再导入正式任务。`);
+        return;
+      }
+
+      setActionNotice(`已生成意图草稿「${item.title}」，但脚本暂未生成成功：${item.planError || '未知错误'}。你仍然可以查看参考图和场景卡，再决定是否导入正式任务。`);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '刷新项目工作台失败');
+    }
+  }
+
+  async function handleIntentDraftUpdated(item: ProjectIntentTaskCreateItem) {
+    setIntentDraftEditorOpen(false);
+    setIntentDraftEditorSeed(null);
+    setError('');
+    setActionNotice('');
+
+    try {
+      await loadIntentDrafts();
+      await loadActivityLogs();
+      if (intentDraftDetail?.intentDraftUid === item.intentDraftUid) {
+        setIntentDraftDetail(await fetchIntentDraftDetail(item.intentDraftUid));
+      }
+
+      if (item.planReady) {
+        setActionNotice(`已更新意图草稿「${item.title}」，场景卡和脚本草稿已重新生成。`);
+        return;
+      }
+
+      setActionNotice(`已更新意图草稿「${item.title}」，但脚本暂未生成成功：${item.planError || '未知错误'}。`);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '刷新意图草稿失败');
+    }
   }
 
   function applyIntentTaskDraft(draft: IntentTaskDraft) {
@@ -909,6 +1418,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
 
     const taskMode = normalizeTaskMode(draft.taskMode);
     setEditingTaskUid('');
+    setTaskFormEntrySource('intent');
     setTaskForm({
       moduleUid,
       sortOrder: draft.sortOrder || 100,
@@ -925,6 +1435,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   function openEditTask(task: TaskItem) {
     if (!canEditContent) { setError(readOnlyHint || '当前操作者没有编辑权限'); return; }
     if (task.status !== 'active') { setError('请先恢复任务，再编辑'); return; }
+    setTaskFormEntrySource('manual');
     setEditingTaskUid(task.configUid);
     const taskMode = normalizeTaskMode(task.taskMode);
     setTaskForm({
@@ -1101,8 +1612,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || '恢复模块失败');
       await loadProject(); await loadModules(); await loadActivityLogs();
-      if (contentStatusFilter === 'archived') setTasks([]);
-      else { setActiveModuleUid(module.moduleUid); await loadTasks(module.moduleUid); }
+      setActiveModuleUid(module.moduleUid); await loadTasks(module.moduleUid);
     } catch (err: unknown) { setError(err instanceof Error ? err.message : '恢复模块失败'); }
     finally { setActioningUid(''); }
   }
@@ -1179,7 +1689,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
       const res = await fetch(`/api/projects/${projectUid}/restore`, { method: 'POST' });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || '恢复项目失败');
-      setContentStatusFilter('active'); await loadProject(); await loadModules(); await loadActivityLogs();
+      await loadProject(); await loadModules(); await loadActivityLogs();
     } catch (err: unknown) { setError(err instanceof Error ? err.message : '恢复项目失败'); }
   }
 
@@ -1280,7 +1790,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
       const res = await fetch(`/api/test-configs/${task.configUid}/executions?limit=50`);
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || '加载执行历史失败');
-      setHistoryRows(json.items || []);
+      setHistoryRows(((json.items || []) as ExecutionRow[]).map(normalizeExecutionRow));
     } catch (err: unknown) { setError(err instanceof Error ? err.message : '加载执行历史失败'); setHistoryOpen(false); }
     finally { setHistoryLoading(false); }
   }
@@ -1357,7 +1867,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                 href="/"
                 className="ml-2 inline-flex h-7 items-center rounded-lg border border-slate-200 bg-white px-2.5 text-xs text-slate-500 transition hover:bg-slate-50 hover:text-slate-700"
               >
-                返回项目首页
+                返回首页
               </Link>
               <button
                 onClick={openActivityModal}
@@ -1388,21 +1898,6 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
           )}
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <div className="inline-flex items-center rounded-lg border border-slate-200 bg-white p-0.5 shadow-sm">
-            {(['active', 'archived', 'all'] as ContentStatusFilter[]).map((status) => (
-              <button
-                key={status}
-                onClick={() => setContentStatusFilter(status)}
-                className={`h-8 rounded-md px-3 text-xs font-medium transition ${
-                  contentStatusFilter === status
-                    ? 'bg-slate-900 text-white'
-                    : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
-                }`}
-              >
-                {contentStatusLabel(status)}
-              </button>
-            ))}
-          </div>
           <button onClick={openProjectSettings} className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-600 transition hover:bg-slate-50">
             项目设置
           </button>
@@ -1427,6 +1922,22 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
           ) : (
             <>
               <button
+                onClick={openIntentDraftsModal}
+                className="inline-flex h-8 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-600 transition hover:bg-slate-50"
+              >
+                <span>意图草稿</span>
+                <span className="rounded-full bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 ring-1 ring-sky-200">
+                  {loadingIntentDrafts ? '...' : intentDrafts.length}
+                </span>
+              </button>
+              <button
+                onClick={openIntentTaskWorkbench}
+                disabled={Boolean(taskCreationBlockedReason)}
+                className="h-8 rounded-lg bg-slate-900 px-3 text-xs font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                AI 生成
+              </button>
+              <button
                 onClick={openCreateModule}
                 disabled={creationLocked}
                 className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
@@ -1436,9 +1947,9 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
               <button
                 onClick={openCreateTask}
                 disabled={creationLocked}
-                className="h-8 rounded-lg bg-slate-900 px-3 text-xs font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                新建任务
+                手动新建
               </button>
             </>
           )}
@@ -1483,7 +1994,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                 <div className="space-y-1">
                   <button
                     onClick={() => { setActiveModuleUid(ALL_MODULES_UID); setCurrentPage(1); }}
-                    title={`${contentStatusLabel(contentStatusFilter)} (${currentScopeTaskCount})`}
+                    title={`全部任务 (${currentScopeTaskCount})`}
                     className={`flex h-7 w-full items-center justify-center rounded-lg text-[11px] font-bold transition-all ${
                       activeModuleUid === ALL_MODULES_UID
                         ? 'bg-white/90 text-slate-900 shadow-md ring-1 ring-white/60'
@@ -1532,9 +2043,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                         {currentScopeTaskCount}
                       </span>
                     </div>
-                    <div className={`mt-1 text-[11px] ${activeModuleUid === ALL_MODULES_UID ? 'text-slate-500' : 'text-slate-500/70'}`}>
-                      {contentStatusLabel(contentStatusFilter)}
-                    </div>
+                    <div className={`mt-1 text-[11px] ${activeModuleUid === ALL_MODULES_UID ? 'text-slate-500' : 'text-slate-500/70'}`}>全部任务</div>
                   </button>
 
                   {loadingModules && <p className="px-3 py-4 text-xs text-slate-400">加载模块中...</p>}
@@ -1622,7 +2131,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
               className="h-9 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-slate-400"
             />
             <span className="flex-shrink-0 text-xs text-slate-400">
-              {contentStatusLabel(contentStatusFilter)} · {activeModuleUid === ALL_MODULES_UID ? '全部模块' : activeModule?.name || '未选模块'} · {filteredTasks.length} 个任务
+              {activeModuleUid === ALL_MODULES_UID ? '全部模块' : activeModule?.name || '未选模块'} · {filteredTasks.length} 个任务
             </span>
           </div>
 
@@ -1637,14 +2146,10 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
 
           {!loadingTasks && (activeModule || activeModuleUid === ALL_MODULES_UID) && filteredTasks.length === 0 && (
             <div className="rounded-lg border border-dashed border-slate-300 px-6 py-12 text-center">
-              <p className="text-sm font-medium text-slate-700">
-                {contentStatusFilter === 'archived' ? '当前筛选下没有已归档任务' : '当前模块没有测试任务'}
-              </p>
-              {contentStatusFilter !== 'archived' && (
-                <button onClick={openCreateTask} className="mt-3 h-8 rounded-lg bg-slate-900 px-4 text-xs font-medium text-white hover:bg-slate-700">
-                  创建测试任务
-                </button>
-              )}
+              <p className="text-sm font-medium text-slate-700">当前模块没有测试任务</p>
+              <button onClick={openCreateTask} className="mt-3 h-8 rounded-lg bg-slate-900 px-4 text-xs font-medium text-white hover:bg-slate-700">
+                创建测试任务
+              </button>
             </div>
           )}
 
@@ -1655,8 +2160,8 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                   <thead>
                     <tr className="border-b border-slate-100 bg-gradient-to-b from-slate-50 to-slate-50/50">
                       <th className="w-[40px] px-3 py-3 text-center text-xs font-semibold text-slate-400">#</th>
-                      <th className="w-[20%] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">任务名称</th>
-                      <th className="w-[28%] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">入口 / 地址</th>
+                      <th className="w-[25%] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">任务名称</th>
+                      <th className="w-[23%] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">入口 / 地址</th>
                       <th className="w-[8%] px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-slate-400">计划</th>
                       <th className="w-[10%] px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-slate-400">状态</th>
                       <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-400">操作</th>
@@ -1699,8 +2204,10 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                         </td>
                         <td className="px-4 py-3">
                           <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="truncate text-sm font-medium text-slate-800">{task.name}</span>
+                            <span className="block line-clamp-2 break-words text-[13px] font-medium leading-5 text-slate-800">
+                              {task.name}
+                            </span>
+                            <div className="mt-1 flex flex-wrap items-center gap-2">
                               <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${
                                 task.taskMode === 'scenario'
                                   ? 'bg-sky-50 text-sky-700 ring-sky-200'
@@ -1713,6 +2220,11 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                                   {task.flowDefinition?.steps.length || 0} 步
                                 </span>
                               )}
+                              {task.latestPlanImportedFromRunId && (
+                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${intentImportTone(task.latestPlanImportedStatus)}`}>
+                                  {intentImportStatusLabel(task.latestPlanImportedStatus)}
+                                </span>
+                              )}
                               {task.status === 'archived' && (
                                 <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-200">
                                   已归档
@@ -1721,6 +2233,14 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                             </div>
                             {activeModuleUid === ALL_MODULES_UID && (
                               <div className="mt-1 text-[11px] text-slate-400">{task.moduleName || '未分组模块'}</div>
+                            )}
+                            {task.latestPlanImportedFromRunId && (
+                              <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+                                <span>来源 Run</span>
+                                <span className="font-mono" title={task.latestPlanImportedFromRunId}>
+                                  {compactRunId(task.latestPlanImportedFromRunId)}
+                                </span>
+                              </div>
                             )}
                           </div>
                         </td>
@@ -1789,6 +2309,15 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                             >
                               <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6l4 2m6-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                             </button>
+                            {task.sourceIntentDraftUid && (
+                              <button
+                                onClick={() => void openIntentDraftDetail(task.sourceIntentDraftUid || '')}
+                                title="来源草稿"
+                                className="inline-flex h-7 items-center rounded-md border border-sky-200 bg-sky-50 px-2.5 text-[11px] font-medium text-sky-700 transition hover:bg-sky-100"
+                              >
+                                来源草稿
+                              </button>
+                            )}
                             {capabilityLaunch && (
                               <Link
                                 href={capabilityLaunch.href}
@@ -2094,11 +2623,439 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
         </div>
       )}
 
+      {intentTaskModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4 backdrop-blur-sm">
+          <div className="relative w-full max-w-[980px] overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_28px_96px_rgba(15,23,42,0.24)]">
+            <button
+              type="button"
+              onClick={() => setIntentTaskModalOpen(false)}
+              className="absolute right-4 top-4 z-10 inline-flex h-9 items-center justify-center rounded-full border border-slate-200 bg-white/92 px-3 text-sm text-slate-500 shadow-sm transition hover:text-slate-900"
+            >
+              关闭
+            </button>
+            <ProjectIntentTaskCreateDialog
+              projectUid={projectUid}
+              initialModuleUid={(activeModule?.status === 'active' ? activeModule.moduleUid : '') || defaultTaskModuleUid}
+              activeModules={activeModules.map((item) => ({ moduleUid: item.moduleUid, name: item.name }))}
+              embeddedProjectAuth={{
+                authRequired: Boolean(project?.authRequired),
+                loginDescription: project?.loginDescription || '',
+              }}
+              onClose={() => setIntentTaskModalOpen(false)}
+              onSaved={handleIntentTaskCreated}
+            />
+          </div>
+        </div>
+      )}
+
+      {intentDraftEditorOpen && intentDraftEditorSeed && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/35 p-4 backdrop-blur-sm">
+          <div className="relative w-full max-w-[980px] overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_28px_96px_rgba(15,23,42,0.24)]">
+            <button
+              type="button"
+              onClick={() => {
+                setIntentDraftEditorOpen(false);
+                setIntentDraftEditorSeed(null);
+              }}
+              className="absolute right-4 top-4 z-10 inline-flex h-9 items-center justify-center rounded-full border border-slate-200 bg-white/92 px-3 text-sm text-slate-500 shadow-sm transition hover:text-slate-900"
+            >
+              关闭
+            </button>
+            <ProjectIntentTaskCreateDialog
+              mode="edit"
+              projectUid={projectUid}
+              initialModuleUid={(activeModule?.status === 'active' ? activeModule.moduleUid : '') || defaultTaskModuleUid}
+              initialDraft={intentDraftEditorSeed}
+              activeModules={activeModules.map((item) => ({ moduleUid: item.moduleUid, name: item.name }))}
+              embeddedProjectAuth={{
+                authRequired: Boolean(project?.authRequired),
+                loginDescription: project?.loginDescription || '',
+              }}
+              onClose={() => {
+                setIntentDraftEditorOpen(false);
+                setIntentDraftEditorSeed(null);
+              }}
+              onSaved={handleIntentDraftUpdated}
+            />
+          </div>
+        </div>
+      )}
+
+      {intentDraftsModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-[1100px] overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_28px_96px_rgba(15,23,42,0.24)]">
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+              <div>
+                <h2 className="text-base font-semibold text-slate-900">意图草稿</h2>
+                <p className="mt-1 text-xs text-slate-500">这里集中保留 AI 生成的参考图、脚本草稿和导入记录；确认后再导入正式任务。</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIntentDraftsModalOpen(false)}
+                className="text-sm text-slate-400 transition hover:text-slate-600"
+              >
+                关闭
+              </button>
+            </div>
+
+            <div className="max-h-[80vh] overflow-y-auto px-5 py-5">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <div className="text-sm text-slate-600">
+                  <span className="font-medium text-slate-900">{intentDrafts.length}</span> 条意图草稿
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadIntentDrafts()}
+                  className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-600 transition hover:bg-slate-50"
+                >
+                  刷新列表
+                </button>
+              </div>
+
+              {loadingIntentDrafts && <p className="rounded-xl bg-slate-50 px-4 py-10 text-center text-sm text-slate-400">加载意图草稿中...</p>}
+
+              {!loadingIntentDrafts && intentDrafts.length === 0 && (
+                <div className="rounded-xl border border-dashed border-slate-300 px-4 py-10 text-center">
+                  <p className="text-sm font-medium text-slate-700">当前项目还没有意图草稿</p>
+                  <p className="mt-1 text-xs text-slate-400">点击顶部“AI 生成”后，草稿会先沉淀在这里，再决定是否导入正式任务。</p>
+                </div>
+              )}
+
+              {!loadingIntentDrafts && intentDrafts.length > 0 && (
+                <div className="space-y-3">
+                  {intentDrafts.map((draft) => (
+                    <article key={draft.intentDraftUid} className="rounded-2xl border border-slate-200 bg-slate-50/60 px-4 py-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="truncate text-sm font-semibold text-slate-900">{draft.title}</h3>
+                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${intentDraftStatusTone(draft.status)}`}>
+                              {intentDraftStatusLabel(draft.status)}
+                            </span>
+                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${
+                              draft.planReady
+                                ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+                                : 'bg-amber-50 text-amber-700 ring-amber-200'
+                            }`}>
+                              {draft.planReady ? '脚本已生成' : '脚本待补'}
+                            </span>
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600 ring-1 ring-slate-200">
+                              {taskModeLabel(draft.taskMode)}
+                            </span>
+                          </div>
+                          <p className="mt-2 line-clamp-2 text-sm leading-6 text-slate-600">{draft.featureDescription || draft.input}</p>
+                          <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
+                            <span>{draft.moduleName || '未分组模块'}</span>
+                            <span>{draft.attachmentCount} 张参考图</span>
+                            <span>{draft.flowStepCount} 步</span>
+                            <span className="truncate" title={draft.targetUrl || draft.targetUrlHint}>
+                              {draft.targetUrl || draft.targetUrlHint || '未提供 URL'}
+                            </span>
+                            <span>{formatRelativeMoment(draft.updatedAt || draft.createdAt)}</span>
+                          </div>
+                          {draft.planError && (
+                            <p className="mt-2 text-xs leading-5 text-amber-700">{draft.planError}</p>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap items-center justify-end gap-2">
+                          <button
+                            onClick={() => void openIntentDraftDetail(draft.intentDraftUid)}
+                            className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-600 transition hover:bg-slate-50"
+                          >
+                            查看
+                          </button>
+                          <button
+                            onClick={() => void openEditIntentDraft(draft.intentDraftUid)}
+                            disabled={
+                              !canEditContent ||
+                              draft.status !== 'active' ||
+                              intentDraftEditingUid === draft.intentDraftUid ||
+                              intentDraftTestingUid === draft.intentDraftUid ||
+                              intentDraftActioningUid === draft.intentDraftUid ||
+                              intentDraftDeletingUid === draft.intentDraftUid
+                            }
+                            className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
+                          >
+                            {intentDraftEditingUid === draft.intentDraftUid ? '加载中...' : '修改草稿'}
+                          </button>
+                          <button
+                            onClick={() => void runIntentDraftTestFlow(draft)}
+                            disabled={
+                              !canEditContent ||
+                              draft.status !== 'active' ||
+                              intentDraftEditingUid === draft.intentDraftUid ||
+                              intentDraftTestingUid === draft.intentDraftUid ||
+                              intentDraftActioningUid === draft.intentDraftUid ||
+                              intentDraftDeletingUid === draft.intentDraftUid
+                            }
+                            className="h-8 rounded-lg border border-slate-900 bg-white px-3 text-xs font-medium text-slate-900 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
+                          >
+                            {intentDraftTestingUid === draft.intentDraftUid ? '启动中...' : '测试流程'}
+                          </button>
+                          <button
+                            onClick={() => void importIntentDraft(draft)}
+                            disabled={
+                              !canEditContent ||
+                              draft.status !== 'active' ||
+                              intentDraftEditingUid === draft.intentDraftUid ||
+                              intentDraftActioningUid === draft.intentDraftUid ||
+                              intentDraftTestingUid === draft.intentDraftUid ||
+                              intentDraftDeletingUid === draft.intentDraftUid
+                            }
+                            className="h-8 rounded-lg bg-slate-900 px-3 text-xs font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                          >
+                            {intentDraftActioningUid === draft.intentDraftUid ? '导入中...' : '导入正式任务'}
+                          </button>
+                          <button
+                            onClick={() => void deleteIntentDraft(draft)}
+                            disabled={
+                              !canEditContent ||
+                              intentDraftDeletingUid === draft.intentDraftUid ||
+                              intentDraftEditingUid === draft.intentDraftUid ||
+                              intentDraftTestingUid === draft.intentDraftUid ||
+                              intentDraftActioningUid === draft.intentDraftUid
+                            }
+                            className="h-8 rounded-lg border border-rose-200 bg-white px-3 text-xs text-rose-600 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
+                          >
+                            {intentDraftDeletingUid === draft.intentDraftUid ? '删除中...' : '删除草稿'}
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {intentDraftDetailOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-[1100px] overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_28px_96px_rgba(15,23,42,0.24)]">
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+              <div>
+                <h2 className="text-base font-semibold text-slate-900">意图草稿详情</h2>
+                <p className="mt-1 text-xs text-slate-500">这里保留的是 AI 生成来源；正式任务只承接导入后的结构化结果。</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIntentDraftDetailOpen(false)}
+                className="text-sm text-slate-400 transition hover:text-slate-600"
+              >
+                关闭
+              </button>
+            </div>
+
+            <div className="max-h-[80vh] overflow-y-auto px-5 py-5">
+              {intentDraftDetailLoading && <p className="rounded-xl bg-slate-50 px-4 py-10 text-center text-sm text-slate-400">加载草稿详情中...</p>}
+
+              {!intentDraftDetailLoading && !intentDraftDetail && (
+                <p className="rounded-xl bg-slate-50 px-4 py-10 text-center text-sm text-slate-400">草稿详情不存在。</p>
+              )}
+
+              {!intentDraftDetailLoading && intentDraftDetail && (
+                <div className="grid gap-5 lg:grid-cols-[360px_minmax(0,1fr)]">
+                  <aside className="space-y-4">
+                    <section className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="text-sm font-semibold text-slate-900">{intentDraftDetail.title}</h3>
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${intentDraftStatusTone(intentDraftDetail.status)}`}>
+                          {intentDraftStatusLabel(intentDraftDetail.status)}
+                        </span>
+                      </div>
+                      <p className="mt-3 text-xs leading-5 text-slate-500">{intentDraftDetail.featureDescription || intentDraftDetail.input}</p>
+                      <div className="mt-3 space-y-2 text-[11px] text-slate-500">
+                        <p>模块：{intentDraftDetail.moduleName}</p>
+                        <p>类型：{taskModeLabel(intentDraftDetail.taskMode)}</p>
+                        <p>步骤：{intentDraftDetail.flowStepCount}</p>
+                        <p>更新时间：{formatMoment(intentDraftDetail.updatedAt || intentDraftDetail.createdAt)}</p>
+                        <p className="break-all">入口：{intentDraftDetail.targetUrl || intentDraftDetail.targetUrlHint || '-'}</p>
+                      </div>
+                    </section>
+
+                    <section className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+                      <div className="flex items-center justify-between gap-2">
+                        <h3 className="text-sm font-semibold text-slate-900">参考图</h3>
+                        <span className="text-xs text-slate-400">{intentDraftDetail.attachments.length} 张</span>
+                      </div>
+                      {intentDraftDetail.attachments.length === 0 ? (
+                        <p className="mt-3 rounded-xl bg-slate-50 px-3 py-6 text-center text-sm text-slate-400">未上传参考图</p>
+                      ) : (
+                        <div className="mt-3 space-y-3">
+                          {intentDraftDetail.attachments.map((attachment, index) => (
+                            <article key={`${attachment.name || 'image'}-${index}`} className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
+                              <img src={attachment.dataUrl} alt={attachment.name || `参考图 ${index + 1}`} className="h-40 w-full object-cover" />
+                              <div className="px-3 py-3">
+                                <p className="text-sm font-medium text-slate-900">{attachment.name || `参考图 ${index + 1}`}</p>
+                                {attachment.purpose && <p className="mt-1 text-xs leading-5 text-slate-500">{attachment.purpose}</p>}
+                              </div>
+                            </article>
+                          ))}
+                        </div>
+                      )}
+                    </section>
+                  </aside>
+
+                  <div className="space-y-4">
+                    <section className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+                      <h3 className="text-sm font-semibold text-slate-900">场景卡</h3>
+                      {intentDraftDetail.scenarioCard ? (
+                        <div className="mt-3 space-y-4">
+                          <p className="text-sm leading-6 text-slate-600">{intentDraftDetail.scenarioCard.featureDescription}</p>
+                          {intentDraftDetail.scenarioCard.successCriteria.length > 0 && (
+                            <div>
+                              <p className="text-xs font-medium text-slate-700">成功标准</p>
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {intentDraftDetail.scenarioCard.successCriteria.map((item, index) => (
+                                  <span key={`${item}-${index}`} className="rounded-full bg-emerald-50 px-2 py-1 text-[11px] text-emerald-700 ring-1 ring-emerald-200">
+                                    {item}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {intentDraftDetail.scenarioCard.flowDefinition.steps.length > 0 && (
+                            <div className="space-y-2">
+                              <p className="text-xs font-medium text-slate-700">步骤摘要</p>
+                              {intentDraftDetail.scenarioCard.flowDefinition.steps.map((step) => (
+                                <div key={step.stepUid} className="rounded-xl bg-slate-50 px-3 py-3">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-medium text-slate-500 ring-1 ring-slate-200">
+                                      {stepTypeLabel(step.stepType)}
+                                    </span>
+                                    <span className="text-sm font-medium text-slate-900">{step.title}</span>
+                                  </div>
+                                  <p className="mt-2 text-xs leading-5 text-slate-600">{step.instruction}</p>
+                                  {step.expectedResult && <p className="mt-1 text-xs leading-5 text-slate-500">预期：{step.expectedResult}</p>}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="mt-3 text-sm text-slate-400">草稿里没有可用的场景卡。</p>
+                      )}
+                    </section>
+
+                    <section className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <h3 className="text-sm font-semibold text-slate-900">脚本草稿</h3>
+                          <p className="mt-1 text-xs text-slate-500">
+                            {intentDraftDetail.planReady
+                              ? `${intentDraftDetail.generationModel || 'AI'} 已生成首版脚本，导入时不会重新跑模型。`
+                              : '当前草稿还没有可导入脚本。'}
+                          </p>
+                        </div>
+                        {intentDraftDetail.planReady && (
+                          <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-200">
+                            Ready
+                          </span>
+                        )}
+                      </div>
+                      {intentDraftDetail.planError && (
+                        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-xs leading-5 text-amber-800">
+                          {intentDraftDetail.planError}
+                        </div>
+                      )}
+                      {intentDraftDetail.planSummary && (
+                        <p className="mt-3 text-xs leading-5 text-slate-500">{intentDraftDetail.planSummary}</p>
+                      )}
+                      {intentDraftDetail.planCode ? (
+                        <pre className="mt-3 overflow-x-auto rounded-2xl bg-slate-950 px-4 py-4 text-xs leading-6 text-slate-100">
+                          <code>{intentDraftDetail.planCode}</code>
+                        </pre>
+                      ) : (
+                        <p className="mt-3 rounded-xl bg-slate-50 px-3 py-6 text-center text-sm text-slate-400">暂无可预览脚本</p>
+                      )}
+                    </section>
+
+                    <div className="flex flex-wrap justify-end gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setIntentDraftDetailOpen(false)}
+                        className="h-10 rounded-xl border border-slate-200 px-4 text-sm text-slate-600 transition hover:bg-slate-50"
+                      >
+                        关闭
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void openEditIntentDraft(intentDraftDetail.intentDraftUid)}
+                        disabled={
+                          !canEditContent ||
+                          intentDraftDetail.status !== 'active' ||
+                          intentDraftEditingUid === intentDraftDetail.intentDraftUid ||
+                          intentDraftTestingUid === intentDraftDetail.intentDraftUid ||
+                          intentDraftActioningUid === intentDraftDetail.intentDraftUid ||
+                          intentDraftDeletingUid === intentDraftDetail.intentDraftUid
+                        }
+                        className="h-10 rounded-xl border border-slate-200 px-4 text-sm text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
+                      >
+                        {intentDraftEditingUid === intentDraftDetail.intentDraftUid ? '加载中...' : '修改草稿'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void runIntentDraftTestFlow(intentDraftDetail)}
+                        disabled={
+                          !canEditContent ||
+                          intentDraftDetail.status !== 'active' ||
+                          intentDraftEditingUid === intentDraftDetail.intentDraftUid ||
+                          intentDraftTestingUid === intentDraftDetail.intentDraftUid ||
+                          intentDraftActioningUid === intentDraftDetail.intentDraftUid ||
+                          intentDraftDeletingUid === intentDraftDetail.intentDraftUid
+                        }
+                        className="h-10 rounded-xl border border-slate-900 px-4 text-sm font-medium text-slate-900 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
+                      >
+                        {intentDraftTestingUid === intentDraftDetail.intentDraftUid ? '启动中...' : '测试流程'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void importIntentDraft(intentDraftDetail)}
+                        disabled={
+                          !canEditContent ||
+                          intentDraftDetail.status !== 'active' ||
+                          intentDraftEditingUid === intentDraftDetail.intentDraftUid ||
+                          intentDraftActioningUid === intentDraftDetail.intentDraftUid ||
+                          intentDraftTestingUid === intentDraftDetail.intentDraftUid ||
+                          intentDraftDeletingUid === intentDraftDetail.intentDraftUid
+                        }
+                        className="h-10 rounded-xl bg-slate-900 px-5 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                      >
+                        {intentDraftActioningUid === intentDraftDetail.intentDraftUid ? '导入中...' : '导入正式任务'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void deleteIntentDraft(intentDraftDetail)}
+                        disabled={
+                          !canEditContent ||
+                          intentDraftDeletingUid === intentDraftDetail.intentDraftUid ||
+                          intentDraftEditingUid === intentDraftDetail.intentDraftUid ||
+                          intentDraftTestingUid === intentDraftDetail.intentDraftUid ||
+                          intentDraftActioningUid === intentDraftDetail.intentDraftUid
+                        }
+                        className="h-10 rounded-xl border border-rose-200 px-4 text-sm text-rose-600 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
+                      >
+                        {intentDraftDeletingUid === intentDraftDetail.intentDraftUid ? '删除中...' : '删除草稿'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {taskModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-sm">
           <div className="w-full max-w-[860px] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
-              <h2 className="text-base font-semibold text-slate-900">{editingTaskUid ? '编辑任务' : '新建任务'}</h2>
+              <div>
+                <h2 className="text-base font-semibold text-slate-900">{taskModalTitle}</h2>
+                <p className="mt-1 text-xs leading-5 text-slate-500">{taskModalHint}</p>
+              </div>
               <button onClick={() => { setTaskModalOpen(false); resetTaskForm(); }} className="text-sm text-slate-400 hover:text-slate-600">关闭</button>
             </div>
             <div className="max-h-[70vh] space-y-4 overflow-y-auto px-5 py-5">
@@ -2346,7 +3303,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
               <button onClick={() => { setTaskModalOpen(false); resetTaskForm(); }} className="h-9 rounded-lg border border-slate-200 px-4 text-sm text-slate-600">取消</button>
               <button onClick={() => void submitTask()} disabled={taskSaving}
                 className="h-9 rounded-lg bg-slate-900 px-4 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50">
-                {taskSaving ? '保存中...' : editingTaskUid ? '保存' : '创建'}
+                {taskSubmitLabel}
               </button>
             </div>
           </div>
@@ -2447,28 +3404,46 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
               )}
               {!activityError && activityLogs.length > 0 && (
                 <div className="space-y-2">
-                  {activityLogs.map((item) => (
-                    <div key={item.activityUid} className="flex gap-3 rounded-xl border border-slate-100 px-3 py-3">
-                      <span className={`mt-1.5 h-2.5 w-2.5 flex-shrink-0 rounded-full ${activityAccent(item.actionType)}`} />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-sm font-medium text-slate-800">{item.title}</span>
-                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${activityBadgeTone(item.actionType)}`}>
-                            {activityEntityLabel(item.entityType)}
-                          </span>
-                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-500">
-                            {formatActorLabel(item.actorLabel)}
-                          </span>
-                        </div>
-                        {item.detail && <p className="mt-1 text-xs leading-5 text-slate-500">{item.detail}</p>}
-                        <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
-                          <span>{formatRelativeMoment(item.createdAt)}</span>
-                          <span>·</span>
-                          <span>{formatMoment(item.createdAt)}</span>
+                  {activityLogs.map((item) => {
+                    const intentRunId = activityIntentImportedRunId(item.meta);
+                    const intentStatus = activityIntentImportedStatus(item);
+
+                    return (
+                      <div key={item.activityUid} className="flex gap-3 rounded-xl border border-slate-100 px-3 py-3">
+                        <span className={`mt-1.5 h-2.5 w-2.5 flex-shrink-0 rounded-full ${activityAccent(item.actionType)}`} />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-sm font-medium text-slate-800">{item.title}</span>
+                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${activityBadgeTone(item.actionType)}`}>
+                              {activityEntityLabel(item.entityType)}
+                            </span>
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-500">
+                              {formatActorLabel(item.actorLabel)}
+                            </span>
+                            {intentRunId && (
+                              <>
+                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${intentImportTone(intentStatus)}`}>
+                                  {intentImportStatusLabel(intentStatus)}
+                                </span>
+                                <span
+                                  className="rounded-full bg-slate-100 px-2 py-0.5 font-mono text-[10px] text-slate-500"
+                                  title={intentRunId}
+                                >
+                                  {compactRunId(intentRunId)}
+                                </span>
+                              </>
+                            )}
+                          </div>
+                          {item.detail && <p className="mt-1 text-xs leading-5 text-slate-500">{item.detail}</p>}
+                          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+                            <span>{formatRelativeMoment(item.createdAt)}</span>
+                            <span>·</span>
+                            <span>{formatMoment(item.createdAt)}</span>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -2511,10 +3486,23 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                             <div className="flex flex-wrap items-center gap-2">
                               <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ring-1 ${statusTone(row.status)}`}>{row.status}</span>
                               <span className="rounded bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">脚本 v{row.planVersion || '-'}</span>
+                              {row.intentImportedFromRunId && (
+                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${intentImportTone(row.status)}`}>
+                                  Intent 导入
+                                </span>
+                              )}
                               <span className="text-[11px] text-slate-400">{row.executionUid}</span>
                               {errorCount > 0 && <span className="text-[11px] text-rose-600">{errorCount} 条异常</span>}
                             </div>
                             <p className="mt-2 text-sm text-slate-700">{row.resultSummary || '暂无摘要'}</p>
+                            {row.intentImportedFromRunId && (
+                              <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                                <span>来源 Run</span>
+                                <span className="font-mono" title={row.intentImportedFromRunId}>
+                                  {compactRunId(row.intentImportedFromRunId)}
+                                </span>
+                              </div>
+                            )}
                             {row.errorMessage && <p className="mt-1 text-sm text-rose-600">{row.errorMessage}</p>}
                             <div className="mt-2 flex gap-3 text-[11px] text-slate-400">
                               <span>开始：{row.startedAt ? formatMoment(row.startedAt) : '-'}</span>

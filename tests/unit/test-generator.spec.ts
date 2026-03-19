@@ -1,5 +1,9 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildPrompt, buildRepairPrompt, resolveDeterministicTemplate } from '../../lib/test-generator';
+import { resetIntentProjectKnowledgeCache } from '../../lib/intent-project-knowledge';
 import { buildFlowSummary } from '../../lib/task-flow';
 
 describe('test-generator prompt builder', () => {
@@ -86,7 +90,47 @@ describe('test-generator prompt builder', () => {
     expect(prompt).toContain('必须传 `searchText`');
     expect(prompt).toContain('`.ant-dropdown-trigger`');
     expect(prompt).toContain("__e2e.clickAntdRowAction(page, targetRow, '生成订单')");
+    expect(prompt).toContain("__e2e.waitForVisibleAntdModal(page, { titleIncludes: '服务分佣配置' })");
+    expect(prompt).toContain('__e2e.ensureLoggedIn(page, { targetUrl: TARGET_URL })');
+    expect(prompt).toContain('禁止再额外 `page.goto(LOGIN_URL)`');
     expect(prompt).toContain('禁止写 `page.getByText(/成功/i).first()`');
+    expect(prompt).toContain("禁止先写 `expect(page.locator('.ant-table-tbody')).toBeVisible()`");
+    expect(prompt).toContain('不要在脚本尾部自动把刚修改成功的业务数据改回原值');
+  });
+
+  it('adds targeted login repair hints when the script jumps away from the real login page', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/clientmanagement/callloglist',
+        title: '通话记录',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '通话记录' }],
+        screenshot: '',
+      },
+      '登录后进入通话记录页面并播放录音',
+      {
+        loginUrl: 'https://uat.example.com/#/',
+        loginDescription: '选择短信验证码登陆tab页，“获取验证码”输入框 输入登陆密码，然后点击登陆。',
+      },
+      [],
+      '',
+      {
+        previousCode: "await page.goto(TARGET_URL);\\nif (onLoginPage) {\\n  await page.goto(LOGIN_URL);\\n  const userInput = page.getByPlaceholder(/手机号|手机号码|请输入手机号|账号|用户名/i).first();\\n}",
+        executionError: `expect(locator).toBeVisible() failed
+
+Locator: getByPlaceholder(/手机号|手机号码|请输入手机号|账号|用户名/i).first()
+Expected: visible
+Timeout: 15000ms
+Error: element(s) not found`,
+        recentEvents: [],
+      }
+    );
+
+    expect(prompt).toContain('__e2e.ensureLoggedIn(page, { targetUrl: TARGET_URL })');
+    expect(prompt).toContain('不要再手写二次跳转');
   });
 
   it('adds targeted dropdown repair hints when a tree option exists but is outside the initial viewport', () => {
@@ -187,6 +231,137 @@ Error: element(s) not found`,
 
     expect(prompt).toContain('__e2e.openAntdDropdown(page, sourceRow)');
     expect(prompt).toContain('它会自动尝试 click、ArrowDown、mousedown 和鼠标坐标点击');
+  });
+
+  it('warns against asserting hidden Ant table 操作 headers in repair hints', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/commission/subCommissionConfig',
+        title: '服务分佣配置',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '服务分佣配置' }],
+        screenshot: '',
+      },
+      '搜索 379 后点击分佣配置',
+      undefined,
+      [],
+      '',
+      {
+        previousCode:
+          "const headerRow = tableWrapper.locator('.ant-table-thead tr').first();\nawait expect(headerRow.getByText('操作', { exact: true }).first()).toBeVisible({ timeout: 15000 });",
+        executionError: `expect(locator).toBeVisible() failed
+
+Locator:  locator('.ant-table-wrapper').first().locator('.ant-table-thead tr').first().getByText('操作', { exact: true }).first()
+Expected: visible
+Received: hidden
+Timeout:  15000ms
+
+Call log:
+  - waiting for locator('.ant-table-wrapper').first().locator('.ant-table-thead tr').first().getByText('操作', { exact: true }).first()
+    19 × locator resolved to <span class="ant-table-column-title">操作</span>
+       - unexpected value "hidden"`,
+        recentEvents: [],
+      }
+    );
+
+    expect(prompt).toContain("不要再新增 `getByText('操作')`");
+    expect(prompt).toContain("__e2e.clickAntdRowAction(page, targetRow, '动作名')");
+    expect(prompt).toContain('data-row-key');
+  });
+
+  it('warns against asserting bare ant-table-tbody visibility when fixed-column clones exist', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/commission/subCommissionConfig',
+        title: '服务分佣配置',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '服务分佣配置' }],
+        screenshot: '',
+      },
+      '按关键词379搜索并点击分佣配置',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: "const tableBody = page.locator('.ant-table-tbody');\nawait expect(tableBody).toBeVisible({ timeout: 30000 });",
+        executionError: `expect(locator).toBeVisible() failed
+
+Locator: locator('.ant-table-tbody')
+Expected: visible
+Error: strict mode violation: locator('.ant-table-tbody') resolved to 2 elements`,
+        recentEvents: [],
+      }
+    );
+
+    expect(prompt).toContain("不要再写 `expect(page.locator('.ant-table-tbody')).toBeVisible()`");
+    expect(prompt).toContain('多个表体副本');
+    expect(prompt).toContain('等待目标行出现');
+  });
+
+  it('adds dynamic modal-title hints for service commission dialogs with entity-prefixed titles', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/commission/subCommissionConfig',
+        title: '服务分佣配置',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '服务分佣配置' }],
+        screenshot: '',
+      },
+      '按关键词379搜索后打开分佣配置弹框，修改商机创建人佣金比例为12%',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: "const modal = page.locator('.ant-modal-content').filter({ hasText: '服务分佣配置' }).first();",
+        executionError: `expect(locator).toBeVisible() failed
+
+Locator: locator('.ant-modal-content').filter({ hasText: '服务分佣配置' }).first()
+Expected: visible
+Timeout: 20000ms
+Error: element(s) not found`,
+        recentEvents: [],
+      }
+    );
+
+    expect(prompt).toContain('“商务礼仪培训”服务分佣配置');
+    expect(prompt).toContain("__e2e.waitForVisibleAntdModal(page, { titleIncludes: '服务分佣配置' })");
+    expect(prompt).toContain('不要再对 `.ant-modal-content` 或完整标题做精确匹配');
+  });
+
+  it('warns against auto-rollback when the task only asks to modify and save business data', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/commission/subCommissionConfig',
+        title: '服务分佣配置',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '服务分佣配置' }],
+        screenshot: '',
+      },
+      '按关键词379搜索并进入分佣配置弹框，将商机创建人佣金比例改为12%，点击保存并校验保存成功',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: "const restoreValue = originalRatio.replace('%', '').trim();\nawait modalAgain.getByRole('button', { name: '保存' }).click();\n// Cleanup: 恢复原值",
+        executionError: 'expect(received).toBeTruthy() failed',
+        recentEvents: [],
+      }
+    );
+
+    expect(prompt).toContain('当前需求没有要求回滚数据');
+    expect(prompt).toContain('删除自动恢复原值的 cleanup');
   });
 
   it('adds targeted remote-search-select hints when the dropdown never opens directly', () => {
@@ -350,6 +525,32 @@ Error: element(s) not found`,
     expect(prompt).toContain('createOrder 响应成功 + Drawer 关闭');
   });
 
+  it('adds media-playback success rules to avoid false negatives from raced fallback booleans', () => {
+    const prompt = buildPrompt(
+      {
+        url: 'https://uat.example.com/#/clientmanagement/callloglist',
+        title: '通话记录',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '通话记录' }],
+        bodyTextExcerpt: '我的通话 全部通话 录音 播放 下载',
+        screenshot: '',
+      },
+      '在通话记录页随机播放一条录音，确认播放已触发',
+      undefined,
+      [],
+      ''
+    );
+
+    expect(prompt).toContain('## 媒体播放 / 预览 / 下载 / 打开详情成功判定规则');
+    expect(prompt).toContain('Promise.race([waitFor(...).catch(() => false), ...])');
+    expect(prompt).toContain('audio[src]');
+    expect(prompt).toContain('Promise.any(...)');
+    expect(prompt).toContain('业务响应成功 + 关键资源已返回');
+  });
+
   it('reuses the validated dedicated template for create-business-to-order tasks', () => {
     const template = resolveDeterministicTemplate(
       {
@@ -404,6 +605,39 @@ Error: element(s) not found`,
     expect(template).toContain("[BATCH-CONTACTS-STAGE-DEBUG]");
     expect(template).toContain("[BATCH-CONTACTS-ROW-DEBUG]");
     expect(template).toContain("await page.locator('#mail-list_keywords').fill(targetPhone);");
+  });
+
+  it('reuses the deterministic service-commission template for ratio-update tasks', () => {
+    const template = resolveDeterministicTemplate(
+      {
+        url: 'https://uat.example.com/#/commission/subCommissionConfig',
+        title: '服务分佣配置',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '服务分佣配置' }],
+        bodyTextExcerpt: '服务分佣配置 请输入关键词 分佣配置 操作日志 商机创建人 保存',
+        screenshot: '',
+      },
+      '登录后进入服务分佣配置页，按关键词379搜索并进入结果行的“分佣配置”弹框，将“商机创建人”佣金比例改为12%，点击保存并校验保存成功。',
+      '',
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://uat.example.com/#/commission/subCommissionConfig',
+        expectedOutcome: '保存成功',
+        cleanupNotes: '',
+        scenarioSummary: '1. 搜索379\n2. 打开分佣配置\n3. 把商机创建人改成12%',
+      }
+    );
+
+    expect(template).toContain("const SEARCH_KEYWORD = \"379\";");
+    expect(template).toContain("const TARGET_ROLE = \"商机创建人\";");
+    expect(template).toContain("const TARGET_RATIO_VALUE = \"12\";");
+    expect(template).toContain("__e2e.waitForVisibleAntdModal(page, {");
+    expect(template).toContain("await __e2e.clickAntdRowAction(page, targetRow, '分佣配置');");
+    expect(template).not.toContain('restoreValue');
+    expect(template).not.toContain('Cleanup:');
   });
 
   it('does not reuse the create-business-order template for non-contact business-list tasks', () => {
@@ -481,6 +715,119 @@ Error: element(s) not found`,
     expect(prompt).toContain('改成在 `createOrder` 成功、Drawer 关闭后直接完成断言');
   });
 
+  it('injects matched project knowledge into prompt generation', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'intent-project-knowledge-prompt-'));
+    const knowledgePath = path.join(tempDir, 'knowledge.json');
+    process.env.INTENT_E2E_PROJECT_KNOWLEDGE_PATH = knowledgePath;
+    fs.writeFileSync(
+      knowledgePath,
+      JSON.stringify(
+        {
+          version: 1,
+          rules: [
+            {
+              id: 'custom.checkout-submit',
+              title: '结算提交页',
+              match: {
+                urlIncludes: ['/checkout'],
+                descriptionIncludes: ['提交订单']
+              },
+              promptNotes: ['结算提交页要先等接口成功，再断言成功页。'],
+              capabilitySlugs: ['assert.wait-for-api-response'],
+              addGlobalRules: ['提交订单后优先等待 /api/checkout/submit 响应成功。'],
+              stepPatches: [
+                {
+                  whenStepTypes: ['ui'],
+                  stepTextIncludes: ['提交订单', '成功页'],
+                  addPreferredHelpers: ['__e2e.waitForApiResponse'],
+                  addRequiredAssertions: ['/api/checkout/submit 响应成功']
+                }
+              ]
+            }
+          ]
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+    resetIntentProjectKnowledgeCache();
+
+    try {
+      const prompt = buildPrompt(
+        {
+          url: 'https://example.com/checkout',
+          title: 'Checkout',
+          forms: [],
+          buttons: [],
+          tooltipElements: [],
+          links: [],
+          headings: [{ level: 'H1', text: 'Checkout' }],
+          bodyTextExcerpt: '提交订单 成功页',
+          screenshot: '',
+        },
+        '填写手机号并提交订单，最后看到成功页',
+        undefined,
+        [],
+        ''
+      );
+
+      expect(prompt).toContain('## 项目知识规则（动态裁剪）');
+      expect(prompt).toContain('custom.checkout-submit');
+      expect(prompt).toContain('结算提交页要先等接口成功');
+      expect(prompt).toContain('/api/checkout/submit 响应成功');
+      expect(prompt).toContain('__e2e.waitForApiResponse');
+      expect(prompt).toContain('assert.wait-for-api-response');
+    } finally {
+      delete process.env.INTENT_E2E_PROJECT_KNOWLEDGE_PATH;
+      resetIntentProjectKnowledgeCache();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('injects historical repair memory hints into repair prompts', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://example.com/checkout',
+        title: 'Checkout',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: 'Checkout' }],
+        screenshot: '',
+      },
+      '访问结算页并提交订单',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: "await page.getByRole('button', { name: '提交订单' }).click();",
+        executionError: 'Error: 未找到行操作：查看',
+        recentEvents: ['INFO createOrder success'],
+        repairMemoryHints: [
+          {
+            clusterId: 'irm-abc123',
+            category: 'row-action-not-found',
+            tags: ['row-action', 'example.com/checkout'],
+            seenCount: 5,
+            resolvedCount: 4,
+            representativeError: 'Error: 未找到行操作：查看',
+            successfulStrategies: ['__e2e.clickAntdRowAction'],
+            antiPatterns: ['假设目标动作一定以内联按钮存在'],
+            sampleUrls: ['https://example.com/checkout'],
+            lastSeenAt: '2026-03-16T10:00:00.000Z',
+          },
+        ],
+      }
+    );
+
+    expect(prompt).toContain('## 历史相似失败记忆');
+    expect(prompt).toContain('cluster=irm-abc123');
+    expect(prompt).toContain('__e2e.clickAntdRowAction');
+    expect(prompt).toContain('假设目标动作一定以内联按钮存在');
+  });
+
   it('prevents business-list repairs from weakening core field assertions into generic truthy checks', () => {
     const prompt = buildRepairPrompt(
       {
@@ -522,6 +869,97 @@ Error: element(s) not found`,
     expect(prompt).toContain('按换行拆分出 companyName、contactName、contactPhone');
     expect(prompt).toContain("页面自身抛出了 `Cannot read properties of null (reading 'id')`");
     expect(prompt).toContain('先等待列表页筛选区和默认数据加载完成');
+  });
+
+  it('adds playback-specific repair hints when audio requests succeed but a raced truthy assertion still fails', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/clientmanagement/callloglist',
+        title: '通话记录',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '通话记录' }],
+        screenshot: '',
+      },
+      '在通话记录页随机播放一条录音，确认播放已触发',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: [
+          "const triggered = await Promise.race([",
+          "  pauseLikeIcon.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false),",
+          "  audioControl.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false),",
+          ']);',
+          'expect(triggered).toBeTruthy();',
+        ].join('\n'),
+        executionError: 'expect(received).toBeTruthy()\n\nReceived: false',
+        recentEvents: [
+          '[ audioUrl ]-377 https://recording.yikaiye.net/20240423/demo.wav',
+          '[ res ]-160 {code: 1, msg: success, data: Object}',
+        ],
+      }
+    );
+
+    expect(prompt).toContain('这次失败很可能不是“播放没触发”，而是成功判定写错了');
+    expect(prompt).toContain('`audioUrl`、`.wav`、`code: 1` / `msg: success`');
+    expect(prompt).toContain('`Promise.race([...catch(() => false)])`');
+    expect(prompt).toContain('`Promise.any(...)`');
+    expect(prompt).toContain('不要改登录流、不要跳去无关页面');
+    expect(prompt).toContain('不要发明需求里没有的页面锚点或 DOM id');
+  });
+
+  it('renders action DSL constraints from scenario steps and helper preferences', () => {
+    const prompt = buildPrompt(
+      {
+        url: 'https://example.com/checkout',
+        title: '访客结算',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '访客结算' }],
+        screenshot: '',
+      },
+      '访问结算页，选择来源=抖音，填写手机号并提交，最终看到成功页',
+      undefined,
+      [],
+      '',
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://example.com/checkout',
+        sharedVariables: ['orderId'],
+        expectedOutcome: '提交成功并看到成功页',
+        cleanupNotes: '记录订单ID，供后续人工清理',
+        scenarioSummary: [
+          '1. [ui] 进入结算页 -> https://example.com/checkout',
+          '   动作: 通过下拉选择来源=抖音，填写手机号并提交',
+          '   预期: 成功页出现',
+        ].join('\n'),
+        scenarioSteps: [
+          {
+            stepUid: 'step_1',
+            stepType: 'ui',
+            title: '填写结算信息',
+            target: 'https://example.com/checkout',
+            instruction: '通过下拉选择来源=抖音，填写手机号并提交',
+            expectedResult: '成功页出现并记录订单ID',
+            extractVariable: 'orderId',
+          },
+        ],
+      }
+    );
+
+    expect(prompt).toContain('## 执行动作约束 DSL');
+    expect(prompt).toContain('### DSL Step 1 [ui] 填写结算信息');
+    expect(prompt).toContain('允许动作:');
+    expect(prompt).toContain('__e2e.selectAntdOption');
+    expect(prompt).toContain('共享变量: orderId');
+    expect(prompt).toContain('page.waitForTimeout(...) 作为主同步手段');
+    expect(prompt).toContain('## 高频动作库（优先复用）');
+    expect(prompt).toContain('ui.select-antd-option');
   });
 
   it('surfaces iframe controls and forces frame-scoped interactions for embedded business pages', () => {
@@ -598,5 +1036,6 @@ Error: element(s) not found`,
     expect(prompt).toContain("page.frames().find((item) => /easySearchList/i.test(item.url()))");
     expect(prompt).toContain('禁止在顶层 page 上直接查找 iframe 内的 placeholder');
     expect(prompt).toContain('不要凭空假设 iframe 的 name 属性');
+    expect(prompt).toContain('__e2e.getFrame');
   });
 });

@@ -1,4 +1,6 @@
 import { analyzePage, type AuthConfig, type PageSnapshot } from '@/lib/page-analyzer';
+import { getLLMRuntimeConfig, type LLMRuntimeOverrides } from '@/lib/llm/provider-config';
+import { getWorkspaceLLMRuntimeOverrides, mergeLLMRuntimeOverrides } from '@/lib/llm/workspace-config';
 import { finalizeCapabilityVerification } from '@/lib/capability-verification-service';
 import { generateTest, repairTest, type GenerateEvent, type GenerateTestContext } from '@/lib/test-generator';
 import { executeTest, type TestResult } from '@/lib/test-executor';
@@ -24,9 +26,13 @@ import {
   updateExecutionStatus,
 } from '@/lib/db/repository';
 import { uid } from '@/lib/db/ids';
+import {
+  extractIntentImportRunIdFromArtifactMeta,
+  extractIntentImportStatusFromArtifactMeta,
+} from '@/lib/intent-e2e-import';
 import { buildCoverageCasesFromTask } from '@/lib/plan-cases';
 import { analyzeRequirementCoverage } from '@/lib/project-knowledge';
-import { buildFlowSummary, collectScenarioSnapshotTargets } from '@/lib/task-flow';
+import { buildFlowSummary, collectScenarioSnapshotTargets, type FlowDefinition, type TaskMode } from '@/lib/task-flow';
 
 function buildAuthContext(
   project: Awaited<ReturnType<typeof getProjectByUid>>,
@@ -54,6 +60,25 @@ function buildAuthContext(
 }
 
 type TestConfigWithSecrets = NonNullable<Awaited<ReturnType<typeof getTestConfigByUid>>>;
+
+export interface PlanGenerationTaskSpec {
+  projectUid: string;
+  name: string;
+  targetUrl: string;
+  featureDescription: string;
+  taskMode: TaskMode;
+  flowDefinition: FlowDefinition | null;
+}
+
+export interface GeneratedPlanDraft {
+  planTitle: string;
+  planCode: string;
+  planSummary: string;
+  generationModel: string;
+  generationPrompt: string;
+  generatedFiles: Array<{ name: string; content: string; language: string }>;
+  tiers: { simple: number; medium: number; complex: number };
+}
 
 function extractRecipeRequirement(featureDescription: string): string {
   const match = featureDescription.match(/(?:^|\n)需求：([^\n]+)/);
@@ -133,19 +158,30 @@ async function analyzeSnapshotTargets(targets: string[], auth?: AuthConfig): Pro
   return snapshots;
 }
 
-async function buildGenerationInput(config: TestConfigWithSecrets, auth?: AuthConfig): Promise<{
+function buildProjectAuthContext(project: Awaited<ReturnType<typeof getProjectByUid>>): AuthConfig | undefined {
+  if (!project?.authRequired) return undefined;
+
+  return {
+    loginUrl: project.loginUrl,
+    username: project.loginUsername,
+    password: project.loginPasswordPlain,
+    loginDescription: project.loginDescription,
+  };
+}
+
+async function buildGenerationInputFromTaskSpec(spec: PlanGenerationTaskSpec, auth?: AuthConfig): Promise<{
   snapshot: PageSnapshot;
   promptDescription: string;
   promptContext: GenerateTestContext;
 }> {
-  const taskMode = config.taskMode === 'scenario' ? 'scenario' : 'page';
+  const taskMode = spec.taskMode === 'scenario' ? 'scenario' : 'page';
   const snapshotTargets =
-    taskMode === 'scenario' ? collectScenarioSnapshotTargets(config.targetUrl, config.flowDefinition, 4) : [config.targetUrl];
-  const snapshots = await analyzeSnapshotTargets(snapshotTargets.length > 0 ? snapshotTargets : [config.targetUrl], auth);
+    taskMode === 'scenario' ? collectScenarioSnapshotTargets(spec.targetUrl, spec.flowDefinition, 4) : [spec.targetUrl];
+  const snapshots = await analyzeSnapshotTargets(snapshotTargets.length > 0 ? snapshotTargets : [spec.targetUrl], auth);
   const snapshot = snapshots[0];
   const flowSummary =
     taskMode === 'scenario'
-      ? buildFlowSummary(config.flowDefinition, {
+      ? buildFlowSummary(spec.flowDefinition, {
           includeInstruction: true,
           includeExpectedResult: true,
           includeExtractVariable: true,
@@ -155,30 +191,48 @@ async function buildGenerationInput(config: TestConfigWithSecrets, auth?: AuthCo
   const promptDescription =
     taskMode === 'scenario'
       ? [
-          config.featureDescription.trim(),
-          `业务流入口: ${config.targetUrl}`,
-          config.flowDefinition?.sharedVariables.length ? `共享变量: ${config.flowDefinition.sharedVariables.join(', ')}` : '',
-          config.flowDefinition?.expectedOutcome ? `期望业务结果: ${config.flowDefinition.expectedOutcome}` : '',
-          config.flowDefinition?.cleanupNotes ? `收尾说明: ${config.flowDefinition.cleanupNotes}` : '',
+          spec.featureDescription.trim(),
+          `业务流入口: ${spec.targetUrl}`,
+          spec.flowDefinition?.sharedVariables.length ? `共享变量: ${spec.flowDefinition.sharedVariables.join(', ')}` : '',
+          spec.flowDefinition?.expectedOutcome ? `期望业务结果: ${spec.flowDefinition.expectedOutcome}` : '',
+          spec.flowDefinition?.cleanupNotes ? `收尾说明: ${spec.flowDefinition.cleanupNotes}` : '',
           flowSummary ? `步骤摘要:\n${flowSummary}` : '',
         ]
           .filter(Boolean)
           .join('\n\n')
-      : config.featureDescription.trim();
+      : spec.featureDescription.trim();
 
   return {
     snapshot,
     promptDescription,
     promptContext: {
       taskMode,
-      scenarioEntryUrl: taskMode === 'scenario' ? config.targetUrl : undefined,
+      scenarioEntryUrl: taskMode === 'scenario' ? spec.targetUrl : undefined,
       scenarioSummary: flowSummary || undefined,
-      expectedOutcome: config.flowDefinition?.expectedOutcome || undefined,
-      sharedVariables: config.flowDefinition?.sharedVariables || [],
-      cleanupNotes: config.flowDefinition?.cleanupNotes || undefined,
+      expectedOutcome: spec.flowDefinition?.expectedOutcome || undefined,
+      sharedVariables: spec.flowDefinition?.sharedVariables || [],
+      cleanupNotes: spec.flowDefinition?.cleanupNotes || undefined,
       relatedSnapshots: snapshots.slice(1),
     },
   };
+}
+
+async function buildGenerationInput(config: TestConfigWithSecrets, auth?: AuthConfig): Promise<{
+  snapshot: PageSnapshot;
+  promptDescription: string;
+  promptContext: GenerateTestContext;
+}> {
+  return buildGenerationInputFromTaskSpec(
+    {
+      projectUid: config.projectUid,
+      name: config.name,
+      targetUrl: config.targetUrl,
+      featureDescription: config.featureDescription,
+      taskMode: config.taskMode,
+      flowDefinition: config.flowDefinition,
+    },
+    auth
+  );
 }
 
 function toConversationMessageType(eventType: GenerateEvent['type']): 'thinking' | 'code' | 'status' | 'error' {
@@ -188,7 +242,7 @@ function toConversationMessageType(eventType: GenerateEvent['type']): 'thinking'
 
 async function collectGeneratedCode(input: {
   projectUid: string;
-  refUid: string;
+  refUid?: string;
   stream: AsyncGenerator<GenerateEvent>;
   completionMessage: string;
 }): Promise<string> {
@@ -199,27 +253,31 @@ async function collectGeneratedCode(input: {
   for await (const event of input.stream) {
     if (event.type === 'code') {
       generatedCode += event.content;
-      await insertLlmConversation({
-        projectUid: input.projectUid,
-        scene: 'plan_generation',
-        refUid: input.refUid,
-        role: 'assistant',
-        messageType: 'code',
-        content: event.content,
-      });
+      if (input.refUid) {
+        await insertLlmConversation({
+          projectUid: input.projectUid,
+          scene: 'plan_generation',
+          refUid: input.refUid,
+          role: 'assistant',
+          messageType: 'code',
+          content: event.content,
+        });
+      }
       continue;
     }
 
     if (event.type === 'complete') {
       completedCode = event.content;
-      await insertLlmConversation({
-        projectUid: input.projectUid,
-        scene: 'plan_generation',
-        refUid: input.refUid,
-        role: 'assistant',
-        messageType: 'status',
-        content: input.completionMessage,
-      });
+      if (input.refUid) {
+        await insertLlmConversation({
+          projectUid: input.projectUid,
+          scene: 'plan_generation',
+          refUid: input.refUid,
+          role: 'assistant',
+          messageType: 'status',
+          content: input.completionMessage,
+        });
+      }
       continue;
     }
 
@@ -227,14 +285,16 @@ async function collectGeneratedCode(input: {
       lastError = event.content.trim() || lastError;
     }
 
-    await insertLlmConversation({
-      projectUid: input.projectUid,
-      scene: 'plan_generation',
-      refUid: input.refUid,
-      role: event.type === 'error' ? 'tool' : 'assistant',
-      messageType: toConversationMessageType(event.type),
-      content: event.content,
-    });
+    if (input.refUid) {
+      await insertLlmConversation({
+        projectUid: input.projectUid,
+        scene: 'plan_generation',
+        refUid: input.refUid,
+        role: event.type === 'error' ? 'tool' : 'assistant',
+        messageType: toConversationMessageType(event.type),
+        content: event.content,
+      });
+    }
   }
 
   const code = completedCode.trim() || generatedCode.trim();
@@ -243,6 +303,58 @@ async function collectGeneratedCode(input: {
   }
 
   return code;
+}
+
+export async function generatePlanDraftFromTaskSpec(
+  spec: PlanGenerationTaskSpec,
+  options?: {
+    auth?: AuthConfig;
+    llmConfig?: LLMRuntimeOverrides;
+    conversationRefUid?: string;
+  }
+): Promise<GeneratedPlanDraft> {
+  const llmConfig = mergeLLMRuntimeOverrides(await getWorkspaceLLMRuntimeOverrides(), options?.llmConfig);
+  const runtimeConfig = getLLMRuntimeConfig(llmConfig);
+  const { snapshot, promptDescription, promptContext } = await buildGenerationInputFromTaskSpec(spec, options?.auth);
+
+  if (options?.conversationRefUid) {
+    await insertLlmConversation({
+      projectUid: spec.projectUid,
+      scene: 'plan_generation',
+      refUid: options.conversationRefUid,
+      role: 'system',
+      messageType: 'status',
+      content:
+        spec.taskMode === 'scenario'
+          ? `开始生成业务流测试计划，入口页面: ${snapshot.title}，共 ${spec.flowDefinition?.steps.length || 0} 步`
+          : `开始生成测试计划，目标页面: ${snapshot.title}`,
+    });
+  }
+
+  const planCode = await collectGeneratedCode({
+    projectUid: spec.projectUid,
+    refUid: options?.conversationRefUid,
+    stream: generateTest(snapshot, promptDescription, options?.auth, promptContext, llmConfig),
+    completionMessage: '代码生成完成，正在整理计划草稿',
+  });
+
+  const generatedFileName = `gen-${Date.now()}.spec.ts`;
+
+  return {
+    planTitle: `${spec.name} - 自动测试计划`,
+    planCode,
+    planSummary: `${spec.taskMode === 'scenario' ? `业务流 ${spec.flowDefinition?.steps.length || 0} 步，` : ''}覆盖简单/中等/复杂三层，自动生成于 ${new Date().toLocaleString('zh-CN')}`,
+    generationModel: runtimeConfig.model,
+    generationPrompt: promptDescription,
+    generatedFiles: [
+      {
+        name: generatedFileName,
+        content: planCode,
+        language: 'typescript',
+      },
+    ],
+    tiers: { simple: 1, medium: 1, complex: 1 },
+  };
 }
 
 function renderRepairEventLine(event: Awaited<ReturnType<typeof listExecutionEvents>>[number]): string {
@@ -266,7 +378,10 @@ function buildRepairEventDigest(events: Awaited<ReturnType<typeof listExecutionE
     .map(renderRepairEventLine);
 }
 
-export async function generatePlanFromConfig(configUid: string, options?: { actorLabel?: string }): Promise<{ planUid: string; planVersion: number }> {
+export async function generatePlanFromConfig(
+  configUid: string,
+  options?: { actorLabel?: string; llmConfig?: LLMRuntimeOverrides }
+): Promise<{ planUid: string; planVersion: number }> {
   const config = await getTestConfigByUid(configUid);
   if (!config) throw new Error('测试配置不存在');
   const project = await getProjectByUid(config.projectUid);
@@ -274,6 +389,8 @@ export async function generatePlanFromConfig(configUid: string, options?: { acto
   validateScenarioRequirementCoverage(config);
 
   const auth = buildAuthContext(project, config);
+  const llmConfig = mergeLLMRuntimeOverrides(await getWorkspaceLLMRuntimeOverrides(), options?.llmConfig);
+  const runtimeConfig = getLLMRuntimeConfig(llmConfig);
   const { snapshot, promptDescription, promptContext } = await buildGenerationInput(config, auth);
   await insertLlmConversation({
     projectUid: config.projectUid,
@@ -290,7 +407,7 @@ export async function generatePlanFromConfig(configUid: string, options?: { acto
   const generatedCode = await collectGeneratedCode({
     projectUid: config.projectUid,
     refUid: configUid,
-    stream: generateTest(snapshot, promptDescription, auth, promptContext),
+    stream: generateTest(snapshot, promptDescription, auth, promptContext, llmConfig),
     completionMessage: '代码生成完成，正在写入计划与用例',
   });
 
@@ -303,7 +420,7 @@ export async function generatePlanFromConfig(configUid: string, options?: { acto
     planTitle: `${config.name} - 自动测试计划`,
     planCode: generatedCode,
     planSummary: `${config.taskMode === 'scenario' ? `业务流 ${config.flowDefinition?.steps.length || 0} 步，` : ''}覆盖简单/中等/复杂三层，自动生成于 ${new Date().toLocaleString('zh-CN')}`,
-    generationModel: process.env.OPENAI_MODEL || 'unknown',
+    generationModel: runtimeConfig.model,
     generationPrompt: promptDescription,
     generatedFiles: [
       {
@@ -348,13 +465,13 @@ export async function generatePlanFromConfig(configUid: string, options?: { acto
     actionType: 'plan_generated',
     actorLabel: options?.actorLabel,
     title: `为任务「${config.name}」生成计划 v${plan.planVersion}`,
-    detail: `生成模型 ${process.env.OPENAI_MODEL || 'unknown'}，已覆盖简单/中等/复杂三层场景。`,
+    detail: `生成模型 ${runtimeConfig.model}，已覆盖简单/中等/复杂三层场景。`,
     meta: {
       configUid: config.configUid,
       configName: config.name,
       previousPlanVersion: latestPlan?.planVersion || 0,
       planVersion: plan.planVersion,
-      generationModel: process.env.OPENAI_MODEL || 'unknown',
+      generationModel: runtimeConfig.model,
       tiers: { simple: 1, medium: 1, complex: 1 },
     },
   });
@@ -463,7 +580,10 @@ export async function restoreHistoricalPlanAsLatest(
   };
 }
 
-export async function repairExecution(executionUid: string, options?: { actorLabel?: string }): Promise<{
+export async function repairExecution(
+  executionUid: string,
+  options?: { actorLabel?: string; llmConfig?: LLMRuntimeOverrides; autoRepairRemaining?: number }
+): Promise<{
   planUid: string;
   planVersion: number;
   executionUid: string;
@@ -494,6 +614,8 @@ export async function repairExecution(executionUid: string, options?: { actorLab
   validateScenarioRequirementCoverage(config);
 
   const auth = buildAuthContext(project, config);
+  const llmConfig = mergeLLMRuntimeOverrides(await getWorkspaceLLMRuntimeOverrides(), options?.llmConfig);
+  const runtimeConfig = getLLMRuntimeConfig(llmConfig);
   const { snapshot, promptDescription, promptContext } = await buildGenerationInput(config, auth);
   const events = await listExecutionEvents(executionUid);
 
@@ -518,7 +640,8 @@ export async function repairExecution(executionUid: string, options?: { actorLab
         recentEvents: buildRepairEventDigest(events),
       },
       auth,
-      promptContext
+      promptContext,
+      llmConfig
     ),
     completionMessage: 'AI 纠错完成，正在写入修复计划与用例',
   });
@@ -535,7 +658,7 @@ export async function repairExecution(executionUid: string, options?: { actorLab
     planTitle: `${config.name} - AI纠错计划`,
     planCode: repairedCode,
     planSummary: `基于失败执行 ${executionUid} 完成 AI 纠错，自动生成于 ${new Date().toLocaleString('zh-CN')}`,
-    generationModel: process.env.OPENAI_MODEL || 'unknown',
+    generationModel: runtimeConfig.model,
     generationPrompt: [`[AI纠错] 原执行: ${executionUid}`, promptDescription].join('\n\n'),
     generatedFiles: [
       {
@@ -586,11 +709,15 @@ export async function repairExecution(executionUid: string, options?: { actorLab
       previousPlanUid: plan.planUid,
       previousPlanVersion: plan.planVersion,
       planVersion: repairedPlan.planVersion,
-      generationModel: process.env.OPENAI_MODEL || 'unknown',
+      generationModel: runtimeConfig.model,
     },
   });
 
-  const rerun = await executePlan(repairedPlan.planUid, { actorLabel: options?.actorLabel || 'AI纠错' });
+  const rerun = await executePlan(repairedPlan.planUid, {
+    actorLabel: options?.actorLabel || 'AI纠错',
+    llmConfig,
+    autoRepairRemaining: Math.max(0, Number(options?.autoRepairRemaining || 0)),
+  });
   return {
     planUid: repairedPlan.planUid,
     planVersion: repairedPlan.planVersion,
@@ -598,7 +725,15 @@ export async function repairExecution(executionUid: string, options?: { actorLab
   };
 }
 
-export async function executePlan(planUid: string, options?: { actorLabel?: string }): Promise<{ executionUid: string }> {
+export async function executePlan(
+  planUid: string,
+  options?: {
+    actorLabel?: string;
+    enableAutoRepair?: boolean;
+    llmConfig?: LLMRuntimeOverrides;
+    autoRepairRemaining?: number;
+  }
+): Promise<{ executionUid: string }> {
   const plan = await getPlanByUid(planUid);
   if (!plan) throw new Error('测试计划不存在');
 
@@ -611,6 +746,14 @@ export async function executePlan(planUid: string, options?: { actorLabel?: stri
   if (!config) throw new Error('计划关联配置不存在');
   const project = await getProjectByUid(config.projectUid);
   if (!project) throw new Error('计划关联项目不存在');
+  const llmConfig = mergeLLMRuntimeOverrides(await getWorkspaceLLMRuntimeOverrides(), options?.llmConfig);
+  const runtimeConfig = getLLMRuntimeConfig(llmConfig);
+  const autoRepairRemaining =
+    typeof options?.autoRepairRemaining === 'number'
+      ? Math.max(0, Math.floor(options.autoRepairRemaining))
+      : options?.enableAutoRepair
+        ? Math.max(0, runtimeConfig.selfHealRetries)
+        : 0;
 
   const workerSessionId = uid('ws');
   const executionUid = await createExecution({
@@ -651,6 +794,7 @@ export async function executePlan(planUid: string, options?: { actorLabel?: stri
       configUid: config.configUid,
       configName: config.name,
       triggerSource: 'manual',
+      autoRepairRemaining,
     },
   });
 
@@ -664,6 +808,9 @@ export async function executePlan(planUid: string, options?: { actorLabel?: stri
     configName: config.name,
     projectUid: config.projectUid,
     auth: buildAuthContext(project, config),
+    actorLabel: options?.actorLabel,
+    llmConfig,
+    autoRepairRemaining,
   });
 
   return { executionUid };
@@ -681,6 +828,14 @@ export async function getExecutionDetail(executionUid: string) {
   const projectRecord = configRecord ? await getProjectByUid(configRecord.projectUid) : null;
   const config = configRecord ? (({ loginPasswordPlain: _ignored, ...rest }) => rest)(configRecord) : null;
   const project = projectRecord ? (({ loginPasswordPlain: _ignored, ...rest }) => rest)(projectRecord) : null;
+  const importedArtifact =
+    artifacts.find((item) => item.artifactType === 'generated_spec' && extractIntentImportRunIdFromArtifactMeta(item.meta)) || null;
+  const importedFromRunId = importedArtifact ? extractIntentImportRunIdFromArtifactMeta(importedArtifact.meta) : '';
+  const importedStatus =
+    importedArtifact
+      ? extractIntentImportStatusFromArtifactMeta(importedArtifact.meta) ||
+        (execution.status === 'passed' || execution.status === 'failed' ? execution.status : '')
+      : '';
 
   return {
     execution,
@@ -691,6 +846,13 @@ export async function getExecutionDetail(executionUid: string) {
     events,
     conversations,
     artifacts,
+    intentImport: importedFromRunId
+      ? {
+          importedFromRunId,
+          importedStatus,
+          importedAt: importedArtifact?.createdAt || '',
+        }
+      : null,
   };
 }
 
@@ -708,6 +870,9 @@ async function runExecutionInBackground(input: {
   configName: string;
   projectUid: string;
   auth?: { loginUrl?: string; username?: string; password?: string; loginDescription?: string };
+  actorLabel?: string;
+  llmConfig?: LLMRuntimeOverrides;
+  autoRepairRemaining: number;
 }) {
   try {
     await insertLlmConversation({
@@ -807,6 +972,92 @@ async function runExecutionInBackground(input: {
       path: `db://executions/${input.executionUid}/${artifactFileName}`,
       name: artifactFileName,
     }, input.projectUid);
+
+    if (outcome.status === 'failed' && input.autoRepairRemaining > 0) {
+      const repairBlockedMessage = buildExecutionRepairBlockedMessage({
+        status: outcome.status,
+        resultSummary: outcome.summary,
+        errorMessage: result.error || '',
+      });
+
+      if (repairBlockedMessage) {
+        const skippedSummary = `执行失败，已停止自动纠错：${repairBlockedMessage}`;
+        await insertExecutionEvent(input.executionUid, 'status', {
+          status: 'auto_repair_skipped',
+          at: new Date().toISOString(),
+          summary: skippedSummary,
+          remainingRetries: input.autoRepairRemaining,
+        }, input.projectUid);
+        await insertLlmConversation({
+          projectUid: input.projectUid,
+          scene: 'plan_execution',
+          refUid: input.executionUid,
+          role: 'tool',
+          messageType: 'error',
+          content: skippedSummary,
+        });
+      } else {
+        const pendingSummary = `执行失败，准备自动发起 AI 纠错，当前剩余自动修复 ${input.autoRepairRemaining} 次。`;
+        await insertExecutionEvent(input.executionUid, 'status', {
+          status: 'auto_repair_pending',
+          at: new Date().toISOString(),
+          summary: pendingSummary,
+          remainingRetries: input.autoRepairRemaining,
+        }, input.projectUid);
+        await insertLlmConversation({
+          projectUid: input.projectUid,
+          scene: 'plan_execution',
+          refUid: input.executionUid,
+          role: 'assistant',
+          messageType: 'thinking',
+          content: pendingSummary,
+        });
+
+        try {
+          const repaired = await repairExecution(input.executionUid, {
+            actorLabel: input.actorLabel || '自动纠错',
+            llmConfig: input.llmConfig,
+            autoRepairRemaining: input.autoRepairRemaining - 1,
+          });
+          const startedSummary = `执行失败，已自动发起 AI 纠错并重跑。新执行 ${repaired.executionUid}，剩余自动修复 ${Math.max(0, input.autoRepairRemaining - 1)} 次。`;
+          await insertExecutionEvent(input.executionUid, 'status', {
+            status: 'auto_repair_started',
+            at: new Date().toISOString(),
+            summary: startedSummary,
+            nextExecutionUid: repaired.executionUid,
+            nextPlanUid: repaired.planUid,
+            nextPlanVersion: repaired.planVersion,
+            nextRunPath: `/runs/${repaired.executionUid}`,
+            remainingRetries: Math.max(0, input.autoRepairRemaining - 1),
+          }, input.projectUid);
+          await insertLlmConversation({
+            projectUid: input.projectUid,
+            scene: 'plan_execution',
+            refUid: input.executionUid,
+            role: 'assistant',
+            messageType: 'status',
+            content: startedSummary,
+          });
+        } catch (repairError: unknown) {
+          const message = repairError instanceof Error ? repairError.message : String(repairError);
+          const failedSummary = `执行失败，自动 AI 纠错启动失败：${message}`;
+          await insertExecutionEvent(input.executionUid, 'status', {
+            status: 'auto_repair_failed',
+            at: new Date().toISOString(),
+            summary: failedSummary,
+            remainingRetries: input.autoRepairRemaining,
+          }, input.projectUid).catch(() => undefined);
+          await insertLlmConversation({
+            projectUid: input.projectUid,
+            scene: 'plan_execution',
+            refUid: input.executionUid,
+            role: 'tool',
+            messageType: 'error',
+            content: failedSummary,
+          }).catch(() => undefined);
+        }
+      }
+    }
 
     await finalizeCapabilityVerification({
       configUid: input.configUid,

@@ -3,6 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const ORIGINAL_ENV = { ...process.env };
 
 function setResponsesEnv() {
+  process.env.LLM_PROVIDER = 'openai';
+  process.env.LLM_MODEL = 'gpt-5.3-codex';
+  process.env.LLM_BASE_URL = 'https://api.openai.com/v1';
+  process.env.LLM_API_KEY = 'test-key';
+  process.env.LLM_API_STYLE = 'responses';
   process.env.OPENAI_MODEL = 'gpt-5.3-codex';
   process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1';
   process.env.OPENAI_API_KEY = 'test-key';

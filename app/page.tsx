@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useEffect, useState, useTransition } from 'react';
+import LLMConfigDialog from '@/components/LLMConfigDialog';
 
 type ProjectStatus = 'active' | 'archived';
 
@@ -106,6 +107,7 @@ export default function HomePage() {
   const [statusFilter, setStatusFilter] = useState<ProjectStatus>('active');
   const [error, setError] = useState('');
   const [openModal, setOpenModal] = useState(false);
+  const [llmConfigModalOpen, setLlmConfigModalOpen] = useState(false);
   const [editingUid, setEditingUid] = useState('');
   const [navigatingProjectUid, setNavigatingProjectUid] = useState('');
   const [form, setForm] = useState<ProjectFormState>(defaultForm);
@@ -315,12 +317,30 @@ async function loadProjects() {
             </button>
           </div>
 
-          <button
-            onClick={openCreate}
-            className="inline-flex h-12 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,#111827,#334155)] px-5 text-sm font-medium text-white shadow-[0_18px_40px_rgba(15,23,42,0.18)] transition hover:scale-[1.01] hover:shadow-[0_24px_48px_rgba(15,23,42,0.22)]"
-          >
-            新建测试项目
-          </button>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={() => setLlmConfigModalOpen(true)}
+              className="inline-flex h-12 items-center justify-center rounded-2xl border border-slate-200/80 bg-white/84 px-5 text-sm font-medium text-slate-700 transition hover:bg-white"
+            >
+              LLM 配置
+            </button>
+            <button
+              onClick={() => {
+                startNavigation(() => {
+                  router.push('/intent-e2e');
+                });
+              }}
+              className="inline-flex h-12 items-center justify-center rounded-2xl border border-slate-200/80 bg-white/84 px-5 text-sm font-medium text-slate-700 transition hover:bg-white"
+            >
+              打开意图工作台
+            </button>
+            <button
+              onClick={openCreate}
+              className="inline-flex h-12 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,#111827,#334155)] px-5 text-sm font-medium text-white shadow-[0_18px_40px_rgba(15,23,42,0.18)] transition hover:scale-[1.01] hover:shadow-[0_24px_48px_rgba(15,23,42,0.22)]"
+            >
+              新建测试项目
+            </button>
+          </div>
         </section>
 
         {error && (
@@ -578,6 +598,8 @@ async function loadProjects() {
           </div>
         </div>
       )}
+
+      <LLMConfigDialog open={llmConfigModalOpen} onClose={() => setLlmConfigModalOpen(false)} />
     </main>
   );
 }

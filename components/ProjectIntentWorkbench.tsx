@@ -119,6 +119,9 @@ type ProjectIntentWorkbenchProps = {
   canEditContent: boolean;
   creationBlockedReason: string;
   onApplyTaskDraft: (draft: IntentTaskDraft) => void;
+  hideTrigger?: boolean;
+  externalOpenKey?: string;
+  externalOpenView?: WorkbenchView;
   launchPreset?: {
     token: string;
     view: WorkbenchView;
@@ -371,6 +374,9 @@ export default function ProjectIntentWorkbench({
   canEditContent,
   creationBlockedReason,
   onApplyTaskDraft,
+  hideTrigger = false,
+  externalOpenKey = '',
+  externalOpenView = 'recipe',
   launchPreset,
   onLaunchPresetConsumed,
 }: ProjectIntentWorkbenchProps) {
@@ -403,6 +409,7 @@ export default function ProjectIntentWorkbench({
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [appliedLaunchToken, setAppliedLaunchToken] = useState('');
+  const [appliedExternalOpenKey, setAppliedExternalOpenKey] = useState('');
 
   const documentNameByUid = new Map(documents.map((item) => [item.documentUid, item.name]));
   const activeDocuments = documents.filter((item) => item.status === 'active');
@@ -416,7 +423,7 @@ export default function ProjectIntentWorkbench({
     const haystack = [item.heading, item.content, item.keywords.join(' ')].join('\n').toLowerCase();
     return haystack.includes(documentPreviewSearchQuery);
   });
-  const capabilityCatalogItems = activeCapabilities.filter((item) =>
+  const capabilityCatalogItems = capabilities.filter((item) =>
     matchesCapabilitySearch(item, capabilitySearchQuery, documentNameByUid.get(item.sourceDocumentUid) || '')
   );
   const selectedModuleName = activeModules.find((item) => item.moduleUid === selectedModuleUid)?.name || '未选择';
@@ -551,6 +558,13 @@ export default function ProjectIntentWorkbench({
     setOpen(true);
     onLaunchPresetConsumed?.(launchPreset.token);
   }, [appliedLaunchToken, launchPreset, onLaunchPresetConsumed]);
+
+  useEffect(() => {
+    if (!externalOpenKey || externalOpenKey === appliedExternalOpenKey) return;
+    setAppliedExternalOpenKey(externalOpenKey);
+    setView(externalOpenView);
+    openWorkbench();
+  }, [appliedExternalOpenKey, externalOpenKey, externalOpenView]);
 
   function showError(message: string) {
     setNotice('');
@@ -2276,12 +2290,14 @@ export default function ProjectIntentWorkbench({
 
   return (
     <>
-      <button
-        onClick={openWorkbench}
-        className="h-8 rounded-lg border border-blue-200 bg-blue-50 px-3 text-xs font-medium text-blue-700 transition hover:bg-blue-100"
-      >
-        需求编排
-      </button>
+      {!hideTrigger && (
+        <button
+          onClick={openWorkbench}
+          className="h-8 rounded-lg border border-blue-200 bg-blue-50 px-3 text-xs font-medium text-blue-700 transition hover:bg-blue-100"
+        >
+          需求编排
+        </button>
+      )}
 
       {open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm">

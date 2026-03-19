@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { callLLM } from './llm-client';
+import type { LLMRuntimeOverrides } from './llm/provider-config';
 
 const ROOT = process.cwd();
 const CASES_PATH = path.join(ROOT, 'edge-cases', 'cases.json');
@@ -15,9 +16,10 @@ export async function handleTestFailure(
   testCode: string,
   error: string,
   url: string,
-  _description: string
+  _description: string,
+  runtimeOverrides?: LLMRuntimeOverrides
 ): Promise<FeedbackResult> {
-  const analysis = await analyzeFailure(error, testCode, url);
+  const analysis = await analyzeFailure(error, testCode, url, runtimeOverrides);
 
   if (!analysis.isEdgeCase) {
     return { saved: false, reason: analysis.reason || '非业务边缘问题，不记录' };
@@ -48,7 +50,12 @@ export async function handleTestFailure(
   return { saved: true, edgeCase };
 }
 
-async function analyzeFailure(error: string, code: string, url: string): Promise<any> {
+async function analyzeFailure(
+  error: string,
+  code: string,
+  url: string,
+  runtimeOverrides?: LLMRuntimeOverrides
+): Promise<any> {
   const prompt = `分析以下 Playwright E2E 测试失败，判断是否为业务边缘案例。
 
 ## 错误
@@ -68,7 +75,7 @@ ${url}
 {"isEdgeCase":boolean,"reason":"简短说明","title":"边缘案例标题","module":"模块名","input":{},"expected":"预期行为","severity":"high|medium|low"}`;
 
   try {
-    const resp = await callLLM(prompt);
+    const resp = await callLLM(prompt, undefined, runtimeOverrides);
     const match = resp.match(/\{[\s\S]*\}/);
     return match ? JSON.parse(match[0]) : { isEdgeCase: false, reason: 'LLM 返回格式异常' };
   } catch {

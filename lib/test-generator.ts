@@ -1,6 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { callLLMStream } from './llm-client';
+import { renderIntentActionLibrary, selectIntentActionLibrary } from './intent-action-library';
+import { renderIntentRepairMemoryHints, type IntentRepairMemoryHint } from './ai/intent-repair-memory';
+import { buildIntentActionDSL, renderIntentActionDSL, type IntentActionDSL, type IntentActionStepInput } from './intent-action-dsl';
+import { applyIntentProjectKnowledgeToDsl, renderIntentProjectKnowledge, resolveIntentProjectKnowledge, type IntentProjectKnowledgeResolution } from './intent-project-knowledge';
+import type { LLMRuntimeOverrides } from './llm/provider-config';
 import type { PageSnapshot, AuthConfig } from './page-analyzer';
 
 export interface GenerateEvent {
@@ -16,12 +21,15 @@ export interface GenerateTestContext {
   sharedVariables?: string[];
   cleanupNotes?: string;
   relatedSnapshots?: PageSnapshot[];
+  scenarioSteps?: IntentActionStepInput[];
+  actionDsl?: IntentActionDSL;
 }
 
 export interface RepairTestContext {
   previousCode: string;
   executionError: string;
   recentEvents?: string[];
+  repairMemoryHints?: IntentRepairMemoryHint[];
 }
 
 const ROOT = process.cwd();
@@ -61,6 +69,68 @@ function buildIntentHaystack(description: string, context?: GenerateTestContext)
   ]
     .join('\n')
     .toLowerCase();
+}
+
+interface ResolvedPromptPlanningContext {
+  dsl: IntentActionDSL;
+  knowledge: IntentProjectKnowledgeResolution;
+}
+
+function resolvePromptPlanningContext(
+  snapshot: PageSnapshot,
+  description: string,
+  context?: GenerateTestContext
+): ResolvedPromptPlanningContext {
+  const baseDsl =
+    context?.actionDsl ||
+    buildIntentActionDSL({
+      taskMode: context?.taskMode,
+      targetUrl: context?.scenarioEntryUrl || snapshot.url,
+      featureDescription: description,
+      expectedOutcome: context?.expectedOutcome,
+      sharedVariables: context?.sharedVariables,
+      cleanupNotes: context?.cleanupNotes,
+      steps: context?.scenarioSteps,
+    });
+
+  const knowledge = resolveIntentProjectKnowledge({
+    snapshot,
+    description,
+    dsl: baseDsl,
+  });
+
+  return {
+    dsl: applyIntentProjectKnowledgeToDsl(baseDsl, knowledge),
+    knowledge,
+  };
+}
+
+function buildActionDslSection(planning: ResolvedPromptPlanningContext): string {
+  return `
+${renderIntentActionDSL(planning.dsl)}`;
+}
+
+function buildProjectKnowledgeSection(planning: ResolvedPromptPlanningContext): string {
+  const rendered = renderIntentProjectKnowledge(planning.knowledge);
+  return rendered ? `
+${rendered}` : '';
+}
+
+function buildActionLibrarySection(
+  snapshot: PageSnapshot,
+  auth: AuthConfig | undefined,
+  planning: ResolvedPromptPlanningContext
+): string {
+  const library = selectIntentActionLibrary({
+    dsl: planning.dsl,
+    auth,
+    snapshot,
+    preferredCapabilitySlugs: planning.knowledge.capabilitySlugs,
+  });
+
+  const rendered = renderIntentActionLibrary(library);
+  return rendered ? `
+${rendered}` : '';
 }
 
 function looksLikeBusinessCreateOrderTask(snapshot: PageSnapshot, description: string, context?: GenerateTestContext): boolean {
@@ -113,8 +183,57 @@ function looksLikeCompanySearchTask(snapshot: PageSnapshot, description: string,
     haystack.includes('/company/easyindex') ||
     haystack.includes('easysearchlist') ||
     haystack.includes('统一信用代码') ||
-    haystack.includes('股东信息搜索企业')
+      haystack.includes('股东信息搜索企业')
   );
+}
+
+function looksLikeServiceCommissionConfigTask(snapshot: PageSnapshot, description: string, context?: GenerateTestContext): boolean {
+  const haystack = buildTaskHaystack(snapshot, description, context);
+  const intentHaystack = buildIntentHaystack(description, context);
+
+  return (
+    (haystack.includes('/commission/subcommissionconfig') || haystack.includes('服务分佣配置')) &&
+    intentHaystack.includes('分佣配置') &&
+    (intentHaystack.includes('佣金比例') || intentHaystack.includes('分佣比例')) &&
+    (intentHaystack.includes('商机创建人') || intentHaystack.includes('订单签单人') || intentHaystack.includes('企业引入人'))
+  );
+}
+
+function extractCommissionSearchKeyword(description: string, context?: GenerateTestContext): string {
+  const source = [description, context?.scenarioSummary || '', context?.expectedOutcome || ''].join('\n');
+  const patterns = [
+    /关键词\s*[:：]?\s*[“"']?([A-Za-z0-9_-]{1,32})[”"']?/i,
+    /搜索\s*[“"']?([A-Za-z0-9_-]{1,32})[”"']?/i,
+    /服务ID\s*[:：]?\s*([A-Za-z0-9_-]{1,32})/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = source.match(pattern);
+    if (match?.[1]) return match[1].trim();
+  }
+
+  return '';
+}
+
+function extractCommissionTargetRatio(description: string, context?: GenerateTestContext): string {
+  const source = [description, context?.scenarioSummary || '', context?.expectedOutcome || ''].join('\n');
+  const patterns = [
+    /(?:改为|修改为|设置为|填写为|调整为)\s*([0-9]+(?:\.[0-9]+)?)\s*%/i,
+    /佣金比例(?:[^0-9]{0,8})([0-9]+(?:\.[0-9]+)?)\s*%/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = source.match(pattern);
+    if (match?.[1]) return match[1].trim();
+  }
+
+  return '';
+}
+
+function extractCommissionRoleLabel(description: string, context?: GenerateTestContext): string {
+  const source = [description, context?.scenarioSummary || '', context?.expectedOutcome || ''].join('\n');
+  const labels = ['商机创建人', '订单签单人', '企业引入人'];
+  return labels.find((label) => source.includes(label)) || '';
 }
 
 function extractEmbeddedExample(source: string): string {
@@ -316,6 +435,158 @@ function buildBusinessBatchAddContactsTemplate(): string {
 });`;
 }
 
+function buildServiceCommissionConfigTemplate(snapshot: PageSnapshot, description: string, context?: GenerateTestContext): string {
+  const targetUrl = context?.scenarioEntryUrl || snapshot.url;
+  const keyword = extractCommissionSearchKeyword(description, context);
+  const targetRatioValue = extractCommissionTargetRatio(description, context);
+  const targetRole = extractCommissionRoleLabel(description, context) || '商机创建人';
+
+  if (!targetUrl.trim() || !keyword || !targetRatioValue) return '';
+
+  return `test('服务分佣配置：按关键词修改佣金比例并校验结果', async ({ page }) => {
+  const TARGET_URL = ${JSON.stringify(targetUrl)};
+  const SEARCH_KEYWORD = ${JSON.stringify(keyword)};
+  const TARGET_ROLE = ${JSON.stringify(targetRole)};
+  const TARGET_RATIO_VALUE = ${JSON.stringify(targetRatioValue)};
+
+  test.skip(
+    !process.env.E2E_USERNAME || !process.env.E2E_PASSWORD,
+    '缺少 E2E_USERNAME / E2E_PASSWORD'
+  );
+
+  const normalizeRatio = (value) => String(value || '').replace(/\\s+/g, '').replace(/%$/, '');
+
+  await __e2e.ensureLoggedIn(page, { targetUrl: TARGET_URL });
+  await page.waitForURL(/#\\/commission\\/subCommissionConfig/, { timeout: 60000 });
+  await expect(page.locator('#service-data-item_keyWord')).toBeVisible({ timeout: 30000 });
+  const searchButton = page.getByRole('button', { name: /搜\\s*索/ }).first();
+  await expect(searchButton).toBeVisible({ timeout: 15000 });
+
+  const keywordInput = page.locator('#service-data-item_keyWord');
+  const targetRow = page.locator('.ant-table .ant-table-tbody > tr').filter({ hasText: SEARCH_KEYWORD }).first();
+  const searchErrorToast = page
+    .locator('.ant-message-notice, .ant-notification-notice')
+    .filter({ hasText: /服务开小差|稍后重试|服务异常/i })
+    .last();
+
+  async function waitForSearchOutcome() {
+    await page.waitForTimeout(1200);
+    if (await targetRow.isVisible().catch(() => false)) return 'row';
+    if (await searchErrorToast.isVisible().catch(() => false)) return 'error';
+    if (await page.locator('.ant-table-placeholder').first().isVisible().catch(() => false)) return 'empty';
+
+    return await page
+      .waitForFunction(
+        (keyword) => {
+          const rows = Array.from(document.querySelectorAll('.ant-table .ant-table-tbody > tr'));
+          if (rows.some((row) => String(row.innerText || '').includes(keyword))) return 'row';
+
+          const toastText = Array.from(document.querySelectorAll('.ant-message-notice, .ant-notification-notice'))
+            .map((node) => String(node.textContent || ''))
+            .join(' ');
+          if (/服务开小差|稍后重试|服务异常/i.test(toastText)) return 'error';
+          if (document.querySelector('.ant-table-placeholder')) return 'empty';
+          return '';
+        },
+        SEARCH_KEYWORD,
+        { timeout: 12000 }
+      )
+      .then((handle) => handle.jsonValue())
+      .catch(() => '');
+  }
+
+  let searchOutcome = '';
+  for (let searchAttempt = 1; searchAttempt <= 3; searchAttempt += 1) {
+    await keywordInput.fill(SEARCH_KEYWORD);
+    await searchButton.click();
+    searchOutcome = String((await waitForSearchOutcome()) || '');
+    if (searchOutcome === 'row') break;
+
+    if (searchAttempt < 3 && (!searchOutcome || searchOutcome === 'error' || searchOutcome === 'empty')) {
+      await page.waitForTimeout(1000 * searchAttempt);
+      continue;
+    }
+  }
+
+  if (!(await targetRow.isVisible().catch(() => false))) {
+    if (searchOutcome === 'error') {
+      throw new Error('搜索结果接口暂时异常，页面提示“服务开小差了，请稍后重试...”');
+    }
+    if (searchOutcome === 'empty') {
+      throw new Error('关键词 ' + SEARCH_KEYWORD + ' 当前未返回任何服务数据');
+    }
+  }
+
+  await expect(targetRow).toBeVisible({ timeout: 10000 });
+
+  await __e2e.clickAntdRowAction(page, targetRow, '分佣配置');
+
+  const modal = await __e2e.waitForVisibleAntdModal(page, {
+    titleIncludes: '服务分佣配置',
+    timeoutMs: 30000,
+  });
+
+  const roleRow = modal.locator('tr').filter({ hasText: TARGET_ROLE }).first();
+  await expect(roleRow).toBeVisible({ timeout: 15000 });
+
+  const ratioInput = roleRow.locator('input').first();
+  await expect(ratioInput).toBeVisible({ timeout: 15000 });
+
+  const beforeRatio = normalizeRatio(await ratioInput.inputValue());
+  if (beforeRatio !== TARGET_RATIO_VALUE) {
+    await ratioInput.click();
+    await ratioInput.fill(TARGET_RATIO_VALUE);
+    await ratioInput.press('Tab');
+
+    const afterRatio = normalizeRatio(await ratioInput.inputValue());
+    expect(afterRatio).toBe(TARGET_RATIO_VALUE);
+
+    const saveButton = page.getByRole('button', { name: /保\\s*存/ }).last();
+    await expect(saveButton).toBeVisible({ timeout: 10000 });
+    await saveButton.click();
+
+    const successToast = page
+      .locator('.ant-message-notice .ant-message-custom-content')
+      .filter({ hasText: /保存成功|修改成功|success/i })
+      .last();
+    const saveOutcome = await Promise.any([
+      successToast.waitFor({ state: 'visible', timeout: 20000 }).then(() => 'toast'),
+      expect(modal).toBeHidden({ timeout: 30000 }).then(() => 'closed'),
+      page
+        .waitForFunction(
+          ({ role, targetValue }) => {
+            const normalize = (value) => String(value || '').replace(/\\s+/g, '').replace(/%$/, '');
+            const containers = Array.from(document.querySelectorAll('.ant-drawer-content, .ant-modal-content'));
+            const visibleContainer = containers.find((node) => {
+              if (!(node instanceof HTMLElement)) return false;
+              const style = window.getComputedStyle(node);
+              const rect = node.getBoundingClientRect();
+              return style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity || '1') !== 0 && rect.width > 0 && rect.height > 0;
+            });
+            if (!(visibleContainer instanceof HTMLElement)) return false;
+
+            const rows = Array.from(visibleContainer.querySelectorAll('tr'));
+            const targetRow = rows.find((row) => String(row.innerText || '').includes(role));
+            if (!(targetRow instanceof HTMLElement)) return false;
+
+            const input = targetRow.querySelector('input');
+            return normalize(input?.value || '') === targetValue;
+          },
+          { role: TARGET_ROLE, targetValue: TARGET_RATIO_VALUE },
+          { timeout: 20000 }
+        )
+        .then(() => 'retained'),
+    ]).catch(() => '');
+
+    if (!saveOutcome) {
+      throw new Error('保存后未观察到成功提示、抽屉关闭或佣金值保留为目标值');
+    }
+  } else {
+    expect(beforeRatio).toBe(TARGET_RATIO_VALUE);
+  }
+});`;
+}
+
 export function resolveDeterministicTemplate(
   snapshot: PageSnapshot,
   description: string,
@@ -324,6 +595,10 @@ export function resolveDeterministicTemplate(
 ): string {
   if (looksLikeBusinessBatchAddContactsTask(snapshot, description, context)) {
     return buildBusinessBatchAddContactsTemplate();
+  }
+
+  if (looksLikeServiceCommissionConfigTask(snapshot, description, context)) {
+    return buildServiceCommissionConfigTemplate(snapshot, description, context);
   }
 
   if (!existingExample.trim()) return '';
@@ -452,9 +727,11 @@ export function buildPrompt(
   auth: AuthConfig | undefined,
   edgeCases: any[],
   existingExample: string,
-  context?: GenerateTestContext
+  context?: GenerateTestContext,
+  planning?: ResolvedPromptPlanningContext
 ): string {
   const parts: string[] = [];
+  const resolvedPlanning = planning || resolvePromptPlanningContext(snapshot, description, context);
 
   parts.push('你是一个 Playwright E2E 测试专家。请根据以下信息生成完整可执行的 Playwright 测试代码。');
 
@@ -464,7 +741,8 @@ export function buildPrompt(
 1. 对列表页，非必要不要点击“全部清除”“重置”等会重载筛选状态的按钮；先观察页面是否已经有可用数据。
 2. 如果任务描述要求批量操作，优先考虑“勾选行 + 顶部批量按钮”的真实入口，不要臆造不存在的行内按钮。
 3. 从列表行提取关键主键时，优先使用明确的链接文本、编号列或字段标签，不要用宽泛正则从整行文本中猜测，以免误取手机号、企业 ID 或金额。
-4. 如果目标行没有可见的“查看 / 编辑 / 生成订单”按钮，而是只有末列三点菜单或 \`.ant-dropdown-trigger\` 图标，必须先打开该行操作菜单，再在当前可见 menu 内点击目标动作。`);
+4. 如果目标行没有可见的“查看 / 编辑 / 生成订单”按钮，而是只有末列三点菜单或 \`.ant-dropdown-trigger\` 图标，必须先打开该行操作菜单，再在当前可见 menu 内点击目标动作。
+5. 对 Ant Design 表格，禁止先写 \`expect(page.locator('.ant-table-tbody')).toBeVisible()\` 这类表体可见性断言；固定列、粘性列和克隆节点会让 \`.ant-table-tbody\` 同时命中多个元素。应直接等待目标行、表格请求完成，或等待 \`.ant-table-placeholder\` / 行数变化。`);
 
   parts.push(`\n## 下拉与重复文案规则
 1. 遇到 Ant Design Select / Cascader / TreeSelect / 弹层枚举项时，必须先定位到当前可见的弹层容器，再在容器内选择选项，例如：
@@ -496,6 +774,9 @@ export function buildPrompt(
    - await __e2e.clickAntdRowAction(page, targetRow, '生成订单');
    - await __e2e.clickAntdRowAction(page, targetRow, '查看');
 7. 只要场景是 Ant Design 下拉或 Ant Design 行操作菜单，默认先考虑 \`__e2e.openAntdDropdown\` / \`__e2e.selectAntdOption\` / \`__e2e.clickAntdRowAction\`，除非页面控件明显不是该类组件。`);
+  parts.push(`8. 对标题会拼接实体名称的 Ant Design 弹框，优先直接写：
+   - const modal = await \`__e2e.waitForVisibleAntdModal(page, { titleIncludes: '服务分佣配置' })\`;
+   - 然后在 \`modal\` 内断言标题后缀、表单行和保存按钮；不要对完整标题做精确匹配。`);
 
   if (looksLikeBusinessCreateOrderTask(snapshot, description, context)) {
     parts.push(`\n## 商机转订单规则
@@ -505,6 +786,13 @@ export function buildPrompt(
 4. 生成订单成功后，原手机号对应的商机记录可能立即从当前商机列表移除或不再提供“查看”动作。除非需求明确要求继续打开详情，否则不要再强行查找同一行并点击“查看”。
 5. 如果需求只是“创建商机并生成订单”，以“createOrder 响应成功 + Drawer 关闭 + 关键清理信息已记录”作为主要成功判定即可；可附加校验“签约成功(n)”计数不下降，但不要把“原商机行仍可见”作为硬前提。`);
   }
+
+  parts.push(`\n## 媒体播放 / 预览 / 下载 / 打开详情成功判定规则
+1. 对“播放录音 / 预览图片或视频 / 打开详情 Drawer / 下载文件”等触发型动作，禁止只写宽泛的 \`expect(...).toBeTruthy()\`、\`page.getByText(/成功/i)\`，也禁止写 \`Promise.race([waitFor(...).catch(() => false), ...])\` 这种会被较早 \`false\` 抢跑的成功判定。
+2. 如果动作会触发明确请求或返回业务数据，优先等待对应接口成功并校验关键字段，例如响应里的 \`code=1\`、媒体 URL、下载地址、详情数据已返回。
+3. 如果页面会出现播放器 / 预览容器 / Drawer / 新窗口，优先断言具体容器、\`audio[src]\` / \`video[src]\` / Drawer 标题 / 同一行按钮状态变化；不要跨整页找模糊 icon 或泛化文本。
+4. 当存在多个候选成功信号时，改用“按顺序检查多个信号”或 \`Promise.any(...)\`（失败分支保持 reject）；不要让任一分支的 \`catch(() => false)\` 提前把整体误判为失败。
+5. 如果接口已成功返回媒体 URL、详情数据或下载 token，即使页面上的播放 icon 没立即切换，也应把“业务响应成功 + 关键资源已返回”作为主要成功判定，再补一个轻量 UI 佐证。`);
 
   parts.push(`\n## Iframe / 嵌入页规则
 1. 如果页面快照或 Iframe 摘要里出现了真实业务控件，必须优先使用 frameLocator 或 frame 对象进入对应 iframe，例如：
@@ -533,7 +821,12 @@ ${context.scenarioSummary || '未提供'}
 4. 步骤说明里的字段名、placeholder、按钮文案、枚举值、企业名称、产品名如果已经给出，必须原样使用，不要擅自改成近义词或测试数据。
 5. 如果快照里已经暴露字段 id / label / placeholder，应优先使用这些精确信息；例如存在“请输入商机联系人”时，不要退化成“请输入联系人”。
 6. 如果分析到的页面仍然是登录页或与业务步骤不匹配，应显式报错或跳过，禁止基于错误页面猜测业务 locator。`);
+    parts.push(`7. 除非 cleanupNotes 明确要求回滚，否则不要在脚本尾部自动把刚修改成功的业务数据改回原值；意图任务默认以完成目标业务动作为主。`);
   }
+
+  parts.push(buildProjectKnowledgeSection(resolvedPlanning));
+  parts.push(buildActionDslSection(resolvedPlanning));
+  parts.push(buildActionLibrarySection(snapshot, auth, resolvedPlanning));
 
   if (context?.relatedSnapshots?.length) {
     parts.push(
@@ -546,18 +839,29 @@ ${context.scenarioSummary || '未提供'}
   parts.push(`\n## 用户需求\n${description}`);
 
   if (auth?.loginUrl) {
+    const preferredTargetUrl = context?.scenarioEntryUrl || snapshot.url;
     parts.push(`\n## 登录信息
 - 登录页: ${auth.loginUrl}
 - 用户名通过 process.env.E2E_USERNAME 获取
 - 密码通过 process.env.E2E_PASSWORD 获取
 - 登录方式说明: ${auth.loginDescription || '未提供，请优先选择可自动化的密码登录方式'}
+- 执行环境内置 helper: \`__e2e.ensureLoggedIn(page, { targetUrl })\`、\`__e2e.loginWithEnvAuth(page)\`
+
+推荐骨架：
+\`\`\`javascript
+const TARGET_URL = '${preferredTargetUrl}';
+test.skip(!process.env.E2E_USERNAME || !process.env.E2E_PASSWORD, '缺少 E2E_USERNAME / E2E_PASSWORD');
+await __e2e.ensureLoggedIn(page, { targetUrl: TARGET_URL });
+\`\`\`
 
 要求：
-1. 先根据“登录方式说明”判断应该切换到哪个登录 tab（如扫码登录 / 密码登录 / 短信登录）。
-2. 如果说明明确为扫码等无法自动化方式，或者缺少自动化凭证，请使用 test.skip 明确说明原因，禁止假通过。
-3. 如果存在多个登录 tab，优先显式点击对应 tab，再填写账号密码并登录。
-4. 登录成功判定不要过拟合固定路由；像 "#/" 这类根主页也算登录成功，成功后可继续跳转到目标业务页。
-5. 遇到 Ant Design 表格的选择框时，优先点击可见的 checkbox wrapper / label，不要优先操作隐藏的 input。`);
+1. 优先复用 \`__e2e.ensureLoggedIn(page, { targetUrl: TARGET_URL })\` 完成登录，不要手写一大段 \`page.goto(LOGIN_URL)\` + locator 登录流程。
+2. 只有当前任务本身就是登录页，或你已经明确判断当前页就是登录页时，才直接调用 \`__e2e.loginWithEnvAuth(page)\`。
+3. 如果业务页已经自动重定向到真实登录页，禁止再额外 \`page.goto(LOGIN_URL)\`；很多站点把根地址当首页壳，重复跳转会把你从真实登录页带走。
+4. 先根据“登录方式说明”判断应该切换到哪个登录 tab（如扫码登录 / 密码登录 / 短信登录）。
+5. 如果说明明确为扫码等无法自动化方式，或者缺少自动化凭证，请使用 \`test.skip\` 明确说明原因，禁止假通过。
+6. 登录成功判定不要过拟合固定路由；像 "#/" 这类根主页也算登录成功，成功后可继续跳转到目标业务页。
+7. 遇到 Ant Design 表格的选择框时，优先点击可见的 checkbox wrapper / label，不要优先操作隐藏的 input。`);
   }
 
   if (edgeCases.length > 0) {
@@ -592,7 +896,13 @@ ${context.scenarioSummary || '未提供'}
 17. 修复 iframe 场景时，优先写 “等待 iframe selector 出现 -> 按 selector 或 frame URL 进入 frame -> 等待 frame 内 placeholder/按钮可见” 这类顺序，不要直接在顶层 page 上重试同一个 placeholder
 18. 只要步骤涉及 Ant Design 下拉，优先复用执行环境内置的 \`__e2e.openAntdDropdown\` / \`__e2e.selectAntdOption\`，不要再自行拼装脆弱 helper
 19. 如果列表目标动作收在行尾三点菜单 / \`.ant-dropdown-trigger\` 里，优先复用执行环境内置的 \`__e2e.clickAntdRowAction(page, targetRow, '动作名')\`，不要臆造行内可见按钮
-20. 禁止写 \`page.getByText(/成功/i).first()\` 这类宽泛成功断言；应优先等待具体 toast/弹窗标题、目标 Drawer/Modal 消失、接口响应成功或业务状态字段发生变化`);
+20. 禁止写 \`page.getByText(/成功/i).first()\` 这类宽泛成功断言；应优先等待具体 toast/弹窗标题、目标 Drawer/Modal 消失、接口响应成功或业务状态字段发生变化
+21. 对播放录音 / 预览媒体 / 打开详情 / 下载文件这类触发型动作，优先等待业务响应成功、资源 URL 返回或对应容器出现；禁止使用 \`Promise.race([...catch(() => false)])\` 这类会把较早失败误判成整体失败的写法
+22. 有统一登录信息时，优先使用执行环境内置的 \`__e2e.ensureLoggedIn(page, { targetUrl: TARGET_URL })\` 或 \`__e2e.loginWithEnvAuth(page)\`；不要重复手写 \`page.goto(LOGIN_URL)\` 并猜登录页 DOM
+23. 如果当前页已经是登录页，禁止再额外跳一次 \`LOGIN_URL\` 根地址；那可能把页面从真实登录页跳回首页壳，导致后续手机号/验证码输入框全部消失
+24. 对 Ant Design 表格，禁止直接断言裸 \`.ant-table-tbody\` 可见；优先等待目标行、行数或 placeholder，并基于目标行继续操作
+25. 对标题会附带业务实体名称的 Modal / Drawer，禁止精确断言整个标题字符串；应在当前可见容器内断言公共后缀文案，必要时直接使用 \`__e2e.waitForVisibleAntdModal(page, { titleIncludes: '公共标题片段' })\`
+26. 除非任务描述或 cleanupNotes 明确要求恢复现场，否则不要在脚本尾部自动把刚修改的业务数据改回去`);
 
   return parts.join('\n');
 }
@@ -614,9 +924,10 @@ export function buildRepairPrompt(
   edgeCases: any[],
   existingExample: string,
   repair: RepairTestContext,
-  context?: GenerateTestContext
+  context?: GenerateTestContext,
+  planning?: ResolvedPromptPlanningContext
 ): string {
-  const parts = [buildPrompt(snapshot, description, auth, edgeCases, existingExample, context)];
+  const parts = [buildPrompt(snapshot, description, auth, edgeCases, existingExample, context, planning)];
   const recentEvents = (repair.recentEvents || []).map((item) => `- ${clampText(item, 220)}`).join('\n');
   const recentEventText = (repair.recentEvents || []).join('\n');
   const diagnosisHints: string[] = [];
@@ -628,6 +939,13 @@ export function buildRepairPrompt(
   if (/getByPlaceholder/i.test(repair.executionError) && snapshot.frames?.length) {
     diagnosisHints.push('报错发生在 placeholder 可见性等待阶段，优先修正为“等待 iframe 就绪后，再在 frame 内等待输入框”。');
   }
+  if (
+    /getByPlaceholder\(/.test(repair.executionError) &&
+    /手机号|手机号码|用户名|账号/.test(repair.executionError) &&
+    /page\.goto\((?:process\.env\.E2E_LOGIN_URL|LOGIN_URL)/.test(repair.previousCode)
+  ) {
+    diagnosisHints.push('这次失败很可能不是凭证缺失，而是脚本已经从业务页自动跳到真实登录页后，又额外 `page.goto(LOGIN_URL)` 把自己带回了根首页壳。修复时优先改成 `await __e2e.ensureLoggedIn(page, { targetUrl: TARGET_URL })`；如果当前页已经是登录页，就直接 `await __e2e.loginWithEnvAuth(page)`，不要再手写二次跳转。');
+  }
   if (/ant-select-dropdown:not\(\.ant-select-dropdown-hidden\)/.test(repair.executionError) && /Received:\s+hidden|unexpected value "hidden"/i.test(repair.executionError)) {
     diagnosisHints.push('当前页面的下拉弹层在动画阶段可能没有 `.ant-select-dropdown-hidden` class，但实际仍是隐藏态。不要再用 `.ant-select-dropdown:not(.ant-select-dropdown-hidden)` 作为唯一可见性判断；改用 `.ant-select-dropdown:visible`，或在多个 dropdown 中显式挑选 isVisible() === true 的那个。');
   }
@@ -636,6 +954,30 @@ export function buildRepairPrompt(
   }
   if (/locator\('tbody tr'\).*getByRole\('button'/i.test(repair.executionError) && /详情\|查看|生成订单/.test(repair.executionError)) {
     diagnosisHints.push('目标列表行可能没有内联 button/link，而是把“查看 / 生成订单”等操作收在末列三点菜单里。修复时先定位目标行，再优先改用 `await __e2e.clickAntdRowAction(page, targetRow, \'生成订单\')` 或 `await __e2e.clickAntdRowAction(page, targetRow, \'查看\')`，不要继续假设行内存在可见 button。');
+  }
+  if (
+    /未找到行操作：/.test(repair.executionError) ||
+    (/getByText\('操作'/.test(repair.executionError) && /ant-table/i.test(repair.executionError)) ||
+    (/ant-table-wrapper/.test(repair.executionError) && /unexpected value "hidden"|Received:\s+hidden/i.test(repair.executionError))
+  ) {
+    diagnosisHints.push('这是 Ant Design 表格固定列/隐藏克隆节点的典型误判。修复时不要再新增 `getByText(\'操作\')`、`.ant-table-thead` 或表头可见性断言；“操作”列在 DOM 里经常同时存在多个隐藏副本。应直接基于目标行调用 `await __e2e.clickAntdRowAction(page, targetRow, \'动作名\')`，或在同 `data-row-key` 的可见克隆行内点击真实可见的动作链接。');
+  }
+  if (/locator\('\.ant-table-tbody'\)/.test(repair.executionError) && /strict mode violation|resolved to \d+ elements/i.test(repair.executionError)) {
+    diagnosisHints.push('当前失败不是“列表没渲染出来”，而是你对裸 `.ant-table-tbody` 做了可见性断言，命中了 Ant Design 固定列生成的多个表体副本。修复时不要再写 `expect(page.locator(\'.ant-table-tbody\')).toBeVisible()`；改成直接等待目标行出现、等待表格请求完成，或等待 `.ant-table-placeholder` / 行数变化。');
+  }
+  if (
+    /ant-modal-content|ant-modal:visible|ant-modal-wrap:visible/.test(repair.executionError) &&
+    /服务分佣配置/.test(repair.executionError) &&
+    /element\(s\) not found|Expected:\s+visible/i.test(repair.executionError)
+  ) {
+    diagnosisHints.push('这类弹框标题通常是“业务实体名 + 服务分佣配置”，例如 `“商务礼仪培训”服务分佣配置`；不要再对 `.ant-modal-content` 或完整标题做精确匹配。修复时优先改成 `const modal = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: \'服务分佣配置\' })`，然后只断言公共标题片段、佣金行和保存按钮。');
+  }
+  if (
+    /Cleanup:|restoreValue|originalRatio|改回原值|rowAfterSave|modalAgain/.test(repair.previousCode) &&
+    /(修改|改为|设置为|填写为|保存)/.test(description) &&
+    !/(恢复|回滚|改回|cleanup|清理)/i.test(`${description}\n${context?.cleanupNotes || ''}`)
+  ) {
+    diagnosisHints.push('当前需求没有要求回滚数据，脚本尾部自动“改回原值”只会增加额外失败面，还可能把已经完成的业务动作撤销。修复时删除自动恢复原值的 cleanup，只保留完成目标动作后的结果校验。');
   }
   if (/getByRole\('button', \{ name: \/搜\\s\*索\/ \}\)/.test(repair.executionError) && /sureOrderInfoDrawer|暂无信息|ant-spin-spinning/.test(repair.executionError)) {
     diagnosisHints.push('当前不是“搜索按钮定位失败”，而是“确定订单信息”Drawer/加载遮罩仍未关闭，说明前面的成功断言误判了。不要再写 `page.getByText(/成功/i).first()`；点击 Drawer 内“确定”后，优先等待 `crmapi/business/createOrder` 响应成功，并显式等待“确定订单信息”Drawer 消失，再继续回到列表或做后续校验。');
@@ -655,6 +997,22 @@ export function buildRepairPrompt(
     /business\/businesslist|contactPhone|contactName|businessId/.test(`${snapshot.url}\n${repair.previousCode}`)
   ) {
     diagnosisHints.push('这次失败不是“断言写法太严格”，而是联系人 / 手机号 / businessId 这些目标字段没有被稳定取到。不要继续把断言弱化成 `toBeTruthy()`、`not.toBe(\'\')` 或“任意非空单元格”；必须先定位到真实目标商机，再对明确字段做校验。若列表行文案会被省略、脱敏或异步补齐，优先改为用接口返回的 businessId 精确定位目标行，或打开该行“查看 / 详情”抽屉后再断言联系人、手机号和创建时间。');
+  }
+  if (
+    /expect\(received\)\.(?:toBeTruthy|not\.toBe\(expected\))/i.test(repair.executionError) &&
+    /录音|播放|audio|audioUrl|\.wav|aplayer|pause/i.test(`${description}\n${repair.previousCode}\n${recentEventText}`)
+  ) {
+    diagnosisHints.push('这次失败很可能不是“播放没触发”，而是成功判定写错了。最近事件里一旦已经出现 `audioUrl`、`.wav`、`code: 1` / `msg: success` 这类信号，就应优先把“接口成功 + 媒体 URL 返回 + 播放器或同行按钮状态变化”作为成功依据，不要继续写 `expect(triggered).toBeTruthy()` 这类宽泛真值断言。');
+  }
+  if (
+    /Promise\.race\(/.test(repair.previousCode) &&
+    /catch\(\(\)\s*=>\s*false\)/.test(repair.previousCode) &&
+    /expect\(received\)\.(?:toBeTruthy|not\.toBe\(expected\))/i.test(repair.executionError)
+  ) {
+    diagnosisHints.push('当前脚本把多个候选成功信号写成了 `Promise.race([...catch(() => false)])`；只要有一个分支更早返回 `false`，整体就会被误判失败。修复时改为按顺序检查各成功信号，或使用保持 reject 的 `Promise.any(...)`，不要让单个失败分支提前产出 `false`。');
+  }
+  if (/audioUrl|\.wav|录音|播放/.test(recentEventText) && /code:\s*1|msg:\s*success/.test(recentEventText)) {
+    diagnosisHints.push('最近执行事件已经出现录音资源 URL 或成功响应，说明点击后的业务链路大概率已经跑通。修复时只收敛修改当前播放成功的断言，不要改登录流、不要跳去无关页面，也不要发明需求里没有的页面锚点或 DOM id。');
   }
   if (
     /Cannot read properties of null \(reading 'id'\)/.test(recentEventText) &&
@@ -682,13 +1040,28 @@ export function buildRepairPrompt(
   if (diagnosisHints.length > 0) {
     parts.push(`\n## 修复诊断提示\n${diagnosisHints.map((item, index) => `${index + 1}. ${item}`).join('\n')}`);
   }
+  if (repair.repairMemoryHints?.length) {
+    parts.push(`\n${renderIntentRepairMemoryHints(repair.repairMemoryHints)}`);
+  }
   parts.push(`\n## 修复要求
 1. 保持测试目标、步骤覆盖和关键断言不变，不要为了通过而删掉业务步骤。
 2. 优先修复 locator、iframe 进入方式、等待顺序、下拉选择和结果断言，不要扩大成无关重写。
 3. 如果快照、Iframe 摘要、现有范例已经给出更稳定的 id / class / selector / frame URL，必须直接使用。
-4. 输出完整替换后的 JavaScript 测试代码，不要解释原因。`);
+4. 输出完整替换后的 JavaScript 测试代码，不要解释原因。
+5. 修复后的代码必须继续遵守上面的“执行动作约束 DSL”；若要调整实现路径，只能在同一步骤语义内收敛修改。`);
 
   return parts.join('\n');
+}
+
+function createAbortError(message = '当前自动测试已取消'): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
+
+function throwIfAborted(signal?: AbortSignal, message?: string): void {
+  if (!signal?.aborted) return;
+  throw createAbortError(message || '当前自动测试已取消');
 }
 
 function extractGeneratedCode(fullCode: string): string {
@@ -702,14 +1075,20 @@ function extractGeneratedCode(fullCode: string): string {
   return code;
 }
 
-async function* streamCodeGeneration(prompt: string): AsyncGenerator<GenerateEvent> {
+async function* streamCodeGeneration(
+  prompt: string,
+  runtimeOverrides?: LLMRuntimeOverrides,
+  signal?: AbortSignal
+): AsyncGenerator<GenerateEvent> {
   let fullCode = '';
+  throwIfAborted(signal);
   try {
-    for await (const chunk of callLLMStream(prompt)) {
+    for await (const chunk of callLLMStream(prompt, undefined, runtimeOverrides, signal)) {
       fullCode += chunk.content;
       yield { type: 'code', content: chunk.content };
     }
   } catch (err: any) {
+    if (err?.name === 'AbortError') throw err;
     yield { type: 'error', content: `LLM 调用失败: ${err.message}` };
     return;
   }
@@ -725,8 +1104,11 @@ export async function* generateTest(
   snapshot: PageSnapshot,
   description: string,
   auth?: AuthConfig,
-  context?: GenerateTestContext
+  context?: GenerateTestContext,
+  runtimeOverrides?: LLMRuntimeOverrides,
+  signal?: AbortSignal
 ): AsyncGenerator<GenerateEvent> {
+  throwIfAborted(signal);
   yield { type: 'thinking', content: '正在加载历史边缘案例...' };
   const edgeCases = await loadEdgeCases(context?.scenarioEntryUrl || snapshot.url);
   yield { type: 'thinking', content: `找到 ${edgeCases.length} 个相关边缘案例` };
@@ -740,9 +1122,22 @@ export async function* generateTest(
     return;
   }
 
+  yield { type: 'thinking', content: '正在匹配项目知识规则...' };
+  const planning = resolvePromptPlanningContext(snapshot, description, context);
+  yield {
+    type: 'thinking',
+    content:
+      planning.knowledge.matches.length > 0
+        ? `命中 ${planning.knowledge.matches.length} 条项目知识规则：${planning.knowledge.matches
+            .slice(0, 3)
+            .map((item) => item.title)
+            .join(' / ')}`
+        : '未命中项目知识规则，继续使用通用 DSL。',
+  };
+
   yield { type: 'thinking', content: '正在构造 Prompt 并调用 LLM...' };
-  const prompt = buildPrompt(snapshot, description, auth, edgeCases, existingExample, context);
-  yield* streamCodeGeneration(prompt);
+  const prompt = buildPrompt(snapshot, description, auth, edgeCases, existingExample, context, planning);
+  yield* streamCodeGeneration(prompt, runtimeOverrides, signal);
 }
 
 export async function* repairTest(
@@ -750,8 +1145,11 @@ export async function* repairTest(
   description: string,
   repair: RepairTestContext,
   auth?: AuthConfig,
-  context?: GenerateTestContext
+  context?: GenerateTestContext,
+  runtimeOverrides?: LLMRuntimeOverrides,
+  signal?: AbortSignal
 ): AsyncGenerator<GenerateEvent> {
+  throwIfAborted(signal);
   yield { type: 'thinking', content: '正在回收失败执行上下文...' };
   const edgeCases = await loadEdgeCases(context?.scenarioEntryUrl || snapshot.url);
   yield { type: 'thinking', content: `已加载 ${edgeCases.length} 个相关边缘案例` };
@@ -765,7 +1163,20 @@ export async function* repairTest(
     return;
   }
 
+  yield { type: 'thinking', content: '正在匹配项目知识规则...' };
+  const planning = resolvePromptPlanningContext(snapshot, description, context);
+  yield {
+    type: 'thinking',
+    content:
+      planning.knowledge.matches.length > 0
+        ? `repair 命中 ${planning.knowledge.matches.length} 条项目知识规则：${planning.knowledge.matches
+            .slice(0, 3)
+            .map((item) => item.title)
+            .join(' / ')}`
+        : 'repair 未命中项目知识规则，继续使用通用 DSL。',
+  };
+
   yield { type: 'thinking', content: '正在构造修复 Prompt 并调用 LLM...' };
-  const prompt = buildRepairPrompt(snapshot, description, auth, edgeCases, existingExample, repair, context);
-  yield* streamCodeGeneration(prompt);
+  const prompt = buildRepairPrompt(snapshot, description, auth, edgeCases, existingExample, repair, context, planning);
+  yield* streamCodeGeneration(prompt, runtimeOverrides, signal);
 }

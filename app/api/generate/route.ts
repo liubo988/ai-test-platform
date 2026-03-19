@@ -1,14 +1,46 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
+import { normalizeIntentE2ERequestBody } from '@/lib/ai/intent-e2e-request';
+import { ensureDbBootstrap } from '@/lib/db/bootstrap';
+import { getWorkspaceLLMRuntimeOverrides, mergeLLMRuntimeOverrides } from '@/lib/llm/workspace-config';
+import type { LLMRuntimeOverrides } from '@/lib/llm/provider-config';
+import type { AuthConfig, PageSnapshot } from '@/lib/page-analyzer';
 import { generateTest } from '@/lib/test-generator';
 
 export async function POST(req: NextRequest) {
-  const { snapshot, description, auth } = await req.json();
+  let snapshot: PageSnapshot | undefined;
+  let description = '';
+  let auth: AuthConfig | undefined;
+  let llmConfig: LLMRuntimeOverrides | undefined;
+
+  try {
+    const body = ((await req.json().catch(() => null)) || {}) as Record<string, unknown>;
+    const normalized = normalizeIntentE2ERequestBody({
+      input: body.description,
+      auth: body.auth,
+      llmConfig: body.llmConfig,
+    });
+
+    snapshot = body.snapshot as PageSnapshot | undefined;
+    description = normalized.input;
+    auth = normalized.auth;
+    await ensureDbBootstrap();
+    llmConfig = mergeLLMRuntimeOverrides(await getWorkspaceLLMRuntimeOverrides(), normalized.llmConfig);
+  } catch (error: unknown) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : '初始化测试脚本生成失败' },
+      { status: 500 }
+    );
+  }
+
+  if (!snapshot) {
+    return NextResponse.json({ error: '缺少 snapshot 参数' }, { status: 400 });
+  }
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
       try {
-        for await (const event of generateTest(snapshot, description, auth)) {
+        for await (const event of generateTest(snapshot, description, auth, undefined, llmConfig)) {
           const data = `data: ${JSON.stringify(event)}\n\n`;
           controller.enqueue(encoder.encode(data));
         }

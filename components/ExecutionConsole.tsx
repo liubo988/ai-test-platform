@@ -1,9 +1,11 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import BrowserView from '@/components/BrowserView';
 import { describeExecutionOutcome, type ExecutionOutcomeTone } from '@/lib/execution-outcome';
+import type { IntentImportStatus } from '@/lib/intent-e2e-import';
 import {
   buildIntentCapabilityPreset,
   buildIntentCapabilityWorkbenchHref,
@@ -77,6 +79,11 @@ type ExecutionDetail = {
   events: EventItem[];
   conversations: ConversationItem[];
   artifacts: ArtifactItem[];
+  intentImport: {
+    importedFromRunId: string;
+    importedStatus: IntentImportStatus | '';
+    importedAt: string;
+  } | null;
 };
 
 function statusTone(status: ExecutionStatus): string {
@@ -127,6 +134,31 @@ function outcomeHintTone(tone: ExecutionOutcomeTone): string {
   }
 }
 
+function intentImportTone(status?: IntentImportStatus | '' | string): string {
+  return status === 'failed'
+    ? 'bg-amber-50 text-amber-800 ring-amber-200'
+    : 'bg-violet-50 text-violet-700 ring-violet-200';
+}
+
+function intentImportPanelTone(status?: IntentImportStatus | '' | string): string {
+  return status === 'failed'
+    ? 'border-amber-200 bg-amber-50 text-amber-900'
+    : 'border-violet-200 bg-violet-50 text-violet-900';
+}
+
+function intentImportLabel(status?: IntentImportStatus | '' | string): string {
+  if (status === 'failed') return 'Intent 导入失败';
+  if (status === 'passed') return 'Intent 导入通过';
+  return 'Intent 导入';
+}
+
+function formatMoment(value: string): string {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+  return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
 function renderEventLine(event: EventItem): string {
   const payload = (event.payload || {}) as Record<string, unknown>;
   if (event.eventType === 'step') {
@@ -142,6 +174,7 @@ function renderEventLine(event: EventItem): string {
 }
 
 export default function ExecutionConsole({ executionUid }: { executionUid: string }) {
+  const router = useRouter();
   const [detail, setDetail] = useState<ExecutionDetail | null>(null);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
@@ -159,24 +192,32 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
   const [replayLoading, setReplayLoading] = useState(false);
   const replayCanvasRef = useRef<HTMLCanvasElement>(null);
   const replayTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const replayAutoloadedRef = useRef<string>('');
+  const autoRepairFollowedRef = useRef<string>('');
 
-  const loadReplayFrames = useCallback(async () => {
+  const loadReplayFrames = useCallback(async (options?: { silent?: boolean; autoPlay?: boolean; initialIndex?: 'first' | 'last' }) => {
     setReplayLoading(true);
     try {
       const res = await fetch(`/api/execution-details/${executionUid}/frames`);
       const json = await res.json();
       if (res.ok && json.frames?.length > 0) {
+        const nextFrames = json.frames as number[];
+        const nextIndex = options?.initialIndex === 'last' ? Math.max(0, nextFrames.length - 1) : 0;
         setReplayFrames(json.frames);
-        setReplayIndex(0);
+        setReplayIndex(nextIndex);
         setReplayMode(true);
-        setReplayPlaying(true);
-        renderReplayFrame(json.frames[0]);
+        setReplayPlaying(options?.autoPlay ?? true);
+        renderReplayFrame(nextFrames[nextIndex]);
       } else {
         setReplayFrames([]);
-        alert('暂无可回放的帧数据');
+        if (!options?.silent) {
+          alert('暂无可回放的帧数据');
+        }
       }
     } catch {
-      alert('加载帧数据失败');
+      if (!options?.silent) {
+        alert('加载帧数据失败');
+      }
     } finally {
       setReplayLoading(false);
     }
@@ -235,6 +276,14 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
   }, [executionUid]);
 
   useEffect(() => {
+    replayAutoloadedRef.current = '';
+    autoRepairFollowedRef.current = '';
+    setReplayMode(false);
+    setReplayFrames([]);
+    setReplayPlaying(false);
+  }, [executionUid]);
+
+  useEffect(() => {
     const es = new EventSource(`/api/test-executions/${executionUid}/stream`);
     es.onmessage = (evt) => {
       try {
@@ -244,22 +293,33 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
           const next = [...prev, data];
           return next.length > 600 ? next.slice(next.length - 600) : next;
         });
+        if (data.eventType === 'status') {
+          void loadDetail();
+        }
       } catch {
         // ignore malformed event
       }
     };
-    es.onerror = () => es.close();
+    es.onerror = () => {
+      // Keep the native EventSource reconnection behavior. Closing here would
+      // make delayed auto-repair follow-up events invisible to the current page.
+    };
     return () => es.close();
   }, [executionUid]);
 
   useEffect(() => {
     if (!detail) return;
-    if (detail.execution.status !== 'running' && detail.execution.status !== 'queued') return;
+    const latestAutoRepairStatus = [...events].reverse().find((item) => item.eventType === 'status');
+    const autoRepairPending =
+      latestAutoRepairStatus &&
+      typeof (latestAutoRepairStatus.payload as Record<string, unknown> | null)?.status === 'string' &&
+      String((latestAutoRepairStatus.payload as Record<string, unknown>).status) === 'auto_repair_pending';
+    if (detail.execution.status !== 'running' && detail.execution.status !== 'queued' && !autoRepairPending) return;
     const timer = setInterval(() => {
       void loadDetail();
     }, 3000);
     return () => clearInterval(timer);
-  }, [detail]);
+  }, [detail, events]);
 
   useEffect(() => {
     const timer = setInterval(async () => {
@@ -274,11 +334,53 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
     return () => clearInterval(timer);
   }, [executionUid]);
 
+  useEffect(() => {
+    if (!detail) return;
+    if (detail.execution.status === 'running' || detail.execution.status === 'queued') return;
+    if (replayMode || replayLoading) return;
+    if (replayAutoloadedRef.current === executionUid) return;
+    replayAutoloadedRef.current = executionUid;
+    void loadReplayFrames({ silent: true, autoPlay: false, initialIndex: 'last' });
+  }, [detail, executionUid, replayLoading, replayMode, loadReplayFrames]);
+
   const frameCount = useMemo(() => events.filter((item) => item.eventType === 'frame').length, [events]);
   const visibleEvents = useMemo(
     () => events.filter((item) => item.eventType !== 'frame').slice(-120),
     [events]
   );
+  const autoRepairFollowUp = useMemo(() => {
+    for (const event of [...events].reverse()) {
+      if (event.eventType !== 'status') continue;
+      const payload = (event.payload || {}) as Record<string, unknown>;
+      const status = String(payload.status || '');
+      if (!status.startsWith('auto_repair_')) continue;
+      return {
+        status,
+        summary: String(payload.summary || ''),
+        nextExecutionUid: typeof payload.nextExecutionUid === 'string' ? payload.nextExecutionUid : '',
+        nextRunPath: typeof payload.nextRunPath === 'string' ? payload.nextRunPath : '',
+        remainingRetries: typeof payload.remainingRetries === 'number' ? payload.remainingRetries : null,
+      };
+    }
+    return null;
+  }, [events]);
+
+  useEffect(() => {
+    if (!autoRepairFollowUp?.nextRunPath || autoRepairFollowUp.status !== 'auto_repair_started') return;
+    const followKey = `${executionUid}:${autoRepairFollowUp.nextExecutionUid || autoRepairFollowUp.nextRunPath}`;
+    if (autoRepairFollowedRef.current === followKey) return;
+    autoRepairFollowedRef.current = followKey;
+    if (typeof window !== 'undefined') {
+      const storageKey = `execution:auto-repair-followed:${executionUid}`;
+      if (window.sessionStorage.getItem(storageKey) === followKey) return;
+      window.sessionStorage.setItem(storageKey, followKey);
+    }
+    setActionNotice(`自动修复已启动，正在跳转到新执行 ${autoRepairFollowUp.nextExecutionUid || ''}`.trim());
+    const timer = window.setTimeout(() => {
+      router.push(autoRepairFollowUp.nextRunPath);
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [autoRepairFollowUp, executionUid, router]);
   const capabilityLaunch = useMemo(() => {
     const config = detail?.config;
     const project = detail?.project;
@@ -389,6 +491,11 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
                 {config.moduleName}
               </span>
             )}
+            {detail.intentImport && (
+              <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ring-1 ${intentImportTone(detail.intentImport.importedStatus)}`}>
+                {intentImportLabel(detail.intentImport.importedStatus)}
+              </span>
+            )}
             {execution.status === 'failed' && (
               <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ring-1 ${outcomeTone(executionOutcome.tone)}`}>
                 {executionOutcome.shortLabel}
@@ -426,6 +533,21 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
           <p className="mt-2 text-sm leading-6 text-slate-500">{plan?.planSummary || execution.resultSummary}</p>
         )}
         {actionNotice && <p className="mt-2 text-xs text-blue-600">{actionNotice}</p>}
+        {autoRepairFollowUp?.summary && (
+          <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900">
+            <p>{autoRepairFollowUp.summary}</p>
+            {autoRepairFollowUp.nextRunPath && (
+              <div className="mt-2">
+                <Link
+                  href={autoRepairFollowUp.nextRunPath}
+                  className="inline-flex h-8 items-center rounded-lg border border-amber-200 bg-white px-3 text-[11px] font-medium text-amber-700 transition hover:bg-amber-100"
+                >
+                  查看自动修复后的新执行
+                </Link>
+              </div>
+            )}
+          </div>
+        )}
       </section>
 
       <section className="grid gap-5 xl:grid-cols-[3fr_7fr]">
@@ -487,6 +609,32 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
                   <p className="mt-1 text-[11px] leading-4 text-slate-500">{config?.loginDescription || project?.loginDescription}</p>
                 )}
               </div>
+              {detail.intentImport && (
+                <div className={`rounded-2xl border px-3.5 py-2.5 ${intentImportPanelTone(detail.intentImport.importedStatus)}`}>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-[10px] uppercase tracking-[0.18em] opacity-70">执行来源</p>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${intentImportTone(detail.intentImport.importedStatus)}`}>
+                      {intentImportLabel(detail.intentImport.importedStatus)}
+                    </span>
+                  </div>
+                  <p className="mt-1.5 text-xs leading-5">
+                    这条执行历史由 Intent E2E 工作台导入生成，用于把自然语言测试结果沉淀到项目工作台。
+                  </p>
+                  <div className="mt-2 grid gap-2">
+                    <div className="rounded-xl border border-current/10 bg-white/70 px-3 py-2">
+                      <p className="text-[10px] uppercase tracking-[0.16em] opacity-60">来源 Run ID</p>
+                      <p className="mt-1 font-mono text-[11px] leading-5 break-all" title={detail.intentImport.importedFromRunId}>
+                        {detail.intentImport.importedFromRunId}
+                      </p>
+                    </div>
+                    {detail.intentImport.importedAt && (
+                      <p className="text-[11px] opacity-70">
+                        导入时间：{formatMoment(detail.intentImport.importedAt)}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
               <div className="rounded-2xl border border-slate-200 bg-white px-3.5 py-2.5">
                 <p className="text-[10px] uppercase tracking-[0.18em] text-slate-400">任务描述</p>
                 <p className="mt-1.5 text-xs leading-5 text-slate-600">{config?.featureDescription || '暂无任务描述。'}</p>

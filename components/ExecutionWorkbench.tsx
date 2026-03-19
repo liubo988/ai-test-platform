@@ -1,8 +1,10 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import BrowserView from '@/components/BrowserView';
+import type { IntentImportStatus } from '@/lib/intent-e2e-import';
 import {
   buildIntentCapabilityPreset,
   buildIntentCapabilityWorkbenchHref,
@@ -75,6 +77,11 @@ type ExecutionDetail = {
   events: EventItem[];
   conversations: ConversationItem[];
   artifacts: ArtifactItem[];
+  intentImport: {
+    importedFromRunId: string;
+    importedStatus: IntentImportStatus | '';
+    importedAt: string;
+  } | null;
 };
 
 function statusTone(status: ExecutionStatus): string {
@@ -99,13 +106,39 @@ function messageTone(kind: ConversationItem['messageType']): string {
   return 'border-zinc-200 bg-zinc-50 text-zinc-700';
 }
 
+function intentImportTone(status?: IntentImportStatus | '' | string): string {
+  return status === 'failed' ? 'bg-amber-100 text-amber-700' : 'bg-violet-100 text-violet-700';
+}
+
+function intentImportPanelTone(status?: IntentImportStatus | '' | string): string {
+  return status === 'failed'
+    ? 'border-amber-200 bg-amber-50 text-amber-900'
+    : 'border-violet-200 bg-violet-50 text-violet-900';
+}
+
+function intentImportLabel(status?: IntentImportStatus | '' | string): string {
+  if (status === 'failed') return 'Intent 导入失败';
+  if (status === 'passed') return 'Intent 导入通过';
+  return 'Intent 导入';
+}
+
+function formatMoment(value: string): string {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+  return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
 export default function ExecutionWorkbench({ executionUid }: { executionUid: string }) {
+  const router = useRouter();
   const [detail, setDetail] = useState<ExecutionDetail | null>(null);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [error, setError] = useState('');
+  const [actionNotice, setActionNotice] = useState('');
+  const autoRepairFollowedRef = useRef('');
 
-  const loadDetail = async () => {
+  const loadDetail = useCallback(async () => {
     try {
       const res = await fetch(`/api/test-executions/${executionUid}`);
       const json = await res.json();
@@ -117,10 +150,14 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '加载失败');
     }
-  };
+  }, [executionUid]);
 
   useEffect(() => {
     void loadDetail();
+  }, [loadDetail]);
+
+  useEffect(() => {
+    autoRepairFollowedRef.current = '';
   }, [executionUid]);
 
   useEffect(() => {
@@ -128,36 +165,42 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
     es.onmessage = (evt) => {
       try {
         const data = JSON.parse(evt.data) as EventItem;
-        if (data.eventType !== 'connected') {
-          setEvents((prev) => {
-            const next = [...prev, data];
-            if (next.length > 600) return next.slice(next.length - 600);
-            return next;
-          });
+        if (data.eventType === 'connected') return;
+        setEvents((prev) => {
+          const next = [...prev, data];
+          if (next.length > 600) return next.slice(next.length - 600);
+          return next;
+        });
+        if (data.eventType === 'status') {
+          void loadDetail();
         }
       } catch {
         // ignore malformed event
       }
     };
     es.onerror = () => {
-      es.close();
+      // Keep native EventSource reconnection; delayed auto-repair status may
+      // arrive after the execution itself is already marked failed.
     };
 
     return () => {
       es.close();
     };
-  }, [executionUid]);
+  }, [executionUid, loadDetail]);
 
   useEffect(() => {
     if (!detail) return;
-    if (detail.execution.status === 'running' || detail.execution.status === 'queued') {
-      const timer = setInterval(() => {
-        void loadDetail();
-      }, 3000);
-      return () => clearInterval(timer);
-    }
-    return;
-  }, [detail]);
+    const latestAutoRepairStatus = [...events].reverse().find((item) => item.eventType === 'status');
+    const autoRepairPending =
+      latestAutoRepairStatus &&
+      typeof (latestAutoRepairStatus.payload as Record<string, unknown> | null)?.status === 'string' &&
+      String((latestAutoRepairStatus.payload as Record<string, unknown>).status) === 'auto_repair_pending';
+    if (detail.execution.status !== 'running' && detail.execution.status !== 'queued' && !autoRepairPending) return;
+    const timer = setInterval(() => {
+      void loadDetail();
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [detail, events, loadDetail]);
 
   useEffect(() => {
     const timer = setInterval(async () => {
@@ -176,6 +219,22 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
   }, [executionUid]);
 
   const frameCount = useMemo(() => events.filter((e) => e.eventType === 'frame').length, [events]);
+  const autoRepairFollowUp = useMemo(() => {
+    for (const event of [...events].reverse()) {
+      if (event.eventType !== 'status') continue;
+      const payload = (event.payload || {}) as Record<string, unknown>;
+      const status = String(payload.status || '');
+      if (!status.startsWith('auto_repair_')) continue;
+      return {
+        status,
+        summary: String(payload.summary || ''),
+        nextExecutionUid: typeof payload.nextExecutionUid === 'string' ? payload.nextExecutionUid : '',
+        nextRunPath: typeof payload.nextRunPath === 'string' ? payload.nextRunPath : '',
+        remainingRetries: typeof payload.remainingRetries === 'number' ? payload.remainingRetries : null,
+      };
+    }
+    return null;
+  }, [events]);
   const capabilityLaunch = useMemo(() => {
     const config = detail?.config;
     const project = detail?.project;
@@ -205,6 +264,23 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
       }),
     };
   }, [detail?.config, detail?.project]);
+
+  useEffect(() => {
+    if (!autoRepairFollowUp?.nextRunPath || autoRepairFollowUp.status !== 'auto_repair_started') return;
+    const followKey = `${executionUid}:${autoRepairFollowUp.nextExecutionUid || autoRepairFollowUp.nextRunPath}`;
+    if (autoRepairFollowedRef.current === followKey) return;
+    autoRepairFollowedRef.current = followKey;
+    if (typeof window !== 'undefined') {
+      const storageKey = `execution:auto-repair-followed:${executionUid}`;
+      if (window.sessionStorage.getItem(storageKey) === followKey) return;
+      window.sessionStorage.setItem(storageKey, followKey);
+    }
+    setActionNotice(`自动修复已启动，正在跳转到新执行 ${autoRepairFollowUp.nextExecutionUid || ''}`.trim());
+    const timer = window.setTimeout(() => {
+      router.push(autoRepairFollowUp.nextRunPath);
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [autoRepairFollowUp, executionUid, router]);
 
   const downloadGeneratedSpec = () => {
     if (!generatedSpec) return;
@@ -243,10 +319,18 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <p className="text-xs uppercase tracking-[0.18em] text-zinc-400">Execution</p>
-            <h1 className="mt-2 text-2xl font-semibold text-zinc-900">执行工作台</h1>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <h1 className="text-2xl font-semibold text-zinc-900">执行工作台</h1>
+              {detail.intentImport && (
+                <span className={`rounded-md px-2.5 py-1 text-xs ${intentImportTone(detail.intentImport.importedStatus)}`}>
+                  {intentImportLabel(detail.intentImport.importedStatus)}
+                </span>
+              )}
+            </div>
             <p className="mt-1 text-sm text-zinc-500">
               {project?.name ? `${project.name} / ` : ''}{config?.name || execution.executionUid}
             </p>
+            {actionNotice && <p className="mt-2 text-xs text-blue-600">{actionNotice}</p>}
           </div>
           <div className="text-right">
             <span className={`rounded-md px-2.5 py-1 text-xs ${statusTone(execution.status)}`}>{execution.status}</span>
@@ -254,6 +338,21 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
             <p className="text-xs text-zinc-400">版本: v{plan?.planVersion || '-'}</p>
           </div>
         </div>
+        {autoRepairFollowUp?.summary && (
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            <p>{autoRepairFollowUp.summary}</p>
+            {autoRepairFollowUp.nextRunPath && (
+              <div className="mt-2">
+                <Link
+                  href={autoRepairFollowUp.nextRunPath}
+                  className="inline-flex items-center rounded-md border border-amber-200 bg-white px-2.5 py-1 text-[11px] font-medium text-amber-700 transition hover:bg-amber-100"
+                >
+                  查看自动修复后的新执行
+                </Link>
+              </div>
+            )}
+          </div>
+        )}
       </section>
 
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
@@ -290,6 +389,29 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
         </div>
 
         <div className="space-y-4">
+          {detail.intentImport && (
+            <div className={`rounded-2xl border p-5 shadow-[0_6px_20px_rgba(0,0,0,0.04)] ${intentImportPanelTone(detail.intentImport.importedStatus)}`}>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base font-semibold">执行来源</h2>
+                <span className={`rounded-md px-2 py-1 text-[11px] ${intentImportTone(detail.intentImport.importedStatus)}`}>
+                  {intentImportLabel(detail.intentImport.importedStatus)}
+                </span>
+              </div>
+              <p className="mt-2 text-xs leading-5 opacity-80">
+                这条执行历史由 Intent E2E 工作台导入，用于把自然语言测试结果沉淀到项目工作台。
+              </p>
+              <div className="mt-3 rounded-xl border border-current/10 bg-white/70 px-3 py-2">
+                <p className="text-[10px] uppercase tracking-[0.16em] opacity-60">来源 Run ID</p>
+                <p className="mt-1 break-all font-mono text-[11px] leading-5" title={detail.intentImport.importedFromRunId}>
+                  {detail.intentImport.importedFromRunId}
+                </p>
+              </div>
+              {detail.intentImport.importedAt && (
+                <p className="mt-2 text-[11px] opacity-70">导入时间：{formatMoment(detail.intentImport.importedAt)}</p>
+              )}
+            </div>
+          )}
+
           <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-[0_6px_20px_rgba(0,0,0,0.04)]">
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-base font-semibold text-zinc-900">浏览器实时画面</h2>

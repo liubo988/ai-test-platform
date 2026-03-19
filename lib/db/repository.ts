@@ -17,6 +17,13 @@ import {
   type CapabilityType,
   type KnowledgeChunkCandidate,
 } from '../project-knowledge';
+import type { ScenarioAttachment, ScenarioCard } from '../ai/scenario-card';
+import type { LLMRuntimeOverrides } from '../llm/provider-config';
+import {
+  extractIntentImportRunIdFromPrompt,
+  normalizeIntentImportStatusFromActionType,
+  type IntentImportStatus,
+} from '../intent-e2e-import';
 
 export type ProjectStatus = 'active' | 'archived';
 export type ModuleStatus = 'active' | 'archived';
@@ -35,9 +42,12 @@ export type ProjectActivityEntityType =
   | 'execution'
   | 'member'
   | 'knowledge'
-  | 'capability';
+  | 'capability'
+  | 'intent_draft';
 export type KnowledgeStatus = 'active' | 'archived';
 export type ProjectKnowledgeSourceType = 'manual' | 'notes' | 'execution' | 'system';
+export type ProjectIntentDraftStatus = 'active' | 'imported' | 'archived';
+export type IntentE2ERunSnapshotStatus = 'created' | 'running' | 'passed' | 'failed' | 'canceled';
 
 export interface TestProjectInput {
   name: string;
@@ -175,6 +185,62 @@ export interface ProjectCapabilityRecord {
   updatedAt: string;
 }
 
+export interface ProjectIntentDraftInput {
+  projectUid: string;
+  moduleUid: string;
+  title: string;
+  input: string;
+  targetUrlHint?: string;
+  attachments?: ScenarioAttachment[];
+  llmConfig?: LLMRuntimeOverrides;
+  scenarioCard: ScenarioCard;
+  scenarioLlmMeta?: unknown;
+  planTitle?: string;
+  planCode?: string;
+  planSummary?: string;
+  generationModel?: string;
+  generationPrompt?: string;
+  generatedFiles?: Array<{ name: string; content: string; language: string }>;
+  planError?: string;
+  status?: ProjectIntentDraftStatus;
+}
+
+export interface ProjectIntentDraftSummaryRecord {
+  intentDraftUid: string;
+  projectUid: string;
+  moduleUid: string;
+  moduleName: string;
+  title: string;
+  input: string;
+  targetUrlHint: string;
+  taskMode: TaskMode;
+  targetUrl: string;
+  featureDescription: string;
+  flowStepCount: number;
+  attachmentCount: number;
+  planReady: boolean;
+  planError: string;
+  status: ProjectIntentDraftStatus;
+  importedConfigUid: string;
+  importedPlanUid: string;
+  importedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectIntentDraftRecord extends ProjectIntentDraftSummaryRecord {
+  attachments: ScenarioAttachment[];
+  llmConfig: LLMRuntimeOverrides;
+  scenarioCard: ScenarioCard | null;
+  scenarioLlmMeta: unknown;
+  planTitle: string;
+  planCode: string;
+  planSummary: string;
+  generationModel: string;
+  generationPrompt: string;
+  generatedFiles: Array<{ name: string; content: string; language: string }>;
+}
+
 export interface TestModuleInput {
   name: string;
   description?: string;
@@ -245,6 +311,11 @@ export interface TestConfigRecord {
   latestPlanVersion: number;
   latestExecutionUid: string;
   latestExecutionStatus: string;
+  latestPlanImportedFromRunId?: string;
+  latestPlanImportedStatus?: IntentImportStatus | '';
+  sourceIntentDraftUid?: string;
+  sourceIntentDraftTitle?: string;
+  sourceIntentDraftImportedAt?: string;
 }
 
 export interface TestPlanInput {
@@ -290,6 +361,24 @@ export interface LlmConversationInput {
   content: string;
 }
 
+export interface WorkspaceLLMSettingsInput {
+  provider: string;
+  model: string;
+  baseUrl: string;
+  apiStyle: string;
+  visionEnabled: boolean;
+  selfHealRetries: number;
+  maxPlanSteps: number;
+}
+
+export interface WorkspaceLLMSettingsRecord extends WorkspaceLLMSettingsInput {
+  scopeUid: string;
+  updatedByUserUid: string;
+  updatedByLabel: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ProjectActivityLogInput {
   projectUid: string;
   entityType: ProjectActivityEntityType;
@@ -312,6 +401,36 @@ export interface ProjectActivityLogRecord {
   detail: string;
   meta: unknown;
   createdAt: string;
+}
+
+export interface IntentE2ERunSnapshotInput {
+  runId: string;
+  projectUid?: string;
+  status: IntentE2ERunSnapshotStatus;
+  stage: string;
+  requestInput: string;
+  targetUrl?: string;
+  state: unknown;
+  error?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  endedAt?: string;
+}
+
+export interface IntentE2ERunSnapshotRecord {
+  runId: string;
+  projectUid: string;
+  status: IntentE2ERunSnapshotStatus;
+  stage: string;
+  requestInput: string;
+  targetUrl: string;
+  state: unknown;
+  error: string;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string;
+  endedAt: string;
 }
 
 function safeJsonParse<T>(value: unknown, fallback: T): T {
@@ -357,9 +476,14 @@ const STALE_EXECUTION_RECONCILE_INTERVAL_MS = 15_000;
 
 let projectActivityTableReady: Promise<void> | null = null;
 let projectCollaborationTablesReady: Promise<void> | null = null;
+let workspaceLlmSettingsTableReady: Promise<void> | null = null;
 let testConfigurationScenarioColumnsReady: Promise<void> | null = null;
 let projectKnowledgeTablesReady: Promise<void> | null = null;
+let projectIntentDraftTablesReady: Promise<void> | null = null;
+let intentE2ERunTablesReady: Promise<void> | null = null;
 const staleExecutionReconcileAt = new Map<string, number>();
+
+const DEFAULT_WORKSPACE_LLM_SCOPE_UID = 'workspace_default';
 
 type ExecutionReconcileScope = {
   executionUid?: string;
@@ -510,6 +634,41 @@ async function ensureProjectCollaborationTables(): Promise<void> {
   return projectCollaborationTablesReady;
 }
 
+async function ensureWorkspaceLLMSettingsTable(): Promise<void> {
+  if (!workspaceLlmSettingsTableReady) {
+    workspaceLlmSettingsTableReady = (async () => {
+      await ensureProjectCollaborationTables();
+      const pool = getDbPool();
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS workspace_llm_settings (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          scope_uid VARCHAR(64) NOT NULL,
+          provider VARCHAR(32) NOT NULL DEFAULT 'openai',
+          model VARCHAR(255) NOT NULL DEFAULT '',
+          base_url TEXT NULL,
+          api_style VARCHAR(32) NOT NULL DEFAULT 'auto',
+          vision_enabled TINYINT(1) NOT NULL DEFAULT 1,
+          self_heal_retries INT NOT NULL DEFAULT 2,
+          max_plan_steps INT NOT NULL DEFAULT 8,
+          updated_by_user_uid VARCHAR(64) NULL,
+          updated_by_label VARCHAR(128) NOT NULL DEFAULT 'system',
+          created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+          updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+          PRIMARY KEY (id),
+          UNIQUE KEY uk_workspace_llm_settings_scope (scope_uid),
+          CONSTRAINT fk_workspace_llm_settings_updated_by_user_uid FOREIGN KEY (updated_by_user_uid) REFERENCES workspace_users (user_uid)
+            ON UPDATE CASCADE ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
+    })().catch((error) => {
+      workspaceLlmSettingsTableReady = null;
+      throw error;
+    });
+  }
+
+  return workspaceLlmSettingsTableReady;
+}
+
 async function ensureProjectKnowledgeTables(): Promise<void> {
   if (!projectKnowledgeTablesReady) {
     projectKnowledgeTablesReady = (async () => {
@@ -601,6 +760,95 @@ async function ensureProjectKnowledgeTables(): Promise<void> {
   return projectKnowledgeTablesReady;
 }
 
+async function ensureProjectIntentDraftTables(): Promise<void> {
+  if (!projectIntentDraftTablesReady) {
+    projectIntentDraftTablesReady = (async () => {
+      const pool = getDbPool();
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS project_intent_drafts (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          intent_draft_uid VARCHAR(64) NOT NULL,
+          project_uid VARCHAR(64) NOT NULL,
+          module_uid VARCHAR(64) NOT NULL,
+          title VARCHAR(255) NOT NULL,
+          input_text TEXT NOT NULL,
+          target_url_hint TEXT NULL,
+          attachments_json JSON NULL,
+          llm_config_json JSON NULL,
+          scenario_card_json JSON NULL,
+          scenario_llm_meta_json JSON NULL,
+          plan_title VARCHAR(255) NULL,
+          plan_code LONGTEXT NULL,
+          plan_summary TEXT NULL,
+          generation_model VARCHAR(255) NULL,
+          generation_prompt LONGTEXT NULL,
+          generated_files_json JSON NULL,
+          plan_error TEXT NULL,
+          status ENUM('active', 'imported', 'archived') NOT NULL DEFAULT 'active',
+          imported_config_uid VARCHAR(64) NULL,
+          imported_plan_uid VARCHAR(64) NULL,
+          imported_at DATETIME(3) NULL,
+          created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+          updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+          PRIMARY KEY (id),
+          UNIQUE KEY uk_project_intent_drafts_uid (intent_draft_uid),
+          KEY idx_project_intent_drafts_project_status_updated (project_uid, status, updated_at),
+          KEY idx_project_intent_drafts_module_status_updated (module_uid, status, updated_at),
+          CONSTRAINT fk_project_intent_drafts_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
+            ON UPDATE CASCADE ON DELETE CASCADE,
+          CONSTRAINT fk_project_intent_drafts_module_uid FOREIGN KEY (module_uid) REFERENCES test_modules (module_uid)
+            ON UPDATE CASCADE ON DELETE CASCADE,
+          CONSTRAINT fk_project_intent_drafts_imported_config_uid FOREIGN KEY (imported_config_uid) REFERENCES test_configurations (config_uid)
+            ON UPDATE CASCADE ON DELETE SET NULL,
+          CONSTRAINT fk_project_intent_drafts_imported_plan_uid FOREIGN KEY (imported_plan_uid) REFERENCES test_plans (plan_uid)
+            ON UPDATE CASCADE ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
+    })().catch((error) => {
+      projectIntentDraftTablesReady = null;
+      throw error;
+    });
+  }
+
+  return projectIntentDraftTablesReady;
+}
+
+async function ensureIntentE2ERunTables(): Promise<void> {
+  if (!intentE2ERunTablesReady) {
+    intentE2ERunTablesReady = (async () => {
+      const pool = getDbPool();
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS intent_e2e_runs (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          run_id VARCHAR(128) NOT NULL,
+          project_uid VARCHAR(64) NULL,
+          status ENUM('created', 'running', 'passed', 'failed', 'canceled') NOT NULL,
+          stage VARCHAR(32) NOT NULL,
+          request_input TEXT NOT NULL,
+          target_url TEXT NULL,
+          state_json LONGTEXT NOT NULL,
+          error_message TEXT NULL,
+          started_at DATETIME(3) NULL,
+          ended_at DATETIME(3) NULL,
+          created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+          updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+          PRIMARY KEY (id),
+          UNIQUE KEY uk_intent_e2e_runs_run_id (run_id),
+          KEY idx_intent_e2e_runs_project_updated (project_uid, updated_at),
+          KEY idx_intent_e2e_runs_status_updated (status, updated_at),
+          CONSTRAINT fk_intent_e2e_runs_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
+            ON UPDATE CASCADE ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
+    })().catch((error) => {
+      intentE2ERunTablesReady = null;
+      throw error;
+    });
+  }
+
+  return intentE2ERunTablesReady;
+}
+
 function roleLabel(role: ProjectMemberRole): string {
   switch (role) {
     case 'owner':
@@ -641,6 +889,35 @@ function normalizeProjectRow(row: RowDataPacket): TestProjectRecord {
     latestExecutionUid: row.latest_execution_uid ? String(row.latest_execution_uid) : '',
     latestExecutionStatus: row.latest_execution_status ? String(row.latest_execution_status) : '',
     lastExecutionAt: toIso(row.last_execution_at),
+  };
+}
+
+function normalizeWorkspaceLLMSettingsRow(row: RowDataPacket): WorkspaceLLMSettingsRecord {
+  return {
+    scopeUid: String(row.scope_uid),
+    provider: row.provider ? String(row.provider) : 'openai',
+    model: row.model ? String(row.model) : '',
+    baseUrl: row.base_url ? String(row.base_url) : '',
+    apiStyle: row.api_style ? String(row.api_style) : 'auto',
+    visionEnabled: !!row.vision_enabled,
+    selfHealRetries: Math.max(0, Number(row.self_heal_retries || 0)),
+    maxPlanSteps: Math.max(1, Number(row.max_plan_steps || 1)),
+    updatedByUserUid: row.updated_by_user_uid ? String(row.updated_by_user_uid) : '',
+    updatedByLabel: row.updated_by_label ? String(row.updated_by_label) : 'system',
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+  };
+}
+
+function normalizeWorkspaceLLMSettingsInput(input: WorkspaceLLMSettingsInput): WorkspaceLLMSettingsInput {
+  return {
+    provider: String(input.provider || 'openai').trim().toLowerCase() || 'openai',
+    model: String(input.model || '').trim(),
+    baseUrl: String(input.baseUrl || '').trim(),
+    apiStyle: String(input.apiStyle || 'auto').trim().toLowerCase() || 'auto',
+    visionEnabled: Boolean(input.visionEnabled),
+    selfHealRetries: Math.max(0, Math.floor(Number(input.selfHealRetries) || 0)),
+    maxPlanSteps: Math.max(1, Math.floor(Number(input.maxPlanSteps) || 1)),
   };
 }
 
@@ -726,6 +1003,66 @@ function normalizeProjectCapabilityRow(row: RowDataPacket): ProjectCapabilityRec
   };
 }
 
+function normalizeIntentDraftTaskMode(scenarioCard: ScenarioCard | null): TaskMode {
+  return normalizeTaskMode(scenarioCard?.taskMode);
+}
+
+function normalizeIntentDraftTargetUrl(scenarioCard: ScenarioCard | null, targetUrlHint: string): string {
+  return scenarioCard?.targetUrl?.trim() || scenarioCard?.flowDefinition?.entryUrl?.trim() || targetUrlHint;
+}
+
+function normalizeProjectIntentDraftSummaryRow(row: RowDataPacket): ProjectIntentDraftSummaryRecord {
+  const scenarioCard = safeJsonParse<ScenarioCard | null>(row.scenario_card_json, null);
+  const taskMode = normalizeIntentDraftTaskMode(scenarioCard);
+  const targetUrlHint = row.target_url_hint ? String(row.target_url_hint) : '';
+
+  return {
+    intentDraftUid: String(row.intent_draft_uid),
+    projectUid: String(row.project_uid),
+    moduleUid: String(row.module_uid),
+    moduleName: row.module_name ? String(row.module_name) : '',
+    title: String(row.title),
+    input: row.input_text ? String(row.input_text) : '',
+    targetUrlHint,
+    taskMode,
+    targetUrl: normalizeIntentDraftTargetUrl(scenarioCard, targetUrlHint),
+    featureDescription: scenarioCard?.featureDescription?.trim() || (row.input_text ? String(row.input_text) : ''),
+    flowStepCount: scenarioCard?.flowDefinition?.steps?.length || 0,
+    attachmentCount: Number(row.attachment_count || 0),
+    planReady: Boolean(row.plan_code),
+    planError: row.plan_error ? String(row.plan_error) : '',
+    status: row.status as ProjectIntentDraftStatus,
+    importedConfigUid: row.imported_config_uid ? String(row.imported_config_uid) : '',
+    importedPlanUid: row.imported_plan_uid ? String(row.imported_plan_uid) : '',
+    importedAt: toIso(row.imported_at),
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+  };
+}
+
+function normalizeProjectIntentDraftRow(row: RowDataPacket): ProjectIntentDraftRecord {
+  const scenarioCard = safeJsonParse<ScenarioCard | null>(row.scenario_card_json, null);
+  const summary = normalizeProjectIntentDraftSummaryRow({
+    ...row,
+    attachment_count: safeJsonParse<ScenarioAttachment[]>(row.attachments_json, []).length,
+    scenario_card_json: scenarioCard,
+  } as RowDataPacket);
+
+  return {
+    ...summary,
+    attachments: safeJsonParse<ScenarioAttachment[]>(row.attachments_json, []),
+    llmConfig: safeJsonParse<LLMRuntimeOverrides>(row.llm_config_json, {}),
+    scenarioCard,
+    scenarioLlmMeta: safeJsonParse<unknown>(row.scenario_llm_meta_json, {}),
+    planTitle: row.plan_title ? String(row.plan_title) : '',
+    planCode: row.plan_code ? String(row.plan_code) : '',
+    planSummary: row.plan_summary ? String(row.plan_summary) : '',
+    generationModel: row.generation_model ? String(row.generation_model) : '',
+    generationPrompt: row.generation_prompt ? String(row.generation_prompt) : '',
+    generatedFiles: safeJsonParse<Array<{ name: string; content: string; language: string }>>(row.generated_files_json, []),
+  };
+}
+
 function resolveAuthFromRow(row: RowDataPacket): {
   source: AuthSource;
   authRequired: boolean;
@@ -775,6 +1112,10 @@ function normalizeConfigRow(row: RowDataPacket): TestConfigRecord {
   const taskMode = normalizeTaskMode(row.task_mode);
   const normalizedFlow = normalizeFlowDefinition(row.flow_definition, targetUrl);
   const flowDefinition = taskMode === 'scenario' || hasScenarioContent(normalizedFlow) ? normalizedFlow : null;
+  const latestPlanImportedFromRunId = extractIntentImportRunIdFromPrompt(row.latest_plan_generation_prompt);
+  const latestPlanImportedStatus = latestPlanImportedFromRunId
+    ? normalizeIntentImportStatusFromActionType(row.latest_plan_import_action_type)
+    : '';
 
   return {
     configUid: String(row.config_uid),
@@ -805,6 +1146,11 @@ function normalizeConfigRow(row: RowDataPacket): TestConfigRecord {
     latestPlanVersion: Number(row.latest_plan_version || 0),
     latestExecutionUid: row.latest_execution_uid ? String(row.latest_execution_uid) : '',
     latestExecutionStatus: row.latest_execution_status ? String(row.latest_execution_status) : '',
+    latestPlanImportedFromRunId,
+    latestPlanImportedStatus,
+    sourceIntentDraftUid: row.source_intent_draft_uid ? String(row.source_intent_draft_uid) : '',
+    sourceIntentDraftTitle: row.source_intent_draft_title ? String(row.source_intent_draft_title) : '',
+    sourceIntentDraftImportedAt: toIso(row.source_intent_draft_imported_at),
   };
 }
 
@@ -834,6 +1180,23 @@ function normalizeProjectActivityRow(row: RowDataPacket): ProjectActivityLogReco
     detail: row.detail ? String(row.detail) : '',
     meta: safeJsonParse<unknown>(row.meta, {}),
     createdAt: toIso(row.created_at),
+  };
+}
+
+function normalizeIntentE2ERunSnapshotRow(row: RowDataPacket): IntentE2ERunSnapshotRecord {
+  return {
+    runId: String(row.run_id),
+    projectUid: row.project_uid ? String(row.project_uid) : '',
+    status: row.status as IntentE2ERunSnapshotStatus,
+    stage: row.stage ? String(row.stage) : 'created',
+    requestInput: row.request_input ? String(row.request_input) : '',
+    targetUrl: row.target_url ? String(row.target_url) : '',
+    state: safeJsonParse<unknown>(row.state_json, null),
+    error: row.error_message ? String(row.error_message) : '',
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+    startedAt: toIso(row.started_at),
+    endedAt: toIso(row.ended_at),
   };
 }
 
@@ -1324,6 +1687,94 @@ export async function ensureWorkspaceActor(userUid = ''): Promise<WorkspaceUserR
     throw new Error('默认操作者不存在');
   }
   return fallback;
+}
+
+export async function getWorkspaceLLMSettings(
+  scopeUid = DEFAULT_WORKSPACE_LLM_SCOPE_UID
+): Promise<WorkspaceLLMSettingsRecord | null> {
+  await ensureWorkspaceLLMSettingsTable();
+  const pool = getDbPool();
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT
+      scope_uid,
+      provider,
+      model,
+      base_url,
+      api_style,
+      vision_enabled,
+      self_heal_retries,
+      max_plan_steps,
+      updated_by_user_uid,
+      updated_by_label,
+      created_at,
+      updated_at
+     FROM workspace_llm_settings
+     WHERE scope_uid = ?
+     LIMIT 1`,
+    [scopeUid]
+  );
+
+  const row = rows[0];
+  return row ? normalizeWorkspaceLLMSettingsRow(row) : null;
+}
+
+export async function upsertWorkspaceLLMSettings(
+  input: WorkspaceLLMSettingsInput,
+  options?: { actorUserUid?: string; actorLabel?: string; scopeUid?: string }
+): Promise<WorkspaceLLMSettingsRecord> {
+  await ensureWorkspaceLLMSettingsTable();
+  const normalized = normalizeWorkspaceLLMSettingsInput(input);
+  const scopeUid = options?.scopeUid?.trim() || DEFAULT_WORKSPACE_LLM_SCOPE_UID;
+  const pool = getDbPool();
+
+  await pool.execute<ResultSetHeader>(
+    `INSERT INTO workspace_llm_settings (
+       scope_uid,
+       provider,
+       model,
+       base_url,
+       api_style,
+       vision_enabled,
+       self_heal_retries,
+       max_plan_steps,
+       updated_by_user_uid,
+       updated_by_label
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       provider = VALUES(provider),
+       model = VALUES(model),
+       base_url = VALUES(base_url),
+       api_style = VALUES(api_style),
+       vision_enabled = VALUES(vision_enabled),
+       self_heal_retries = VALUES(self_heal_retries),
+       max_plan_steps = VALUES(max_plan_steps),
+       updated_by_user_uid = VALUES(updated_by_user_uid),
+       updated_by_label = VALUES(updated_by_label)`,
+    [
+      scopeUid,
+      normalized.provider,
+      normalized.model,
+      normalized.baseUrl,
+      normalized.apiStyle,
+      normalized.visionEnabled ? 1 : 0,
+      normalized.selfHealRetries,
+      normalized.maxPlanSteps,
+      options?.actorUserUid?.trim() || null,
+      options?.actorLabel?.trim() || 'system',
+    ]
+  );
+
+  const row = await getWorkspaceLLMSettings(scopeUid);
+  if (!row) {
+    throw new Error('读取共享 LLM 配置失败');
+  }
+  return row;
+}
+
+export async function deleteWorkspaceLLMSettings(scopeUid = DEFAULT_WORKSPACE_LLM_SCOPE_UID): Promise<void> {
+  await ensureWorkspaceLLMSettingsTable();
+  const pool = getDbPool();
+  await pool.execute<ResultSetHeader>(`DELETE FROM workspace_llm_settings WHERE scope_uid = ?`, [scopeUid]);
 }
 
 export async function listProjectMembers(projectUid: string): Promise<ProjectMemberRecord[]> {
@@ -2205,6 +2656,359 @@ export async function restoreProjectCapability(capabilityUid: string, options?: 
   });
 }
 
+export async function listProjectIntentDrafts(params: {
+  projectUid: string;
+  moduleUid?: string;
+  status?: ProjectIntentDraftStatus | 'all';
+  limit?: number;
+}): Promise<ProjectIntentDraftSummaryRecord[]> {
+  await ensureProjectIntentDraftTables();
+  const pool = getDbPool();
+  const status = params.status || 'active';
+  const limit = Math.max(1, Math.min(100, params.limit || 20));
+  const where: string[] = ['d.project_uid = ?'];
+  const args: unknown[] = [params.projectUid];
+
+  if (params.moduleUid) {
+    where.push('d.module_uid = ?');
+    args.push(params.moduleUid);
+  }
+
+  if (status !== 'all') {
+    where.push('d.status = ?');
+    args.push(status);
+  }
+
+  args.push(limit);
+
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT
+       d.intent_draft_uid,
+       d.project_uid,
+       d.module_uid,
+       m.name AS module_name,
+       d.title,
+       d.input_text,
+       d.target_url_hint,
+       d.scenario_card_json,
+       COALESCE(JSON_LENGTH(d.attachments_json), 0) AS attachment_count,
+       d.plan_code,
+       d.plan_error,
+       d.status,
+       d.imported_config_uid,
+       d.imported_plan_uid,
+       d.imported_at,
+       d.created_at,
+       d.updated_at
+     FROM project_intent_drafts d
+     LEFT JOIN test_modules m ON m.module_uid = d.module_uid
+     WHERE ${where.join(' AND ')}
+     ORDER BY d.updated_at DESC, d.id DESC
+     LIMIT ?`,
+    args
+  );
+
+  return rows.map(normalizeProjectIntentDraftSummaryRow);
+}
+
+export async function getProjectIntentDraftByUid(intentDraftUid: string): Promise<ProjectIntentDraftRecord | null> {
+  await ensureProjectIntentDraftTables();
+  const pool = getDbPool();
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT
+       d.*,
+       m.name AS module_name
+     FROM project_intent_drafts d
+     LEFT JOIN test_modules m ON m.module_uid = d.module_uid
+     WHERE d.intent_draft_uid = ?
+     LIMIT 1`,
+    [intentDraftUid]
+  );
+
+  const row = rows[0];
+  if (!row) return null;
+  return normalizeProjectIntentDraftRow(row);
+}
+
+export async function createProjectIntentDraft(
+  input: ProjectIntentDraftInput,
+  options?: { actorLabel?: string }
+): Promise<ProjectIntentDraftRecord> {
+  await ensureProjectIntentDraftTables();
+  const pool = getDbPool();
+  const projectUid = input.projectUid.trim();
+  const moduleUid = input.moduleUid.trim();
+  const project = await getProjectByUid(projectUid);
+  if (!project) throw new Error('项目不存在');
+  const module = await getModuleByUid(moduleUid);
+  if (!module || module.projectUid !== projectUid) {
+    throw new Error('模块不存在，或不属于当前项目');
+  }
+
+  const intentDraftUid = uid('idraft');
+  const status = input.status || 'active';
+
+  await pool.execute<ResultSetHeader>(
+    `INSERT INTO project_intent_drafts
+      (intent_draft_uid, project_uid, module_uid, title, input_text, target_url_hint, attachments_json, llm_config_json, scenario_card_json, scenario_llm_meta_json, plan_title, plan_code, plan_summary, generation_model, generation_prompt, generated_files_json, plan_error, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      intentDraftUid,
+      projectUid,
+      moduleUid,
+      input.title.trim(),
+      input.input.trim(),
+      input.targetUrlHint?.trim() || null,
+      JSON.stringify(input.attachments || []),
+      JSON.stringify(input.llmConfig || {}),
+      JSON.stringify(input.scenarioCard),
+      input.scenarioLlmMeta === undefined ? null : JSON.stringify(input.scenarioLlmMeta),
+      input.planTitle?.trim() || null,
+      input.planCode || null,
+      input.planSummary?.trim() || null,
+      input.generationModel?.trim() || null,
+      input.generationPrompt || null,
+      JSON.stringify(input.generatedFiles || []),
+      input.planError?.trim() || null,
+      status,
+    ]
+  );
+
+  const row = await getProjectIntentDraftByUid(intentDraftUid);
+  if (!row) throw new Error('创建意图草稿失败');
+
+  await insertProjectActivityLog({
+    projectUid,
+    entityType: 'intent_draft',
+    entityUid: row.intentDraftUid,
+    actionType: 'intent_draft_created',
+    actorLabel: options?.actorLabel,
+    title: `创建意图草稿「${row.title}」`,
+    detail: row.planReady
+      ? `已生成脚本草稿，归属模块「${row.moduleName}」，共 ${row.flowStepCount} 步。`
+      : `归属模块「${row.moduleName}」，脚本尚未生成成功：${row.planError || '未知错误'}。`,
+    meta: {
+      moduleUid: row.moduleUid,
+      moduleName: row.moduleName,
+      attachmentCount: row.attachmentCount,
+      planReady: row.planReady,
+      taskMode: row.taskMode,
+      flowStepCount: row.flowStepCount,
+    },
+  });
+
+  return row;
+}
+
+export async function updateProjectIntentDraft(
+  intentDraftUid: string,
+  input: ProjectIntentDraftInput,
+  options?: { actorLabel?: string }
+): Promise<ProjectIntentDraftRecord> {
+  await ensureProjectIntentDraftTables();
+  const pool = getDbPool();
+  const existing = await getProjectIntentDraftByUid(intentDraftUid);
+  if (!existing) throw new Error('意图草稿不存在');
+
+  const nextProjectUid = input.projectUid.trim();
+  if (nextProjectUid !== existing.projectUid) {
+    throw new Error('暂不支持跨项目移动意图草稿');
+  }
+
+  const nextModuleUid = input.moduleUid.trim();
+  const module = await getModuleByUid(nextModuleUid);
+  if (!module || module.projectUid !== nextProjectUid) {
+    throw new Error('模块不存在，或不属于当前项目');
+  }
+
+  await pool.execute<ResultSetHeader>(
+    `UPDATE project_intent_drafts
+     SET module_uid = ?,
+         title = ?,
+         input_text = ?,
+         target_url_hint = ?,
+         attachments_json = ?,
+         llm_config_json = ?,
+         scenario_card_json = ?,
+         scenario_llm_meta_json = ?,
+         plan_title = ?,
+         plan_code = ?,
+         plan_summary = ?,
+         generation_model = ?,
+         generation_prompt = ?,
+         generated_files_json = ?,
+         plan_error = ?,
+         status = ?
+     WHERE intent_draft_uid = ?`,
+    [
+      nextModuleUid,
+      input.title.trim(),
+      input.input.trim(),
+      input.targetUrlHint?.trim() || null,
+      JSON.stringify(input.attachments || []),
+      JSON.stringify(input.llmConfig || {}),
+      JSON.stringify(input.scenarioCard),
+      input.scenarioLlmMeta === undefined ? null : JSON.stringify(input.scenarioLlmMeta),
+      input.planTitle?.trim() || null,
+      input.planCode || null,
+      input.planSummary?.trim() || null,
+      input.generationModel?.trim() || null,
+      input.generationPrompt || null,
+      JSON.stringify(input.generatedFiles || []),
+      input.planError?.trim() || null,
+      input.status || existing.status,
+      intentDraftUid,
+    ]
+  );
+
+  const row = await getProjectIntentDraftByUid(intentDraftUid);
+  if (!row) throw new Error('更新意图草稿失败');
+
+  const detailParts: string[] = [];
+  if (existing.title !== row.title) {
+    detailParts.push(`草稿标题更新为「${row.title}」`);
+  }
+  if (existing.moduleUid !== row.moduleUid) {
+    detailParts.push(`已移动到模块「${row.moduleName}」`);
+  }
+  if (existing.targetUrlHint !== row.targetUrlHint) {
+    detailParts.push('已更新目标地址提示');
+  }
+  if (existing.attachmentCount !== row.attachmentCount) {
+    detailParts.push(`参考图更新为 ${row.attachmentCount} 张`);
+  }
+  if (existing.taskMode !== row.taskMode) {
+    detailParts.push(row.taskMode === 'scenario' ? '已切换为业务流草稿' : '已切换为单页面草稿');
+  }
+  if (existing.flowStepCount !== row.flowStepCount) {
+    detailParts.push(`场景步骤更新为 ${row.flowStepCount} 步`);
+  }
+  if (existing.planReady !== row.planReady) {
+    detailParts.push(row.planReady ? '已重新生成脚本草稿' : `脚本草稿暂未生成成功：${row.planError || '未知错误'}`);
+  }
+
+  await insertProjectActivityLog({
+    projectUid: row.projectUid,
+    entityType: 'intent_draft',
+    entityUid: row.intentDraftUid,
+    actionType: 'intent_draft_updated',
+    actorLabel: options?.actorLabel,
+    title: `更新意图草稿「${row.title}」`,
+    detail: detailParts.length > 0 ? `${detailParts.join('；')}。` : '已更新意图草稿内容并重新生成场景卡。',
+    meta: {
+      previousTitle: existing.title,
+      currentTitle: row.title,
+      previousModuleUid: existing.moduleUid,
+      currentModuleUid: row.moduleUid,
+      previousAttachmentCount: existing.attachmentCount,
+      currentAttachmentCount: row.attachmentCount,
+      previousTaskMode: existing.taskMode,
+      currentTaskMode: row.taskMode,
+      previousFlowStepCount: existing.flowStepCount,
+      currentFlowStepCount: row.flowStepCount,
+      planReady: row.planReady,
+    },
+  });
+
+  return row;
+}
+
+export async function markProjectIntentDraftImported(
+  intentDraftUid: string,
+  input: { importedConfigUid: string; importedPlanUid?: string }
+): Promise<ProjectIntentDraftRecord> {
+  await ensureProjectIntentDraftTables();
+  const pool = getDbPool();
+  await pool.execute<ResultSetHeader>(
+    `UPDATE project_intent_drafts
+     SET status = 'imported',
+         imported_config_uid = ?,
+         imported_plan_uid = ?,
+         imported_at = CURRENT_TIMESTAMP(3)
+     WHERE intent_draft_uid = ?`,
+    [input.importedConfigUid, input.importedPlanUid?.trim() || null, intentDraftUid]
+  );
+
+  const row = await getProjectIntentDraftByUid(intentDraftUid);
+  if (!row) throw new Error('更新意图草稿导入状态失败');
+  return row;
+}
+
+export async function archiveProjectIntentDraft(intentDraftUid: string, options?: { actorLabel?: string }): Promise<void> {
+  await ensureProjectIntentDraftTables();
+  const pool = getDbPool();
+  const draft = await getProjectIntentDraftByUid(intentDraftUid);
+  if (!draft) throw new Error('意图草稿不存在');
+  if (draft.status === 'archived') return;
+
+  await pool.execute<ResultSetHeader>(`UPDATE project_intent_drafts SET status = 'archived' WHERE intent_draft_uid = ?`, [intentDraftUid]);
+
+  await insertProjectActivityLog({
+    projectUid: draft.projectUid,
+    entityType: 'intent_draft',
+    entityUid: draft.intentDraftUid,
+    actionType: 'intent_draft_archived',
+    actorLabel: options?.actorLabel,
+    title: `删除意图草稿「${draft.title}」`,
+    detail: draft.importedConfigUid
+      ? `草稿已从列表移除，不影响已导入的正式任务「${draft.importedConfigUid}」。`
+      : `草稿已从模块「${draft.moduleName}」移除。`,
+    meta: {
+      moduleUid: draft.moduleUid,
+      moduleName: draft.moduleName,
+      statusBeforeArchive: draft.status,
+      importedConfigUid: draft.importedConfigUid,
+      importedPlanUid: draft.importedPlanUid,
+    },
+  });
+}
+
+export async function upsertIntentE2ERunSnapshot(input: IntentE2ERunSnapshotInput): Promise<void> {
+  await ensureIntentE2ERunTables();
+  const pool = getDbPool();
+
+  await pool.execute<ResultSetHeader>(
+    `INSERT INTO intent_e2e_runs
+      (run_id, project_uid, status, stage, request_input, target_url, state_json, error_message, started_at, ended_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       project_uid = VALUES(project_uid),
+       status = VALUES(status),
+       stage = VALUES(stage),
+       request_input = VALUES(request_input),
+       target_url = VALUES(target_url),
+       state_json = VALUES(state_json),
+       error_message = VALUES(error_message),
+       started_at = VALUES(started_at),
+       ended_at = VALUES(ended_at),
+       created_at = VALUES(created_at),
+       updated_at = VALUES(updated_at)`,
+    [
+      input.runId,
+      input.projectUid?.trim() || null,
+      input.status,
+      input.stage.trim() || 'created',
+      input.requestInput.trim(),
+      input.targetUrl?.trim() || null,
+      JSON.stringify(input.state ?? null),
+      input.error?.trim() || null,
+      input.startedAt ? new Date(input.startedAt) : null,
+      input.endedAt ? new Date(input.endedAt) : null,
+      new Date(input.createdAt),
+      new Date(input.updatedAt),
+    ]
+  );
+}
+
+export async function getIntentE2ERunSnapshotByRunId(runId: string): Promise<IntentE2ERunSnapshotRecord | null> {
+  await ensureIntentE2ERunTables();
+  const pool = getDbPool();
+  const [rows] = await pool.query<RowDataPacket[]>(`SELECT * FROM intent_e2e_runs WHERE run_id = ? LIMIT 1`, [runId]);
+  const row = rows[0];
+  if (!row) return null;
+  return normalizeIntentE2ERunSnapshotRow(row);
+}
+
 export async function listModulesByProject(projectUid: string, params?: { status?: ModuleStatus | 'all' }): Promise<TestModuleRecord[]> {
   await reconcileStaleExecutions({ projectUid });
   const pool = getDbPool();
@@ -2508,6 +3312,7 @@ export async function listTestConfigs(params: {
   moduleUid?: string;
 }) {
   await ensureTestConfigurationScenarioColumns();
+  await ensureProjectIntentDraftTables();
   await reconcileStaleExecutions({
     projectUid: params.projectUid,
     moduleUid: params.moduleUid,
@@ -2570,6 +3375,28 @@ export async function listTestConfigs(params: {
         LIMIT 1
       ) AS latest_plan_version,
       (
+        SELECT p2.generation_prompt
+        FROM test_plans p2
+        WHERE p2.config_uid = c.config_uid
+        ORDER BY p2.plan_version DESC
+        LIMIT 1
+      ) AS latest_plan_generation_prompt,
+      (
+        SELECT a2.action_type
+        FROM project_activity_logs a2
+        WHERE a2.entity_type = 'plan'
+          AND a2.entity_uid = (
+            SELECT p2.plan_uid
+            FROM test_plans p2
+            WHERE p2.config_uid = c.config_uid
+            ORDER BY p2.plan_version DESC
+            LIMIT 1
+          )
+          AND a2.action_type IN ('plan_imported_passed', 'plan_imported_failed')
+        ORDER BY a2.created_at DESC, a2.id DESC
+        LIMIT 1
+      ) AS latest_plan_import_action_type,
+      (
         SELECT e2.execution_uid
         FROM test_executions e2
         WHERE e2.config_uid = c.config_uid
@@ -2582,7 +3409,28 @@ export async function listTestConfigs(params: {
         WHERE e2.config_uid = c.config_uid
         ORDER BY e2.created_at DESC
         LIMIT 1
-      ) AS latest_execution_status
+      ) AS latest_execution_status,
+      (
+        SELECT d.intent_draft_uid
+        FROM project_intent_drafts d
+        WHERE d.imported_config_uid = c.config_uid
+        ORDER BY d.imported_at DESC, d.updated_at DESC, d.id DESC
+        LIMIT 1
+      ) AS source_intent_draft_uid,
+      (
+        SELECT d.title
+        FROM project_intent_drafts d
+        WHERE d.imported_config_uid = c.config_uid
+        ORDER BY d.imported_at DESC, d.updated_at DESC, d.id DESC
+        LIMIT 1
+      ) AS source_intent_draft_title,
+      (
+        SELECT d.imported_at
+        FROM project_intent_drafts d
+        WHERE d.imported_config_uid = c.config_uid
+        ORDER BY d.imported_at DESC, d.updated_at DESC, d.id DESC
+        LIMIT 1
+      ) AS source_intent_draft_imported_at
      FROM test_configurations c
      LEFT JOIN test_modules m ON m.module_uid = c.module_uid
      LEFT JOIN test_projects p ON p.project_uid = c.project_uid
@@ -2611,6 +3459,7 @@ export async function listTestConfigs(params: {
 
 export async function getTestConfigByUid(configUid: string): Promise<(TestConfigRecord & { loginPasswordPlain: string }) | null> {
   await ensureTestConfigurationScenarioColumns();
+  await ensureProjectIntentDraftTables();
   await reconcileStaleExecutions({ configUid });
   const pool = getDbPool();
   const [rows] = await pool.query<RowDataPacket[]>(
@@ -2650,7 +3499,28 @@ export async function getTestConfigByUid(configUid: string): Promise<(TestConfig
         WHERE e2.config_uid = c.config_uid
         ORDER BY e2.created_at DESC
         LIMIT 1
-      ) AS latest_execution_status
+      ) AS latest_execution_status,
+      (
+        SELECT d.intent_draft_uid
+        FROM project_intent_drafts d
+        WHERE d.imported_config_uid = c.config_uid
+        ORDER BY d.imported_at DESC, d.updated_at DESC, d.id DESC
+        LIMIT 1
+      ) AS source_intent_draft_uid,
+      (
+        SELECT d.title
+        FROM project_intent_drafts d
+        WHERE d.imported_config_uid = c.config_uid
+        ORDER BY d.imported_at DESC, d.updated_at DESC, d.id DESC
+        LIMIT 1
+      ) AS source_intent_draft_title,
+      (
+        SELECT d.imported_at
+        FROM project_intent_drafts d
+        WHERE d.imported_config_uid = c.config_uid
+        ORDER BY d.imported_at DESC, d.updated_at DESC, d.id DESC
+        LIMIT 1
+      ) AS source_intent_draft_imported_at
      FROM test_configurations c
      LEFT JOIN test_modules m ON m.module_uid = c.module_uid
      LEFT JOIN test_projects p ON p.project_uid = c.project_uid
@@ -3147,12 +4017,23 @@ export async function listExecutionsByConfigUid(configUid: string, limit = 30): 
     errorMessage: string;
     workerSessionId: string;
     createdAt: string;
+    intentImportedFromRunId?: string;
   }>
 > {
   await reconcileStaleExecutions({ configUid });
   const pool = getDbPool();
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT e.*, p.plan_version
+    `SELECT
+       e.*,
+       p.plan_version,
+       (
+         SELECT JSON_UNQUOTE(JSON_EXTRACT(a.meta, '$.importedFromRunId'))
+         FROM execution_artifacts a
+         WHERE a.execution_uid = e.execution_uid
+           AND a.artifact_type = 'generated_spec'
+         ORDER BY a.created_at DESC, a.id DESC
+         LIMIT 1
+       ) AS intent_imported_from_run_id
      FROM test_executions e
      LEFT JOIN test_plans p ON p.plan_uid = e.plan_uid
      WHERE e.config_uid = ?
@@ -3174,6 +4055,7 @@ export async function listExecutionsByConfigUid(configUid: string, limit = 30): 
     errorMessage: row.error_message ? String(row.error_message) : '',
     workerSessionId: row.worker_session_id ? String(row.worker_session_id) : '',
     createdAt: toIso(row.created_at),
+    intentImportedFromRunId: row.intent_imported_from_run_id ? String(row.intent_imported_from_run_id) : '',
   }));
 }
 

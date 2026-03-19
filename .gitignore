@@ -24,3 +24,6 @@ tests/e2e/generated/*
 .termite-upstream-check
 .termite-upgrade-report
 audit-package-*
+.next-demo/*
+tmp/*.png
+tmp/generate-order-after-confirm.png

@@ -477,6 +477,10 @@ async function installApiMocks(page: Page) {
       return jsonResponse(route, { items: state.modules });
     }
 
+    if (method === 'GET' && pathname === `/api/projects/${projectUid}/intent-drafts`) {
+      return jsonResponse(route, { items: [] });
+    }
+
     if (method === 'GET' && pathname === `/api/projects/${projectUid}/activity`) {
       return jsonResponse(route, { items: state.activity.slice(0, Number(url.searchParams.get('limit') || 12)) });
     }
@@ -991,8 +995,8 @@ test('smoke: scenario task flow renders structured plan preview @smoke', async (
   await expect(page.getByRole('heading', { name: 'Scenario Smoke Project' })).toBeVisible();
   await expect(page.getByText('1 模块')).toBeVisible();
 
-  await page.getByRole('button', { name: '新建任务' }).click();
-  await expect(page.getByRole('heading', { name: '新建任务' })).toBeVisible();
+  await page.getByRole('button', { name: '手动新建' }).click();
+  await expect(page.getByRole('heading', { name: '手动新建任务' })).toBeVisible();
 
   await page.getByPlaceholder('例如：新增商品主流程').fill('跨页面下单流程');
   await page.getByRole('button', { name: '业务流任务' }).click();
@@ -1039,7 +1043,7 @@ test('smoke: scenario task flow renders structured plan preview @smoke', async (
 
   await page.getByRole('button', { name: '创建', exact: true }).click();
 
-  await expect(page.getByRole('heading', { name: '新建任务' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '手动新建任务' })).toHaveCount(0);
 
   const taskRow = page.locator('tr').filter({ hasText: '跨页面下单流程' });
   await expect(taskRow).toContainText('业务流');
@@ -1079,7 +1083,7 @@ test('smoke: intent workbench imports context and creates a scenario task draft 
   await expect(workbench.getByRole('heading', { name: '需求编排工作台' })).toBeVisible();
 
   await workbench.getByRole('button', { name: '知识文档', exact: true }).click();
-  await expect(workbench.getByRole('heading', { name: '知识文档', exact: true })).toBeVisible();
+  await expect(workbench.getByRole('heading', { name: '导入知识文档', exact: true })).toBeVisible();
 
   await workbench.getByLabel('知识文档名称').fill('GBS 商机列表手册');
   await workbench.getByLabel('知识来源路径').fill('tmp/manuals/gbs-business-list.txt');
@@ -1100,10 +1104,10 @@ test('smoke: intent workbench imports context and creates a scenario task draft 
   await expect(workbench.getByText('支持按手机号、联系人姓名检索商机。')).toBeVisible();
 
   await workbench.getByRole('button', { name: '稳定能力', exact: true }).click();
-  await expect(workbench.getByRole('heading', { name: '稳定能力', exact: true })).toBeVisible();
+  await expect(workbench.getByRole('heading', { name: '能力目录', exact: true })).toBeVisible();
   await workbench.getByRole('button', { name: '新增稳定能力' }).click();
-  await workbench.getByRole('button', { name: '命中与前置', exact: true }).click();
-  await workbench.getByRole('button', { name: '动作与断言', exact: true }).click();
+  await workbench.getByRole('button', { name: /命中与前置/ }).click();
+  await workbench.getByRole('button', { name: /动作与断言/ }).click();
 
   await workbench.getByLabel('能力标识').fill('navigation.business-list-page');
   await workbench.getByLabel('能力类型').selectOption('navigation');
@@ -1120,9 +1124,9 @@ test('smoke: intent workbench imports context and creates a scenario task draft 
 
   await workbench.getByRole('button', { name: '知识文档', exact: true }).click();
   await workbench.getByRole('button', { name: '设为能力来源', exact: true }).click();
-  await workbench.getByRole('button', { name: '命中与前置', exact: true }).click();
-  await workbench.getByRole('button', { name: '动作与断言', exact: true }).click();
-  await workbench.getByRole('button', { name: '清理与依赖', exact: true }).click();
+  await workbench.getByRole('button', { name: /命中与前置/ }).click();
+  await workbench.getByRole('button', { name: /动作与断言/ }).click();
+  await workbench.getByRole('button', { name: /清理与依赖/ }).click();
   await workbench.getByLabel('能力标识').fill('business.list-search-by-phone');
   await workbench.getByLabel('能力类型').selectOption('query');
   await workbench.getByLabel('能力名称').fill('商机列表按手机号检索');
@@ -1142,22 +1146,22 @@ test('smoke: intent workbench imports context and creates a scenario task draft 
   await workbench.getByLabel('需求描述').fill('在商机列表按手机号校验落库结果');
   await workbench.getByRole('button', { name: '生成 recipe' }).click();
 
-  await expect(workbench.getByText('编排结果')).toBeVisible();
+  await expect(workbench.getByRole('heading', { name: '编排结果', exact: true })).toBeVisible();
   await expect(workbench).toContainText('打开商机列表页');
   await expect(workbench).toContainText('商机列表按手机号检索');
-  await expect(workbench.getByText('手册证据')).toBeVisible();
+  await expect(workbench.getByRole('heading', { name: '手册证据', exact: true })).toBeVisible();
 
   await workbench.getByRole('button', { name: '写入任务草稿' }).click();
 
-  await expect(page.getByRole('heading', { name: '新建任务' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '需求编排草稿' })).toBeVisible();
   await expect(page.getByPlaceholder('例如：新增商品主流程')).toHaveValue('在商机列表按手机号校验落库结果');
   await expect(page.getByText('业务流定义')).toBeVisible();
   await expect(page.getByText('2 个步骤')).toBeVisible();
   await expect(page.getByPlaceholder('https://example.com/path')).toHaveValue('https://uat.example.com/#/business/list');
 
-  await page.getByRole('button', { name: '创建', exact: true }).click();
+  await page.getByRole('button', { name: '保存到工作台', exact: true }).click();
 
-  await expect(page.getByRole('heading', { name: '新建任务' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '需求编排草稿' })).toHaveCount(0);
 
   const taskRow = page.locator('tr').filter({ hasText: '在商机列表按手机号校验落库结果' });
   await expect(taskRow).toContainText('业务流');
@@ -1205,8 +1209,8 @@ test('smoke: intent workbench blocks incomplete recipe drafts when requirement c
 
   await workbench.getByRole('button', { name: '稳定能力', exact: true }).click();
   await workbench.getByRole('button', { name: '新增稳定能力' }).click();
-  await workbench.getByRole('button', { name: '命中与前置', exact: true }).click();
-  await workbench.getByRole('button', { name: '动作与断言', exact: true }).click();
+  await workbench.getByRole('button', { name: /命中与前置/ }).click();
+  await workbench.getByRole('button', { name: /动作与断言/ }).click();
   await workbench.getByLabel('能力标识').fill('business.create-core');
   await workbench.getByLabel('能力类型').selectOption('action');
   await workbench.getByLabel('能力名称').fill('创建商机主链路');
@@ -1224,7 +1228,7 @@ test('smoke: intent workbench blocks incomplete recipe drafts when requirement c
   await workbench.getByLabel('需求描述').fill('创建商机并生成订单');
   await workbench.getByRole('button', { name: '生成 recipe' }).click();
 
-  await expect(workbench.getByText('编排结果')).toBeVisible();
+  await expect(workbench.getByRole('heading', { name: '编排结果', exact: true })).toBeVisible();
   await expect(workbench).toContainText('未命中的需求片段：生成订单');
   await expect(workbench).toContainText('已覆盖 · 创建商机');
   await expect(workbench).toContainText('未覆盖 · 生成订单');
@@ -1256,8 +1260,8 @@ test('smoke: intent workbench edits an existing capability and reuses it for rec
 
   await workbench.getByRole('button', { name: '稳定能力', exact: true }).click();
   await workbench.getByRole('button', { name: '新增稳定能力' }).click();
-  await workbench.getByRole('button', { name: '命中与前置', exact: true }).click();
-  await workbench.getByRole('button', { name: '动作与断言', exact: true }).click();
+  await workbench.getByRole('button', { name: /命中与前置/ }).click();
+  await workbench.getByRole('button', { name: /动作与断言/ }).click();
 
   await workbench.getByLabel('能力标识').fill('business.list-search');
   await workbench.getByLabel('能力类型').selectOption('query');
@@ -1288,7 +1292,7 @@ test('smoke: intent workbench edits an existing capability and reuses it for rec
   await workbench.getByLabel('需求描述').fill('按联系人姓名检索商机');
   await workbench.getByRole('button', { name: '生成 recipe' }).click();
 
-  await expect(workbench.getByText('编排结果')).toBeVisible();
+  await expect(workbench.getByRole('heading', { name: '编排结果', exact: true })).toBeVisible();
   await expect(workbench).toContainText('商机列表联合检索');
   await expect(workbench.getByText('列表展示匹配商机与联系人姓名')).toBeVisible();
 });
@@ -1316,8 +1320,8 @@ test('smoke: archived capability is excluded from recipe until restored @smoke',
 
   await workbench.getByRole('button', { name: '稳定能力', exact: true }).click();
   await workbench.getByRole('button', { name: '新增稳定能力' }).click();
-  await workbench.getByRole('button', { name: '命中与前置', exact: true }).click();
-  await workbench.getByRole('button', { name: '动作与断言', exact: true }).click();
+  await workbench.getByRole('button', { name: /命中与前置/ }).click();
+  await workbench.getByRole('button', { name: /动作与断言/ }).click();
 
   await workbench.getByLabel('能力标识').fill('business.archive-check');
   await workbench.getByLabel('能力类型').selectOption('query');
@@ -1334,29 +1338,28 @@ test('smoke: archived capability is excluded from recipe until restored @smoke',
   await workbench.getByRole('button', { name: '归档能力 归档前商机检索能力' }).click();
 
   await expect(workbench.getByText('能力「归档前商机检索能力」已归档')).toBeVisible();
-  await expect(workbench).toContainText('0 启用 / 1 总计');
-  await expect(workbench).toContainText('默认隐藏 1 个已归档能力');
+  await expect(workbench).toContainText('0 项可用能力');
+  await expect(workbench.getByRole('button', { name: '恢复能力 归档前商机检索能力' })).toBeVisible();
 
   await workbench.getByRole('button', { name: '需求编排', exact: true }).click();
   await workbench.getByLabel('需求描述').fill('按手机号检索商机');
   await workbench.getByRole('button', { name: '生成 recipe' }).click();
 
-  await expect(workbench.getByText('编排结果')).toBeVisible();
-  await expect(workbench.getByText('当前 recipe 选中 0 个能力。')).toBeVisible();
+  await expect(workbench.getByRole('heading', { name: '编排结果', exact: true })).toBeVisible();
+  await expect(workbench.getByText('已选能力 0/0')).toBeVisible();
 
   await workbench.getByRole('button', { name: '稳定能力', exact: true }).click();
-  await workbench.getByRole('button', { name: '查看已归档 1 项' }).click();
   await workbench.getByRole('button', { name: '恢复能力 归档前商机检索能力' }).click();
 
   await expect(workbench.getByText('能力「归档前商机检索能力」已恢复')).toBeVisible();
-  await expect(workbench).toContainText('1 启用 / 1 总计');
+  await expect(workbench).toContainText('1 项可用能力');
 
   await workbench.getByRole('button', { name: '需求编排', exact: true }).click();
   await workbench.getByRole('button', { name: '生成 recipe' }).click();
   await expect(workbench).toContainText('归档前商机检索能力');
 });
 
-test('smoke: archived knowledge is excluded from recipe evidence until restored @smoke', async ({ page }) => {
+test('smoke: archived knowledge blocks recipe generation until restored @smoke', async ({ page }) => {
   test.setTimeout(120_000);
   await installApiMocks(page);
 
@@ -1395,8 +1398,8 @@ test('smoke: archived knowledge is excluded from recipe evidence until restored 
 
   await workbench.getByRole('button', { name: '需求编排', exact: true }).click();
   await workbench.getByRole('button', { name: '生成 recipe' }).click();
-  await expect(workbench.getByText('编排结果')).toBeVisible();
-  await expect(workbench.getByText('当前 recipe 选中 0 个能力。')).toBeVisible();
-  await expect(workbench.getByText('手册证据')).toBeVisible();
-  await expect(workbench.getByText('支持按手机号检索商机。')).toBeVisible();
+  await expect(workbench.getByRole('heading', { name: '编排结果', exact: true })).toBeVisible();
+  await expect(workbench.getByText('已选能力 0/0')).toBeVisible();
+  await expect(workbench.getByRole('heading', { name: '手册证据', exact: true })).toBeVisible();
+  await expect(workbench.getByText('当前需求还没有明显的手册证据命中。')).toBeVisible();
 });

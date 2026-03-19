@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "business.create-order-flow",
+      "title": "商机转订单主链路",
+      "match": {
+        "urlIncludes": ["/business/createbusiness", "/business/businesslist"],
+        "descriptionIncludes": ["生成订单", "createorder", "签约成功", "商机转订单"]
+      },
+      "promptNotes": [
+        "商机转订单链路优先以 createOrder 响应成功 + Drawer/Modal 收敛 + 状态变化为主断言，不强求原商机行继续可见。",
+        "如果需要重新检索目标商机，优先复用真实手机号、businessId 或接口响应主键，不要随机挑行。"
+      ],
+      "capabilitySlugs": [
+        "ui.select-antd-option",
+        "ui.click-antd-row-action",
+        "assert.wait-for-api-response",
+        "extract.capture-shared-variable"
+      ],
+      "addGlobalRules": [
+        "命中商机转订单知识时，主成功条件优先绑定 createOrder 响应成功、订单 Drawer 关闭和签约状态变化。",
+        "订单创建成功后，不要再把“原列表行仍然可见”当成唯一成功标准。"
+      ],
+      "addPreferredPrimitives": [
+        "assert_business_transition(before, after): 用接口成功 + 状态计数/Drawer 收敛验证商机转订单结果"
+      ],
+      "addOutputContract": [
+        "商机转订单场景不要回退成宽泛成功 toast 断言，至少保留接口成功 + UI 状态收敛其中两类证据。"
+      ],
+      "stepPatches": [
+        {
+          "whenStepTypes": ["ui", "assert", "extract"],
+          "stepTextIncludes": ["商机", "订单", "生成订单", "签约成功", "查看"],
+          "addAllowedActions": ["find_table_row", "click_row_action", "wait_for_response", "assert_response_ok", "extract_text", "store_variable"],
+          "addPreferredHelpers": ["__e2e.clickAntdRowAction", "__e2e.waitForApiResponse"],
+          "addRequiredAssertions": ["/crmapi/business/createOrder 响应成功", "订单 Drawer 关闭或签约状态发生变化"],
+          "addForbiddenPatterns": ["用 page.getByText(/成功/i).first() 作为主断言", "createOrder 成功后继续强依赖原目标行仍然可见"]
+        }
+      ]
+    },
+    {
+      "id": "embedded.easyindex-search",
+      "title": "搜企业 iframe 业务页",
+      "match": {
+        "urlIncludes": ["/company/easyindex"],
+        "titleIncludes": ["搜企业"],
+        "frameUrlIncludes": ["easySearchList"]
+      },
+      "promptNotes": [
+        "真正的搜索框、按钮和列表通常都在 iframe 内，不要在顶层 page 上反复等待 placeholder。",
+        "优先按快照 selectorHint / elementId 进入 frame，再在 frame 内定位企业搜索输入框和搜索按钮。"
+      ],
+      "capabilitySlugs": ["navigation.enter-iframe-context"],
+      "addGlobalRules": [
+        "命中 iframe 页面知识时，先进入正确 frame，再做后续 UI 操作和断言。"
+      ],
+      "addPreferredPrimitives": [
+        "enter_frame_context(selector, urlIncludes?): 使用 __e2e.getFrame 进入真实业务 frame"
+      ],
+      "stepPatches": [
+        {
+          "whenStepTypes": ["ui", "assert"],
+          "stepTextIncludes": ["企业", "搜索", "筛选", "结果"],
+          "addAllowedActions": ["enter_frame_context", "wait_for_ui"],
+          "addPreferredHelpers": ["__e2e.getFrame"],
+          "addRequiredAssertions": ["先确认 frame 内关键输入框/按钮可见，再执行搜索或断言"],
+          "addForbiddenPatterns": ["臆造 iframe[name=...] 选择器", "在顶层 page 上直接等待 frame 内 placeholder"]
+        }
+      ]
+    },
+    {
+      "id": "business.batch-add-contacts",
+      "title": "商机列表批量加入通讯录",
+      "match": {
+        "urlIncludes": ["/business/businesslist"],
+        "descriptionIncludes": ["批量加入通讯录", "通讯录"]
+      },
+      "promptNotes": [
+        "这类场景优先走“勾选目标行 + 顶部批量按钮”的真实入口，不要臆造行内按钮。",
+        "最终成功断言应落到“通讯录列表里能检索到目标手机号/联系人”这类业务结果，而不是只看瞬时反馈。"
+      ],
+      "addGlobalRules": [
+        "批量加入通讯录场景必须先定位目标行并勾选 checkbox，再点击顶部批量按钮。"
+      ],
+      "stepPatches": [
+        {
+          "whenStepTypes": ["ui", "assert"],
+          "stepTextIncludes": ["批量加入通讯录", "通讯录", "勾选"],
+          "addAllowedActions": ["find_table_row", "assert_state", "assert_text"],
+          "addRequiredAssertions": ["目标行勾选状态成功切换", "通讯录列表中可检索到目标联系人或手机号"],
+          "addForbiddenPatterns": ["直接点击不存在的行内\"加入通讯录\"按钮", "仅凭 toast 判定最终成功"]
+        }
+      ]
+    }
+  ]
+}

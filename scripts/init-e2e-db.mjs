@@ -41,6 +41,7 @@ async function main() {
     await connection.query(sql);
     await ensureProjectTables(connection);
     await ensureCollaborationTables(connection);
+    await ensureWorkspaceLLMSettingsTable(connection);
     await ensureModuleTables(connection);
     await ensureConfigurationColumns(connection);
     await ensureDerivedProjectColumns(connection);
@@ -210,6 +211,30 @@ async function ensureCollaborationTables(connection) {
      ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), email = VALUES(email)`,
     [DEFAULT_WORKSPACE_USER_UID, DEFAULT_WORKSPACE_USER_NAME, DEFAULT_WORKSPACE_USER_EMAIL]
   );
+}
+
+async function ensureWorkspaceLLMSettingsTable(connection) {
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS workspace_llm_settings (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      scope_uid VARCHAR(64) NOT NULL,
+      provider VARCHAR(32) NOT NULL DEFAULT 'openai',
+      model VARCHAR(255) NOT NULL DEFAULT '',
+      base_url TEXT NULL,
+      api_style VARCHAR(32) NOT NULL DEFAULT 'auto',
+      vision_enabled TINYINT(1) NOT NULL DEFAULT 1,
+      self_heal_retries INT NOT NULL DEFAULT 2,
+      max_plan_steps INT NOT NULL DEFAULT 8,
+      updated_by_user_uid VARCHAR(64) NULL,
+      updated_by_label VARCHAR(128) NOT NULL DEFAULT 'system',
+      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (id),
+      UNIQUE KEY uk_workspace_llm_settings_scope (scope_uid),
+      CONSTRAINT fk_workspace_llm_settings_updated_by_user_uid FOREIGN KEY (updated_by_user_uid) REFERENCES workspace_users (user_uid)
+        ON UPDATE CASCADE ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
 }
 
 async function ensureConfigurationColumns(connection) {

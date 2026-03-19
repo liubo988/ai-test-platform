@@ -39,6 +39,7 @@ vi.mock('@/lib/db/repository', () => ({
   getLatestPlanByConfigUid: vi.fn(),
   getPlanByUid: vi.fn(),
   getProjectByUid: vi.fn(),
+  getWorkspaceLLMSettings: vi.fn(),
   getTestConfigByUid: vi.fn(),
   insertExecutionArtifact: vi.fn(),
   insertExecutionEvent: vi.fn(),
@@ -71,6 +72,7 @@ import {
   getLatestPlanByConfigUid,
   getPlanByUid,
   getProjectByUid,
+  getWorkspaceLLMSettings,
   getTestConfigByUid,
   insertExecutionArtifact,
   insertExecutionEvent,
@@ -85,8 +87,15 @@ import {
 import { finalizeCapabilityVerification } from '@/lib/capability-verification-service';
 
 describe('test-plan-service', () => {
+  async function flushAsyncWork(cycles = 6) {
+    for (let index = 0; index < cycles; index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getWorkspaceLLMSettings).mockResolvedValue(null as never);
     vi.mocked(insertExecutionArtifact).mockResolvedValue(undefined as never);
     vi.mocked(insertExecutionEvent).mockResolvedValue(undefined as never);
     vi.mocked(insertLlmConversation).mockResolvedValue(undefined as never);
@@ -150,6 +159,50 @@ describe('test-plan-service', () => {
     });
     expect(detail?.config).not.toHaveProperty('loginPasswordPlain');
     expect(detail?.project).not.toHaveProperty('loginPasswordPlain');
+  });
+
+  it('exposes intent import metadata on execution details when the execution was imported', async () => {
+    vi.mocked(getExecution).mockResolvedValue({
+      executionUid: 'exec_import_1',
+      planUid: 'plan_import_1',
+      configUid: 'cfg_import_1',
+      projectUid: 'proj_1',
+      status: 'failed',
+      startedAt: '2026-03-17T10:00:00.000Z',
+      endedAt: '2026-03-17T10:05:00.000Z',
+      durationMs: 300000,
+      resultSummary: 'Intent E2E 失败',
+      errorMessage: '未找到成功提示',
+      workerSessionId: 'ws_import_1',
+      createdAt: '2026-03-17T10:00:00.000Z',
+    } as never);
+    vi.mocked(listExecutionEvents).mockResolvedValue([] as never);
+    vi.mocked(listLlmConversations).mockResolvedValue([] as never);
+    vi.mocked(listExecutionArtifacts).mockResolvedValue(
+      [
+        {
+          artifactType: 'generated_spec',
+          storagePath: 'db://executions/exec_import_1/intent-failed.spec.ts',
+          meta: {
+            importedFromRunId: 'intent-run-999',
+            success: false,
+          },
+          createdAt: '2026-03-17T10:05:00.000Z',
+        },
+      ] as never
+    );
+    vi.mocked(getPlanByUid).mockResolvedValue(null);
+    vi.mocked(listPlanCases).mockResolvedValue([] as never);
+    vi.mocked(getTestConfigByUid).mockResolvedValue(null);
+    vi.mocked(getProjectByUid).mockResolvedValue(null);
+
+    const detail = await getExecutionDetail('exec_import_1');
+
+    expect(detail?.intentImport).toEqual({
+      importedFromRunId: 'intent-run-999',
+      importedStatus: 'failed',
+      importedAt: '2026-03-17T10:05:00.000Z',
+    });
   });
 
   it('treats skipped executions as failed outcomes', () => {
@@ -268,6 +321,178 @@ describe('test-plan-service', () => {
         executionUid: 'exec_skip_1',
         status: 'failed',
       })
+    );
+  });
+
+  it('automatically launches AI repair and reruns when project execution self-heal is enabled', async () => {
+    vi.mocked(findRunningExecution).mockResolvedValue(null as never);
+    vi.mocked(getPlanByUid).mockImplementation(async (planUid: string) => {
+      if (planUid === 'plan_auto_1') {
+        return {
+          planUid: 'plan_auto_1',
+          configUid: 'cfg_auto_1',
+          projectUid: 'proj_auto_1',
+          planTitle: '创建商机脚本',
+          planVersion: 1,
+          planSummary: 'first plan',
+          planCode: "test('first', async () => {});",
+        } as never;
+      }
+      if (planUid === 'plan_auto_2') {
+        return {
+          planUid: 'plan_auto_2',
+          configUid: 'cfg_auto_1',
+          projectUid: 'proj_auto_1',
+          planTitle: '创建商机脚本 - AI纠错计划',
+          planVersion: 2,
+          planSummary: 'repair plan',
+          planCode: "test('repaired', async () => {});",
+        } as never;
+      }
+      return null as never;
+    });
+    vi.mocked(getExecution).mockResolvedValue({
+      executionUid: 'exec_auto_1',
+      planUid: 'plan_auto_1',
+      configUid: 'cfg_auto_1',
+      projectUid: 'proj_auto_1',
+      status: 'failed',
+      startedAt: '2026-03-17T05:00:00.000Z',
+      endedAt: '2026-03-17T05:00:02.000Z',
+      durationMs: 2000,
+      resultSummary: '执行失败（失败步骤 1）',
+      errorMessage: 'locator timeout',
+      workerSessionId: 'ws_auto_1',
+      createdAt: '2026-03-17T05:00:00.000Z',
+    } as never);
+    vi.mocked(getTestConfigByUid).mockResolvedValue({
+      configUid: 'cfg_auto_1',
+      projectUid: 'proj_auto_1',
+      moduleUid: 'mod_auto_1',
+      name: '创建商机',
+      moduleName: '商机管理',
+      targetUrl: 'https://uat.example.com/#/business/createbusiness',
+      featureDescription: '创建商机并校验结果',
+      taskMode: 'page',
+      flowDefinition: null,
+      authSource: 'project',
+      loginDescription: '短信登录',
+      loginPasswordPlain: 'secret',
+    } as never);
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_auto_1',
+      name: '项目',
+      authRequired: true,
+      loginUrl: 'https://uat.example.com/#/',
+      loginUsername: 'tester',
+      loginDescription: '短信登录',
+      loginPasswordPlain: 'secret',
+    } as never);
+    vi.mocked(createExecution)
+      .mockResolvedValueOnce('exec_auto_1' as never)
+      .mockResolvedValueOnce('exec_auto_2' as never);
+    vi.mocked(executeTest)
+      .mockResolvedValueOnce({
+        success: false,
+        duration: 1500,
+        error: 'locator timeout',
+        steps: [
+          {
+            title: '创建商机',
+            status: 'failed',
+            duration: 1500,
+            error: 'locator timeout',
+            at: '2026-03-17T05:00:01.000Z',
+          },
+        ],
+      } as never)
+      .mockResolvedValueOnce({
+        success: true,
+        duration: 900,
+        error: null,
+        steps: [
+          {
+            title: '创建商机',
+            status: 'passed',
+            duration: 900,
+            at: '2026-03-17T05:00:03.000Z',
+          },
+        ],
+      } as never);
+    vi.mocked(listExecutionEvents).mockResolvedValue([
+      {
+        eventType: 'step',
+        payload: {
+          title: '创建商机',
+          status: 'failed',
+          error: 'locator timeout',
+        },
+        createdAt: '2026-03-17T05:00:02.000Z',
+      },
+    ] as never);
+    vi.mocked(analyzePage).mockResolvedValue({
+      url: 'https://uat.example.com/#/business/createbusiness',
+      title: '创建商机',
+      forms: [],
+      buttons: [],
+      tooltipElements: [],
+      links: [],
+      headings: [],
+      screenshot: '',
+      frames: [],
+    } as never);
+    vi.mocked(repairTest).mockImplementation(
+      (async function* () {
+        yield { type: 'thinking', content: '正在修复' };
+        yield { type: 'complete', content: "test('repaired', async () => {});" };
+      }) as never
+    );
+    vi.mocked(createTestPlan).mockResolvedValue({
+      planUid: 'plan_auto_2',
+      configUid: 'cfg_auto_1',
+      projectUid: 'proj_auto_1',
+      planTitle: '创建商机脚本 - AI纠错计划',
+      planVersion: 2,
+      planSummary: 'repair plan',
+      planCode: "test('repaired', async () => {});",
+      generatedFiles: [],
+      createdAt: '2026-03-17T05:00:02.500Z',
+    } as never);
+    vi.mocked(getLatestPlanByConfigUid).mockResolvedValue(null as never);
+
+    const result = await executePlan('plan_auto_1', {
+      actorLabel: 'Owner',
+      enableAutoRepair: true,
+      llmConfig: {
+        selfHealRetries: 1,
+      },
+    });
+
+    expect(result).toEqual({ executionUid: 'exec_auto_1' });
+
+    await flushAsyncWork();
+
+    expect(createExecution).toHaveBeenCalledTimes(2);
+    expect(repairTest).toHaveBeenCalledTimes(1);
+    expect(insertExecutionEvent).toHaveBeenCalledWith(
+      'exec_auto_1',
+      'status',
+      expect.objectContaining({
+        status: 'auto_repair_started',
+        nextExecutionUid: 'exec_auto_2',
+        nextRunPath: '/runs/exec_auto_2',
+        remainingRetries: 0,
+      }),
+      'proj_auto_1'
+    );
+    expect(updateExecutionStatus).toHaveBeenCalledWith(
+      'exec_auto_2',
+      'passed',
+      expect.objectContaining({
+        durationMs: 900,
+        resultSummary: '执行成功（步骤通过 1，跳过 0）',
+      }),
+      'proj_auto_1'
     );
   });
 
