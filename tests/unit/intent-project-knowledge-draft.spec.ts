@@ -142,6 +142,9 @@ describe('intent-project-knowledge-draft', () => {
     expect(mergeResult.diffPreview).toContain(`+ ${draft.candidates[0].rule.id}`);
     expect(mergeResult.summary.beforeRuleCount).toBe(0);
     expect(mergeResult.summary.afterRuleCount).toBe(1);
+    expect(mergeResult.comparison.before.ruleCount).toBe(0);
+    expect(mergeResult.comparison.after.ruleCount).toBe(1);
+    expect(mergeResult.comparison.addedRuleIds).toEqual([draft.candidates[0].rule.id]);
     expect(mergeResult.summary.addedRules[0].ruleId).toBe(draft.candidates[0].rule.id);
     expect(savedBackup.rules).toHaveLength(0);
     expect(savedProfile.rules).toHaveLength(1);

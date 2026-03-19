@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { runIntentDrivenE2EStream, type IntentE2EStreamEvent } from '@/lib/ai/intent-e2e-service';
 import { analyzePage, precheckPageAccess } from '@/lib/page-analyzer';
 import { executeTest } from '@/lib/test-executor';
-import { generateTest, repairTest, type GenerateEvent } from '@/lib/test-generator';
+import { generateTest, repairTest, resolveIntentPromptPlanningContext, type GenerateEvent } from '@/lib/test-generator';
 import { getLLMRuntimeConfig } from '@/lib/llm/provider-config';
 import { buildGenerateInputFromScenarioCard, generateScenarioCard } from '@/lib/ai/scenario-card';
 import { listRelevantIntentRepairHints, recordIntentRepairFailure, recordIntentRepairResolution } from '@/lib/ai/intent-repair-memory';
@@ -19,6 +19,7 @@ vi.mock('@/lib/test-executor', () => ({
 vi.mock('@/lib/test-generator', () => ({
   generateTest: vi.fn(),
   repairTest: vi.fn(),
+  resolveIntentPromptPlanningContext: vi.fn(),
 }));
 
 vi.mock('@/lib/llm/provider-config', () => ({
@@ -137,6 +138,41 @@ beforeEach(() => {
   vi.mocked(recordIntentRepairFailure).mockResolvedValue(recordedFailureHint as any);
   vi.mocked(recordIntentRepairResolution).mockResolvedValue();
   vi.mocked(repairTest).mockReturnValue(toAsyncGenerator([]));
+  vi.mocked(resolveIntentPromptPlanningContext).mockReturnValue({
+    dsl: {
+      version: 1,
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/checkout',
+      summary: '打开结算页并提交',
+      globalRules: [],
+      preferredPrimitives: [],
+      outputContract: [],
+      steps: [],
+    },
+    knowledge: {
+      version: 1,
+      profilePath: 'intent-e2e.project-knowledge.json',
+      matches: [
+        {
+          ruleId: 'checkout.submit',
+          title: '结算提交页',
+          reasons: ['URL命中'],
+          promptNotes: [],
+          capabilitySlugs: ['assert.wait-for-api-response'],
+          addGlobalRules: [],
+          addPreferredPrimitives: [],
+          addOutputContract: [],
+          stepPatches: [
+            {
+              addPreferredHelpers: ['__e2e.waitForApiResponse'],
+            },
+          ],
+          score: 10,
+        },
+      ],
+      capabilitySlugs: ['assert.wait-for-api-response'],
+    },
+  } as any);
 });
 
 describe('intent-e2e-service stream', () => {
@@ -145,8 +181,8 @@ describe('intent-e2e-service stream', () => {
     vi.mocked(generateTest).mockReturnValue(
       toAsyncGenerator([
         { type: 'thinking', content: '先搭建稳定的页面进入逻辑。' },
-        { type: 'code', content: "test('checkout', async ({ page }) => {\n" },
-        { type: 'complete', content: "test('checkout', async ({ page }) => {\n  await page.goto('https://example.com/checkout');\n});" },
+        { type: 'code', content: "test('checkout', async ({ page }) => {\n  await __e2e.waitForApiResponse(page, { urlIncludes: '/checkout' });\n" },
+        { type: 'complete', content: "test('checkout', async ({ page }) => {\n  await __e2e.waitForApiResponse(page, { urlIncludes: '/checkout' });\n  await page.goto('https://example.com/checkout');\n});" },
       ])
     );
 
@@ -192,10 +228,23 @@ describe('intent-e2e-service stream', () => {
     expect(result.attempts).toHaveLength(1);
     expect(result.attempts[0].sessionId).toMatch(/^intent-/);
     expect(result.attempts[0].code).toContain('page.goto');
+    expect(result.knowledge).toEqual({
+      profilePath: 'intent-e2e.project-knowledge.json',
+      matchCount: 1,
+      matchedRuleIds: ['checkout.submit'],
+      matchedRuleTitles: ['结算提交页'],
+      capabilitySlugs: ['assert.wait-for-api-response'],
+      suggestedHelpers: ['__e2e.waitForApiResponse'],
+    });
+    expect(result.attempts[0].helperUsage).toEqual({
+      usedHelpers: ['__e2e.waitForApiResponse'],
+      usedSuggestedHelpers: ['__e2e.waitForApiResponse'],
+    });
     expect(vi.mocked(repairTest)).not.toHaveBeenCalled();
     expect(vi.mocked(listRelevantIntentRepairHints)).not.toHaveBeenCalled();
     expect(vi.mocked(recordIntentRepairFailure)).not.toHaveBeenCalled();
     expect(vi.mocked(recordIntentRepairResolution)).not.toHaveBeenCalled();
+    expect(vi.mocked(resolveIntentPromptPlanningContext)).toHaveBeenCalledTimes(1);
 
     expect(events.some((event) => event.type === 'scenario_card')).toBe(true);
     expect(events.some((event) => event.type === 'description')).toBe(true);

@@ -96,10 +96,25 @@ function cloneRunState(state: IntentE2ERunRecord): IntentE2ERunRecord {
     result: state.result
       ? {
           ...state.result,
+          knowledge: state.result.knowledge
+            ? {
+                ...state.result.knowledge,
+                matchedRuleIds: [...state.result.knowledge.matchedRuleIds],
+                matchedRuleTitles: [...state.result.knowledge.matchedRuleTitles],
+                capabilitySlugs: [...state.result.knowledge.capabilitySlugs],
+                suggestedHelpers: [...state.result.knowledge.suggestedHelpers],
+              }
+            : state.result.knowledge ?? null,
           attempts: state.result.attempts.map((attempt) => ({
             ...attempt,
             events: attempt.events.map((event) => ({ ...event })),
             logs: attempt.logs.map((log) => ({ ...log })),
+            helperUsage: attempt.helperUsage
+              ? {
+                  usedHelpers: [...attempt.helperUsage.usedHelpers],
+                  usedSuggestedHelpers: [...attempt.helperUsage.usedSuggestedHelpers],
+                }
+              : undefined,
             result: {
               ...attempt.result,
               steps: attempt.result.steps.map((step) => ({ ...step })),

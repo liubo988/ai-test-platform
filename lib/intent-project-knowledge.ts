@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
@@ -75,11 +76,29 @@ export interface IntentProjectKnowledgeMergeSummary {
   addedRules: IntentProjectKnowledgeMergeAddedRule[];
 }
 
+export interface IntentProjectKnowledgeProfileMetrics {
+  ruleCount: number;
+  enabledRuleCount: number;
+  capabilitySlugCount: number;
+  preferredHelperCount: number;
+  stepPatchCount: number;
+  urlPatternCount: number;
+}
+
+export interface IntentProjectKnowledgeProfileComparison {
+  before: IntentProjectKnowledgeProfileMetrics;
+  after: IntentProjectKnowledgeProfileMetrics;
+  addedRuleIds: string[];
+  removedRuleIds: string[];
+  updatedRuleIds: string[];
+}
+
 export interface MergeIntentProjectKnowledgeRulesResult {
   writtenTo: string;
   backupPath: string | null;
   diffPreview: string;
   summary: IntentProjectKnowledgeMergeSummary;
+  comparison: IntentProjectKnowledgeProfileComparison;
   addedRuleIds: string[];
   skippedRuleIds: string[];
   profile: IntentProjectKnowledgeProfile;
@@ -102,7 +121,52 @@ export interface RestoreIntentProjectKnowledgeBackupResult {
   restoredFrom: string;
   writtenTo: string;
   backupCreated: string | null;
+  comparison: IntentProjectKnowledgeProfileComparison;
   profile: IntentProjectKnowledgeProfile;
+}
+
+export type IntentProjectKnowledgeAuditOperation = 'merge' | 'restore';
+
+export interface IntentProjectKnowledgeAuditMeta {
+  requestedCandidateIds?: string[];
+  mergedCandidateIds?: string[];
+  coveredCandidateIds?: string[];
+  missingCandidateIds?: string[];
+  skippedRuleIds?: string[];
+  restoredFrom?: string;
+  projectActivityLogged?: boolean;
+  projectActivityError?: string;
+}
+
+export interface IntentProjectKnowledgeAuditEntry {
+  auditId: string;
+  occurredAt: string;
+  operation: IntentProjectKnowledgeAuditOperation;
+  projectUid: string;
+  actorLabel: string;
+  title: string;
+  detail: string;
+  writtenTo: string;
+  backupPath: string | null;
+  sourcePath: string | null;
+  comparison: IntentProjectKnowledgeProfileComparison;
+  meta: IntentProjectKnowledgeAuditMeta;
+}
+
+export interface CreateIntentProjectKnowledgeAuditEntryInput {
+  operation: IntentProjectKnowledgeAuditOperation;
+  projectUid?: string | null;
+  actorLabel?: string | null;
+  writtenTo: string;
+  backupPath?: string | null;
+  sourcePath?: string | null;
+  comparison: IntentProjectKnowledgeProfileComparison;
+  meta?: IntentProjectKnowledgeAuditMeta;
+}
+
+export interface ListIntentProjectKnowledgeAuditEntriesResult {
+  auditLogPath: string;
+  items: IntentProjectKnowledgeAuditEntry[];
 }
 
 export interface ResolveIntentProjectKnowledgeInput {
@@ -113,6 +177,7 @@ export interface ResolveIntentProjectKnowledgeInput {
 
 const DEFAULT_PROJECT_KNOWLEDGE_PATH = path.join(process.cwd(), 'intent-e2e.project-knowledge.json');
 const DEFAULT_PROJECT_KNOWLEDGE_BACKUP_DIR = path.join(process.cwd(), 'reports', 'intent-e2e.project-knowledge.backups');
+const DEFAULT_PROJECT_KNOWLEDGE_AUDIT_PATH = path.join(process.cwd(), 'reports', 'intent-e2e.project-knowledge.audit.jsonl');
 
 let cachePath = '';
 let cacheProfile: IntentProjectKnowledgeProfile | null = null;
@@ -200,6 +265,71 @@ function normalizeProfile(raw: unknown): IntentProjectKnowledgeProfile {
   };
 }
 
+function normalizeIntentProjectKnowledgeProfileMetrics(raw: unknown): IntentProjectKnowledgeProfileMetrics {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  return {
+    ruleCount: normalizeCount(source.ruleCount),
+    enabledRuleCount: normalizeCount(source.enabledRuleCount),
+    capabilitySlugCount: normalizeCount(source.capabilitySlugCount),
+    preferredHelperCount: normalizeCount(source.preferredHelperCount),
+    stepPatchCount: normalizeCount(source.stepPatchCount),
+    urlPatternCount: normalizeCount(source.urlPatternCount),
+  };
+}
+
+function normalizeIntentProjectKnowledgeProfileComparison(raw: unknown): IntentProjectKnowledgeProfileComparison {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  return {
+    before: normalizeIntentProjectKnowledgeProfileMetrics(source.before),
+    after: normalizeIntentProjectKnowledgeProfileMetrics(source.after),
+    addedRuleIds: normalizeStringArray(source.addedRuleIds),
+    removedRuleIds: normalizeStringArray(source.removedRuleIds),
+    updatedRuleIds: normalizeStringArray(source.updatedRuleIds),
+  };
+}
+
+function normalizeIntentProjectKnowledgeAuditMeta(raw: unknown): IntentProjectKnowledgeAuditMeta {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const projectActivityError = typeof source.projectActivityError === 'string' ? source.projectActivityError.trim() : '';
+
+  return {
+    requestedCandidateIds: normalizeStringArray(source.requestedCandidateIds),
+    mergedCandidateIds: normalizeStringArray(source.mergedCandidateIds),
+    coveredCandidateIds: normalizeStringArray(source.coveredCandidateIds),
+    missingCandidateIds: normalizeStringArray(source.missingCandidateIds),
+    skippedRuleIds: normalizeStringArray(source.skippedRuleIds),
+    restoredFrom: typeof source.restoredFrom === 'string' ? source.restoredFrom.trim() : undefined,
+    projectActivityLogged: source.projectActivityLogged === true,
+    projectActivityError: projectActivityError || undefined,
+  };
+}
+
+function normalizeIntentProjectKnowledgeAuditEntry(raw: unknown): IntentProjectKnowledgeAuditEntry | null {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
+  if (!source) return null;
+
+  const operation = source.operation === 'merge' || source.operation === 'restore' ? source.operation : null;
+  if (!operation) return null;
+
+  const writtenTo = typeof source.writtenTo === 'string' ? source.writtenTo.trim() : '';
+  if (!writtenTo) return null;
+
+  return {
+    auditId: typeof source.auditId === 'string' && source.auditId.trim() ? source.auditId.trim() : `intent-knowledge-audit-${randomUUID()}`,
+    occurredAt: typeof source.occurredAt === 'string' && source.occurredAt.trim() ? source.occurredAt.trim() : new Date().toISOString(),
+    operation,
+    projectUid: typeof source.projectUid === 'string' ? source.projectUid.trim() : '',
+    actorLabel: typeof source.actorLabel === 'string' && source.actorLabel.trim() ? source.actorLabel.trim() : 'system',
+    title: typeof source.title === 'string' && source.title.trim() ? source.title.trim() : '项目知识审计记录',
+    detail: typeof source.detail === 'string' ? source.detail.trim() : '',
+    writtenTo,
+    backupPath: typeof source.backupPath === 'string' && source.backupPath.trim() ? source.backupPath.trim() : null,
+    sourcePath: typeof source.sourcePath === 'string' && source.sourcePath.trim() ? source.sourcePath.trim() : null,
+    comparison: normalizeIntentProjectKnowledgeProfileComparison(source.comparison),
+    meta: normalizeIntentProjectKnowledgeAuditMeta(source.meta),
+  };
+}
+
 function resolveProjectKnowledgePath(): string {
   return process.env.INTENT_E2E_PROJECT_KNOWLEDGE_PATH?.trim() || DEFAULT_PROJECT_KNOWLEDGE_PATH;
 }
@@ -208,12 +338,20 @@ function resolveProjectKnowledgeBackupDir(): string {
   return process.env.INTENT_E2E_PROJECT_KNOWLEDGE_BACKUP_DIR?.trim() || DEFAULT_PROJECT_KNOWLEDGE_BACKUP_DIR;
 }
 
+function resolveProjectKnowledgeAuditPath(): string {
+  return process.env.INTENT_E2E_PROJECT_KNOWLEDGE_AUDIT_PATH?.trim() || DEFAULT_PROJECT_KNOWLEDGE_AUDIT_PATH;
+}
+
 export function getIntentProjectKnowledgePath(): string {
   return toDisplayPath(resolveProjectKnowledgePath());
 }
 
 export function getIntentProjectKnowledgeBackupDir(): string {
   return toDisplayPath(resolveProjectKnowledgeBackupDir());
+}
+
+export function getIntentProjectKnowledgeAuditPath(): string {
+  return toDisplayPath(resolveProjectKnowledgeAuditPath());
 }
 
 function toDisplayPath(filePath: string): string {
@@ -229,6 +367,11 @@ function toAbsolutePath(filePath: string): string {
 function isPathInsideDir(filePath: string, dirPath: string): boolean {
   const relative = path.relative(dirPath, filePath);
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function normalizeCount(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
 }
 
 function loadIntentProjectKnowledgeProfile(): IntentProjectKnowledgeProfile {
@@ -442,6 +585,107 @@ export function renderIntentProjectKnowledge(resolution: IntentProjectKnowledgeR
   return lines.join('\n');
 }
 
+function buildIntentProjectKnowledgeProfileMetrics(profile: IntentProjectKnowledgeProfile): IntentProjectKnowledgeProfileMetrics {
+  return {
+    ruleCount: profile.rules.length,
+    enabledRuleCount: profile.rules.filter((rule) => rule.enabled !== false).length,
+    capabilitySlugCount: uniqueStrings(profile.rules.flatMap((rule) => rule.capabilitySlugs)).length,
+    preferredHelperCount: uniqueStrings(
+      profile.rules.flatMap((rule) => rule.stepPatches.flatMap((patch) => patch.addPreferredHelpers || []))
+    ).length,
+    stepPatchCount: profile.rules.reduce((sum, rule) => sum + rule.stepPatches.length, 0),
+    urlPatternCount: uniqueStrings(profile.rules.flatMap((rule) => rule.match.urlIncludes || [])).length,
+  };
+}
+
+function buildIntentProjectKnowledgeProfileComparison(
+  previousProfile: IntentProjectKnowledgeProfile,
+  nextProfile: IntentProjectKnowledgeProfile
+): IntentProjectKnowledgeProfileComparison {
+  const previousRules = new Map(previousProfile.rules.map((rule) => [rule.id, rule]));
+  const nextRules = new Map(nextProfile.rules.map((rule) => [rule.id, rule]));
+  const addedRuleIds = [...nextRules.keys()].filter((ruleId) => !previousRules.has(ruleId)).sort((a, b) => a.localeCompare(b));
+  const removedRuleIds = [...previousRules.keys()].filter((ruleId) => !nextRules.has(ruleId)).sort((a, b) => a.localeCompare(b));
+  const updatedRuleIds = [...nextRules.entries()]
+    .filter(([ruleId, rule]) => previousRules.has(ruleId) && JSON.stringify(previousRules.get(ruleId)) !== JSON.stringify(rule))
+    .map(([ruleId]) => ruleId)
+    .sort((a, b) => a.localeCompare(b));
+
+  return {
+    before: buildIntentProjectKnowledgeProfileMetrics(previousProfile),
+    after: buildIntentProjectKnowledgeProfileMetrics(nextProfile),
+    addedRuleIds,
+    removedRuleIds,
+    updatedRuleIds,
+  };
+}
+
+function summarizeAuditIds(label: string, ids: string[], limit = 3): string {
+  if (ids.length === 0) return '';
+
+  const picked = uniqueStrings(ids).slice(0, limit);
+  const suffix = ids.length > picked.length ? ` 等 ${ids.length} 条` : '';
+  return `${label}${picked.join(', ')}${suffix}`;
+}
+
+function buildIntentProjectKnowledgeAuditTitle(
+  operation: IntentProjectKnowledgeAuditOperation,
+  comparison: IntentProjectKnowledgeProfileComparison
+): string {
+  if (operation === 'restore') {
+    return '从备份回滚项目知识规则';
+  }
+
+  return comparison.addedRuleIds.length > 0 ? `合并 ${comparison.addedRuleIds.length} 条项目知识规则` : '尝试合并项目知识规则（无新增）';
+}
+
+function buildIntentProjectKnowledgeAuditDetail(
+  operation: IntentProjectKnowledgeAuditOperation,
+  comparison: IntentProjectKnowledgeProfileComparison,
+  sourcePath: string | null,
+  meta: IntentProjectKnowledgeAuditMeta
+): string {
+  const details = [
+    `规则 ${comparison.before.ruleCount} -> ${comparison.after.ruleCount}`,
+    `能力 ${comparison.before.capabilitySlugCount} -> ${comparison.after.capabilitySlugCount}`,
+    `Helper ${comparison.before.preferredHelperCount} -> ${comparison.after.preferredHelperCount}`,
+    `Step Patch ${comparison.before.stepPatchCount} -> ${comparison.after.stepPatchCount}`,
+    summarizeAuditIds('新增规则：', comparison.addedRuleIds),
+    summarizeAuditIds('移除规则：', comparison.removedRuleIds),
+    summarizeAuditIds('更新规则：', comparison.updatedRuleIds),
+    operation === 'restore' && sourcePath ? `恢复来源：${sourcePath}` : '',
+    meta.mergedCandidateIds && meta.mergedCandidateIds.length > 0 ? `已入库候选 ${meta.mergedCandidateIds.length} 条` : '',
+    meta.coveredCandidateIds && meta.coveredCandidateIds.length > 0 ? `已覆盖候选 ${meta.coveredCandidateIds.length} 条` : '',
+    meta.missingCandidateIds && meta.missingCandidateIds.length > 0 ? `失效候选 ${meta.missingCandidateIds.length} 条` : '',
+    meta.skippedRuleIds && meta.skippedRuleIds.length > 0 ? `重复规则 ${meta.skippedRuleIds.length} 条` : '',
+  ].filter(Boolean);
+
+  return details.join('；');
+}
+
+export function createIntentProjectKnowledgeAuditEntry(
+  input: CreateIntentProjectKnowledgeAuditEntryInput
+): IntentProjectKnowledgeAuditEntry {
+  const comparison = normalizeIntentProjectKnowledgeProfileComparison(input.comparison);
+  const meta = normalizeIntentProjectKnowledgeAuditMeta(input.meta);
+  const sourcePath = input.sourcePath?.trim() || null;
+
+  return {
+    auditId: `intent-knowledge-audit-${randomUUID()}`,
+    occurredAt: new Date().toISOString(),
+    operation: input.operation,
+    projectUid: input.projectUid?.trim() || '',
+    actorLabel: input.actorLabel?.trim() || 'system',
+    title: buildIntentProjectKnowledgeAuditTitle(input.operation, comparison),
+    detail: buildIntentProjectKnowledgeAuditDetail(input.operation, comparison, sourcePath, meta),
+    writtenTo: input.writtenTo,
+    backupPath: input.backupPath?.trim() || null,
+    sourcePath,
+    comparison,
+    meta,
+  };
+}
+
 function buildIntentProjectKnowledgeMergeSummary(
   previousProfile: IntentProjectKnowledgeProfile,
   nextProfile: IntentProjectKnowledgeProfile,
@@ -547,6 +791,7 @@ export async function mergeIntentProjectKnowledgeRules(
     rules: mergedRules,
   };
   const summary = buildIntentProjectKnowledgeMergeSummary(profile, nextProfile, addedRules);
+  const comparison = buildIntentProjectKnowledgeProfileComparison(profile, nextProfile);
   const dedupedSkippedRuleIds = uniqueStrings(skippedRuleIds);
   const diffPreview = renderIntentProjectKnowledgeMergeDiff(summary, dedupedSkippedRuleIds);
   const backupPath = addedRuleIds.length > 0 ? await backupIntentProjectKnowledgeFile(outputPath) : null;
@@ -557,6 +802,7 @@ export async function mergeIntentProjectKnowledgeRules(
     backupPath,
     diffPreview,
     summary,
+    comparison,
     addedRuleIds,
     skippedRuleIds: dedupedSkippedRuleIds,
     profile: nextProfile,
@@ -609,6 +855,7 @@ export async function restoreIntentProjectKnowledgeBackup(
   outputPath = resolveProjectKnowledgePath(),
   backupDir = resolveProjectKnowledgeBackupDir()
 ): Promise<RestoreIntentProjectKnowledgeBackupResult> {
+  const currentProfile = getIntentProjectKnowledgeProfile();
   const backups = await listIntentProjectKnowledgeBackups(50, outputPath, backupDir);
   const selectedDisplayPath = backupPath?.trim() || backups.backups[0]?.path || '';
   if (!selectedDisplayPath) {
@@ -625,12 +872,64 @@ export async function restoreIntentProjectKnowledgeBackup(
   const restoredProfile = normalizeProfile(JSON.parse(raw));
   const backupCreated = await backupIntentProjectKnowledgeFile(outputPath);
   const writtenTo = await writeIntentProjectKnowledgeProfile(restoredProfile, outputPath);
+  const comparison = buildIntentProjectKnowledgeProfileComparison(currentProfile, restoredProfile);
 
   return {
     restoredFrom: toDisplayPath(absoluteBackupPath),
     writtenTo,
     backupCreated,
+    comparison,
     profile: restoredProfile,
+  };
+}
+
+export async function writeIntentProjectKnowledgeAuditEntry(
+  entry: IntentProjectKnowledgeAuditEntry,
+  auditPath = resolveProjectKnowledgeAuditPath()
+): Promise<IntentProjectKnowledgeAuditEntry> {
+  const normalized = normalizeIntentProjectKnowledgeAuditEntry(entry);
+  if (!normalized) {
+    throw new Error('项目知识审计记录格式无效');
+  }
+
+  await fsPromises.mkdir(path.dirname(auditPath), { recursive: true });
+  await fsPromises.appendFile(auditPath, `${JSON.stringify(normalized)}\n`, 'utf8');
+  return normalized;
+}
+
+export async function listIntentProjectKnowledgeAuditEntries(
+  limit = 12,
+  projectUid = '',
+  auditPath = resolveProjectKnowledgeAuditPath()
+): Promise<ListIntentProjectKnowledgeAuditEntriesResult> {
+  const normalizedLimit = Math.max(1, Math.floor(limit || 12));
+  const normalizedProjectUid = projectUid.trim();
+  const items: IntentProjectKnowledgeAuditEntry[] = [];
+
+  try {
+    const raw = await fsPromises.readFile(auditPath, 'utf8');
+    const lines = raw.split(/\r?\n/).filter(Boolean).reverse();
+
+    for (const line of lines) {
+      try {
+        const parsed = normalizeIntentProjectKnowledgeAuditEntry(JSON.parse(line));
+        if (!parsed) continue;
+        if (normalizedProjectUid && parsed.projectUid !== normalizedProjectUid) continue;
+        items.push(parsed);
+        if (items.length >= normalizedLimit) break;
+      } catch {
+        continue;
+      }
+    }
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code !== 'ENOENT') {
+      throw error;
+    }
+  }
+
+  return {
+    auditLogPath: toDisplayPath(auditPath),
+    items,
   };
 }
 

@@ -249,7 +249,7 @@ type ExecutionEvent = {
 type ActivityItem = {
   activityUid: string;
   projectUid: string;
-  entityType: 'project' | 'module' | 'config' | 'plan' | 'execution' | 'member' | 'intent_draft';
+  entityType: 'project' | 'module' | 'config' | 'plan' | 'execution' | 'member' | 'knowledge' | 'capability' | 'intent_draft';
   entityUid: string;
   actionType: string;
   actorLabel: string;
@@ -607,6 +607,10 @@ function activityEntityLabel(entityType: ActivityItem['entityType']): string {
       return '执行';
     case 'member':
       return '成员';
+    case 'knowledge':
+      return '知识';
+    case 'capability':
+      return '能力';
     case 'intent_draft':
       return '意图草稿';
     default:

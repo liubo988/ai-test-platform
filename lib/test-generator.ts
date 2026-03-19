@@ -71,12 +71,12 @@ function buildIntentHaystack(description: string, context?: GenerateTestContext)
     .toLowerCase();
 }
 
-interface ResolvedPromptPlanningContext {
+export interface ResolvedPromptPlanningContext {
   dsl: IntentActionDSL;
   knowledge: IntentProjectKnowledgeResolution;
 }
 
-function resolvePromptPlanningContext(
+export function resolveIntentPromptPlanningContext(
   snapshot: PageSnapshot,
   description: string,
   context?: GenerateTestContext
@@ -731,7 +731,7 @@ export function buildPrompt(
   planning?: ResolvedPromptPlanningContext
 ): string {
   const parts: string[] = [];
-  const resolvedPlanning = planning || resolvePromptPlanningContext(snapshot, description, context);
+  const resolvedPlanning = planning || resolveIntentPromptPlanningContext(snapshot, description, context);
 
   parts.push('你是一个 Playwright E2E 测试专家。请根据以下信息生成完整可执行的 Playwright 测试代码。');
 
@@ -1123,7 +1123,7 @@ export async function* generateTest(
   }
 
   yield { type: 'thinking', content: '正在匹配项目知识规则...' };
-  const planning = resolvePromptPlanningContext(snapshot, description, context);
+  const planning = resolveIntentPromptPlanningContext(snapshot, description, context);
   yield {
     type: 'thinking',
     content:
@@ -1164,7 +1164,7 @@ export async function* repairTest(
   }
 
   yield { type: 'thinking', content: '正在匹配项目知识规则...' };
-  const planning = resolvePromptPlanningContext(snapshot, description, context);
+  const planning = resolveIntentPromptPlanningContext(snapshot, description, context);
   yield {
     type: 'thinking',
     content:

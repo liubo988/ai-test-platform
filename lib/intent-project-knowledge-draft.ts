@@ -5,6 +5,7 @@ import {
   getIntentProjectKnowledgePath,
   getIntentProjectKnowledgeProfile,
   mergeIntentProjectKnowledgeRules,
+  type IntentProjectKnowledgeProfileComparison,
   type IntentProjectKnowledgeMergeSummary,
   type IntentProjectKnowledgeProfile,
   type IntentProjectKnowledgeRule,
@@ -77,6 +78,7 @@ export interface MergeIntentProjectKnowledgeDraftCandidatesResult {
   backupPath: string | null;
   diffPreview: string;
   summary: IntentProjectKnowledgeMergeSummary;
+  comparison: IntentProjectKnowledgeProfileComparison;
   addedRuleIds: string[];
   skippedRuleIds: string[];
   mergedCandidateIds: string[];
@@ -631,6 +633,7 @@ export async function mergeIntentProjectKnowledgeDraftCandidates(
     backupPath: mergeResult.backupPath,
     diffPreview: mergeResult.diffPreview,
     summary: mergeResult.summary,
+    comparison: mergeResult.comparison,
     addedRuleIds: mergeResult.addedRuleIds,
     skippedRuleIds: mergeResult.skippedRuleIds,
     mergedCandidateIds: mergeCandidates

@@ -5,26 +5,33 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildIntentActionDSL } from '@/lib/intent-action-dsl';
 import {
   applyIntentProjectKnowledgeToDsl,
+  createIntentProjectKnowledgeAuditEntry,
   listIntentProjectKnowledgeBackups,
+  listIntentProjectKnowledgeAuditEntries,
   mergeIntentProjectKnowledgeRules,
   renderIntentProjectKnowledge,
   resetIntentProjectKnowledgeCache,
   resolveIntentProjectKnowledge,
   restoreIntentProjectKnowledgeBackup,
+  writeIntentProjectKnowledgeAuditEntry,
 } from '@/lib/intent-project-knowledge';
 
 let tempDir = '';
 let knowledgeFile = '';
+let auditFile = '';
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'intent-project-knowledge-'));
   knowledgeFile = path.join(tempDir, 'project-knowledge.json');
+  auditFile = path.join(tempDir, 'project-knowledge.audit.jsonl');
   process.env.INTENT_E2E_PROJECT_KNOWLEDGE_PATH = knowledgeFile;
+  process.env.INTENT_E2E_PROJECT_KNOWLEDGE_AUDIT_PATH = auditFile;
   resetIntentProjectKnowledgeCache();
 });
 
 afterEach(() => {
   delete process.env.INTENT_E2E_PROJECT_KNOWLEDGE_PATH;
+  delete process.env.INTENT_E2E_PROJECT_KNOWLEDGE_AUDIT_PATH;
   resetIntentProjectKnowledgeCache();
   if (tempDir) {
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -159,14 +166,103 @@ describe('intent-project-knowledge', () => {
     const liveProfile = JSON.parse(fs.readFileSync(knowledgeFile, 'utf8'));
 
     expect(mergeResult.backupPath).toBeTruthy();
+    expect(mergeResult.comparison.before.ruleCount).toBe(1);
+    expect(mergeResult.comparison.after.ruleCount).toBe(2);
+    expect(mergeResult.comparison.addedRuleIds).toEqual(['custom.orders-list']);
     expect(backups.backups.length).toBeGreaterThan(0);
     expect(backups.backups[0].path).toBe(mergeResult.backupPath);
     expect(restored.restoredFrom).toBe(mergeResult.backupPath);
     expect(restored.backupCreated).toBeTruthy();
+    expect(restored.comparison.before.ruleCount).toBe(2);
+    expect(restored.comparison.after.ruleCount).toBe(1);
+    expect(restored.comparison.removedRuleIds).toEqual(['custom.orders-list']);
     expect(restored.profile.rules).toHaveLength(1);
     expect(restored.profile.rules[0].id).toBe('custom.checkout-submit');
     expect(liveProfile.rules).toHaveLength(1);
     expect(liveProfile.rules[0].id).toBe('custom.checkout-submit');
+  });
+
+  it('writes and filters project knowledge audit entries', async () => {
+    const mergeAudit = await writeIntentProjectKnowledgeAuditEntry(
+      createIntentProjectKnowledgeAuditEntry({
+        operation: 'merge',
+        projectUid: 'proj_alpha',
+        actorLabel: 'bobo',
+        writtenTo: 'intent-e2e.project-knowledge.json',
+        backupPath: 'reports/intent-e2e.project-knowledge.backups/before-merge.json',
+        comparison: {
+          before: {
+            ruleCount: 1,
+            enabledRuleCount: 1,
+            capabilitySlugCount: 1,
+            preferredHelperCount: 1,
+            stepPatchCount: 1,
+            urlPatternCount: 1,
+          },
+          after: {
+            ruleCount: 2,
+            enabledRuleCount: 2,
+            capabilitySlugCount: 2,
+            preferredHelperCount: 3,
+            stepPatchCount: 2,
+            urlPatternCount: 2,
+          },
+          addedRuleIds: ['custom.orders-list'],
+          removedRuleIds: [],
+          updatedRuleIds: [],
+        },
+        meta: {
+          requestedCandidateIds: ['candidate-1'],
+          mergedCandidateIds: ['candidate-1'],
+          projectActivityLogged: true,
+        },
+      })
+    );
+    const restoreAudit = await writeIntentProjectKnowledgeAuditEntry(
+      createIntentProjectKnowledgeAuditEntry({
+        operation: 'restore',
+        projectUid: 'proj_beta',
+        actorLabel: 'system',
+        writtenTo: 'intent-e2e.project-knowledge.json',
+        backupPath: 'reports/intent-e2e.project-knowledge.backups/before-restore.json',
+        sourcePath: 'reports/intent-e2e.project-knowledge.backups/target-backup.json',
+        comparison: {
+          before: {
+            ruleCount: 2,
+            enabledRuleCount: 2,
+            capabilitySlugCount: 2,
+            preferredHelperCount: 3,
+            stepPatchCount: 2,
+            urlPatternCount: 2,
+          },
+          after: {
+            ruleCount: 1,
+            enabledRuleCount: 1,
+            capabilitySlugCount: 1,
+            preferredHelperCount: 1,
+            stepPatchCount: 1,
+            urlPatternCount: 1,
+          },
+          addedRuleIds: [],
+          removedRuleIds: ['custom.orders-list'],
+          updatedRuleIds: [],
+        },
+        meta: {
+          restoredFrom: 'reports/intent-e2e.project-knowledge.backups/target-backup.json',
+        },
+      })
+    );
+
+    const allAudits = await listIntentProjectKnowledgeAuditEntries(12);
+    const projectAudits = await listIntentProjectKnowledgeAuditEntries(12, 'proj_alpha');
+
+    expect(allAudits.auditLogPath).toBe(auditFile);
+    expect(allAudits.items).toHaveLength(2);
+    expect(allAudits.items[0].auditId).toBe(restoreAudit.auditId);
+    expect(allAudits.items[1].auditId).toBe(mergeAudit.auditId);
+    expect(projectAudits.items).toHaveLength(1);
+    expect(projectAudits.items[0].projectUid).toBe('proj_alpha');
+    expect(projectAudits.items[0].meta.projectActivityLogged).toBe(true);
   });
 
   it('returns empty matches when no knowledge file exists', () => {

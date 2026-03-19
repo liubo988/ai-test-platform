@@ -433,6 +433,12 @@ export interface IntentE2ERunSnapshotRecord {
   endedAt: string;
 }
 
+export interface ListIntentE2ERunSnapshotsParams {
+  projectUid?: string;
+  status?: IntentE2ERunSnapshotStatus | 'terminal' | 'all';
+  limit?: number;
+}
+
 function safeJsonParse<T>(value: unknown, fallback: T): T {
   if (value === null || value === undefined) return fallback;
   if (typeof value === 'object') return value as T;
@@ -3007,6 +3013,39 @@ export async function getIntentE2ERunSnapshotByRunId(runId: string): Promise<Int
   const row = rows[0];
   if (!row) return null;
   return normalizeIntentE2ERunSnapshotRow(row);
+}
+
+export async function listIntentE2ERunSnapshots(params: ListIntentE2ERunSnapshotsParams = {}): Promise<IntentE2ERunSnapshotRecord[]> {
+  await ensureIntentE2ERunTables();
+  const pool = getDbPool();
+  const where: string[] = [];
+  const args: unknown[] = [];
+  const projectUid = params.projectUid?.trim() || '';
+  const status = params.status || 'all';
+  const limit = Math.max(1, Math.min(200, Math.floor(params.limit || 50)));
+
+  if (projectUid) {
+    where.push('project_uid = ?');
+    args.push(projectUid);
+  }
+
+  if (status === 'terminal') {
+    where.push(`status IN ('passed', 'failed', 'canceled')`);
+  } else if (status !== 'all') {
+    where.push('status = ?');
+    args.push(status);
+  }
+
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT *
+     FROM intent_e2e_runs
+     ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
+     ORDER BY COALESCE(ended_at, updated_at, created_at) DESC, id DESC
+     LIMIT ?`,
+    [...args, limit]
+  );
+
+  return rows.map(normalizeIntentE2ERunSnapshotRow);
 }
 
 export async function listModulesByProject(projectUid: string, params?: { status?: ModuleStatus | 'all' }): Promise<TestModuleRecord[]> {

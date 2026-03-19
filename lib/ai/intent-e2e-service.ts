@@ -1,6 +1,12 @@
 import { analyzePage, precheckPageAccess, type AuthConfig, type PageAccessPrecheckReadyResult } from '@/lib/page-analyzer';
 import { executeTest, type TestResult } from '@/lib/test-executor';
-import { generateTest, repairTest, type GenerateEvent } from '@/lib/test-generator';
+import {
+  generateTest,
+  repairTest,
+  resolveIntentPromptPlanningContext,
+  type GenerateEvent,
+  type ResolvedPromptPlanningContext,
+} from '@/lib/test-generator';
 import { getLLMRuntimeConfig, type LLMRuntimeOverrides } from '@/lib/llm/provider-config';
 import { buildGenerateInputFromScenarioCard, generateScenarioCard, type ScenarioAttachment, type ScenarioCard } from '@/lib/ai/scenario-card';
 import { listRelevantIntentRepairHints, recordIntentRepairFailure, recordIntentRepairResolution } from '@/lib/ai/intent-repair-memory';
@@ -9,6 +15,20 @@ import {
   formatIntentE2EFailureTriage,
   type IntentE2EFailureTriage,
 } from '@/lib/ai/intent-e2e-failure-triage';
+
+export interface IntentE2EKnowledgeSummary {
+  profilePath: string;
+  matchCount: number;
+  matchedRuleIds: string[];
+  matchedRuleTitles: string[];
+  capabilitySlugs: string[];
+  suggestedHelpers: string[];
+}
+
+export interface IntentE2EAttemptHelperUsage {
+  usedHelpers: string[];
+  usedSuggestedHelpers: string[];
+}
 
 export interface IntentE2ERunRequest {
   input: string;
@@ -27,6 +47,7 @@ export interface IntentE2EAttempt {
   events: GenerateEvent[];
   logs: Array<{ level: string; message: string; at?: string }>;
   result: TestResult;
+  helperUsage?: IntentE2EAttemptHelperUsage;
   triage?: IntentE2EFailureTriage | null;
 }
 
@@ -40,6 +61,7 @@ export interface IntentE2ERunResult {
   };
   targetUrl: string;
   description: string;
+  knowledge?: IntentE2EKnowledgeSummary | null;
   attempts: IntentE2EAttempt[];
   finalResult: TestResult;
   finalFailureTriage?: IntentE2EFailureTriage | null;
@@ -211,6 +233,51 @@ function createTerminalFailureResult(stepTitle: string, errorMessage: string): T
   };
 }
 
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const items: string[] = [];
+
+  for (const raw of values) {
+    const value = typeof raw === 'string' ? raw.trim() : '';
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    items.push(value);
+  }
+
+  return items;
+}
+
+function buildIntentE2EKnowledgeSummary(planning: ResolvedPromptPlanningContext): IntentE2EKnowledgeSummary {
+  return {
+    profilePath: planning.knowledge.profilePath,
+    matchCount: planning.knowledge.matches.length,
+    matchedRuleIds: planning.knowledge.matches.map((item) => item.ruleId),
+    matchedRuleTitles: planning.knowledge.matches.map((item) => item.title),
+    capabilitySlugs: [...planning.knowledge.capabilitySlugs],
+    suggestedHelpers: uniqueStrings(
+      planning.knowledge.matches.flatMap((item) => item.stepPatches.flatMap((patch) => patch.addPreferredHelpers || []))
+    ),
+  };
+}
+
+function extractIntentE2EUsedHelpers(code: string): string[] {
+  const matches = code.matchAll(/__e2e\.([A-Za-z0-9_]+)/g);
+  return uniqueStrings([...matches].map((match) => `__e2e.${match[1]}`));
+}
+
+function buildIntentE2EAttemptHelperUsage(
+  code: string,
+  knowledge: IntentE2EKnowledgeSummary | null
+): IntentE2EAttemptHelperUsage {
+  const usedHelpers = extractIntentE2EUsedHelpers(code);
+  const suggestedHelpers = knowledge?.suggestedHelpers || [];
+
+  return {
+    usedHelpers,
+    usedSuggestedHelpers: usedHelpers.filter((helper) => suggestedHelpers.includes(helper)),
+  };
+}
+
 async function emitFinalRunState(listener: IntentE2EStreamListener | undefined, output: IntentE2ERunResult): Promise<void> {
   const finalFailureTriage = output.finalResult.success ? null : output.finalFailureTriage ?? null;
 
@@ -248,6 +315,7 @@ async function runIntentE2EPrecheck(
     auth?: AuthConfig;
     scenarioCard: ScenarioCard;
     llmMeta: IntentE2ERunResult['llmMeta'];
+    knowledge?: IntentE2EKnowledgeSummary | null;
   },
   listener?: IntentE2EStreamListener,
   signal?: AbortSignal
@@ -273,6 +341,7 @@ async function runIntentE2EPrecheck(
         llmMeta: input.llmMeta,
         targetUrl: input.targetUrl,
         description: input.description,
+        knowledge: input.knowledge || null,
         attempts: [],
         finalResult,
         finalFailureTriage,
@@ -299,6 +368,7 @@ async function runIntentE2EPrecheck(
       llmMeta: input.llmMeta,
       targetUrl: input.targetUrl,
       description: input.description,
+      knowledge: input.knowledge || null,
       attempts: [],
       finalResult,
       finalFailureTriage,
@@ -383,6 +453,8 @@ export async function runIntentDrivenE2EStream(
     storageState: precheck.precheck.storageState,
   });
   throwIfAborted(signal);
+  const planning = resolveIntentPromptPlanningContext(snapshot, description, context);
+  const knowledge = buildIntentE2EKnowledgeSummary(planning);
 
   const attempts: IntentE2EAttempt[] = [];
   const runtimeConfig = getLLMRuntimeConfig(input.llmConfig);
@@ -530,6 +602,7 @@ export async function runIntentDrivenE2EStream(
       events: generation.events,
       logs,
       result,
+      helperUsage: buildIntentE2EAttemptHelperUsage(currentCode, knowledge),
       triage,
     };
 
@@ -596,6 +669,7 @@ export async function runIntentDrivenE2EStream(
     llmMeta: scenarioCardOutput.llmMeta,
     targetUrl,
     description,
+    knowledge,
     attempts,
     finalResult,
     finalFailureTriage: finalResult.success ? null : finalFailureTriage,

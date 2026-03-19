@@ -1,5 +1,121 @@
 # OpenAI 意图驱动 E2E MVP 迭代文档（2026-03-16）
 
+## 2026-03-19 第十七次更新（历史运行洞察与回滚候选已接入工作台）
+本次继续围绕“简单上手、成功率高”推进，但没有再加新开关，而是把已有运行记录真的转成能指导动作的反馈：
+- 已新增 `GET /api/intent-e2e/insights`，会直接聚合最近终态 run snapshot 和项目知识审计，输出通过率、知识命中率、推荐 helper 复用率、Top 规则 / helper / 失败类别
+- 已新增 `lib/ai/intent-e2e-insights.ts`，不引入新表，直接复用现有持久化的 run snapshot 与 `project-knowledge` audit log 做轻量聚合
+- 已在 `IntentE2EWorkbench` 的“项目知识草稿”区域补上“历史运行洞察”卡片，默认显示最近成功率、知识命中率、helper 复用率，以及最该优先看的规则 / helper / 失败模式
+- 已补一层基于 merge 审计的回滚候选提示：当某次知识合并后，前后窗口各至少 3 次、最多 5 次终态运行的通过率下滑达到 20 个点时，工作台会直接提示可疑规则和对应备份路径
+- 这一步的价值是把“跑完一次看日志”推进成“看趋势决定下一步”：先判断是知识没命中、helper 没复用，还是某次规则沉淀把成功率拖下来了
+
+新增 / 更新关键文件：
+- `lib/db/repository.ts`
+- `lib/ai/intent-e2e-insights.ts`
+- `app/api/intent-e2e/insights/route.ts`
+- `components/IntentE2EWorkbench.tsx`
+- `tests/unit/intent-e2e-insights.spec.ts`
+- `tests/unit/api-intent-e2e-insights-route.spec.ts`
+- `README.md`
+- `docs/openai-intent-e2e-mvp-2026-03-16.md`
+
+当前状态更新：
+- P0：后端最小闭环，已完成
+- P1：前端工作台第一版，已完成
+- P1.5：流式执行反馈，已完成
+- P1.8：服务端 runId / 断线恢复 / 服务端停止，已完成
+- P2.1：动作约束 DSL，已完成
+- P2.3：高频动作库 + 新 runtime helper，已完成
+- P2.4：修复记忆（失败聚类 + 策略回写），已完成
+- P2.5：项目知识驱动裁剪，已完成
+- P2.6：repair memory 反推项目规则草稿，已完成
+- P2.7：工作台项目知识草稿面板，已完成
+- P2.8：候选规则一键合并回项目知识文件，已完成
+- P2.9：合并前自动备份 + 变更预览，已完成
+- P3.0：从 backup 一键回滚项目知识规则，已完成
+- P3.1：项目工作台 / 需求编排联调收口（前置检查阻断 / Next 16 build / smoke 对齐），已完成
+- P3.2：项目知识 merge / restore 收益对比 + 审计记录，已完成
+- P3.3：运行结果知识命中 / helper 使用可观测性，已完成
+- P3.4：历史运行洞察 / 回滚候选提示，已完成
+- 下一步建议优先做：基于这批 insights 做规则排序、自动降级或半自动回滚 guardrail，再继续补业务 helper / capability 资产
+## 2026-03-19 第十六次更新（运行结果已补知识命中与 helper 使用可观测性）
+本次没有继续加新的操作面板，而是补“为什么这次成功/失败”的透明度：
+- `IntentE2ERunResult` 现在会附带结构化 `knowledge` 摘要，直接记录本次 run 命中的项目知识规则、能力标签、推荐 helper 和规则文件路径
+- 每次 attempt 现在都会附带 `helperUsage`，可以看到脚本实际用了哪些 `__e2e.*` helper，以及其中有多少是命中了项目知识推荐 helper
+- `IntentE2EWorkbench` 结果区现在会直接展示“知识命中与 Helper 使用”卡片，并在每次尝试卡片里补充 helper 摘要，方便快速判断当前成功是否来自既有知识沉淀，还是纯靠通用脚本侥幸通过
+- 这一步的核心价值不是直接抬高单次成功率，而是让后续真正能做“规则命中 -> helper 使用 -> 最终通过率”的闭环分析，为下一轮自动回滚、规则排序和成功率看板打基础
+
+新增 / 更新关键文件：
+- `lib/ai/intent-e2e-service.ts`
+- `lib/ai/intent-e2e-run-registry.ts`
+- `lib/test-generator.ts`
+- `components/IntentE2EWorkbench.tsx`
+- `tests/unit/intent-e2e-service.spec.ts`
+- `tests/unit/intent-e2e-run-registry.spec.ts`
+- `tests/unit/test-generator.spec.ts`
+- `README.md`
+- `docs/openai-intent-e2e-mvp-2026-03-16.md`
+
+当前状态更新：
+- P0：后端最小闭环，已完成
+- P1：前端工作台第一版，已完成
+- P1.5：流式执行反馈，已完成
+- P1.8：服务端 runId / 断线恢复 / 服务端停止，已完成
+- P2.1：动作约束 DSL，已完成
+- P2.3：高频动作库 + 新 runtime helper，已完成
+- P2.4：修复记忆（失败聚类 + 策略回写），已完成
+- P2.5：项目知识驱动裁剪，已完成
+- P2.6：repair memory 反推项目规则草稿，已完成
+- P2.7：工作台项目知识草稿面板，已完成
+- P2.8：候选规则一键合并回项目知识文件，已完成
+- P2.9：合并前自动备份 + 变更预览，已完成
+- P3.0：从 backup 一键回滚项目知识规则，已完成
+- P3.1：项目工作台 / 需求编排联调收口（前置检查阻断 / Next 16 build / smoke 对齐），已完成
+- P3.2：项目知识 merge / restore 收益对比 + 审计记录，已完成
+- P3.3：运行结果知识命中 / helper 使用可观测性，已完成
+- 下一步建议优先做：基于这批 run telemetry 做“规则命中 -> helper 使用 -> 通过率”的趋势看板，再决定自动回滚和规则排序策略
+
+## 2026-03-19 第十五次更新（项目知识 merge / restore 已补收益对比与审计记录）
+本次把上一轮留下的“可回退但还不够可量化 / 可追踪”缺口补齐了：
+- `POST /api/intent-e2e/project-knowledge/merge` 现在除了 `backupPath / diffPreview / summary` 之外，还会返回结构化 `comparison`，直接给出规则数、启用规则数、能力覆盖、Helper 覆盖、Step Patch 覆盖、URL 模式覆盖的前后变化
+- `POST /api/intent-e2e/project-knowledge/backups/restore` 现在也会返回同样的 `comparison`，可以明确看到这次回滚到底撤回了哪些规则、移除了哪些覆盖、是否有同 ID 规则内容被改写
+- 已新增本地审计日志：`GET /api/intent-e2e/project-knowledge/audits`，默认落到 `reports/intent-e2e.project-knowledge.audit.jsonl`，会保留最近 merge / restore 的标题、摘要、来源备份、备份产物和规则增删改明细
+- 当请求里带 `projectUid` 时，merge / restore 会先校验该项目的 `owner/editor` 权限，再尝试把这次规则沉淀或回滚同步写进项目 activity log；即使 DB activity 写入失败，本地审计仍会保留，避免“实际已改文件但前端误以为全失败”
+- `IntentE2EWorkbench` 里的“项目知识草稿”面板现在已直接展示本次 merge / restore 的收益对比卡片、最近审计记录列表，以及是否成功同步到项目 activity 的状态
+
+新增 / 更新关键文件：
+- `lib/intent-project-knowledge.ts`
+- `lib/intent-project-knowledge-draft.ts`
+- `app/api/intent-e2e/project-knowledge/merge/route.ts`
+- `app/api/intent-e2e/project-knowledge/backups/restore/route.ts`
+- `app/api/intent-e2e/project-knowledge/audits/route.ts`
+- `components/IntentE2EWorkbench.tsx`
+- `components/ProjectWorkspace.tsx`
+- `tests/unit/intent-project-knowledge.spec.ts`
+- `tests/unit/intent-project-knowledge-draft.spec.ts`
+- `tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+- `tests/unit/api-intent-project-knowledge-backup-restore-route.spec.ts`
+- `tests/unit/api-intent-project-knowledge-audits-route.spec.ts`
+- `README.md`
+- `docs/openai-intent-e2e-mvp-2026-03-16.md`
+
+当前状态更新：
+- P0：后端最小闭环，已完成
+- P1：前端工作台第一版，已完成
+- P1.5：流式执行反馈，已完成
+- P1.8：服务端 runId / 断线恢复 / 服务端停止，已完成
+- P2.1：动作约束 DSL，已完成
+- P2.3：高频动作库 + 新 runtime helper，已完成
+- P2.4：修复记忆（失败聚类 + 策略回写），已完成
+- P2.5：项目知识驱动裁剪，已完成
+- P2.6：repair memory 反推项目规则草稿，已完成
+- P2.7：工作台项目知识草稿面板，已完成
+- P2.8：候选规则一键合并回项目知识文件，已完成
+- P2.9：合并前自动备份 + 变更预览，已完成
+- P3.0：从 backup 一键回滚项目知识规则，已完成
+- P3.1：项目工作台 / 需求编排联调收口（前置检查阻断 / Next 16 build / smoke 对齐），已完成
+- P3.2：项目知识 merge / restore 收益对比 + 审计记录，已完成
+- 下一步建议优先做：把“配置覆盖对比”继续联到真实 repair 命中率 / 通过率趋势、评估是否拆 project-scoped knowledge 文件、继续补业务 capability / workflow 资产
+
 ## 2026-03-19 第十四次更新（项目工作台 / 需求编排 smoke 已对齐当前 UI，构建与前置检查回归已收口）
 本次不是继续堆功能，而是把上一轮大改之后的联调缺口和回归面真正收口：
 - 已修正 `intent-e2e` 前置检查的阻断分支：当前当 `precheckPageAccess()` 返回 `blocked` 时，会直接给出结构化 `final_result` 和失败归类，不再错误地继续读取 `storageState` 并进入 `analyzePage`

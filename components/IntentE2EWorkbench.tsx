@@ -86,8 +86,21 @@ type IntentAttempt = {
   events: AttemptEvent[];
   logs: AttemptLog[];
   result: TestResult | null;
+  helperUsage?: {
+    usedHelpers: string[];
+    usedSuggestedHelpers: string[];
+  };
   triage?: IntentFailureTriage | null;
   status?: 'running' | 'completed';
+};
+
+type IntentKnowledgeSummary = {
+  profilePath: string;
+  matchCount: number;
+  matchedRuleIds: string[];
+  matchedRuleTitles: string[];
+  capabilitySlugs: string[];
+  suggestedHelpers: string[];
 };
 
 type IntentRunResult = {
@@ -100,6 +113,7 @@ type IntentRunResult = {
   };
   targetUrl: string;
   description: string;
+  knowledge?: IntentKnowledgeSummary | null;
   attempts: IntentAttempt[];
   finalResult: TestResult;
   finalFailureTriage?: IntentFailureTriage | null;
@@ -333,17 +347,63 @@ type ProjectKnowledgeMergeSummary = {
   }>;
 };
 
+type ProjectKnowledgeProfileMetrics = {
+  ruleCount: number;
+  enabledRuleCount: number;
+  capabilitySlugCount: number;
+  preferredHelperCount: number;
+  stepPatchCount: number;
+  urlPatternCount: number;
+};
+
+type ProjectKnowledgeProfileComparison = {
+  before: ProjectKnowledgeProfileMetrics;
+  after: ProjectKnowledgeProfileMetrics;
+  addedRuleIds: string[];
+  removedRuleIds: string[];
+  updatedRuleIds: string[];
+};
+
+type ProjectKnowledgeAuditMeta = {
+  requestedCandidateIds?: string[];
+  mergedCandidateIds?: string[];
+  coveredCandidateIds?: string[];
+  missingCandidateIds?: string[];
+  skippedRuleIds?: string[];
+  restoredFrom?: string;
+  projectActivityLogged?: boolean;
+  projectActivityError?: string;
+};
+
+type ProjectKnowledgeAuditItem = {
+  auditId: string;
+  occurredAt: string;
+  operation: 'merge' | 'restore';
+  projectUid: string;
+  actorLabel: string;
+  title: string;
+  detail: string;
+  writtenTo: string;
+  backupPath?: string | null;
+  sourcePath?: string | null;
+  comparison: ProjectKnowledgeProfileComparison;
+  meta: ProjectKnowledgeAuditMeta;
+};
+
 type ProjectKnowledgeMergeResponse = {
   draft: IntentProjectKnowledgeDraft;
   mergedTo: string;
   backupPath?: string | null;
   diffPreview?: string;
   summary?: ProjectKnowledgeMergeSummary;
+  comparison?: ProjectKnowledgeProfileComparison;
   addedRuleIds: string[];
   skippedRuleIds: string[];
   mergedCandidateIds: string[];
   coveredCandidateIds: string[];
   missingCandidateIds: string[];
+  auditEntry?: ProjectKnowledgeAuditItem;
+  auditWarning?: string;
   error?: string;
 };
 
@@ -361,14 +421,85 @@ type ProjectKnowledgeBackupsResponse = {
   error?: string;
 };
 
+type ProjectKnowledgeAuditsResponse = {
+  auditLogPath: string;
+  items: ProjectKnowledgeAuditItem[];
+  error?: string;
+};
+
+type IntentE2EInsightsSummary = {
+  totalRuns: number;
+  passedRuns: number;
+  failedRuns: number;
+  canceledRuns: number;
+  passRate: number;
+  knowledgeHitRuns: number;
+  knowledgeHitRate: number;
+  suggestedHelperReuseRuns: number;
+  suggestedHelperReuseRate: number;
+};
+
+type IntentE2EInsightRuleStat = {
+  ruleId: string;
+  title: string;
+  runCount: number;
+  passedRuns: number;
+  passRate: number;
+};
+
+type IntentE2EInsightHelperStat = {
+  helper: string;
+  runCount: number;
+  passedRuns: number;
+  passRate: number;
+  suggestedReuseRuns: number;
+};
+
+type IntentE2EInsightFailureClassStat = {
+  failureClass: string;
+  count: number;
+};
+
+type IntentE2EInsightRollbackCandidate = {
+  auditId: string;
+  occurredAt: string;
+  projectUid: string;
+  title: string;
+  backupPath: string | null;
+  addedRuleIds: string[];
+  beforeRuns: number;
+  beforePassRate: number;
+  afterRuns: number;
+  afterPassRate: number;
+  passRateDelta: number;
+  recommendation: string;
+};
+
+type IntentE2EInsightsResponse = {
+  scope: {
+    projectUid: string;
+    runLimit: number;
+    auditLimit: number;
+  };
+  summary: IntentE2EInsightsSummary;
+  topRules: IntentE2EInsightRuleStat[];
+  topHelpers: IntentE2EInsightHelperStat[];
+  failureClasses: IntentE2EInsightFailureClassStat[];
+  rollbackCandidates: IntentE2EInsightRollbackCandidate[];
+  error?: string;
+};
+
 type ProjectKnowledgeRestoreResponse = {
   restoredFrom: string;
   writtenTo: string;
   backupCreated?: string | null;
+  comparison?: ProjectKnowledgeProfileComparison;
   profile: {
     version: 1;
     rules: IntentProjectKnowledgeRule[];
   };
+  auditEntry?: ProjectKnowledgeAuditItem;
+  auditWarning?: string;
   error?: string;
 };
 
@@ -639,6 +770,12 @@ function formatPercent(value: number): string {
   return `${percent >= 100 ? percent.toFixed(0) : percent.toFixed(1)}%`;
 }
 
+function formatRatePercent(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0%';
+  const rounded = Math.round(value * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}%`;
+}
+
 function formatDateTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
@@ -658,6 +795,53 @@ function summarizeTextList(items: string[], limit = 3): string {
     .filter(Boolean)
     .slice(0, limit);
   return picked.length > 0 ? picked.join(' · ') : '—';
+}
+
+function formatMetricDelta(before: number, after: number): string {
+  const delta = after - before;
+  if (delta > 0) return `+${delta}`;
+  return `${delta}`;
+}
+
+function formatActorLabel(actorLabel: string): string {
+  if (!actorLabel || actorLabel === 'system') return '系统';
+  if (actorLabel === 'web') return 'Web';
+  return actorLabel;
+}
+
+function projectKnowledgeOperationLabel(operation: ProjectKnowledgeAuditItem['operation'] | 'merge' | 'restore'): string {
+  return operation === 'restore' ? '回滚' : '合并';
+}
+
+function summarizeIdList(items: string[], limit = 4): string {
+  const picked = items.filter(Boolean).slice(0, limit);
+  if (picked.length === 0) return '—';
+  return items.length > picked.length ? `${picked.join('，')} 等 ${items.length} 条` : picked.join('，');
+}
+
+function projectKnowledgeComparisonMetrics(comparison: ProjectKnowledgeProfileComparison) {
+  return [
+    { key: 'rules', label: '规则', before: comparison.before.ruleCount, after: comparison.after.ruleCount },
+    { key: 'enabled', label: '启用规则', before: comparison.before.enabledRuleCount, after: comparison.after.enabledRuleCount },
+    { key: 'capabilities', label: '能力', before: comparison.before.capabilitySlugCount, after: comparison.after.capabilitySlugCount },
+    { key: 'helpers', label: 'Helper', before: comparison.before.preferredHelperCount, after: comparison.after.preferredHelperCount },
+    { key: 'patches', label: 'Step Patch', before: comparison.before.stepPatchCount, after: comparison.after.stepPatchCount },
+    { key: 'urls', label: 'URL 模式', before: comparison.before.urlPatternCount, after: comparison.after.urlPatternCount },
+  ];
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const items: string[] = [];
+
+  for (const raw of values) {
+    const value = typeof raw === 'string' ? raw.trim() : '';
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    items.push(value);
+  }
+
+  return items;
 }
 
 function defaultKnowledgeDraftCandidateIds(draft: IntentProjectKnowledgeDraft): string[] {
@@ -1215,7 +1399,7 @@ async function writeProjectKnowledgeDraftFromWorkbench(
 }
 
 async function mergeProjectKnowledgeFromWorkbench(
-  options: ProjectKnowledgeDraftRequestOptions & { candidateIds: string[] }
+  options: ProjectKnowledgeDraftRequestOptions & { candidateIds: string[]; projectUid?: string }
 ): Promise<ProjectKnowledgeMergeResponse> {
   const res = await fetch('/api/intent-e2e/project-knowledge/merge', {
     method: 'POST',
@@ -1243,11 +1427,49 @@ async function fetchProjectKnowledgeBackups(limit = 12): Promise<ProjectKnowledg
   return json as ProjectKnowledgeBackupsResponse;
 }
 
-async function restoreProjectKnowledgeBackupFromWorkbench(backupPath: string): Promise<ProjectKnowledgeRestoreResponse> {
+async function fetchProjectKnowledgeAudits(limit = 12, projectUid = ''): Promise<ProjectKnowledgeAuditsResponse> {
+  const search = new URLSearchParams({ limit: String(limit) });
+  if (projectUid.trim()) {
+    search.set('projectUid', projectUid.trim());
+  }
+
+  const res = await fetch(`/api/intent-e2e/project-knowledge/audits?${search.toString()}`, { cache: 'no-store' });
+  const json = (await res.json().catch(() => null)) as ProjectKnowledgeAuditsResponse | { error?: string } | null;
+
+  if (!res.ok || !json || !('items' in json)) {
+    throw new Error((json as { error?: string } | null)?.error || '读取项目知识审计失败');
+  }
+
+  return json as ProjectKnowledgeAuditsResponse;
+}
+
+async function fetchIntentE2EInsights(projectUid = '', runLimit = 50, auditLimit = 12): Promise<IntentE2EInsightsResponse> {
+  const search = new URLSearchParams({
+    runLimit: String(runLimit),
+    auditLimit: String(auditLimit),
+  });
+  if (projectUid.trim()) {
+    search.set('projectUid', projectUid.trim());
+  }
+
+  const res = await fetch(`/api/intent-e2e/insights?${search.toString()}`, { cache: 'no-store' });
+  const json = (await res.json().catch(() => null)) as IntentE2EInsightsResponse | { error?: string } | null;
+
+  if (!res.ok || !json || !('summary' in json)) {
+    throw new Error((json as { error?: string } | null)?.error || '读取意图执行洞察失败');
+  }
+
+  return json as IntentE2EInsightsResponse;
+}
+
+async function restoreProjectKnowledgeBackupFromWorkbench(
+  backupPath: string,
+  projectUid = ''
+): Promise<ProjectKnowledgeRestoreResponse> {
   const res = await fetch('/api/intent-e2e/project-knowledge/backups/restore', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ backupPath }),
+    body: JSON.stringify({ backupPath, projectUid: projectUid.trim() || undefined }),
   });
   const json = (await res.json().catch(() => null)) as ProjectKnowledgeRestoreResponse | { error?: string } | null;
 
@@ -1366,10 +1588,19 @@ export default function IntentE2EWorkbench({
   const [knowledgeDraftMergedTo, setKnowledgeDraftMergedTo] = useState('');
   const [knowledgeDraftMergeBackupPath, setKnowledgeDraftMergeBackupPath] = useState('');
   const [knowledgeDraftMergeDiffPreview, setKnowledgeDraftMergeDiffPreview] = useState('');
+  const [knowledgeChangeOperation, setKnowledgeChangeOperation] = useState<'merge' | 'restore' | ''>('');
+  const [knowledgeChangeComparison, setKnowledgeChangeComparison] = useState<ProjectKnowledgeProfileComparison | null>(null);
+  const [knowledgeAuditWarning, setKnowledgeAuditWarning] = useState('');
   const [knowledgeBackupsLoading, setKnowledgeBackupsLoading] = useState(false);
   const [knowledgeBackupRestoring, setKnowledgeBackupRestoring] = useState(false);
+  const [knowledgeAuditsLoading, setKnowledgeAuditsLoading] = useState(false);
   const [knowledgeBackupDir, setKnowledgeBackupDir] = useState('');
   const [knowledgeBackups, setKnowledgeBackups] = useState<ProjectKnowledgeBackupItem[]>([]);
+  const [knowledgeAuditPath, setKnowledgeAuditPath] = useState('');
+  const [knowledgeAudits, setKnowledgeAudits] = useState<ProjectKnowledgeAuditItem[]>([]);
+  const [insightsLoading, setInsightsLoading] = useState(false);
+  const [insightsError, setInsightsError] = useState('');
+  const [insights, setInsights] = useState<IntentE2EInsightsResponse | null>(null);
   const [knowledgeRestoredFrom, setKnowledgeRestoredFrom] = useState('');
   const [knowledgeRestoreBackupCreated, setKnowledgeRestoreBackupCreated] = useState('');
   const [workspaceProjects, setWorkspaceProjects] = useState<WorkspaceProjectOption[]>([]);
@@ -1399,6 +1630,7 @@ export default function IntentE2EWorkbench({
   const displayFinalResult = result?.finalResult ?? streamState.finalResult;
   const displayFinalFailureTriage = result?.finalFailureTriage ?? streamState.finalFailureTriage;
   const displayLlmMeta = result?.llmMeta ?? streamState.llmMeta;
+  const displayKnowledge = result?.knowledge ?? null;
   const displayTargetUrl = result?.targetUrl ?? streamState.targetUrl;
   const browserAttempt = [...displayAttempts].reverse().find((attempt) => Boolean(attempt.sessionId)) || null;
   const browserSessionId = browserAttempt?.sessionId || '';
@@ -1406,6 +1638,14 @@ export default function IntentE2EWorkbench({
   const showCanceledState = !running && streamState.stage === 'canceled' && !displayFinalResult;
   const finalAttempt = displayAttempts[displayAttempts.length - 1] || null;
   const finalStats = useMemo(() => (displayFinalResult ? countByStatus(displayFinalResult) : null), [displayFinalResult]);
+  const displayUsedHelpers = useMemo(
+    () => uniqueStrings(displayAttempts.flatMap((attempt) => attempt.helperUsage?.usedHelpers || [])),
+    [displayAttempts]
+  );
+  const displayUsedSuggestedHelpers = useMemo(
+    () => uniqueStrings(displayAttempts.flatMap((attempt) => attempt.helperUsage?.usedSuggestedHelpers || [])),
+    [displayAttempts]
+  );
   const providerIsImplemented = llmConfig.provider === 'openai' && llmConfig.providerImplemented;
   const hasDisplayDetails = Boolean(displayScenarioCard || displayDescription || displayAttempts.length > 0);
   const knowledgeDraftBusy = knowledgeDraftLoading || knowledgeDraftWriting || knowledgeDraftMerging || knowledgeBackupsLoading || knowledgeBackupRestoring;
@@ -1532,6 +1772,22 @@ export default function IntentE2EWorkbench({
   useEffect(() => {
     void refreshProjectKnowledgeBackups({ silent: true });
   }, []);
+
+  useEffect(() => {
+    void refreshProjectKnowledgeAudits({ silent: true });
+  }, [workspaceProjectUid]);
+
+  useEffect(() => {
+    void refreshIntentE2EInsights({ silent: true });
+  }, [workspaceProjectUid]);
+
+  useEffect(() => {
+    if (!activeRunId || !displayFinalResult || running) {
+      return;
+    }
+
+    void refreshIntentE2EInsights({ silent: true });
+  }, [activeRunId, displayFinalResult, running]);
 
   useEffect(() => {
     if (!displayFinalResult || workspaceLoadingProjects || workspaceProjects.length > 0) return;
@@ -2000,6 +2256,14 @@ export default function IntentE2EWorkbench({
     setKnowledgeDraftSelectedCandidateIds(defaultKnowledgeDraftCandidateIds(draft));
   }
 
+  function upsertKnowledgeAuditEntry(entry?: ProjectKnowledgeAuditItem) {
+    if (!entry) return;
+    setKnowledgeAudits((current) => {
+      const next = [entry, ...current.filter((item) => item.auditId !== entry.auditId)];
+      return next.slice(0, 12);
+    });
+  }
+
   function toggleKnowledgeDraftCandidate(candidateId: string) {
     setKnowledgeDraftSelectedCandidateIds((current) =>
       current.includes(candidateId) ? current.filter((item) => item !== candidateId) : [...current, candidateId]
@@ -2013,6 +2277,58 @@ export default function IntentE2EWorkbench({
 
   function clearKnowledgeDraftSelection() {
     setKnowledgeDraftSelectedCandidateIds([]);
+  }
+
+  async function refreshIntentE2EInsights(options?: { silent?: boolean }) {
+    if (insightsLoading) return;
+
+    setInsightsLoading(true);
+    if (!options?.silent) {
+      setInsightsError('');
+    }
+
+    try {
+      const result = await fetchIntentE2EInsights(workspaceProjectUid);
+      setInsights(result);
+      setInsightsError('');
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : '读取意图执行洞察失败';
+      if (!options?.silent) {
+        setInsightsError(message);
+        setStreamState((current) => ({
+          ...current,
+          feed: pushFeed(current.feed, message, 'error'),
+        }));
+      }
+    } finally {
+      setInsightsLoading(false);
+    }
+  }
+
+  async function refreshProjectKnowledgeAudits(options?: { silent?: boolean }) {
+    if (knowledgeAuditsLoading) return;
+
+    setKnowledgeAuditsLoading(true);
+    if (!options?.silent) {
+      setKnowledgeDraftError('');
+    }
+
+    try {
+      const result = await fetchProjectKnowledgeAudits(12, workspaceProjectUid);
+      setKnowledgeAuditPath(result.auditLogPath);
+      setKnowledgeAudits(result.items);
+    } catch (error: unknown) {
+      if (!options?.silent) {
+        const message = error instanceof Error ? error.message : '读取项目知识审计失败';
+        setKnowledgeDraftError(message);
+        setStreamState((current) => ({
+          ...current,
+          feed: pushFeed(current.feed, message, 'error'),
+        }));
+      }
+    } finally {
+      setKnowledgeAuditsLoading(false);
+    }
   }
 
   async function refreshProjectKnowledgeBackups(options?: { silent?: boolean }) {
@@ -2046,9 +2362,10 @@ export default function IntentE2EWorkbench({
 
     setKnowledgeBackupRestoring(true);
     setKnowledgeDraftError('');
+    setKnowledgeAuditWarning('');
 
     try {
-      const restored = await restoreProjectKnowledgeBackupFromWorkbench(backupPath);
+      const restored = await restoreProjectKnowledgeBackupFromWorkbench(backupPath, workspaceProjectUid);
       const nextDraft = await fetchProjectKnowledgeDraftPreview({
         minSeenCount: knowledgeDraftMinSeenCount,
         minResolvedCount: knowledgeDraftMinResolvedCount,
@@ -2061,7 +2378,13 @@ export default function IntentE2EWorkbench({
       setKnowledgeDraftMergedTo(restored.writtenTo);
       setKnowledgeDraftMergeBackupPath('');
       setKnowledgeDraftMergeDiffPreview('');
+      setKnowledgeChangeOperation('restore');
+      setKnowledgeChangeComparison(restored.comparison || null);
+      setKnowledgeAuditWarning(restored.auditWarning || '');
+      upsertKnowledgeAuditEntry(restored.auditEntry);
       await refreshProjectKnowledgeBackups({ silent: true });
+      await refreshProjectKnowledgeAudits({ silent: true });
+      await refreshIntentE2EInsights({ silent: true });
       setStreamState((current) => ({
         ...current,
         feed: pushFeed(
@@ -2069,6 +2392,7 @@ export default function IntentE2EWorkbench({
           [
             `项目知识已从备份 ${restored.restoredFrom} 回滚`,
             restored.backupCreated ? `回滚前当前版本已备份到 ${restored.backupCreated}` : '',
+            restored.auditWarning ? `审计提醒：${restored.auditWarning}` : '',
           ]
             .filter(Boolean)
             .join('；'),
@@ -2096,6 +2420,9 @@ export default function IntentE2EWorkbench({
     setKnowledgeDraftMergedTo('');
     setKnowledgeDraftMergeBackupPath('');
     setKnowledgeDraftMergeDiffPreview('');
+    setKnowledgeChangeOperation('');
+    setKnowledgeChangeComparison(null);
+    setKnowledgeAuditWarning('');
     setKnowledgeRestoredFrom('');
     setKnowledgeRestoreBackupCreated('');
 
@@ -2138,6 +2465,9 @@ export default function IntentE2EWorkbench({
     setKnowledgeDraftMergedTo('');
     setKnowledgeDraftMergeBackupPath('');
     setKnowledgeDraftMergeDiffPreview('');
+    setKnowledgeChangeOperation('');
+    setKnowledgeChangeComparison(null);
+    setKnowledgeAuditWarning('');
     setKnowledgeRestoredFrom('');
     setKnowledgeRestoreBackupCreated('');
 
@@ -2180,6 +2510,7 @@ export default function IntentE2EWorkbench({
     setKnowledgeDraftError('');
     setKnowledgeRestoredFrom('');
     setKnowledgeRestoreBackupCreated('');
+    setKnowledgeAuditWarning('');
 
     try {
       const merged = await mergeProjectKnowledgeFromWorkbench({
@@ -2187,13 +2518,20 @@ export default function IntentE2EWorkbench({
         minResolvedCount: knowledgeDraftMinResolvedCount,
         maxCandidates: knowledgeDraftMaxCandidates,
         candidateIds: knowledgeDraftSelectedCandidateIds,
+        projectUid: workspaceProjectUid || undefined,
       });
 
       replaceKnowledgeDraftPreview(merged.draft);
       setKnowledgeDraftMergedTo(merged.mergedTo);
       setKnowledgeDraftMergeBackupPath(merged.backupPath || '');
       setKnowledgeDraftMergeDiffPreview(merged.diffPreview || '');
+      setKnowledgeChangeOperation('merge');
+      setKnowledgeChangeComparison(merged.comparison || null);
+      setKnowledgeAuditWarning(merged.auditWarning || '');
+      upsertKnowledgeAuditEntry(merged.auditEntry);
       await refreshProjectKnowledgeBackups({ silent: true });
+      await refreshProjectKnowledgeAudits({ silent: true });
+      await refreshIntentE2EInsights({ silent: true });
       setStreamState((current) => ({
         ...current,
         feed: pushFeed(
@@ -2204,6 +2542,7 @@ export default function IntentE2EWorkbench({
             merged.coveredCandidateIds.length > 0 ? `已跳过 ${merged.coveredCandidateIds.length} 条已覆盖候选` : '',
             merged.skippedRuleIds.length > 0 ? `已跳过 ${merged.skippedRuleIds.length} 条重复规则` : '',
             merged.missingCandidateIds.length > 0 ? `有 ${merged.missingCandidateIds.length} 条候选已失效` : '',
+            merged.auditWarning ? `审计提醒：${merged.auditWarning}` : '',
           ]
             .filter(Boolean)
             .join('；'),
@@ -2836,6 +3175,328 @@ export default function IntentE2EWorkbench({
                 </div>
               )}
 
+              {knowledgeChangeComparison && (
+                <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50/60 px-4 py-4 text-sm text-slate-700">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="font-medium text-slate-900">{knowledgeChangeOperation === 'restore' ? '本次回滚前后对比' : '本次合并收益对比'}</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">这里只比较项目知识配置本身的覆盖变化，不直接代表线上执行成功率。</p>
+                    </div>
+                    <span className="inline-flex rounded-full border border-emerald-200 bg-white px-3 py-1 text-[11px] font-medium text-emerald-700">
+                      {projectKnowledgeOperationLabel(knowledgeChangeOperation || 'merge')}
+                    </span>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                    {projectKnowledgeComparisonMetrics(knowledgeChangeComparison).map((metric) => {
+                      const delta = metric.after - metric.before;
+                      const deltaTone =
+                        delta > 0
+                          ? 'text-emerald-700 bg-emerald-100'
+                          : delta < 0
+                            ? 'text-amber-700 bg-amber-100'
+                            : 'text-slate-600 bg-slate-100';
+
+                      return (
+                        <div key={metric.key} className="rounded-2xl border border-white/80 bg-white px-4 py-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <p className="text-xs uppercase tracking-[0.14em] text-slate-400">{metric.label}</p>
+                            <span className={`rounded-full px-2 py-1 text-[11px] font-medium ${deltaTone}`}>{formatMetricDelta(metric.before, metric.after)}</span>
+                          </div>
+                          <p className="mt-3 text-lg font-semibold text-slate-950">
+                            {metric.before} <span className="text-slate-400">→</span> {metric.after}
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mt-4 grid gap-3 md:grid-cols-3">
+                    <div className="rounded-2xl border border-white/80 bg-white px-4 py-3 text-xs leading-6 text-slate-600">
+                      <p className="font-medium text-slate-900">新增规则</p>
+                      <p className="mt-2">{summarizeIdList(knowledgeChangeComparison.addedRuleIds)}</p>
+                    </div>
+                    <div className="rounded-2xl border border-white/80 bg-white px-4 py-3 text-xs leading-6 text-slate-600">
+                      <p className="font-medium text-slate-900">移除规则</p>
+                      <p className="mt-2">{summarizeIdList(knowledgeChangeComparison.removedRuleIds)}</p>
+                    </div>
+                    <div className="rounded-2xl border border-white/80 bg-white px-4 py-3 text-xs leading-6 text-slate-600">
+                      <p className="font-medium text-slate-900">更新规则</p>
+                      <p className="mt-2">{summarizeIdList(knowledgeChangeComparison.updatedRuleIds)}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {knowledgeAuditWarning && (
+                <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  审计提醒：{knowledgeAuditWarning}
+                </div>
+              )}
+
+              <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-700">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="font-medium text-slate-900">历史运行洞察</p>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                      用最近的运行和知识审计回答两件事：哪些规则/helper 真在拉高成功率，哪些合并可能把通过率打下来了。
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void refreshIntentE2EInsights()}
+                    disabled={insightsLoading}
+                    className="inline-flex h-10 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 px-4 text-xs text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {insightsLoading ? '刷新中…' : '刷新洞察'}
+                  </button>
+                </div>
+
+                {insightsError && (
+                  <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs leading-5 text-rose-700">
+                    {insightsError}
+                  </div>
+                )}
+
+                {insights ? (
+                  <>
+                    <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                      {workspaceProjectUid ? `当前展示项目 ${workspaceProjectUid}` : '当前展示全局'} 最近 {insights.scope.runLimit} 次终态运行，
+                      并结合最近 {insights.scope.auditLimit} 条项目知识审计生成趋势。
+                    </p>
+
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                        <p className="text-xs uppercase tracking-[0.14em] text-slate-400">runs</p>
+                        <p className="mt-2 text-2xl font-semibold text-slate-950">{insights.summary.totalRuns}</p>
+                        <p className="mt-1 text-[11px] text-slate-500">
+                          通过 {insights.summary.passedRuns} · 失败 {insights.summary.failedRuns} · 取消 {insights.summary.canceledRuns}
+                        </p>
+                      </div>
+                      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                        <p className="text-xs uppercase tracking-[0.14em] text-emerald-600">pass rate</p>
+                        <p className="mt-2 text-2xl font-semibold text-emerald-900">{formatRatePercent(insights.summary.passRate)}</p>
+                        <p className="mt-1 text-[11px] text-emerald-700">最近成功率，先看这项是否稳定抬升。</p>
+                      </div>
+                      <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3">
+                        <p className="text-xs uppercase tracking-[0.14em] text-sky-600">knowledge hit</p>
+                        <p className="mt-2 text-2xl font-semibold text-sky-900">{formatRatePercent(insights.summary.knowledgeHitRate)}</p>
+                        <p className="mt-1 text-[11px] text-sky-700">有命中知识规则的运行占比。</p>
+                      </div>
+                      <div className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3">
+                        <p className="text-xs uppercase tracking-[0.14em] text-violet-600">helper reuse</p>
+                        <p className="mt-2 text-2xl font-semibold text-violet-900">{formatRatePercent(insights.summary.suggestedHelperReuseRate)}</p>
+                        <p className="mt-1 text-[11px] text-violet-700">实际复用了推荐 helper 的运行占比。</p>
+                      </div>
+                    </div>
+
+                    {insights.rollbackCandidates.length > 0 ? (
+                      <div className="mt-4 space-y-3">
+                        {insights.rollbackCandidates.map((candidate) => (
+                          <div key={candidate.auditId} className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div>
+                                <p className="font-medium">{candidate.title}</p>
+                                <p className="mt-1 text-xs leading-5 text-amber-800">
+                                  {formatDateTime(candidate.occurredAt)} · 通过率 {formatRatePercent(candidate.beforePassRate)} →{' '}
+                                  {formatRatePercent(candidate.afterPassRate)} · 下滑 {formatRatePercent(candidate.passRateDelta)}
+                                </p>
+                              </div>
+                              <span className="rounded-full border border-amber-300 bg-white px-3 py-1 text-[11px] font-medium text-amber-800">
+                                可疑回滚候选
+                              </span>
+                            </div>
+                            <p className="mt-3 text-xs leading-6 text-amber-900">{candidate.recommendation}</p>
+                            <div className="mt-3 space-y-1 text-[11px] text-amber-800">
+                              <p>新增规则：{summarizeIdList(candidate.addedRuleIds)}</p>
+                              <p>
+                                观察窗口：前 {candidate.beforeRuns} 次 / 后 {candidate.afterRuns} 次
+                              </p>
+                              {candidate.backupPath && (
+                                <p className="break-all">
+                                  建议回滚备份：<span className="font-mono">{candidate.backupPath}</span>
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs leading-5 text-emerald-800">
+                        暂未发现明显需要优先回滚的规则合并；继续积累运行样本后，这里会自动提示。
+                      </div>
+                    )}
+
+                    <div className="mt-4 grid gap-3 xl:grid-cols-3">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <p className="font-medium text-slate-900">高频命中规则</p>
+                        {insights.topRules.length === 0 ? (
+                          <p className="mt-3 text-xs leading-5 text-slate-500">还没有足够的历史规则命中数据。</p>
+                        ) : (
+                          <div className="mt-3 space-y-3">
+                            {insights.topRules.map((item) => (
+                              <div key={item.ruleId} className="rounded-2xl border border-white/80 bg-white px-3 py-3">
+                                <p className="text-sm font-medium text-slate-900">{item.title}</p>
+                                <p className="mt-1 text-[11px] leading-5 text-slate-500">{item.ruleId}</p>
+                                <p className="mt-2 text-xs text-slate-600">
+                                  命中 {item.runCount} 次 · 通过 {item.passedRuns} 次 · 通过率 {formatRatePercent(item.passRate)}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <p className="font-medium text-slate-900">最常用 Helper</p>
+                        {insights.topHelpers.length === 0 ? (
+                          <p className="mt-3 text-xs leading-5 text-slate-500">还没有足够的 helper 复用数据。</p>
+                        ) : (
+                          <div className="mt-3 space-y-3">
+                            {insights.topHelpers.map((item) => (
+                              <div key={item.helper} className="rounded-2xl border border-white/80 bg-white px-3 py-3">
+                                <p className="break-all font-mono text-xs text-slate-900">{item.helper}</p>
+                                <p className="mt-2 text-xs text-slate-600">
+                                  使用 {item.runCount} 次 · 通过率 {formatRatePercent(item.passRate)} · 命中推荐 {item.suggestedReuseRuns} 次
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <p className="font-medium text-slate-900">常见失败类别</p>
+                        {insights.failureClasses.length === 0 ? (
+                          <p className="mt-3 text-xs leading-5 text-slate-500">最近失败样本不足，暂时没有明显模式。</p>
+                        ) : (
+                          <div className="mt-3 space-y-3">
+                            {insights.failureClasses.map((item) => (
+                              <div key={item.failureClass} className="flex items-center justify-between rounded-2xl border border-white/80 bg-white px-3 py-3">
+                                <div>
+                                  <p className="text-sm font-medium text-slate-900">
+                                    {intentFailureClassLabel(item.failureClass as IntentFailureTriage['failureClass'])}
+                                  </p>
+                                  <p className="mt-1 text-[11px] text-slate-500">{item.failureClass}</p>
+                                </div>
+                                <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-700">
+                                  {item.count} 次
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-sm text-slate-400">
+                    {insightsLoading ? '正在汇总最近运行趋势…' : '洞察还未加载；点击“刷新洞察”后可查看成功率、规则命中和回滚提示。'}
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-700">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="font-medium text-slate-900">最近审计记录</p>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                      每次 merge / restore 都会在本地落一条审计；如果当前已选项目，也会顺带尝试写入项目 activity。
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void refreshProjectKnowledgeAudits()}
+                    disabled={knowledgeAuditsLoading}
+                    className="inline-flex h-10 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 px-4 text-xs text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {knowledgeAuditsLoading ? '刷新中…' : '刷新审计记录'}
+                  </button>
+                </div>
+                {knowledgeAuditPath && <p className="mt-2 break-all font-mono text-[11px] text-slate-500">{knowledgeAuditPath}</p>}
+                {workspaceProjectUid && (
+                  <p className="mt-1 text-[11px] text-slate-500">当前仅展示项目 {workspaceProjectUid} 关联的审计记录。</p>
+                )}
+
+                {knowledgeAudits.length === 0 ? (
+                  <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-sm text-slate-400">
+                    还没有项目知识审计记录；执行一次规则合并或回滚后，这里会自动出现。
+                  </div>
+                ) : (
+                  <div className="mt-4 space-y-3">
+                    {knowledgeAudits.map((item) => (
+                      <div key={item.auditId} className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span
+                                className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                                  item.operation === 'restore'
+                                    ? 'border border-emerald-200 bg-emerald-50 text-emerald-700'
+                                    : 'border border-sky-200 bg-sky-50 text-sky-700'
+                                }`}
+                              >
+                                {projectKnowledgeOperationLabel(item.operation)}
+                              </span>
+                              <p className="font-medium text-slate-900">{item.title}</p>
+                            </div>
+                            <p className="mt-2 text-xs text-slate-500">
+                              {formatDateTime(item.occurredAt)} · {formatActorLabel(item.actorLabel)}
+                              {item.projectUid ? ` · ${item.projectUid}` : ''}
+                            </p>
+                          </div>
+                          <div className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-right text-[11px] text-slate-500">
+                            <p className="font-medium text-slate-900">
+                              {item.comparison.before.ruleCount} <span className="text-slate-400">→</span> {item.comparison.after.ruleCount}
+                            </p>
+                            <p className="mt-1">规则总数</p>
+                          </div>
+                        </div>
+
+                        {item.detail && <p className="mt-3 text-xs leading-6 text-slate-600">{item.detail}</p>}
+
+                        {(item.sourcePath || item.backupPath) && (
+                          <div className="mt-3 space-y-1 text-[11px] text-slate-500">
+                            {item.sourcePath && (
+                              <p className="break-all">
+                                来源：<span className="font-mono">{item.sourcePath}</span>
+                              </p>
+                            )}
+                            {item.backupPath && (
+                              <p className="break-all">
+                                备份：<span className="font-mono">{item.backupPath}</span>
+                              </p>
+                            )}
+                          </div>
+                        )}
+
+                        <div className="mt-3 grid gap-2 md:grid-cols-3 text-[11px] text-slate-500">
+                          <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                            <p className="font-medium text-slate-900">新增</p>
+                            <p className="mt-1">{summarizeIdList(item.comparison.addedRuleIds)}</p>
+                          </div>
+                          <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                            <p className="font-medium text-slate-900">移除</p>
+                            <p className="mt-1">{summarizeIdList(item.comparison.removedRuleIds)}</p>
+                          </div>
+                          <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                            <p className="font-medium text-slate-900">更新</p>
+                            <p className="mt-1">{summarizeIdList(item.comparison.updatedRuleIds)}</p>
+                          </div>
+                        </div>
+
+                        {item.meta.projectActivityLogged && (
+                          <p className="mt-3 text-[11px] text-emerald-600">已同步写入项目活动记录。</p>
+                        )}
+                        {item.meta.projectActivityError && (
+                          <p className="mt-3 text-[11px] text-amber-600">项目活动未写入：{item.meta.projectActivityError}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-700">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
@@ -3203,6 +3864,49 @@ export default function IntentE2EWorkbench({
                   <p className="mt-2 break-all text-xs leading-6 text-slate-600">
                     {displayLlmMeta.provider} / {displayLlmMeta.model} · vision {displayLlmMeta.visionEnabled ? 'on' : 'off'} · 输入图片 {displayLlmMeta.attachmentCount} 张
                   </p>
+                </div>
+              )}
+
+              {displayKnowledge && (
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-700">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-medium text-slate-900">知识命中与 Helper 使用</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">这块用来回答“这次为什么更容易成功”，避免继续靠猜。</p>
+                    </div>
+                    <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-[11px] font-medium text-sky-700">
+                      {displayKnowledge.matchCount > 0 ? `命中 ${displayKnowledge.matchCount} 条规则` : '未命中规则'}
+                    </span>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-400">matched rules</p>
+                      <p className="mt-2 text-sm font-medium text-slate-900">{summarizeTextList(displayKnowledge.matchedRuleTitles, 3)}</p>
+                      {displayKnowledge.matchedRuleIds.length > 0 && (
+                        <p className="mt-2 text-[11px] leading-5 text-slate-500">{summarizeTextList(displayKnowledge.matchedRuleIds, 3)}</p>
+                      )}
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-400">helper coverage</p>
+                      <p className="mt-2 text-sm font-medium text-slate-900">推荐 {displayKnowledge.suggestedHelpers.length} 个 · 实际使用 {displayUsedHelpers.length} 个</p>
+                      <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                        命中推荐 helper：{summarizeTextList(displayUsedSuggestedHelpers, 4)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 space-y-2 text-[11px] leading-5 text-slate-500">
+                    <p className="break-all">
+                      规则文件：<span className="font-mono">{displayKnowledge.profilePath}</span>
+                    </p>
+                    <p>能力标签：{summarizeTextList(displayKnowledge.capabilitySlugs, 4)}</p>
+                    <p>推荐 helper：{summarizeTextList(displayKnowledge.suggestedHelpers, 4)}</p>
+                    <p>本次实际 helper：{summarizeTextList(displayUsedHelpers, 4)}</p>
+                    {finalAttempt?.helperUsage && (
+                      <p>最终尝试 helper：{summarizeTextList(finalAttempt.helperUsage.usedHelpers, 4)}</p>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -3652,6 +4356,14 @@ export default function IntentE2EWorkbench({
                               ? `实时接收 ${attempt.events.length} 条事件 · ${attempt.logs.length} 条日志 · 当前代码长度 ${attempt.code.length} 字符`
                               : `耗时 ${formatDuration(attempt.result?.duration || 0)} · 代码长度 ${attempt.code.length} 字符 · 事件 ${attempt.events.length} 条`}
                           </p>
+                          {attempt.helperUsage && attempt.helperUsage.usedHelpers.length > 0 && (
+                            <p className="text-xs text-slate-500">
+                              helper：{summarizeTextList(attempt.helperUsage.usedHelpers, 4)}
+                              {attempt.helperUsage.usedSuggestedHelpers.length > 0
+                                ? ` · 命中推荐 ${attempt.helperUsage.usedSuggestedHelpers.length} 个`
+                                : ''}
+                            </p>
+                          )}
                           {attempt.sessionId && <p className="text-xs text-slate-400">浏览器会话：{attempt.sessionId}</p>}
                           {attempt.triage && (
                             <div className={`inline-flex max-w-full flex-wrap items-center gap-2 rounded-2xl border px-3 py-2 text-xs ${intentFailureTone(attempt.triage)}`}>

@@ -50,8 +50,10 @@ npm run edge:generate
 - 后端接口（预览项目知识草稿）：`GET /api/intent-e2e/project-knowledge/draft`
 - 后端接口（写出项目知识草稿）：`POST /api/intent-e2e/project-knowledge/draft`
 - 后端接口（合并选中项目知识规则）：`POST /api/intent-e2e/project-knowledge/merge`
+- 后端接口（读取项目知识审计记录）：`GET /api/intent-e2e/project-knowledge/audits`
 - 后端接口（读取项目知识备份列表）：`GET /api/intent-e2e/project-knowledge/backups`
 - 后端接口（按备份回滚项目知识规则）：`POST /api/intent-e2e/project-knowledge/backups/restore`
+- 后端接口（汇总历史运行洞察）：`GET /api/intent-e2e/insights`
 
 同时可读取当前服务端默认配置：
 - `GET /api/llm/config`
@@ -71,9 +73,11 @@ npm run edge:generate
 - 填写可选登录信息
 - 临时覆盖 provider / model / baseUrl / vision / retry 配置
 - 实时查看阶段状态、ScenarioCard、动作约束 DSL / 高频动作库、尝试日志、脚本生成、自愈过程与浏览器实时画面
+- 运行完成后直接查看：命中了哪些项目知识规则、推荐了哪些 helper、最终脚本实际用了哪些 helper
 - repair 阶段会自动命中历史相似失败记忆，把已验证修法与常见误区一起注入到修复 Prompt
 - generate / repair 阶段都会先匹配项目知识规则文件，自动裁剪 DSL、动作库和 Prompt
-- repair memory 达到阈值后，可在工作台里直接预览 / 写出项目知识规则草稿，并勾选候选后一键合并回项目规则文件；合并时会自动备份旧文件、展示本次变更预览，并支持从备份一键回滚
+- repair memory 达到阈值后，可在工作台里直接预览 / 写出项目知识规则草稿，并勾选候选后一键合并回项目规则文件；合并时会自动备份旧文件、展示本次变更预览、给出 merge / restore 前后覆盖对比，并保留最近审计记录
+- 可直接在工作台查看“历史运行洞察”：最近通过率、知识命中率、推荐 helper 复用率、Top 规则 / helper / 失败类别，以及疑似导致成功率下滑的规则合并回滚提示
 - 随时停止当前自动测试，并保留已生成的上下文和尝试记录
 - 自动显示服务端 `runId`，刷新页面后可自动恢复当前运行
 - 在流式执行完成后查看最终 `ScenarioCard`、编译后的描述、每次尝试的脚本 / 日志 / 结果
@@ -117,6 +121,7 @@ npm run edge:generate
 - `GET /api/intent-e2e/runs/:runId/stream`：先补发 backlog，再推送实时事件，适合刷新恢复 / 断线重连
 - `POST /api/intent-e2e/runs/:runId/cancel`：触发服务端停止当前运行
 - `POST /api/intent-e2e/runs/:runId/workspace`：把最终运行结果导入现有项目工作台，沉淀为任务、脚本版本和执行历史
+- `GET /api/intent-e2e/insights`：汇总最近终态运行的通过率、知识命中率、helper 复用率、Top 规则 / helper / 失败类别，以及基于 merge 审计推导的回滚候选
 
 ### Repair Memory
 - 默认会把失败聚类和成功修法写入 `reports/intent-e2e-repair-memory.json`
@@ -135,11 +140,17 @@ npm run edge:generate
 - 可通过环境变量 `INTENT_E2E_PROJECT_KNOWLEDGE_DRAFT_PATH` 覆盖草稿输出路径
 - 合并时默认会先把旧规则文件备份到 `reports/intent-e2e.project-knowledge.backups/`
 - 可通过环境变量 `INTENT_E2E_PROJECT_KNOWLEDGE_BACKUP_DIR` 覆盖备份目录
+- merge / restore 审计默认会追加到 `reports/intent-e2e.project-knowledge.audit.jsonl`
+- 可通过环境变量 `INTENT_E2E_PROJECT_KNOWLEDGE_AUDIT_PATH` 覆盖审计日志路径
 - `GET /api/intent-e2e/project-knowledge/draft` 会基于当前 repair memory 返回候选规则预览
 - `POST /api/intent-e2e/project-knowledge/draft` 传入 `{ "write": true }` 会把草稿写到文件，工作台里也已提供一键写出入口
-- `POST /api/intent-e2e/project-knowledge/merge` 传入候选 `candidateIds` 后，会把选中的建议规则直接合并回 `intent-e2e.project-knowledge.json`，并返回 backup 路径与变更预览
+- `POST /api/intent-e2e/project-knowledge/merge` 传入候选 `candidateIds` 后，会把选中的建议规则直接合并回 `intent-e2e.project-knowledge.json`，并返回 backup 路径、变更预览、覆盖对比与最新审计记录
+- 如果请求里额外带上 `projectUid`，merge / restore 会先校验该项目的 `owner/editor` 权限，并尝试把这次操作同步写入项目 activity log
+- `GET /api/intent-e2e/project-knowledge/audits` 会返回最近的 merge / restore 审计记录；可选通过 `projectUid` 过滤某个项目上下文触发的操作
 - `GET /api/intent-e2e/project-knowledge/backups` 会返回当前规则文件可用的备份列表
-- `POST /api/intent-e2e/project-knowledge/backups/restore` 传入某个 `backupPath` 后，可直接把项目规则回滚到该备份版本
+- `POST /api/intent-e2e/project-knowledge/backups/restore` 传入某个 `backupPath` 后，可直接把项目规则回滚到该备份版本，并返回回滚前后配置对比
+- `GET /api/intent-e2e/insights` 可选带 `projectUid`、`runLimit`、`auditLimit`；若指定 `projectUid`，会校验该项目的 `owner/editor/viewer` 权限
+- `GET /api/intent-e2e/insights` 当前直接复用已持久化的 run snapshot 和知识审计，不额外建表；回滚候选会比较某次 merge 前后最多各 5 次终态运行，通过率下滑达到 20 个点时会高亮提醒
 - 草稿默认只会把“重复出现且至少修成功过一次”的失败模式提炼成候选规则，并标记哪些规则已经被现有知识覆盖
 
 ## GitHub 自动化
@@ -148,8 +159,8 @@ npm run edge:generate
 - `ai-generate-tests.yml`：`edge-cases/**` 变更后自动生成测试并发 PR
 
 ## 下一步建议
-1. 用工作台或 `GET/POST /api/intent-e2e/project-knowledge/draft` 持续把 repair memory 反推成候选规则，再一键合并回 `intent-e2e.project-knowledge.json`；如果效果不好，可直接从 backup 回滚
+1. 基于当前 insights 做规则排序、自动降级或半自动回滚 guardrail，把“看得到趋势”继续推成“系统会主动保护成功率”
 2. 把更多业务动作沉淀成 runtime helper（如 `login`、`submit_order`、`assert_order_created`）
-3. 增加 repair 命中率 / 聚类分布 / 策略回放面板，量化修复记忆收益
+3. 决定是否把当前全局 `intent-e2e.project-knowledge.json` 继续拆成 project-scoped 知识文件，减少多项目之间的规则串扰
 4. 接入真实预发环境 E2E（通过 `E2E_BASE_URL`）
 5. 完善 provider 切换占位（OpenAI / Claude / Gemini），保持执行层不变
