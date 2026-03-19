@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getIntentE2EInsights } from '@/lib/ai/intent-e2e-insights';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { insertProjectActivityLog } from '@/lib/db/repository';
 import {
@@ -46,6 +47,29 @@ function normalizeProjectUid(value: unknown): string {
 
 function mergeActionType(addedRuleCount: number): string {
   return addedRuleCount > 0 ? 'intent_project_knowledge_merged' : 'intent_project_knowledge_merge_noop';
+}
+
+function buildMergeGuardrailWarning(addedRuleIds: string[], rollbackCandidates: Array<{ title: string; addedRuleIds: string[] }>): string {
+  if (addedRuleIds.length === 0 || rollbackCandidates.length === 0) return '';
+
+  const overlap = addedRuleIds.filter((ruleId) =>
+    rollbackCandidates.some((candidate) => candidate.addedRuleIds.includes(ruleId))
+  );
+  if (overlap.length === 0) return '';
+
+  const relatedTitles = rollbackCandidates
+    .filter((candidate) => candidate.addedRuleIds.some((ruleId) => overlap.includes(ruleId)))
+    .map((candidate) => candidate.title)
+    .filter(Boolean)
+    .slice(0, 2);
+
+  return [
+    `本次新增规则里包含 ${overlap.join(' / ')}，它们曾出现在历史可疑回滚候选中。`,
+    relatedTitles.length > 0 ? `相关合并：${relatedTitles.join('；')}。` : '',
+    '建议先小范围验证，若最近通过率继续下滑，优先从洞察卡片直接回滚。',
+  ]
+    .filter(Boolean)
+    .join('');
 }
 
 export async function POST(req: NextRequest) {
@@ -135,6 +159,19 @@ export async function POST(req: NextRequest) {
       warnings.push(`审计记录未写入：${message}`);
     }
 
+    let guardrailWarning: string | undefined;
+    try {
+      const insights = await getIntentE2EInsights({
+        projectUid,
+        runLimit: 50,
+        auditLimit: 20,
+      });
+      const warning = buildMergeGuardrailWarning(mergeResult.addedRuleIds, insights.rollbackCandidates);
+      guardrailWarning = warning || undefined;
+    } catch {
+      // Guardrail evaluation is best-effort and must not block merge.
+    }
+
     const response = NextResponse.json({
       draft: nextDraft,
       mergedTo: mergeResult.writtenTo,
@@ -149,6 +186,7 @@ export async function POST(req: NextRequest) {
       missingCandidateIds: mergeResult.missingCandidateIds,
       auditEntry,
       auditWarning: warnings.length > 0 ? warnings.join('；') : undefined,
+      guardrailWarning,
     });
 
     return actorUserUid ? applyActorCookie(response, actorUserUid) : response;

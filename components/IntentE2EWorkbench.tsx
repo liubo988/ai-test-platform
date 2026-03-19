@@ -404,6 +404,7 @@ type ProjectKnowledgeMergeResponse = {
   missingCandidateIds: string[];
   auditEntry?: ProjectKnowledgeAuditItem;
   auditWarning?: string;
+  guardrailWarning?: string;
   error?: string;
 };
 
@@ -1591,6 +1592,7 @@ export default function IntentE2EWorkbench({
   const [knowledgeChangeOperation, setKnowledgeChangeOperation] = useState<'merge' | 'restore' | ''>('');
   const [knowledgeChangeComparison, setKnowledgeChangeComparison] = useState<ProjectKnowledgeProfileComparison | null>(null);
   const [knowledgeAuditWarning, setKnowledgeAuditWarning] = useState('');
+  const [knowledgeGuardrailWarning, setKnowledgeGuardrailWarning] = useState('');
   const [knowledgeBackupsLoading, setKnowledgeBackupsLoading] = useState(false);
   const [knowledgeBackupRestoring, setKnowledgeBackupRestoring] = useState(false);
   const [knowledgeAuditsLoading, setKnowledgeAuditsLoading] = useState(false);
@@ -2279,6 +2281,22 @@ export default function IntentE2EWorkbench({
     setKnowledgeDraftSelectedCandidateIds([]);
   }
 
+  async function restoreRollbackCandidate(candidate: IntentE2EInsightRollbackCandidate) {
+    if (!candidate.backupPath || knowledgeDraftBusy) return;
+    const scopeLabel = candidate.projectUid || workspaceProjectUid || '当前规则集';
+    const confirmed = confirm(
+      [
+        `确认回滚到候选备份？`,
+        `范围：${scopeLabel}`,
+        `合并：${candidate.title}`,
+        `通过率：${formatRatePercent(candidate.beforePassRate)} -> ${formatRatePercent(candidate.afterPassRate)}`,
+        `备份：${candidate.backupPath}`,
+      ].join('\n')
+    );
+    if (!confirmed) return;
+    await restoreProjectKnowledgeBackup(candidate.backupPath, candidate.projectUid || workspaceProjectUid);
+  }
+
   async function refreshIntentE2EInsights(options?: { silent?: boolean }) {
     if (insightsLoading) return;
 
@@ -2357,15 +2375,16 @@ export default function IntentE2EWorkbench({
     }
   }
 
-  async function restoreProjectKnowledgeBackup(backupPath: string) {
+  async function restoreProjectKnowledgeBackup(backupPath: string, projectUidOverride = '') {
     if (knowledgeDraftBusy) return;
 
     setKnowledgeBackupRestoring(true);
     setKnowledgeDraftError('');
     setKnowledgeAuditWarning('');
+    setKnowledgeGuardrailWarning('');
 
     try {
-      const restored = await restoreProjectKnowledgeBackupFromWorkbench(backupPath, workspaceProjectUid);
+      const restored = await restoreProjectKnowledgeBackupFromWorkbench(backupPath, projectUidOverride || workspaceProjectUid);
       const nextDraft = await fetchProjectKnowledgeDraftPreview({
         minSeenCount: knowledgeDraftMinSeenCount,
         minResolvedCount: knowledgeDraftMinResolvedCount,
@@ -2423,6 +2442,7 @@ export default function IntentE2EWorkbench({
     setKnowledgeChangeOperation('');
     setKnowledgeChangeComparison(null);
     setKnowledgeAuditWarning('');
+    setKnowledgeGuardrailWarning('');
     setKnowledgeRestoredFrom('');
     setKnowledgeRestoreBackupCreated('');
 
@@ -2468,6 +2488,7 @@ export default function IntentE2EWorkbench({
     setKnowledgeChangeOperation('');
     setKnowledgeChangeComparison(null);
     setKnowledgeAuditWarning('');
+    setKnowledgeGuardrailWarning('');
     setKnowledgeRestoredFrom('');
     setKnowledgeRestoreBackupCreated('');
 
@@ -2511,6 +2532,7 @@ export default function IntentE2EWorkbench({
     setKnowledgeRestoredFrom('');
     setKnowledgeRestoreBackupCreated('');
     setKnowledgeAuditWarning('');
+    setKnowledgeGuardrailWarning('');
 
     try {
       const merged = await mergeProjectKnowledgeFromWorkbench({
@@ -2528,6 +2550,7 @@ export default function IntentE2EWorkbench({
       setKnowledgeChangeOperation('merge');
       setKnowledgeChangeComparison(merged.comparison || null);
       setKnowledgeAuditWarning(merged.auditWarning || '');
+      setKnowledgeGuardrailWarning(merged.guardrailWarning || '');
       upsertKnowledgeAuditEntry(merged.auditEntry);
       await refreshProjectKnowledgeBackups({ silent: true });
       await refreshProjectKnowledgeAudits({ silent: true });
@@ -2543,6 +2566,7 @@ export default function IntentE2EWorkbench({
             merged.skippedRuleIds.length > 0 ? `已跳过 ${merged.skippedRuleIds.length} 条重复规则` : '',
             merged.missingCandidateIds.length > 0 ? `有 ${merged.missingCandidateIds.length} 条候选已失效` : '',
             merged.auditWarning ? `审计提醒：${merged.auditWarning}` : '',
+            merged.guardrailWarning ? `护栏提醒：${merged.guardrailWarning}` : '',
           ]
             .filter(Boolean)
             .join('；'),
@@ -3234,6 +3258,12 @@ export default function IntentE2EWorkbench({
                 </div>
               )}
 
+              {knowledgeGuardrailWarning && (
+                <div className="mt-4 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm text-violet-800">
+                  护栏提醒：{knowledgeGuardrailWarning}
+                </div>
+              )}
+
               <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-700">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
@@ -3301,10 +3331,25 @@ export default function IntentE2EWorkbench({
                                   {formatDateTime(candidate.occurredAt)} · 通过率 {formatRatePercent(candidate.beforePassRate)} →{' '}
                                   {formatRatePercent(candidate.afterPassRate)} · 下滑 {formatRatePercent(candidate.passRateDelta)}
                                 </p>
+                                {candidate.projectUid && !workspaceProjectUid && (
+                                  <p className="mt-1 text-[11px] text-amber-700">项目：{candidate.projectUid}</p>
+                                )}
                               </div>
-                              <span className="rounded-full border border-amber-300 bg-white px-3 py-1 text-[11px] font-medium text-amber-800">
-                                可疑回滚候选
-                              </span>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="rounded-full border border-amber-300 bg-white px-3 py-1 text-[11px] font-medium text-amber-800">
+                                  可疑回滚候选
+                                </span>
+                                {candidate.backupPath && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void restoreRollbackCandidate(candidate)}
+                                    disabled={knowledgeDraftBusy}
+                                    className="inline-flex h-9 items-center justify-center rounded-2xl border border-amber-300 bg-white px-3 text-[11px] font-medium text-amber-900 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {knowledgeBackupRestoring ? '回滚中…' : '直接回滚'}
+                                  </button>
+                                )}
+                              </div>
                             </div>
                             <p className="mt-3 text-xs leading-6 text-amber-900">{candidate.recommendation}</p>
                             <div className="mt-3 space-y-1 text-[11px] text-amber-800">

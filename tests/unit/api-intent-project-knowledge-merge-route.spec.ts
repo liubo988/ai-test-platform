@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('@/lib/ai/intent-e2e-insights', () => ({
+  getIntentE2EInsights: vi.fn(),
+}));
+
 vi.mock('@/lib/db/bootstrap', () => ({
   ensureDbBootstrap: vi.fn(),
 }));
@@ -31,6 +35,7 @@ vi.mock('@/lib/server/project-actor', () => ({
 }));
 
 import { POST } from '../../app/api/intent-e2e/project-knowledge/merge/route';
+import { getIntentE2EInsights } from '@/lib/ai/intent-e2e-insights';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { insertProjectActivityLog } from '@/lib/db/repository';
 import { createIntentProjectKnowledgeAuditEntry, writeIntentProjectKnowledgeAuditEntry } from '@/lib/intent-project-knowledge';
@@ -78,6 +83,28 @@ const auditEntry = {
 describe('intent project knowledge merge route', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getIntentE2EInsights).mockResolvedValue({
+      scope: {
+        projectUid: '',
+        runLimit: 50,
+        auditLimit: 20,
+      },
+      summary: {
+        totalRuns: 0,
+        passedRuns: 0,
+        failedRuns: 0,
+        canceledRuns: 0,
+        passRate: 0,
+        knowledgeHitRuns: 0,
+        knowledgeHitRate: 0,
+        suggestedHelperReuseRuns: 0,
+        suggestedHelperReuseRate: 0,
+      },
+      topRules: [],
+      topHelpers: [],
+      failureClasses: [],
+      rollbackCandidates: [],
+    } as never);
     vi.mocked(generateIntentProjectKnowledgeDraft).mockResolvedValue({ version: 1, candidates: [], summary: {} } as never);
     vi.mocked(mergeIntentProjectKnowledgeDraftCandidates).mockResolvedValue({
       writtenTo: 'intent-e2e.project-knowledge.json',
@@ -136,6 +163,11 @@ describe('intent project knowledge merge route', () => {
       })
     );
     expect(writeIntentProjectKnowledgeAuditEntry).toHaveBeenCalledTimes(1);
+    expect(getIntentE2EInsights).toHaveBeenCalledWith({
+      projectUid: '',
+      runLimit: 50,
+      auditLimit: 20,
+    });
     expect(insertProjectActivityLog).not.toHaveBeenCalled();
     expect(requireProjectRole).not.toHaveBeenCalled();
     expect(res.status).toBe(200);
@@ -166,6 +198,7 @@ describe('intent project knowledge merge route', () => {
       missingCandidateIds: [],
       auditEntry,
       auditWarning: undefined,
+      guardrailWarning: undefined,
     });
   });
 
@@ -195,5 +228,56 @@ describe('intent project knowledge merge route', () => {
     );
     expect(applyActorCookie).toHaveBeenCalledTimes(1);
     expect(res.status).toBe(200);
+  });
+
+  it('returns a guardrail warning when merged rules overlap historical rollback candidates', async () => {
+    vi.mocked(getIntentE2EInsights).mockResolvedValue({
+      scope: {
+        projectUid: '',
+        runLimit: 50,
+        auditLimit: 20,
+      },
+      summary: {
+        totalRuns: 8,
+        passedRuns: 5,
+        failedRuns: 3,
+        canceledRuns: 0,
+        passRate: 62.5,
+        knowledgeHitRuns: 6,
+        knowledgeHitRate: 75,
+        suggestedHelperReuseRuns: 4,
+        suggestedHelperReuseRate: 50,
+      },
+      topRules: [],
+      topHelpers: [],
+      failureClasses: [],
+      rollbackCandidates: [
+        {
+          auditId: 'audit-risk-1',
+          occurredAt: '2026-03-19T12:00:00.000Z',
+          projectUid: 'proj_1',
+          title: '合并 2 条项目知识规则',
+          backupPath: 'reports/intent-e2e.project-knowledge.backups/risky.json',
+          addedRuleIds: ['business.rule-1', 'business.rule-2'],
+          beforeRuns: 4,
+          beforePassRate: 100,
+          afterRuns: 4,
+          afterPassRate: 25,
+          passRateDelta: 75,
+          recommendation: '建议回滚',
+        },
+      ],
+    } as never);
+
+    const req = new NextRequest('http://localhost/api/intent-e2e/project-knowledge/merge', {
+      method: 'POST',
+      body: JSON.stringify({ candidateIds: ['candidate-1'] }),
+      headers: { 'content-type': 'application/json' },
+    });
+    const res = await POST(req);
+    const json = await res.json();
+
+    expect(json.guardrailWarning).toContain('business.rule-1');
+    expect(json.guardrailWarning).toContain('历史可疑回滚候选');
   });
 });

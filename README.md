@@ -77,7 +77,7 @@ npm run edge:generate
 - repair 阶段会自动命中历史相似失败记忆，把已验证修法与常见误区一起注入到修复 Prompt
 - generate / repair 阶段都会先匹配项目知识规则文件，自动裁剪 DSL、动作库和 Prompt
 - repair memory 达到阈值后，可在工作台里直接预览 / 写出项目知识规则草稿，并勾选候选后一键合并回项目规则文件；合并时会自动备份旧文件、展示本次变更预览、给出 merge / restore 前后覆盖对比，并保留最近审计记录
-- 可直接在工作台查看“历史运行洞察”：最近通过率、知识命中率、推荐 helper 复用率、Top 规则 / helper / 失败类别，以及疑似导致成功率下滑的规则合并回滚提示
+- 可直接在工作台查看“历史运行洞察”：最近通过率、知识命中率、推荐 helper 复用率、Top 规则 / helper / 失败类别，以及疑似导致成功率下滑的规则合并回滚提示；若命中候选风险，可直接从洞察卡片一键回滚
 - 随时停止当前自动测试，并保留已生成的上下文和尝试记录
 - 自动显示服务端 `runId`，刷新页面后可自动恢复当前运行
 - 在流式执行完成后查看最终 `ScenarioCard`、编译后的描述、每次尝试的脚本 / 日志 / 结果
@@ -145,6 +145,7 @@ npm run edge:generate
 - `GET /api/intent-e2e/project-knowledge/draft` 会基于当前 repair memory 返回候选规则预览
 - `POST /api/intent-e2e/project-knowledge/draft` 传入 `{ "write": true }` 会把草稿写到文件，工作台里也已提供一键写出入口
 - `POST /api/intent-e2e/project-knowledge/merge` 传入候选 `candidateIds` 后，会把选中的建议规则直接合并回 `intent-e2e.project-knowledge.json`，并返回 backup 路径、变更预览、覆盖对比与最新审计记录
+- `POST /api/intent-e2e/project-knowledge/merge` 若本次新增规则命中过去的“可疑回滚候选”规则 ID，会额外返回 `guardrailWarning`，提醒先小范围验证
 - 如果请求里额外带上 `projectUid`，merge / restore 会先校验该项目的 `owner/editor` 权限，并尝试把这次操作同步写入项目 activity log
 - `GET /api/intent-e2e/project-knowledge/audits` 会返回最近的 merge / restore 审计记录；可选通过 `projectUid` 过滤某个项目上下文触发的操作
 - `GET /api/intent-e2e/project-knowledge/backups` 会返回当前规则文件可用的备份列表

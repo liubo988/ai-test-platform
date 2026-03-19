@@ -6,6 +6,8 @@
 - 已新增 `lib/ai/intent-e2e-insights.ts`，不引入新表，直接复用现有持久化的 run snapshot 与 `project-knowledge` audit log 做轻量聚合
 - 已在 `IntentE2EWorkbench` 的“项目知识草稿”区域补上“历史运行洞察”卡片，默认显示最近成功率、知识命中率、helper 复用率，以及最该优先看的规则 / helper / 失败模式
 - 已补一层基于 merge 审计的回滚候选提示：当某次知识合并后，前后窗口各至少 3 次、最多 5 次终态运行的通过率下滑达到 20 个点时，工作台会直接提示可疑规则和对应备份路径
+- 已把“半自动回滚 guardrail”补到洞察卡片上：看到可疑回滚候选后，可以直接在卡片里一键回滚到对应备份，不必再去备份列表里手动找
+- 已把 merge guardrail 补到接口返回上：如果本次新增规则与历史可疑回滚候选的 ruleId 重合，`POST /api/intent-e2e/project-knowledge/merge` 会返回 `guardrailWarning`，提醒先小范围验证
 - 这一步的价值是把“跑完一次看日志”推进成“看趋势决定下一步”：先判断是知识没命中、helper 没复用，还是某次规则沉淀把成功率拖下来了
 
 新增 / 更新关键文件：
