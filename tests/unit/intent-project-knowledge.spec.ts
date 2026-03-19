@@ -289,4 +289,125 @@ describe('intent-project-knowledge', () => {
     expect(resolution.matches).toEqual([]);
     expect(renderIntentProjectKnowledge(resolution)).toBe('');
   });
+
+  it('prioritizes historically stable rules and deprioritizes rollback-risk rules', () => {
+    fs.writeFileSync(
+      knowledgeFile,
+      JSON.stringify(
+        {
+          version: 1,
+          rules: [
+            {
+              id: 'checkout.safe',
+              title: '稳定结算规则',
+              match: {
+                urlIncludes: ['/checkout'],
+              },
+              promptNotes: ['优先等待 checkout submit 接口。'],
+              capabilitySlugs: ['assert.wait-for-api-response'],
+              addGlobalRules: ['先等接口后断言成功页。'],
+              addPreferredPrimitives: [],
+              addOutputContract: [],
+              stepPatches: [
+                {
+                  whenStepTypes: ['ui'],
+                  stepTextIncludes: ['提交订单'],
+                  addPreferredHelpers: ['__e2e.waitForApiResponse'],
+                },
+              ],
+            },
+            {
+              id: 'checkout.risky',
+              title: '高风险结算规则',
+              match: {
+                urlIncludes: ['/checkout'],
+              },
+              promptNotes: ['直接点提交后只看 toast。'],
+              capabilitySlugs: ['assert.toast-only'],
+              addGlobalRules: ['不要等接口，直接断言 toast。'],
+              addPreferredPrimitives: [],
+              addOutputContract: [],
+              stepPatches: [
+                {
+                  whenStepTypes: ['ui'],
+                  stepTextIncludes: ['提交订单'],
+                  addPreferredHelpers: ['__e2e.assertToastVisible'],
+                },
+              ],
+            },
+          ],
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const baseDsl = buildIntentActionDSL({
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/checkout',
+      featureDescription: '填写手机号后提交订单',
+      expectedOutcome: '成功页出现',
+      steps: [
+        {
+          stepUid: 'step_1',
+          stepType: 'ui',
+          title: '提交订单',
+          target: 'https://example.com/checkout',
+          instruction: '点击提交订单按钮',
+          expectedResult: '成功页出现',
+          extractVariable: '',
+        },
+      ],
+    });
+
+    const resolution = resolveIntentProjectKnowledge(
+      {
+        snapshot: {
+          url: 'https://example.com/checkout',
+          title: 'Checkout',
+          buttons: [],
+          headings: [{ level: 'H1', text: 'Checkout' }],
+          bodyTextExcerpt: '提交订单 成功页',
+          frames: [],
+        },
+        description: '填写手机号并提交订单，最后看到成功页',
+        dsl: baseDsl,
+      },
+      {
+        rulePerformanceById: {
+          'checkout.safe': {
+            runCount: 7,
+            passedRuns: 6,
+            failedRuns: 1,
+            canceledRuns: 0,
+            passRate: 85.7,
+            rollbackCandidateCount: 0,
+          },
+          'checkout.risky': {
+            runCount: 6,
+            passedRuns: 2,
+            failedRuns: 4,
+            canceledRuns: 0,
+            passRate: 33.3,
+            rollbackCandidateCount: 1,
+          },
+        },
+      }
+    );
+    const patched = applyIntentProjectKnowledgeToDsl(baseDsl, resolution);
+
+    expect(resolution.matches.map((item) => item.ruleId)).toEqual(['checkout.safe']);
+    expect(resolution.deprioritizedMatches.map((item) => item.ruleId)).toEqual(['checkout.risky']);
+    expect(resolution.matches[0]?.feedback).toMatchObject({
+      status: 'preferred',
+      runCount: 7,
+    });
+    expect(resolution.deprioritizedMatches[0]?.feedback).toMatchObject({
+      status: 'deprioritized',
+      rollbackCandidateCount: 1,
+    });
+    expect(patched.steps[0].preferredHelpers).toContain('__e2e.waitForApiResponse');
+    expect(patched.steps[0].preferredHelpers).not.toContain('__e2e.assertToastVisible');
+  });
 });

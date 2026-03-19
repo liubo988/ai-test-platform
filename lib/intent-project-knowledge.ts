@@ -52,13 +52,34 @@ export interface IntentProjectKnowledgeMatchResult {
   addOutputContract: string[];
   stepPatches: IntentProjectKnowledgeStepPatch[];
   score: number;
+  baseScore?: number;
+  feedback?: IntentProjectKnowledgeMatchFeedback;
 }
 
 export interface IntentProjectKnowledgeResolution {
   version: 1;
   profilePath: string;
   matches: IntentProjectKnowledgeMatchResult[];
+  deprioritizedMatches: IntentProjectKnowledgeMatchResult[];
   capabilitySlugs: string[];
+}
+
+export interface IntentProjectKnowledgeRulePerformance {
+  runCount: number;
+  passedRuns: number;
+  failedRuns: number;
+  canceledRuns: number;
+  passRate: number;
+  rollbackCandidateCount: number;
+}
+
+export interface IntentProjectKnowledgeMatchFeedback {
+  runCount: number;
+  passRate: number;
+  rollbackCandidateCount: number;
+  scoreAdjustment: number;
+  status: 'preferred' | 'neutral' | 'deprioritized';
+  reasons: string[];
 }
 
 export interface IntentProjectKnowledgeMergeAddedRule {
@@ -173,6 +194,10 @@ export interface ResolveIntentProjectKnowledgeInput {
   snapshot: Pick<PageSnapshot, 'url' | 'title' | 'buttons' | 'headings' | 'bodyTextExcerpt' | 'frames'>;
   description: string;
   dsl: IntentActionDSL;
+}
+
+export interface ResolveIntentProjectKnowledgeOptions {
+  rulePerformanceById?: Record<string, IntentProjectKnowledgeRulePerformance>;
 }
 
 const DEFAULT_PROJECT_KNOWLEDGE_PATH = path.join(process.cwd(), 'intent-e2e.project-knowledge.json');
@@ -491,18 +516,114 @@ function patchAppliesToStep(patch: IntentProjectKnowledgeStepPatch, step: Intent
   return (patch.stepTextIncludes || []).some((item) => haystack.includes(item.toLowerCase()));
 }
 
-export function resolveIntentProjectKnowledge(input: ResolveIntentProjectKnowledgeInput): IntentProjectKnowledgeResolution {
+function scorePassRateAdjustment(performance: IntentProjectKnowledgeRulePerformance): { adjustment: number; reasons: string[] } {
+  if (performance.runCount < 3) {
+    return { adjustment: 0, reasons: [] };
+  }
+
+  if (performance.passRate >= 80) {
+    return {
+      adjustment: performance.runCount >= 6 ? 5 : 4,
+      reasons: [`历史命中 ${performance.runCount} 次，通过率 ${performance.passRate}%`],
+    };
+  }
+
+  if (performance.passRate >= 60) {
+    return {
+      adjustment: 2,
+      reasons: [`历史命中 ${performance.runCount} 次，通过率 ${performance.passRate}%`],
+    };
+  }
+
+  if (performance.passRate <= 20) {
+    return {
+      adjustment: -6,
+      reasons: [`历史命中 ${performance.runCount} 次，通过率仅 ${performance.passRate}%`],
+    };
+  }
+
+  if (performance.passRate <= 35) {
+    return {
+      adjustment: -4,
+      reasons: [`历史命中 ${performance.runCount} 次，通过率仅 ${performance.passRate}%`],
+    };
+  }
+
+  if (performance.passRate < 50) {
+    return {
+      adjustment: -2,
+      reasons: [`历史命中 ${performance.runCount} 次，通过率 ${performance.passRate}%`],
+    };
+  }
+
+  return { adjustment: 0, reasons: [] };
+}
+
+function applyIntentProjectKnowledgePerformanceFeedback(
+  match: IntentProjectKnowledgeMatchResult,
+  performanceByRuleId?: Record<string, IntentProjectKnowledgeRulePerformance>
+): IntentProjectKnowledgeMatchResult {
+  const performance = performanceByRuleId?.[match.ruleId];
+  const baseScore = match.score;
+
+  if (!performance) {
+    return {
+      ...match,
+      baseScore,
+    };
+  }
+
+  const reasons: string[] = [];
+  let adjustment = 0;
+  const passRate = scorePassRateAdjustment(performance);
+  adjustment += passRate.adjustment;
+  reasons.push(...passRate.reasons);
+
+  if (performance.rollbackCandidateCount > 0) {
+    adjustment -= Math.min(2, performance.rollbackCandidateCount) * 8;
+    reasons.push(`曾 ${performance.rollbackCandidateCount} 次进入可疑回滚候选`);
+  }
+
+  const finalScore = Math.max(0, baseScore + adjustment);
+  const deprioritized =
+    performance.rollbackCandidateCount > 0
+      ? finalScore < baseScore
+      : performance.runCount >= 5 && performance.passRate <= 35 && adjustment < 0 && finalScore <= 4;
+
+  return {
+    ...match,
+    baseScore,
+    score: finalScore,
+    feedback: {
+      runCount: performance.runCount,
+      passRate: performance.passRate,
+      rollbackCandidateCount: performance.rollbackCandidateCount,
+      scoreAdjustment: adjustment,
+      status: deprioritized ? 'deprioritized' : adjustment > 0 ? 'preferred' : 'neutral',
+      reasons,
+    },
+  };
+}
+
+export function resolveIntentProjectKnowledge(
+  input: ResolveIntentProjectKnowledgeInput,
+  options: ResolveIntentProjectKnowledgeOptions = {}
+): IntentProjectKnowledgeResolution {
   const profile = loadIntentProjectKnowledgeProfile();
   const matches = profile.rules
     .map((rule) => matchRule(rule, input))
     .filter((item): item is IntentProjectKnowledgeMatchResult => Boolean(item))
-    .sort((a, b) => b.score - a.score || a.ruleId.localeCompare(b.ruleId));
+    .map((item) => applyIntentProjectKnowledgePerformanceFeedback(item, options.rulePerformanceById))
+    .sort((a, b) => b.score - a.score || (b.baseScore || 0) - (a.baseScore || 0) || a.ruleId.localeCompare(b.ruleId));
+  const deprioritizedMatches = matches.filter((item) => item.feedback?.status === 'deprioritized');
+  const activeMatches = matches.filter((item) => item.feedback?.status !== 'deprioritized');
 
   return {
     version: 1,
     profilePath: toDisplayPath(resolveProjectKnowledgePath()),
-    matches,
-    capabilitySlugs: uniqueStrings(matches.flatMap((item) => item.capabilitySlugs)),
+    matches: activeMatches,
+    deprioritizedMatches,
+    capabilitySlugs: uniqueStrings(activeMatches.flatMap((item) => item.capabilitySlugs)),
   };
 }
 
@@ -570,6 +691,9 @@ export function renderIntentProjectKnowledge(resolution: IntentProjectKnowledgeR
   if (resolution.matches.length === 0) return '';
 
   const lines: string[] = ['## 项目知识规则（动态裁剪）', `- 配置文件: ${resolution.profilePath}`, `- 命中规则: ${resolution.matches.length} 条`];
+  if (resolution.deprioritizedMatches.length > 0) {
+    lines.push(`- 已降权规则: ${resolution.deprioritizedMatches.length} 条`);
+  }
 
   resolution.matches.forEach((match, index) => {
     lines.push(
@@ -580,6 +704,9 @@ export function renderIntentProjectKnowledge(resolution: IntentProjectKnowledgeR
       `- Prompt 提示: ${match.promptNotes.join('；') || '无'}`,
       `- 推荐动作库: ${match.capabilitySlugs.join(' | ') || '无'}`
     );
+    if (match.feedback && match.feedback.reasons.length > 0) {
+      lines.push(`- 历史表现: ${match.feedback.reasons.join('；')}`);
+    }
   });
 
   return lines.join('\n');

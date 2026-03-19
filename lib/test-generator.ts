@@ -4,7 +4,13 @@ import { callLLMStream } from './llm-client';
 import { renderIntentActionLibrary, selectIntentActionLibrary } from './intent-action-library';
 import { renderIntentRepairMemoryHints, type IntentRepairMemoryHint } from './ai/intent-repair-memory';
 import { buildIntentActionDSL, renderIntentActionDSL, type IntentActionDSL, type IntentActionStepInput } from './intent-action-dsl';
-import { applyIntentProjectKnowledgeToDsl, renderIntentProjectKnowledge, resolveIntentProjectKnowledge, type IntentProjectKnowledgeResolution } from './intent-project-knowledge';
+import {
+  applyIntentProjectKnowledgeToDsl,
+  renderIntentProjectKnowledge,
+  resolveIntentProjectKnowledge,
+  type IntentProjectKnowledgeResolution,
+  type IntentProjectKnowledgeRulePerformance,
+} from './intent-project-knowledge';
 import type { LLMRuntimeOverrides } from './llm/provider-config';
 import type { PageSnapshot, AuthConfig } from './page-analyzer';
 
@@ -76,10 +82,15 @@ export interface ResolvedPromptPlanningContext {
   knowledge: IntentProjectKnowledgeResolution;
 }
 
+export interface ResolveIntentPromptPlanningOptions {
+  rulePerformanceById?: Record<string, IntentProjectKnowledgeRulePerformance>;
+}
+
 export function resolveIntentPromptPlanningContext(
   snapshot: PageSnapshot,
   description: string,
-  context?: GenerateTestContext
+  context?: GenerateTestContext,
+  options: ResolveIntentPromptPlanningOptions = {}
 ): ResolvedPromptPlanningContext {
   const baseDsl =
     context?.actionDsl ||
@@ -97,6 +108,8 @@ export function resolveIntentPromptPlanningContext(
     snapshot,
     description,
     dsl: baseDsl,
+  }, {
+    rulePerformanceById: options.rulePerformanceById,
   });
 
   return {
@@ -114,6 +127,22 @@ function buildProjectKnowledgeSection(planning: ResolvedPromptPlanningContext): 
   const rendered = renderIntentProjectKnowledge(planning.knowledge);
   return rendered ? `
 ${rendered}` : '';
+}
+
+function formatPlanningKnowledgeHitMessage(prefix: string, planning: ResolvedPromptPlanningContext): string {
+  if (planning.knowledge.matches.length === 0) {
+    return planning.knowledge.deprioritizedMatches.length > 0
+      ? `${prefix}未启用项目知识规则；另有 ${planning.knowledge.deprioritizedMatches.length} 条规则因历史表现或回滚风险被降权跳过。`
+      : `${prefix}未命中项目知识规则，继续使用通用 DSL。`;
+  }
+
+  const hitText = `${prefix}命中 ${planning.knowledge.matches.length} 条项目知识规则：${planning.knowledge.matches
+    .slice(0, 3)
+    .map((item) => item.title)
+    .join(' / ')}`;
+  return planning.knowledge.deprioritizedMatches.length > 0
+    ? `${hitText}；另有 ${planning.knowledge.deprioritizedMatches.length} 条规则因历史表现或回滚风险被降权跳过。`
+    : hitText;
 }
 
 function buildActionLibrarySection(
@@ -1106,7 +1135,8 @@ export async function* generateTest(
   auth?: AuthConfig,
   context?: GenerateTestContext,
   runtimeOverrides?: LLMRuntimeOverrides,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  planning?: ResolvedPromptPlanningContext
 ): AsyncGenerator<GenerateEvent> {
   throwIfAborted(signal);
   yield { type: 'thinking', content: '正在加载历史边缘案例...' };
@@ -1123,20 +1153,14 @@ export async function* generateTest(
   }
 
   yield { type: 'thinking', content: '正在匹配项目知识规则...' };
-  const planning = resolveIntentPromptPlanningContext(snapshot, description, context);
+  const resolvedPlanning = planning || resolveIntentPromptPlanningContext(snapshot, description, context);
   yield {
     type: 'thinking',
-    content:
-      planning.knowledge.matches.length > 0
-        ? `命中 ${planning.knowledge.matches.length} 条项目知识规则：${planning.knowledge.matches
-            .slice(0, 3)
-            .map((item) => item.title)
-            .join(' / ')}`
-        : '未命中项目知识规则，继续使用通用 DSL。',
+    content: formatPlanningKnowledgeHitMessage('', resolvedPlanning).trim(),
   };
 
   yield { type: 'thinking', content: '正在构造 Prompt 并调用 LLM...' };
-  const prompt = buildPrompt(snapshot, description, auth, edgeCases, existingExample, context, planning);
+  const prompt = buildPrompt(snapshot, description, auth, edgeCases, existingExample, context, resolvedPlanning);
   yield* streamCodeGeneration(prompt, runtimeOverrides, signal);
 }
 
@@ -1147,7 +1171,8 @@ export async function* repairTest(
   auth?: AuthConfig,
   context?: GenerateTestContext,
   runtimeOverrides?: LLMRuntimeOverrides,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  planning?: ResolvedPromptPlanningContext
 ): AsyncGenerator<GenerateEvent> {
   throwIfAborted(signal);
   yield { type: 'thinking', content: '正在回收失败执行上下文...' };
@@ -1164,19 +1189,13 @@ export async function* repairTest(
   }
 
   yield { type: 'thinking', content: '正在匹配项目知识规则...' };
-  const planning = resolveIntentPromptPlanningContext(snapshot, description, context);
+  const resolvedPlanning = planning || resolveIntentPromptPlanningContext(snapshot, description, context);
   yield {
     type: 'thinking',
-    content:
-      planning.knowledge.matches.length > 0
-        ? `repair 命中 ${planning.knowledge.matches.length} 条项目知识规则：${planning.knowledge.matches
-            .slice(0, 3)
-            .map((item) => item.title)
-            .join(' / ')}`
-        : 'repair 未命中项目知识规则，继续使用通用 DSL。',
+    content: formatPlanningKnowledgeHitMessage('repair ', resolvedPlanning),
   };
 
   yield { type: 'thinking', content: '正在构造修复 Prompt 并调用 LLM...' };
-  const prompt = buildRepairPrompt(snapshot, description, auth, edgeCases, existingExample, repair, context, planning);
+  const prompt = buildRepairPrompt(snapshot, description, auth, edgeCases, existingExample, repair, context, resolvedPlanning);
   yield* streamCodeGeneration(prompt, runtimeOverrides, signal);
 }

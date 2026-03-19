@@ -49,6 +49,17 @@ export interface IntentE2EInsightRollbackCandidate {
   recommendation: string;
 }
 
+export interface IntentE2ERulePerformance {
+  ruleId: string;
+  title: string;
+  runCount: number;
+  passedRuns: number;
+  failedRuns: number;
+  canceledRuns: number;
+  passRate: number;
+  rollbackCandidateCount: number;
+}
+
 export interface IntentE2EInsightsResult {
   scope: {
     projectUid: string;
@@ -251,7 +262,8 @@ function buildFailureClassStats(runs: InsightRunRecord[]): IntentE2EInsightFailu
 
 function buildRollbackCandidates(
   runs: InsightRunRecord[],
-  audits: IntentProjectKnowledgeAuditEntry[]
+  audits: IntentProjectKnowledgeAuditEntry[],
+  limit = 3
 ): IntentE2EInsightRollbackCandidate[] {
   const terminalRuns = [...runs].sort((a, b) => a.finishedAtMs - b.finishedAtMs);
   const windowSize = 5;
@@ -286,7 +298,70 @@ function buildRollbackCandidates(
     })
     .filter((candidate) => candidate.beforeRuns >= minWindowRuns && candidate.afterRuns >= minWindowRuns && candidate.passRateDelta >= 20)
     .sort((a, b) => b.passRateDelta - a.passRateDelta || Date.parse(b.occurredAt) - Date.parse(a.occurredAt))
-    .slice(0, 3);
+    .slice(0, Math.max(1, Math.floor(limit || 3)));
+}
+
+export function buildIntentE2ERulePerformanceMapFromData(
+  runSnapshots: IntentE2ERunSnapshotRecord[],
+  audits: IntentProjectKnowledgeAuditEntry[]
+): Record<string, IntentE2ERulePerformance> {
+  const terminalRuns = runSnapshots
+    .map(normalizeTerminalRun)
+    .filter((item): item is InsightRunRecord => Boolean(item));
+  const rollbackCandidates = buildRollbackCandidates(terminalRuns, audits, Math.max(1, audits.length || 1));
+  const rollbackCounts = new Map<string, number>();
+  const stats = new Map<
+    string,
+    {
+      title: string;
+      runIds: Set<string>;
+      passedRunIds: Set<string>;
+      failedRunIds: Set<string>;
+      canceledRunIds: Set<string>;
+    }
+  >();
+
+  for (const candidate of rollbackCandidates) {
+    for (const ruleId of candidate.addedRuleIds) {
+      rollbackCounts.set(ruleId, (rollbackCounts.get(ruleId) || 0) + 1);
+    }
+  }
+
+  for (const run of terminalRuns) {
+    run.matchedRuleIds.forEach((ruleId, index) => {
+      const current = stats.get(ruleId) || {
+        title: run.matchedRuleTitles[index] || ruleId,
+        runIds: new Set<string>(),
+        passedRunIds: new Set<string>(),
+        failedRunIds: new Set<string>(),
+        canceledRunIds: new Set<string>(),
+      };
+      current.title = current.title || run.matchedRuleTitles[index] || ruleId;
+      current.runIds.add(run.runId);
+      if (run.status === 'passed') {
+        current.passedRunIds.add(run.runId);
+      } else if (run.status === 'failed') {
+        current.failedRunIds.add(run.runId);
+      } else if (run.status === 'canceled') {
+        current.canceledRunIds.add(run.runId);
+      }
+      stats.set(ruleId, current);
+    });
+  }
+
+  return [...stats.entries()].reduce<Record<string, IntentE2ERulePerformance>>((acc, [ruleId, current]) => {
+    acc[ruleId] = {
+      ruleId,
+      title: current.title || ruleId,
+      runCount: current.runIds.size,
+      passedRuns: current.passedRunIds.size,
+      failedRuns: current.failedRunIds.size,
+      canceledRuns: current.canceledRunIds.size,
+      passRate: toPercent(current.passedRunIds.size, current.runIds.size),
+      rollbackCandidateCount: rollbackCounts.get(ruleId) || 0,
+    };
+    return acc;
+  }, {});
 }
 
 export function buildIntentE2EInsightsFromData(
@@ -327,6 +402,24 @@ export function buildIntentE2EInsightsFromData(
     failureClasses: buildFailureClassStats(terminalRuns),
     rollbackCandidates: buildRollbackCandidates(terminalRuns, audits),
   };
+}
+
+export async function getIntentE2ERulePerformanceMap(
+  options: BuildIntentE2EInsightsOptions = {}
+): Promise<Record<string, IntentE2ERulePerformance>> {
+  const projectUid = options.projectUid?.trim() || '';
+  const runLimit = Math.max(1, Math.min(200, Math.floor(options.runLimit || 50)));
+  const auditLimit = Math.max(1, Math.min(50, Math.floor(options.auditLimit || 12)));
+  const [runs, audits] = await Promise.all([
+    listIntentE2ERunSnapshots({
+      projectUid,
+      status: 'terminal',
+      limit: runLimit,
+    }),
+    listIntentProjectKnowledgeAuditEntries(auditLimit, projectUid),
+  ]);
+
+  return buildIntentE2ERulePerformanceMapFromData(runs, audits.items);
 }
 
 export async function getIntentE2EInsights(options: BuildIntentE2EInsightsOptions = {}): Promise<IntentE2EInsightsResult> {

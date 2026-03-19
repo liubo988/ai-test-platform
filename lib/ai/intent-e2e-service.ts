@@ -1,4 +1,5 @@
 import { analyzePage, precheckPageAccess, type AuthConfig, type PageAccessPrecheckReadyResult } from '@/lib/page-analyzer';
+import { getIntentE2ERulePerformanceMap } from '@/lib/ai/intent-e2e-insights';
 import { executeTest, type TestResult } from '@/lib/test-executor';
 import {
   generateTest,
@@ -260,6 +261,25 @@ function buildIntentE2EKnowledgeSummary(planning: ResolvedPromptPlanningContext)
   };
 }
 
+async function loadIntentE2ERulePerformanceFeedback(projectUid = ''): Promise<Record<string, {
+  runCount: number;
+  passedRuns: number;
+  failedRuns: number;
+  canceledRuns: number;
+  passRate: number;
+  rollbackCandidateCount: number;
+}>> {
+  try {
+    return await getIntentE2ERulePerformanceMap({
+      projectUid,
+      runLimit: 50,
+      auditLimit: 20,
+    });
+  } catch {
+    return {};
+  }
+}
+
 function extractIntentE2EUsedHelpers(code: string): string[] {
   const matches = code.matchAll(/__e2e\.([A-Za-z0-9_]+)/g);
   return uniqueStrings([...matches].map((match) => `__e2e.${match[1]}`));
@@ -453,7 +473,10 @@ export async function runIntentDrivenE2EStream(
     storageState: precheck.precheck.storageState,
   });
   throwIfAborted(signal);
-  const planning = resolveIntentPromptPlanningContext(snapshot, description, context);
+  const rulePerformanceById = await loadIntentE2ERulePerformanceFeedback(input.projectUid?.trim() || '');
+  const planning = resolveIntentPromptPlanningContext(snapshot, description, context, {
+    rulePerformanceById,
+  });
   const knowledge = buildIntentE2EKnowledgeSummary(planning);
 
   const attempts: IntentE2EAttempt[] = [];
@@ -515,7 +538,7 @@ export async function runIntentDrivenE2EStream(
     const generation =
       kind === 'generate'
         ? await collectGeneratedCode(
-            generateTest(snapshot, description, input.auth, context, input.llmConfig, signal),
+            generateTest(snapshot, description, input.auth, context, input.llmConfig, signal, planning),
             (event) => emit(listener, { type: 'attempt_event', attempt, kind, event }),
             signal
           )
@@ -532,7 +555,8 @@ export async function runIntentDrivenE2EStream(
               input.auth,
               context,
               input.llmConfig,
-              signal
+              signal,
+              planning
             ),
             (event) => emit(listener, { type: 'attempt_event', attempt, kind, event }),
             signal

@@ -75,7 +75,7 @@ npm run edge:generate
 - 实时查看阶段状态、ScenarioCard、动作约束 DSL / 高频动作库、尝试日志、脚本生成、自愈过程与浏览器实时画面
 - 运行完成后直接查看：命中了哪些项目知识规则、推荐了哪些 helper、最终脚本实际用了哪些 helper
 - repair 阶段会自动命中历史相似失败记忆，把已验证修法与常见误区一起注入到修复 Prompt
-- generate / repair 阶段都会先匹配项目知识规则文件，自动裁剪 DSL、动作库和 Prompt
+- generate / repair 阶段都会先匹配项目知识规则文件，自动裁剪 DSL、动作库和 Prompt；最近历史通过率更高的规则会被前置，命中过去可疑回滚候选的高风险规则会被自动降权
 - repair memory 达到阈值后，可在工作台里直接预览 / 写出项目知识规则草稿，并勾选候选后一键合并回项目规则文件；合并时会自动备份旧文件、展示本次变更预览、给出 merge / restore 前后覆盖对比，并保留最近审计记录
 - 可直接在工作台查看“历史运行洞察”：最近通过率、知识命中率、推荐 helper 复用率、Top 规则 / helper / 失败类别，以及疑似导致成功率下滑的规则合并回滚提示；若命中候选风险，可直接从洞察卡片一键回滚
 - 随时停止当前自动测试，并保留已生成的上下文和尝试记录
@@ -152,6 +152,7 @@ npm run edge:generate
 - `POST /api/intent-e2e/project-knowledge/backups/restore` 传入某个 `backupPath` 后，可直接把项目规则回滚到该备份版本，并返回回滚前后配置对比
 - `GET /api/intent-e2e/insights` 可选带 `projectUid`、`runLimit`、`auditLimit`；若指定 `projectUid`，会校验该项目的 `owner/editor/viewer` 权限
 - `GET /api/intent-e2e/insights` 当前直接复用已持久化的 run snapshot 和知识审计，不额外建表；回滚候选会比较某次 merge 前后最多各 5 次终态运行，通过率下滑达到 20 个点时会高亮提醒
+- 当前服务端在执行 generate / repair 前，会把最近运行沉淀出的规则表现反馈回规划阶段：高通过率规则会前置进 DSL / Prompt，历史低通过率且命中过回滚候选的规则会被降权甚至跳过
 - 草稿默认只会把“重复出现且至少修成功过一次”的失败模式提炼成候选规则，并标记哪些规则已经被现有知识覆盖
 
 ## GitHub 自动化
@@ -160,7 +161,7 @@ npm run edge:generate
 - `ai-generate-tests.yml`：`edge-cases/**` 变更后自动生成测试并发 PR
 
 ## 下一步建议
-1. 基于当前 insights 做规则排序、自动降级或半自动回滚 guardrail，把“看得到趋势”继续推成“系统会主动保护成功率”
+1. 在当前基于历史表现的规则排序之上，再补自动降级 / 半自动回滚 guardrail，让“系统主动保护成功率”从 merge 阶段进一步前移到规则生命周期管理
 2. 把更多业务动作沉淀成 runtime helper（如 `login`、`submit_order`、`assert_order_created`）
 3. 决定是否把当前全局 `intent-e2e.project-knowledge.json` 继续拆成 project-scoped 知识文件，减少多项目之间的规则串扰
 4. 接入真实预发环境 E2E（通过 `E2E_BASE_URL`）

@@ -8,6 +8,7 @@
 - 已补一层基于 merge 审计的回滚候选提示：当某次知识合并后，前后窗口各至少 3 次、最多 5 次终态运行的通过率下滑达到 20 个点时，工作台会直接提示可疑规则和对应备份路径
 - 已把“半自动回滚 guardrail”补到洞察卡片上：看到可疑回滚候选后，可以直接在卡片里一键回滚到对应备份，不必再去备份列表里手动找
 - 已把 merge guardrail 补到接口返回上：如果本次新增规则与历史可疑回滚候选的 ruleId 重合，`POST /api/intent-e2e/project-knowledge/merge` 会返回 `guardrailWarning`，提醒先小范围验证
+- 已把历史规则表现真正接回 generate / repair 规划阶段：最近通过率更高的规则会前置进 DSL / Prompt，命中过去可疑回滚候选且历史表现差的规则会被自动降权，必要时直接跳过
 - 这一步的价值是把“跑完一次看日志”推进成“看趋势决定下一步”：先判断是知识没命中、helper 没复用，还是某次规则沉淀把成功率拖下来了
 
 新增 / 更新关键文件：
@@ -15,7 +16,11 @@
 - `lib/ai/intent-e2e-insights.ts`
 - `app/api/intent-e2e/insights/route.ts`
 - `components/IntentE2EWorkbench.tsx`
+- `lib/test-generator.ts`
+- `lib/ai/intent-e2e-service.ts`
 - `tests/unit/intent-e2e-insights.spec.ts`
+- `tests/unit/intent-e2e-service.spec.ts`
+- `tests/unit/intent-project-knowledge.spec.ts`
 - `tests/unit/api-intent-e2e-insights-route.spec.ts`
 - `README.md`
 - `docs/openai-intent-e2e-mvp-2026-03-16.md`

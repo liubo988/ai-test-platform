@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { runIntentDrivenE2EStream, type IntentE2EStreamEvent } from '@/lib/ai/intent-e2e-service';
+import { getIntentE2ERulePerformanceMap } from '@/lib/ai/intent-e2e-insights';
 import { analyzePage, precheckPageAccess } from '@/lib/page-analyzer';
 import { executeTest } from '@/lib/test-executor';
 import { generateTest, repairTest, resolveIntentPromptPlanningContext, type GenerateEvent } from '@/lib/test-generator';
@@ -10,6 +11,10 @@ import { listRelevantIntentRepairHints, recordIntentRepairFailure, recordIntentR
 vi.mock('@/lib/page-analyzer', () => ({
   analyzePage: vi.fn(),
   precheckPageAccess: vi.fn(),
+}));
+
+vi.mock('@/lib/ai/intent-e2e-insights', () => ({
+  getIntentE2ERulePerformanceMap: vi.fn(),
 }));
 
 vi.mock('@/lib/test-executor', () => ({
@@ -92,6 +97,18 @@ const recordedFailureHint = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(getIntentE2ERulePerformanceMap).mockResolvedValue({
+    'checkout.submit': {
+      ruleId: 'checkout.submit',
+      title: '结算提交页',
+      runCount: 6,
+      passedRuns: 5,
+      failedRuns: 1,
+      canceledRuns: 0,
+      passRate: 83.3,
+      rollbackCandidateCount: 0,
+    },
+  } as never);
 
   vi.mocked(generateScenarioCard).mockResolvedValue({
     card: scenarioCard,
@@ -245,6 +262,29 @@ describe('intent-e2e-service stream', () => {
     expect(vi.mocked(recordIntentRepairFailure)).not.toHaveBeenCalled();
     expect(vi.mocked(recordIntentRepairResolution)).not.toHaveBeenCalled();
     expect(vi.mocked(resolveIntentPromptPlanningContext)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(resolveIntentPromptPlanningContext).mock.calls[0]?.[3]).toEqual({
+      rulePerformanceById: {
+        'checkout.submit': {
+          ruleId: 'checkout.submit',
+          title: '结算提交页',
+          runCount: 6,
+          passedRuns: 5,
+          failedRuns: 1,
+          canceledRuns: 0,
+          passRate: 83.3,
+          rollbackCandidateCount: 0,
+        },
+      },
+    });
+    expect(vi.mocked(generateTest).mock.calls[0]?.[6]).toMatchObject({
+      knowledge: expect.objectContaining({
+        matches: [
+          expect.objectContaining({
+            ruleId: 'checkout.submit',
+          }),
+        ],
+      }),
+    });
 
     expect(events.some((event) => event.type === 'scenario_card')).toBe(true);
     expect(events.some((event) => event.type === 'description')).toBe(true);

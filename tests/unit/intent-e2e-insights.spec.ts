@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildIntentE2EInsightsFromData } from '@/lib/ai/intent-e2e-insights';
+import { buildIntentE2EInsightsFromData, buildIntentE2ERulePerformanceMapFromData } from '@/lib/ai/intent-e2e-insights';
 import type { IntentE2ERunSnapshotRecord } from '@/lib/db/repository';
 import type { IntentProjectKnowledgeAuditEntry } from '@/lib/intent-project-knowledge';
 
@@ -338,5 +338,115 @@ describe('intent-e2e insights', () => {
     });
     expect(result.rollbackCandidates[0]?.recommendation).toContain('checkout.submit / checkout.success');
     expect(result.rollbackCandidates[0]?.recommendation).toContain('reports/intent-e2e.project-knowledge.backups/checkout.json');
+  });
+
+  it('builds rule performance map with rollback risk counts', () => {
+    const runSnapshots = [
+      makeRunSnapshot({
+        runId: 'before_1',
+        status: 'passed',
+        endedAt: '2026-03-19T10:00:00.000Z',
+        state: { result: { knowledge: { matchedRuleIds: ['checkout.base'], matchedRuleTitles: ['基础结算'], suggestedHelpers: [] }, attempts: [] } },
+      }),
+      makeRunSnapshot({
+        runId: 'before_2',
+        status: 'passed',
+        endedAt: '2026-03-19T10:01:00.000Z',
+        state: { result: { knowledge: { matchedRuleIds: ['checkout.base'], matchedRuleTitles: ['基础结算'], suggestedHelpers: [] }, attempts: [] } },
+      }),
+      makeRunSnapshot({
+        runId: 'before_3',
+        status: 'passed',
+        endedAt: '2026-03-19T10:02:00.000Z',
+        state: { result: { knowledge: { matchedRuleIds: ['checkout.base'], matchedRuleTitles: ['基础结算'], suggestedHelpers: [] }, attempts: [] } },
+      }),
+      makeRunSnapshot({
+        runId: 'after_1',
+        status: 'failed',
+        endedAt: '2026-03-19T10:05:00.000Z',
+        state: {
+          result: {
+            knowledge: {
+              matchedRuleIds: ['checkout.submit'],
+              matchedRuleTitles: ['结算提交页'],
+              suggestedHelpers: ['__e2e.waitForApiResponse'],
+            },
+            attempts: [],
+          },
+        },
+      }),
+      makeRunSnapshot({
+        runId: 'after_2',
+        status: 'failed',
+        endedAt: '2026-03-19T10:06:00.000Z',
+        state: {
+          result: {
+            knowledge: {
+              matchedRuleIds: ['checkout.submit'],
+              matchedRuleTitles: ['结算提交页'],
+              suggestedHelpers: ['__e2e.waitForApiResponse'],
+            },
+            attempts: [],
+          },
+        },
+      }),
+      makeRunSnapshot({
+        runId: 'after_3',
+        status: 'passed',
+        endedAt: '2026-03-19T10:07:00.000Z',
+        state: {
+          result: {
+            knowledge: {
+              matchedRuleIds: ['checkout.submit'],
+              matchedRuleTitles: ['结算提交页'],
+              suggestedHelpers: ['__e2e.waitForApiResponse'],
+            },
+            attempts: [],
+          },
+        },
+      }),
+    ];
+    const audits = [
+      makeAudit({
+        occurredAt: '2026-03-19T10:04:00.000Z',
+        comparison: {
+          before: {
+            ruleCount: 8,
+            enabledRuleCount: 8,
+            capabilitySlugCount: 4,
+            preferredHelperCount: 5,
+            stepPatchCount: 9,
+            urlPatternCount: 8,
+          },
+          after: {
+            ruleCount: 9,
+            enabledRuleCount: 9,
+            capabilitySlugCount: 5,
+            preferredHelperCount: 6,
+            stepPatchCount: 10,
+            urlPatternCount: 9,
+          },
+          addedRuleIds: ['checkout.submit'],
+          removedRuleIds: [],
+          updatedRuleIds: [],
+        },
+      }),
+    ];
+
+    const result = buildIntentE2ERulePerformanceMapFromData(runSnapshots, audits);
+
+    expect(result['checkout.base']).toMatchObject({
+      runCount: 3,
+      passedRuns: 3,
+      passRate: 100,
+      rollbackCandidateCount: 0,
+    });
+    expect(result['checkout.submit']).toMatchObject({
+      runCount: 3,
+      passedRuns: 1,
+      failedRuns: 2,
+      passRate: 33.3,
+      rollbackCandidateCount: 1,
+    });
   });
 });
