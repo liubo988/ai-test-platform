@@ -81,6 +81,7 @@ export function normalizeIntentE2ERequestBody(body: unknown): IntentE2ERunReques
     input: typeof record.input === 'string' ? record.input.trim() : '',
     targetUrl: typeof record.targetUrl === 'string' ? record.targetUrl.trim() : '',
     projectUid: typeof record.projectUid === 'string' ? record.projectUid.trim() : '',
+    moduleUid: typeof record.moduleUid === 'string' ? record.moduleUid.trim() : '',
     auth: normalizeAuth(record.auth),
     attachments: normalizeAttachments(record.attachments),
     llmConfig: normalizeLlmConfig(record.llmConfig),

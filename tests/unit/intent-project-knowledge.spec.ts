@@ -121,6 +121,307 @@ describe('intent-project-knowledge', () => {
     expect(rendered).toContain('提交类场景要先等接口成功');
   });
 
+  it('resolves field-path hints from matched knowledge rules', () => {
+    fs.writeFileSync(
+      knowledgeFile,
+      JSON.stringify(
+        {
+          version: 1,
+          rules: [
+            {
+              id: 'customer.detail-fields',
+              title: '客户详情字段映射',
+              match: {
+                urlIncludes: ['/customer/detail'],
+                descriptionIncludes: ['详情页核对'],
+              },
+              promptNotes: [],
+              capabilitySlugs: [],
+              addGlobalRules: [],
+              addPreferredPrimitives: [],
+              addOutputContract: [],
+              stepPatches: [],
+              fieldPathHints: [
+                {
+                  label: '状态',
+                  paths: ['auditStatusName', 'statusLabel'],
+                  stableIdentifiers: ['customerCode'],
+                  whenStepTypes: ['assert'],
+                  stepTextIncludes: ['详情'],
+                },
+                {
+                  label: '编号',
+                  paths: ['recordCode', 'customer.code'],
+                  stableIdentifier: 'customerCode',
+                },
+              ],
+            },
+          ],
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const baseDsl = buildIntentActionDSL({
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/customer/detail/1',
+      featureDescription: '打开详情页并核对状态与编号',
+      expectedOutcome: '详情字段正确',
+      sharedVariables: ['customerCode'],
+      steps: [
+        {
+          stepUid: 'step_1',
+          stepType: 'assert',
+          title: '详情页核对',
+          target: 'https://example.com/customer/detail/1',
+          instruction: '在详情页核对状态和编号',
+          expectedResult: '详情字段正确',
+          extractVariable: '',
+        },
+      ],
+    });
+
+    const resolution = resolveIntentProjectKnowledge({
+      snapshot: {
+        url: 'https://example.com/customer/detail/1',
+        title: '客户详情',
+        buttons: [],
+        headings: [{ level: 'H2', text: '详情信息' }],
+        bodyTextExcerpt: '详情 状态 编号',
+        frames: [],
+      },
+      description: '详情页核对 customerCode 与状态',
+      dsl: baseDsl,
+    });
+
+    expect(resolution.matches).toHaveLength(1);
+    expect(resolution.matches[0]?.fieldPathHints).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: '状态',
+          paths: ['auditStatusName', 'statusLabel'],
+          stableIdentifiers: ['customerCode'],
+        }),
+        expect.objectContaining({
+          label: '编号',
+          paths: ['recordCode', 'customer.code'],
+          stableIdentifiers: ['customerCode'],
+        }),
+      ])
+    );
+  });
+
+  it('resolves record-lookup and detail-surface helper hints from matched knowledge rules', () => {
+    fs.writeFileSync(
+      knowledgeFile,
+      JSON.stringify(
+        {
+          version: 1,
+          rules: [
+            {
+              id: 'customer.lookup-hints',
+              title: '客户列表回查参数',
+              match: {
+                urlIncludes: ['/customer'],
+                descriptionIncludes: ['customerCode'],
+              },
+              promptNotes: [],
+              capabilitySlugs: [],
+              addGlobalRules: [],
+              addPreferredPrimitives: [],
+              addOutputContract: [],
+              stepPatches: [],
+              recordLookupHints: [
+                {
+                  stableIdentifier: 'customerCode',
+                  whenStepTypes: ['assert'],
+                  stepTextIncludes: ['详情'],
+                  listResponse: { urlIncludes: '/customer/search', method: 'POST' },
+                  detailUrl: '/customer/profile/{{primaryValue}}',
+                  rowHasTexts: ['customerCode', '签约中'],
+                  searchSurface: {
+                    keywordInput: { selector: 'input#customerKeyword:visible' },
+                    searchButton: { textIncludes: '检索' },
+                  },
+                  tableScope: { selector: '.customer-table-wrapper' },
+                  detailReadyLocator: { textIncludes: '客户详情' },
+                  detailEntry: {
+                    trigger: 'row_action',
+                    actionLabel: '查看',
+                    target: 'drawer_or_modal',
+                  },
+                },
+              ],
+              detailSurfaceHints: [
+                {
+                  stableIdentifier: 'customerCode',
+                  whenStepTypes: ['assert'],
+                  stepTextIncludes: ['详情'],
+                  titleIncludes: '客户详情',
+                  scopeHints: ['详情页'],
+                },
+              ],
+            },
+          ],
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const baseDsl = buildIntentActionDSL({
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/customer/list',
+      featureDescription: '列表按 customerCode 回查，必要时进入详情页核对状态',
+      expectedOutcome: '找到目标客户并核对详情',
+      sharedVariables: ['customerCode'],
+      steps: [
+        {
+          stepUid: 'step_1',
+          stepType: 'assert',
+          title: '详情页核对',
+          target: 'https://example.com/customer/list',
+          instruction: '按 customerCode 检索，未命中则进入详情页核对状态',
+          expectedResult: '详情状态正确',
+          extractVariable: '',
+        },
+      ],
+    });
+
+    const resolution = resolveIntentProjectKnowledge({
+      snapshot: {
+        url: 'https://example.com/customer/list',
+        title: '客户列表',
+        buttons: [],
+        headings: [{ level: 'H2', text: '客户列表' }],
+        bodyTextExcerpt: '客户列表 customerCode 详情',
+        frames: [],
+      },
+      description: '按 customerCode 回查并在详情页核对状态',
+      dsl: baseDsl,
+    });
+
+    expect(resolution.matches).toHaveLength(1);
+    expect(resolution.matches[0]?.recordLookupHints).toEqual([
+      {
+        stableIdentifiers: ['customerCode'],
+        whenStepTypes: ['assert'],
+        stepTextIncludes: ['详情'],
+        listResponse: { urlIncludes: '/customer/search', method: 'POST' },
+        detailUrl: '/customer/profile/{{primaryValue}}',
+        rowHasTexts: ['customerCode', '签约中'],
+        searchSurface: {
+          keywordInput: { selector: 'input#customerKeyword:visible' },
+          searchButton: { textIncludes: '检索' },
+        },
+        tableScope: { selector: '.customer-table-wrapper' },
+        detailReadyLocator: { textIncludes: '客户详情' },
+        detailEntry: {
+          trigger: 'row_action',
+          actionLabel: '查看',
+          target: 'drawer_or_modal',
+        },
+      },
+    ]);
+    expect(resolution.matches[0]?.detailSurfaceHints).toEqual([
+      {
+        stableIdentifiers: ['customerCode'],
+        whenStepTypes: ['assert'],
+        stepTextIncludes: ['详情'],
+        titleIncludes: '客户详情',
+        scopeHints: ['详情页'],
+      },
+    ]);
+  });
+
+  it('parses row_click detailEntry hints without requiring an action label', () => {
+    fs.writeFileSync(
+      knowledgeFile,
+      JSON.stringify(
+        {
+          version: 1,
+          rules: [
+            {
+              id: 'customer.row-click-entry',
+              title: '客户列表整行进入详情',
+              match: {
+                urlIncludes: ['/customer'],
+                descriptionIncludes: ['customerCode'],
+              },
+              promptNotes: [],
+              capabilitySlugs: [],
+              addGlobalRules: [],
+              addPreferredPrimitives: [],
+              addOutputContract: [],
+              stepPatches: [],
+              recordLookupHints: [
+                {
+                  stableIdentifier: 'customerCode',
+                  whenStepTypes: ['assert'],
+                  stepTextIncludes: ['详情'],
+                  listResponse: { urlIncludes: '/customer/search', method: 'POST' },
+                  detailUrl: '/customer/profile/{{primaryValue}}',
+                  rowHasTexts: ['customerCode', '签约中'],
+                  detailReadyLocator: { textIncludes: '客户详情' },
+                  detailEntry: {
+                    trigger: 'row_click',
+                    target: 'page',
+                    urlIncludes: '/customer/profile/',
+                  },
+                },
+              ],
+            },
+          ],
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const baseDsl = buildIntentActionDSL({
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/customer/list',
+      featureDescription: '列表按 customerCode 回查，点击整行进入详情页核对状态',
+      expectedOutcome: '找到目标客户并核对详情',
+      sharedVariables: ['customerCode'],
+      steps: [
+        {
+          stepUid: 'step_1',
+          stepType: 'assert',
+          title: '详情页核对',
+          target: 'https://example.com/customer/list',
+          instruction: '按 customerCode 检索，点击整行进入详情页核对状态',
+          expectedResult: '详情状态正确',
+          extractVariable: '',
+        },
+      ],
+    });
+
+    const resolution = resolveIntentProjectKnowledge({
+      snapshot: {
+        url: 'https://example.com/customer/list',
+        title: '客户列表',
+        buttons: [],
+        headings: [{ level: 'H2', text: '客户列表' }],
+        bodyTextExcerpt: '客户列表 customerCode 详情',
+        frames: [],
+      },
+      description: '按 customerCode 回查并点击整行进入详情页核对状态',
+      dsl: baseDsl,
+    });
+
+    expect(resolution.matches).toHaveLength(1);
+    expect(resolution.matches[0]?.recordLookupHints?.[0]?.detailEntry).toEqual({
+      trigger: 'row_click',
+      target: 'page',
+      urlIncludes: '/customer/profile/',
+    });
+  });
+
   it('lists backups and restores the selected backup into the live profile', async () => {
     fs.writeFileSync(
       knowledgeFile,
@@ -213,7 +514,122 @@ describe('intent-project-knowledge', () => {
         },
         meta: {
           requestedCandidateIds: ['candidate-1'],
+          requestedModuleUid: 'mod_alpha',
+          selectedCandidateFeedbackStatuses: ['probationary'],
+          selectedRiskyCandidateIds: ['candidate-1'],
+          acknowledgedRiskCandidateIds: ['candidate-1'],
+          appliedAcknowledgedRiskCandidateIds: ['candidate-1'],
+          appliedAcknowledgedRiskCandidateFeedbackStatuses: ['probationary'],
           mergedCandidateIds: ['candidate-1'],
+          mergedCandidates: [
+            {
+              candidateId: 'candidate-1',
+              ruleId: 'custom.orders-list',
+              source: 'successful_run',
+            feedbackStatus: 'probationary',
+            risky: true,
+            overrideApplied: false,
+            riskAcknowledged: true,
+            runIds: ['intent-run-success-1'],
+            observationTags: ['obs-page-surface', 'obs-anchor-missing'],
+            observationSummary: 'page_surface=observed；anchor_presence=not_found',
+          },
+        ],
+          mergedCandidateSources: ['successful_run'],
+          mergedRunIds: ['intent-run-success-1'],
+          selectionSummary: {
+            requestedCandidateIds: ['candidate-1'],
+            requestedCandidateCount: 1,
+            selectedCandidateIds: ['candidate-1'],
+            selectedCandidateCount: 1,
+            selectedRuleIds: ['custom.orders-list'],
+            mergeCandidateIds: ['candidate-1'],
+            mergeCandidateCount: 1,
+            coveredCandidateIds: [],
+            coveredCandidateCount: 0,
+            missingCandidateIds: [],
+            missingCandidateCount: 0,
+            selectedSources: ['successful_run'],
+            selectedFeedbackStatuses: ['probationary'],
+            selectedLifecyclePolicies: ['observe'],
+            selectedRiskyCandidateIds: ['candidate-1'],
+            autoPromoteCandidateIds: [],
+            observeCandidateIds: ['candidate-1'],
+            blockDefaultMergeCandidateIds: [],
+            overrideRequiredCandidateIds: [],
+            riskAcknowledgementRequiredCandidateIds: ['candidate-1'],
+          },
+          preflightSummary: {
+            requiresOverride: false,
+            requiresRiskAcknowledgement: true,
+            autoPromoteCount: 0,
+            observeCount: 1,
+            blockDefaultMergeCount: 0,
+            itemCount: 1,
+            items: [
+              {
+                kind: 'risk_acknowledgement',
+                level: 'warning',
+                title: '需确认观察期风险',
+                message: '本次选择包含 1 条观察期候选，需显式确认风险后才能合并。',
+                provenanceType: 'risk_acknowledgement',
+                candidateIds: ['candidate-1'],
+                ruleIds: ['custom.orders-list'],
+                feedbackStatuses: ['probationary'],
+                lifecyclePolicies: ['observe'],
+              },
+            ],
+          },
+          mergeReceipts: [
+            {
+              kind: 'risk_acknowledgement',
+              level: 'warning',
+              title: '风险确认已记录',
+              message: '本次合并已确认 1 条观察期候选风险。',
+              provenanceType: 'risk_acknowledgement',
+              candidateIds: ['candidate-1'],
+              ruleIds: ['custom.orders-list'],
+              feedbackStatuses: ['probationary'],
+              lifecyclePolicies: ['observe'],
+            },
+          ],
+          successfulRunKnowledgePromotionReceipt: {
+            version: 1,
+            receiptId: 'successful-run-knowledge-promotion-receipt-1',
+            recordedAt: '2026-03-26T12:00:00.000Z',
+            projectUid: 'proj_alpha',
+            actorLabel: 'bobo',
+            requestedModuleUid: 'mod_alpha',
+            title: 'Successful Run 知识沉淀回执（1 条）',
+            detail:
+              '模块：mod_alpha；已请求 1 条 successful run 候选；新增规则 1 条；关联通过运行 1 条；涉及 helper 1 个；观察上下文：page_surface=observed；anchor_presence=not_found',
+            summary: {
+              requestedCandidateCount: 1,
+              mergedCandidateCount: 1,
+              mergedRuleCount: 1,
+              coveredCandidateCount: 0,
+              missingCandidateCount: 0,
+              skippedRuleCount: 0,
+              helperCount: 1,
+              runCount: 1,
+            },
+            items: [
+              {
+                candidateId: 'candidate-1',
+                ruleId: 'custom.orders-list',
+                ruleTitle: '订单列表规则',
+                source: 'successful_run',
+                status: 'merged',
+                feedbackStatus: 'probationary',
+                lifecyclePolicy: 'observe',
+                runIds: ['intent-run-success-1'],
+                successfulStrategies: ['__e2e.resolvePrimaryRecord'],
+                sampleUrls: ['https://example.com/orders/list'],
+                observationTags: ['obs-page-surface', 'obs-anchor-missing'],
+                observationSummary: 'page_surface=observed；anchor_presence=not_found',
+              },
+            ],
+          },
           projectActivityLogged: true,
         },
       })
@@ -249,6 +665,40 @@ describe('intent-project-knowledge', () => {
         },
         meta: {
           restoredFrom: 'reports/intent-e2e.project-knowledge.backups/target-backup.json',
+          preflightSummary: {
+            requiresOverride: false,
+            requiresRiskAcknowledgement: false,
+            autoPromoteCount: 0,
+            observeCount: 0,
+            blockDefaultMergeCount: 0,
+            itemCount: 1,
+            items: [
+              {
+                kind: 'audit',
+                level: 'info',
+                title: '准备回滚项目知识规则',
+                message: '将从备份 reports/intent-e2e.project-knowledge.backups/target-backup.json 恢复项目知识。',
+                provenanceType: 'audit',
+                candidateIds: [],
+                ruleIds: ['custom.orders-list'],
+                feedbackStatuses: [],
+                lifecyclePolicies: [],
+              },
+            ],
+          },
+          mergeReceipts: [
+            {
+              kind: 'audit',
+              level: 'info',
+              title: '回滚已完成',
+              message: '已从备份 reports/intent-e2e.project-knowledge.backups/target-backup.json 恢复项目知识。',
+              provenanceType: 'audit',
+              candidateIds: [],
+              ruleIds: ['custom.orders-list'],
+              feedbackStatuses: [],
+              lifecyclePolicies: [],
+            },
+          ],
         },
       })
     );
@@ -260,9 +710,56 @@ describe('intent-project-knowledge', () => {
     expect(allAudits.items).toHaveLength(2);
     expect(allAudits.items[0].auditId).toBe(restoreAudit.auditId);
     expect(allAudits.items[1].auditId).toBe(mergeAudit.auditId);
+    expect(allAudits.items[0].meta.preflightSummary?.itemCount).toBe(1);
+    expect(allAudits.items[0].meta.mergeReceipts).toEqual([
+      expect.objectContaining({
+        kind: 'audit',
+        title: '回滚已完成',
+        ruleIds: ['custom.orders-list'],
+      }),
+    ]);
+    expect(allAudits.items[0].detail).toContain('结构化预检 1 项');
+    expect(allAudits.items[0].detail).toContain('结构化回执 1 条');
     expect(projectAudits.items).toHaveLength(1);
     expect(projectAudits.items[0].projectUid).toBe('proj_alpha');
     expect(projectAudits.items[0].meta.projectActivityLogged).toBe(true);
+    expect(projectAudits.items[0].meta.requestedModuleUid).toBe('mod_alpha');
+    expect(projectAudits.items[0].meta.acknowledgedRiskCandidateIds).toEqual(['candidate-1']);
+    expect(projectAudits.items[0].meta.selectionSummary?.selectedCandidateCount).toBe(1);
+    expect(projectAudits.items[0].meta.preflightSummary?.requiresRiskAcknowledgement).toBe(true);
+    expect(projectAudits.items[0].meta.mergeReceipts).toEqual([
+      expect.objectContaining({
+        kind: 'risk_acknowledgement',
+        title: '风险确认已记录',
+        ruleIds: ['custom.orders-list'],
+      }),
+    ]);
+    expect(projectAudits.items[0].meta.mergedCandidates).toEqual([
+      expect.objectContaining({
+        candidateId: 'candidate-1',
+        ruleId: 'custom.orders-list',
+        riskAcknowledged: true,
+        observationTags: ['obs-page-surface', 'obs-anchor-missing'],
+        observationSummary: 'page_surface=observed；anchor_presence=not_found',
+      }),
+    ]);
+    expect(projectAudits.items[0].meta.successfulRunKnowledgePromotionReceipt?.items[0]).toEqual(
+      expect.objectContaining({
+        candidateId: 'candidate-1',
+        observationTags: ['obs-page-surface', 'obs-anchor-missing'],
+        observationSummary: 'page_surface=observed；anchor_presence=not_found',
+      })
+    );
+    expect(projectAudits.items[0].detail).toContain('作用域模块：mod_alpha');
+    expect(projectAudits.items[0].detail).toContain('风险确认生效 1 条');
+    expect(projectAudits.items[0].detail).toContain('风险确认状态：probationary');
+    expect(projectAudits.items[0].detail).toContain('规则映射候选 1 条');
+    expect(projectAudits.items[0].detail).toContain('结构化范围：选中 1 条，实际 merge 1 条');
+    expect(projectAudits.items[0].detail).toContain('结构化预检 1 项');
+    expect(projectAudits.items[0].detail).toContain('结构化回执 1 条');
+    expect(projectAudits.items[0].detail).toContain(
+      'Successful Run 回执：新增规则 1 条，关联通过运行 1 条，涉及 helper 1 个，观察上下文：page_surface=observed；anchor_presence=not_found'
+    );
   });
 
   it('returns empty matches when no knowledge file exists', () => {
@@ -521,6 +1018,12 @@ describe('intent-project-knowledge', () => {
               sourceTitle: '合并 1 条项目知识规则',
               backupPath: 'reports/intent-e2e.project-knowledge.backups/checkout.json',
               recommendation: '继续观察后续 4 次终态运行，再决定是否转正。',
+              selectedCandidateFeedbackStatuses: ['probationary'],
+              selectedRiskyCandidateIds: ['candidate-new-probation'],
+              appliedOverrideCandidateIds: [],
+              appliedOverrideCandidateFeedbackStatuses: [],
+              appliedAcknowledgedRiskCandidateIds: ['candidate-new-probation'],
+              appliedAcknowledgedRiskCandidateFeedbackStatuses: ['probationary'],
             },
           },
         },
@@ -538,12 +1041,12 @@ describe('intent-project-knowledge', () => {
     expect(resolution.matches[1]?.feedback).toMatchObject({
       status: 'probationary',
       runCount: 1,
-      scoreAdjustment: -2,
+      scoreAdjustment: -3,
       rollbackCandidateCount: 0,
     });
-    expect(resolution.matches[1]?.feedback?.reasons.join('；')).toContain('新规则仍在观察期');
+    expect(resolution.matches[1]?.feedback?.reasons.join('；')).toContain('经风险确认纳入的规则仍在观察期');
     expect(patched.steps[0].preferredHelpers).toContain('__e2e.waitForApiResponse');
     expect(patched.steps[0].preferredHelpers).toContain('__e2e.observeSubmitState');
-    expect(rendered).toContain('新规则仍在观察期');
+    expect(rendered).toContain('经风险确认纳入的规则仍在观察期');
   });
 });

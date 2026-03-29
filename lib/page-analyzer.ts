@@ -98,6 +98,10 @@ export interface AuthConfig {
 
 export type PageAccessPrecheckFailureClass = 'auth_failed' | 'permission_blocked' | 'data_missing' | 'env_transient';
 
+export interface PageAccessPrecheckOptions {
+  ignoreFailureClasses?: PageAccessPrecheckFailureClass[];
+}
+
 export interface PageAccessPrecheckReadyResult {
   status: 'ready';
   url: string;
@@ -127,9 +131,14 @@ export interface AnalyzePageOptions {
 const PAGE_VIEWPORT = { width: 1280, height: 720 };
 const PAGE_LOCALE = 'zh-CN';
 const PAGE_NAVIGATION_TIMEOUT_MS = 30_000;
+const PAGE_LOAD_STATE_TIMEOUT_MS = 10_000;
 const PAGE_TARGET_SETTLE_MS = 1000;
 const PAGE_POST_LOGIN_SETTLE_MS = 1500;
+const PAGE_POST_LOGIN_TRANSITION_TIMEOUT_MS = 4500;
+const PAGE_LOGIN_RETRY_COUNT = 2;
+const PAGE_LOGIN_RETRY_DELAY_MS = 400;
 const PAGE_PRECHECK_TEXT_MAX = 1200;
+const RETRYABLE_PAGE_ACCESS_NAVIGATION_PATTERNS = [/net::ERR_ABORTED/i, /Timeout \d+ms exceeded/i];
 
 async function createAnalyzerContext(browser: Browser, storageState?: Exclude<BrowserContextOptions['storageState'], undefined>) {
   return browser.newContext({
@@ -146,6 +155,35 @@ function normalizeUrl(u: string): string {
   } catch {
     return u.replace(/\/+$/, '');
   }
+}
+
+export function isRetryablePageAccessNavigationError(error: unknown): boolean {
+  const message =
+    typeof error === 'string'
+      ? error
+      : error instanceof Error
+      ? error.message
+      : error && typeof error === 'object' && 'message' in error
+      ? String((error as { message?: unknown }).message || '')
+      : '';
+
+  return RETRYABLE_PAGE_ACCESS_NAVIGATION_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+type PageAccessNavigationSurface = Pick<Page, 'goto' | 'waitForLoadState'>;
+
+export async function navigateForPageAccess(page: PageAccessNavigationSurface, url: string): Promise<void> {
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PAGE_NAVIGATION_TIMEOUT_MS });
+    return;
+  } catch (error: unknown) {
+    if (!isRetryablePageAccessNavigationError(error)) {
+      throw error;
+    }
+  }
+
+  await page.goto(url, { waitUntil: 'commit', timeout: PAGE_NAVIGATION_TIMEOUT_MS });
+  await page.waitForLoadState('domcontentloaded', { timeout: PAGE_LOAD_STATE_TIMEOUT_MS }).catch(() => {});
 }
 
 type PrecheckSignalRule = {
@@ -228,6 +266,13 @@ export function classifyPageAccessPrecheckBlock(source: string): {
   }
 
   return null;
+}
+
+export function shouldIgnorePageAccessPrecheckFailure(
+  failureClass: PageAccessPrecheckFailureClass,
+  options?: PageAccessPrecheckOptions
+): boolean {
+  return !!options?.ignoreFailureClasses?.includes(failureClass);
 }
 
 function getUsernameInput(page: Page): Locator {
@@ -314,14 +359,14 @@ async function ensureLoginSurface(page: Page, auth: AuthConfig, options?: { fall
   if (currentPageLooksLikeLogin) return;
 
   if (shouldOpenConfiguredLoginUrl(currentPageLooksLikeLogin, auth.loginUrl)) {
-    await page.goto(auth.loginUrl!, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    await navigateForPageAccess(page, auth.loginUrl!);
     await page.waitForTimeout(600);
     if (await isLikelyLoginPage(page)) return;
   }
 
   const fallbackUrl = `${options?.fallbackUrl || ''}`.trim();
   if (fallbackUrl) {
-    await page.goto(fallbackUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    await navigateForPageAccess(page, fallbackUrl);
     await page.waitForTimeout(600);
     if (await isLikelyLoginPage(page)) return;
   }
@@ -329,39 +374,65 @@ async function ensureLoginSurface(page: Page, auth: AuthConfig, options?: { fall
   throw new Error(`未能进入可识别的登录页，请检查登录地址配置: ${auth.loginUrl || '未提供登录地址'}`);
 }
 
+async function waitForLoginTransition(page: Page): Promise<boolean> {
+  await page.waitForLoadState('domcontentloaded', { timeout: PAGE_LOAD_STATE_TIMEOUT_MS }).catch(() => {});
+  await page.waitForTimeout(PAGE_POST_LOGIN_SETTLE_MS);
+
+  if (!(await isLikelyLoginPage(page))) {
+    return true;
+  }
+
+  const deadline = Date.now() + PAGE_POST_LOGIN_TRANSITION_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(200);
+    if (!(await isLikelyLoginPage(page))) {
+      return true;
+    }
+  }
+
+  return !(await isLikelyLoginPage(page));
+}
+
 async function performLogin(page: Page, auth: AuthConfig, options?: { fallbackUrl?: string }): Promise<void> {
   if (!auth.loginUrl || !auth.username || !auth.password) return;
 
-  await ensureLoginSurface(page, auth, options);
-  await switchLoginModeIfNeeded(page, auth);
-  const usernameInput = getUsernameInput(page);
-  await usernameInput.waitFor({ state: 'visible', timeout: 10_000 });
-  await usernameInput.fill(auth.username);
+  for (let attempt = 1; attempt <= PAGE_LOGIN_RETRY_COUNT; attempt += 1) {
+    await ensureLoginSurface(page, auth, options);
+    await switchLoginModeIfNeeded(page, auth);
+    const usernameInput = getUsernameInput(page);
+    await usernameInput.waitFor({ state: 'visible', timeout: 10_000 });
+    await usernameInput.fill(auth.username);
 
-  const secretInput = await resolveSecretInput(page, auth);
-  await secretInput.waitFor({ state: 'visible', timeout: 10_000 });
-  await secretInput.fill(auth.password);
+    const secretInput = await resolveSecretInput(page, auth);
+    await secretInput.waitFor({ state: 'visible', timeout: 10_000 });
+    await secretInput.fill(auth.password);
 
-  const loginButton = page.getByRole('button', { name: loginButtonNamePattern }).first();
-  await loginButton.waitFor({ state: 'visible', timeout: 10_000 });
-  await loginButton.click();
+    const loginButton = page.getByRole('button', { name: loginButtonNamePattern }).first();
+    await loginButton.waitFor({ state: 'visible', timeout: 10_000 });
+    await loginButton.click();
 
-  await page.waitForLoadState('domcontentloaded').catch(() => {});
-  await page.waitForTimeout(1500);
+    const transitioned = await waitForLoginTransition(page);
+    if (transitioned) {
+      return;
+    }
 
-  if (await isLikelyLoginPage(page)) {
+    if (attempt < PAGE_LOGIN_RETRY_COUNT) {
+      await page.waitForTimeout(PAGE_LOGIN_RETRY_DELAY_MS);
+      continue;
+    }
+
     throw new Error(`登录后仍停留在登录页，请检查登录说明或凭证: ${auth.loginDescription || '未提供登录说明'}`);
   }
 }
 
 async function ensurePageAccess(page: Page, url: string, auth?: AuthConfig): Promise<void> {
   const isSamePage = auth?.loginUrl && normalizeUrl(auth.loginUrl) === normalizeUrl(url);
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PAGE_NAVIGATION_TIMEOUT_MS });
+  await navigateForPageAccess(page, url);
   await page.waitForTimeout(PAGE_TARGET_SETTLE_MS);
 
   if (auth?.loginUrl && auth?.username && auth?.password && !isSamePage && (await isLikelyLoginPage(page))) {
     await performLogin(page, auth, { fallbackUrl: url });
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PAGE_NAVIGATION_TIMEOUT_MS });
+    await navigateForPageAccess(page, url);
     await page.waitForTimeout(PAGE_POST_LOGIN_SETTLE_MS);
     if (await isLikelyLoginPage(page)) {
       throw new Error(`登录后再次访问目标页面仍停留在登录页，请检查登录说明或凭证: ${auth.loginDescription || '未提供登录说明'}`);
@@ -582,7 +653,7 @@ export async function analyzePage(url: string, auth?: AuthConfig, options?: Anal
     for (const frame of page.frames().slice(1)) {
       if (!frame.url() || frame.url() === 'about:blank') continue;
       try {
-        await frame.waitForLoadState('domcontentloaded').catch(() => {});
+        await frame.waitForLoadState('domcontentloaded', { timeout: PAGE_LOAD_STATE_TIMEOUT_MS }).catch(() => {});
         await page.waitForTimeout(600);
         const frameElement = await frame.frameElement().catch(() => null);
         const frameMeta = frameElement
@@ -645,7 +716,11 @@ export async function analyzePage(url: string, auth?: AuthConfig, options?: Anal
   }
 }
 
-export async function precheckPageAccess(url: string, auth?: AuthConfig): Promise<PageAccessPrecheckResult> {
+export async function precheckPageAccess(
+  url: string,
+  auth?: AuthConfig,
+  options?: PageAccessPrecheckOptions
+): Promise<PageAccessPrecheckResult> {
   const browser: Browser = await chromium.launch({ headless: true });
   const context = await createAnalyzerContext(browser);
   const page = await context.newPage();
@@ -671,7 +746,7 @@ export async function precheckPageAccess(url: string, auth?: AuthConfig): Promis
     }
 
     const contentBlock = classifyPageAccessPrecheckBlock([title, bodyTextExcerpt].filter(Boolean).join('\n'));
-    if (contentBlock) {
+    if (contentBlock && !shouldIgnorePageAccessPrecheckFailure(contentBlock.failureClass, options)) {
       await browser.close();
       return {
         status: 'blocked',
@@ -700,7 +775,7 @@ export async function precheckPageAccess(url: string, auth?: AuthConfig): Promis
     const title = await page.title().catch(() => '');
     const bodyTextExcerpt = await readPageBodyExcerpt(page);
     const knownBlock = classifyPageAccessPrecheckBlock(err?.message || '');
-    if (knownBlock) {
+    if (knownBlock && !shouldIgnorePageAccessPrecheckFailure(knownBlock.failureClass, options)) {
       await browser.close();
       return {
         status: 'blocked',

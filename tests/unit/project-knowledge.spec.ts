@@ -252,6 +252,61 @@ describe('project knowledge recipe drafting', () => {
     ]);
   });
 
+  it('prefers starter capabilities with positive long-term evidence over ordinary knowledge-derived ones when scores are tied', () => {
+    const recipe = draftRecipeFromRequirement({
+      requirement: '等待提交成功响应',
+      includeAuthCapability: false,
+      capabilities: [
+        {
+          slug: 'assert.starter-positive',
+          name: '等待提交成功响应',
+          description: '由 starter helper 沉淀的响应等待能力',
+          capabilityType: 'assertion',
+          entryUrl: 'https://example.com/#/checkout',
+          triggerPhrases: ['等待提交成功响应', '提交成功响应'],
+          preconditions: [],
+          steps: ['等待 createOrder 接口成功'],
+          assertions: ['createOrder 成功'],
+          cleanupNotes: '',
+          dependsOn: [],
+          sortOrder: 40,
+          meta: {
+            source: 'intent-e2e-starter-asset',
+            verificationStatus: 'knowledge_inferred',
+            starterAssetSlug: 'starter.assert.wait-for-api-response',
+            starterHelper: '__e2e.waitForApiResponse',
+            starterKnowledgeChangeSignal: 'positive',
+            starterKnowledgeChangeDecisionableRuleCount: 2,
+          },
+        },
+        {
+          slug: 'assert.knowledge-derived',
+          name: '等待提交成功响应',
+          description: '普通知识提炼的响应等待能力',
+          capabilityType: 'assertion',
+          entryUrl: 'https://example.com/#/checkout',
+          triggerPhrases: ['等待提交成功响应', '提交成功响应'],
+          preconditions: [],
+          steps: ['等待 createOrder 接口成功'],
+          assertions: ['createOrder 成功'],
+          cleanupNotes: '',
+          dependsOn: [],
+          sortOrder: 10,
+          meta: {
+            source: 'knowledge_chunk_auto',
+            verificationStatus: 'knowledge_inferred',
+          },
+        },
+      ],
+      knowledgeChunks: [],
+    });
+
+    expect(recipe.matchedCapabilities.map((item) => item.slug)).toEqual([
+      'assert.starter-positive',
+      'assert.knowledge-derived',
+    ]);
+  });
+
   it('recomputes coverage, steps, and assertions from the user-selected capability subset', () => {
     const recipe = draftRecipeFromRequirement({
       requirement: '登录并创建商机',

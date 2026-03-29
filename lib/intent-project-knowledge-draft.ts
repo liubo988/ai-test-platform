@@ -1,36 +1,61 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { listIntentE2ERunSnapshots, type IntentE2ERunSnapshotRecord } from './db/repository';
+import {
+  buildIntentE2EInsightsFromData,
+  type IntentE2EInsightKnowledgeChangeRuleSummary,
+  type IntentE2EInsightProbationRule,
+  type IntentE2EInsightRiskLifecyclePolicy,
+  type IntentE2EInsightRiskLifecycleRule,
+  type IntentE2EInsightRollbackCandidate,
+} from './ai/intent-e2e-insights';
 import {
   getIntentProjectKnowledgePath,
   getIntentProjectKnowledgeProfile,
+  listIntentProjectKnowledgeAuditEntries,
   mergeIntentProjectKnowledgeRules,
+  type IntentProjectKnowledgeMergedCandidateMeta,
   type IntentProjectKnowledgeProfileComparison,
   type IntentProjectKnowledgeMergeSummary,
   type IntentProjectKnowledgeProfile,
   type IntentProjectKnowledgeRule,
   type IntentProjectKnowledgeStepPatch,
 } from './intent-project-knowledge';
+import type { IntentProjectKnowledgeMergeLifecyclePolicy as IntentProjectKnowledgeDraftCandidateLifecyclePolicy } from './intent-project-knowledge-merge-provenance';
 import {
   getIntentRepairMemoryPath,
   listIntentRepairMemoryClusters,
   type IntentRepairMemoryClusterSnapshot,
 } from './ai/intent-repair-memory';
+import { defaultIntentProjectKnowledgeDraftCandidateIds } from './intent-project-knowledge-draft-merge-policy';
 
 const DEFAULT_DRAFT_PATH = path.join(process.cwd(), 'reports', 'intent-e2e.project-knowledge.draft.json');
 const MAX_TOKENS = 8;
+const SUCCESS_RUN_CANDIDATE_LIMIT = 50;
+const SUCCESS_RUN_FEEDBACK_RUN_LIMIT = 200;
+const SUCCESS_RUN_FEEDBACK_AUDIT_LIMIT = 200;
 
 export interface GenerateIntentProjectKnowledgeDraftOptions {
   minSeenCount?: number;
   minResolvedCount?: number;
   maxCandidates?: number;
+  projectUid?: string;
+  moduleUid?: string;
 }
+
+export type IntentProjectKnowledgeDraftCandidateSource = 'repair_memory' | 'successful_run';
+export type IntentProjectKnowledgeDraftCandidateFeedbackStatus = NonNullable<IntentProjectKnowledgeDraftCandidate['feedback']>['status'];
+export type IntentProjectKnowledgeDraftCandidateKnowledgeChangeSignal = 'positive' | 'negative';
 
 export interface IntentProjectKnowledgeDraftCandidate {
   candidateId: string;
+  source: IntentProjectKnowledgeDraftCandidateSource;
   confidence: number;
+  feedback?: IntentProjectKnowledgeDraftCandidateFeedback;
   category: string;
   clusterIds: string[];
+  runIds?: string[];
   seenCount: number;
   resolvedCount: number;
   successRate: number;
@@ -40,15 +65,30 @@ export interface IntentProjectKnowledgeDraftCandidate {
   representativeErrors: string[];
   successfulStrategies: string[];
   antiPatterns: string[];
+  observationTags?: string[];
+  observationSummary?: string;
   alreadyCovered: boolean;
   coveredByRuleIds: string[];
   rule: IntentProjectKnowledgeRule;
 }
 
+export interface IntentProjectKnowledgeDraftCandidateFeedback {
+  status: 'preferred' | 'neutral' | 'probationary' | 'deprioritized';
+  confidenceAdjustment: number;
+  reasons: string[];
+  supportingAuditIds: string[];
+  lifecyclePolicy?: IntentProjectKnowledgeDraftCandidateLifecyclePolicy;
+  lifecyclePolicyReason?: string;
+  knowledgeChangeSignal?: IntentProjectKnowledgeDraftCandidateKnowledgeChangeSignal;
+  knowledgeChangeSignalReason?: string;
+}
+
 export interface IntentProjectKnowledgeDraftSkippedItem {
   groupKey: string;
+  source?: IntentProjectKnowledgeDraftCandidateSource;
   category: string;
   clusterIds: string[];
+  runIds?: string[];
   sampleUrls: string[];
   reason: string;
 }
@@ -63,7 +103,10 @@ export interface IntentProjectKnowledgeDraft {
   summary: {
     totalClusters: number;
     eligibleClusters: number;
+    totalPassedRuns: number;
     candidateGroups: number;
+    repairMemoryCandidateGroups: number;
+    successfulRunCandidateGroups: number;
     suggestedCandidates: number;
     alreadyCoveredCandidates: number;
     skippedItems: number;
@@ -71,6 +114,14 @@ export interface IntentProjectKnowledgeDraft {
   candidates: IntentProjectKnowledgeDraftCandidate[];
   skipped: IntentProjectKnowledgeDraftSkippedItem[];
   mergedProfilePreview: IntentProjectKnowledgeProfile;
+}
+
+export interface IntentProjectKnowledgeDraftCandidateSelection {
+  requestedCandidateIds: string[];
+  selectedCandidates: IntentProjectKnowledgeDraftCandidate[];
+  missingCandidateIds: string[];
+  coveredCandidates: IntentProjectKnowledgeDraftCandidate[];
+  mergeCandidates: IntentProjectKnowledgeDraftCandidate[];
 }
 
 export interface MergeIntentProjectKnowledgeDraftCandidatesResult {
@@ -82,6 +133,8 @@ export interface MergeIntentProjectKnowledgeDraftCandidatesResult {
   addedRuleIds: string[];
   skippedRuleIds: string[];
   mergedCandidateIds: string[];
+  mergedCandidateSources: IntentProjectKnowledgeDraftCandidateSource[];
+  mergedRunIds: string[];
   coveredCandidateIds: string[];
   missingCandidateIds: string[];
   profile: IntentProjectKnowledgeProfile;
@@ -102,6 +155,37 @@ interface ClusterGroup {
   successfulStrategies: string[];
   antiPatterns: string[];
   tags: string[];
+}
+
+interface SuccessfulRunKnowledgeCandidate {
+  candidateId: string;
+  targetUrl: string;
+  description: string;
+  checkUid: string;
+  stableIdentifiers: string[];
+  preferredHelpers: string[];
+  matchedRuleIds: string[];
+  observationTags?: string[];
+  observationSummary?: string;
+  rule: IntentProjectKnowledgeRule;
+}
+
+interface SuccessfulRunCandidateGroup {
+  groupKey: string;
+  runIds: string[];
+  sampleUrls: string[];
+  sampleTitles: string[];
+  sampleDescriptions: string[];
+  successfulStrategies: string[];
+  matchedRuleIds: string[];
+  observationTags: string[];
+  observationSummaries: string[];
+  rule: IntentProjectKnowledgeRule;
+}
+
+interface DraftCandidateFeedbackTarget {
+  ruleId: string;
+  source: IntentProjectKnowledgeDraftCandidateSource;
 }
 
 interface CategoryRuleTemplate {
@@ -146,6 +230,10 @@ function truncate(text: string, max = 180): string {
   return normalized.length > max ? `${normalized.slice(0, Math.max(0, max - 1))}…` : normalized;
 }
 
+function normalizeScopeValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
 function resolveDraftPath(): string {
   return process.env.INTENT_E2E_PROJECT_KNOWLEDGE_DRAFT_PATH?.trim() || DEFAULT_DRAFT_PATH;
 }
@@ -167,6 +255,25 @@ function normalizeRouteFragment(url: string): string {
   } catch {
     return url.replace(/https?:\/\/[^/]+/i, '').replace(/\/+$/, '') || '/';
   }
+}
+
+function asRecord(raw: unknown): Record<string, unknown> | null {
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
+}
+
+function cloneStoredRule(raw: unknown): IntentProjectKnowledgeRule | null {
+  const source = asRecord(raw);
+  if (!source) return null;
+  const id = typeof source.id === 'string' ? source.id.trim() : '';
+  const title = typeof source.title === 'string' ? source.title.trim() : '';
+  if (!id || !title) return null;
+
+  const cloned = JSON.parse(JSON.stringify(source)) as IntentProjectKnowledgeRule;
+  return {
+    ...cloned,
+    id,
+    title,
+  };
 }
 
 function routeToIdToken(routeFragment: string): string {
@@ -209,6 +316,10 @@ const KEYWORD_DICTIONARY = [
   '联系人',
   'businessId',
   'orderId',
+  '我创建的',
+  '我跟进的',
+  '归属',
+  '范围',
   '保存',
   '提交',
   '成功页',
@@ -235,6 +346,7 @@ function extractHighSignalKeywords(group: ClusterGroup): string[] {
 
 function capabilitySlugFromStrategy(strategy: string): string | null {
   if (/__e2e\.selectAntdOption|__e2e\.openAntdDropdown/i.test(strategy)) return 'ui.select-antd-option';
+  if (/__e2e\.switchBusinessListOwnershipView/i.test(strategy)) return 'ui.switch-business-list-ownership-view';
   if (/__e2e\.clickAntdRowAction/i.test(strategy)) return 'ui.click-antd-row-action';
   if (/__e2e\.getFrame|frameLocator\(/i.test(strategy)) return 'navigation.enter-iframe-context';
   if (/__e2e\.waitForApiResponse|page\.waitForResponse/i.test(strategy)) return 'assert.wait-for-api-response';
@@ -522,6 +634,754 @@ function buildClustersGroups(clusters: IntentRepairMemoryClusterSnapshot[], thre
   };
 }
 
+function normalizeSuccessfulRunKnowledgeCandidate(
+  raw: unknown,
+  snapshot: Pick<IntentE2ERunSnapshotRecord, 'targetUrl' | 'requestInput'>
+): SuccessfulRunKnowledgeCandidate | null {
+  const source = asRecord(raw);
+  if (!source) return null;
+
+  const rule = cloneStoredRule(source.rule);
+  if (!rule) return null;
+
+  const candidateId = typeof source.candidateId === 'string' ? source.candidateId.trim() : '';
+  const checkUid = typeof source.checkUid === 'string' ? source.checkUid.trim() : '';
+  const targetUrl = typeof source.targetUrl === 'string' && source.targetUrl.trim() ? source.targetUrl.trim() : snapshot.targetUrl;
+  const description =
+    typeof source.description === 'string' && source.description.trim() ? source.description.trim() : snapshot.requestInput;
+
+  return {
+    candidateId: candidateId || `success-candidate-${rule.id}`,
+    targetUrl,
+    description,
+    checkUid,
+    stableIdentifiers: uniqueStrings(Array.isArray(source.stableIdentifiers) ? source.stableIdentifiers.map((item) => String(item || '')) : []),
+    preferredHelpers: uniqueStrings(Array.isArray(source.preferredHelpers) ? source.preferredHelpers.map((item) => String(item || '')) : []),
+    matchedRuleIds: uniqueStrings(Array.isArray(source.matchedRuleIds) ? source.matchedRuleIds.map((item) => String(item || '')) : []),
+    observationTags: uniqueStrings(Array.isArray(source.observationTags) ? source.observationTags.map((item) => String(item || '')) : [], 8),
+    observationSummary: typeof source.observationSummary === 'string' ? source.observationSummary.trim() : '',
+    rule,
+  };
+}
+
+function extractSuccessfulRunKnowledgeCandidates(snapshot: IntentE2ERunSnapshotRecord): SuccessfulRunKnowledgeCandidate[] {
+  const state = asRecord(snapshot.state);
+  const result = asRecord(state?.result);
+  const rawCandidates = Array.isArray(result?.knowledgeCandidates) ? result?.knowledgeCandidates : [];
+
+  return rawCandidates
+    .map((candidate) =>
+      normalizeSuccessfulRunKnowledgeCandidate(candidate, {
+        targetUrl: snapshot.targetUrl,
+        requestInput: snapshot.requestInput,
+      })
+    )
+    .filter((candidate): candidate is SuccessfulRunKnowledgeCandidate => Boolean(candidate));
+}
+
+function buildSuccessfulRunCandidateConfidence(group: SuccessfulRunCandidateGroup): number {
+  const helperScore = Math.min(12, group.successfulStrategies.length * 2);
+  const evidenceScore = Math.min(18, group.runIds.length * 6);
+  const matchedRuleScore = Math.min(6, group.matchedRuleIds.length * 2);
+  return Math.max(1, Math.min(99, 68 + helperScore + evidenceScore + matchedRuleScore));
+}
+
+function buildSuccessfulRunCandidateRule(group: SuccessfulRunCandidateGroup): IntentProjectKnowledgeRule {
+  const observationPromptNotes = uniqueStrings(
+    [
+      ...group.observationSummaries.map((item) => `repair 受控观察：${item}`),
+      group.observationTags.length > 0 ? `repair 观察标签：${group.observationTags.join(' / ')}` : '',
+    ],
+    4
+  );
+
+  return {
+    ...group.rule,
+    enabled: typeof group.rule.enabled === 'boolean' ? group.rule.enabled : true,
+    promptNotes: uniqueStrings(
+      [
+        ...(group.rule.promptNotes || []),
+        `该规则由 successful runs 自动草拟：passedRuns=${group.runIds.length}`,
+        ...observationPromptNotes,
+      ],
+      12
+    ),
+  };
+}
+
+function buildSuccessfulRunCandidateGroups(runSnapshots: IntentE2ERunSnapshotRecord[]): SuccessfulRunCandidateGroup[] {
+  const grouped = new Map<string, SuccessfulRunCandidateGroup>();
+
+  for (const snapshot of runSnapshots) {
+    if (snapshot.status !== 'passed') continue;
+
+    for (const candidate of extractSuccessfulRunKnowledgeCandidates(snapshot)) {
+      const groupKey = candidate.rule.id;
+      const current = grouped.get(groupKey);
+      if (current) {
+        current.runIds.push(snapshot.runId);
+        current.sampleUrls.push(candidate.targetUrl || snapshot.targetUrl);
+        current.sampleTitles.push(candidate.rule.title);
+        current.sampleDescriptions.push(candidate.description || snapshot.requestInput);
+        current.successfulStrategies.push(...candidate.preferredHelpers);
+        current.matchedRuleIds.push(...candidate.matchedRuleIds);
+        current.observationTags.push(...(candidate.observationTags || []));
+        if (candidate.observationSummary) {
+          current.observationSummaries.push(candidate.observationSummary);
+        }
+        continue;
+      }
+
+      grouped.set(groupKey, {
+        groupKey,
+        runIds: [snapshot.runId],
+        sampleUrls: [candidate.targetUrl || snapshot.targetUrl],
+        sampleTitles: [candidate.rule.title],
+        sampleDescriptions: [candidate.description || snapshot.requestInput],
+        successfulStrategies: [...candidate.preferredHelpers],
+        matchedRuleIds: [...candidate.matchedRuleIds],
+        observationTags: [...(candidate.observationTags || [])],
+        observationSummaries: candidate.observationSummary ? [candidate.observationSummary] : [],
+        rule: candidate.rule,
+      });
+    }
+  }
+
+  return [...grouped.values()].map((group) => ({
+    ...group,
+    runIds: uniqueStrings(group.runIds),
+    sampleUrls: uniqueStrings(group.sampleUrls, 8),
+    sampleTitles: uniqueStrings(group.sampleTitles, 4),
+    sampleDescriptions: uniqueStrings(group.sampleDescriptions, 6),
+    successfulStrategies: uniqueStrings(group.successfulStrategies, 12),
+    matchedRuleIds: uniqueStrings(group.matchedRuleIds, 12),
+    observationTags: uniqueStrings(group.observationTags, 8),
+    observationSummaries: uniqueStrings(group.observationSummaries, 4),
+  }));
+}
+
+function buildSuccessfulRunSnapshotQuery(
+  thresholds: Required<GenerateIntentProjectKnowledgeDraftOptions>
+): { status: 'passed'; limit: number; projectUid?: string; moduleUid?: string } {
+  if (thresholds.projectUid) {
+    return {
+      status: 'passed',
+      limit: SUCCESS_RUN_CANDIDATE_LIMIT,
+      projectUid: thresholds.projectUid,
+    };
+  }
+
+  if (thresholds.moduleUid) {
+    return {
+      status: 'passed',
+      limit: SUCCESS_RUN_CANDIDATE_LIMIT,
+      moduleUid: thresholds.moduleUid,
+    };
+  }
+
+  return {
+    status: 'passed',
+    limit: SUCCESS_RUN_CANDIDATE_LIMIT,
+  };
+}
+
+function buildSuccessfulRunFeedbackSnapshotQuery(
+  thresholds: Required<GenerateIntentProjectKnowledgeDraftOptions>
+): { status: 'terminal'; limit: number; projectUid?: string; moduleUid?: string } {
+  if (thresholds.projectUid) {
+    return {
+      projectUid: thresholds.projectUid,
+      status: 'terminal',
+      limit: SUCCESS_RUN_FEEDBACK_RUN_LIMIT,
+    };
+  }
+
+  if (thresholds.moduleUid) {
+    return {
+      moduleUid: thresholds.moduleUid,
+      status: 'terminal',
+      limit: SUCCESS_RUN_FEEDBACK_RUN_LIMIT,
+    };
+  }
+
+  return {
+    status: 'terminal',
+    limit: SUCCESS_RUN_FEEDBACK_RUN_LIMIT,
+  };
+}
+
+function selectSuccessfulRunSnapshotsForDraft(
+  runSnapshots: IntentE2ERunSnapshotRecord[],
+  thresholds: Required<GenerateIntentProjectKnowledgeDraftOptions>
+): IntentE2ERunSnapshotRecord[] {
+  const projectScoped = thresholds.projectUid
+    ? runSnapshots.filter((snapshot) => normalizeScopeValue(snapshot.projectUid) === thresholds.projectUid)
+    : runSnapshots;
+
+  if (!thresholds.projectUid || !thresholds.moduleUid) {
+    return projectScoped;
+  }
+
+  const exactModule = projectScoped.filter((snapshot) => normalizeScopeValue(snapshot.moduleUid) === thresholds.moduleUid);
+  return exactModule.length > 0 ? exactModule : projectScoped;
+}
+
+function selectScopedSuccessfulRunEffects<T extends { requestedModuleUid?: string }>(
+  entries: T[],
+  thresholds: Required<GenerateIntentProjectKnowledgeDraftOptions>
+): T[] {
+  if (!thresholds.moduleUid) {
+    return entries;
+  }
+
+  const exactModule = entries.filter((entry) => normalizeScopeValue(entry.requestedModuleUid) === thresholds.moduleUid);
+  if (exactModule.length > 0) {
+    return exactModule;
+  }
+
+  if (thresholds.projectUid) {
+    return entries.filter((entry) => !normalizeScopeValue(entry.requestedModuleUid));
+  }
+
+  return [];
+}
+
+function compareIsoDesc(left: string, right: string): number {
+  return Date.parse(right || '') - Date.parse(left || '');
+}
+
+function computeProbationPassRateDelta(probation: IntentE2EInsightProbationRule): number {
+  return Math.round((probation.beforePassRate - probation.observedPassRate) * 10) / 10;
+}
+
+function summarizeProbationEffect(probation: IntentE2EInsightProbationRule): string {
+  const passRateDelta = computeProbationPassRateDelta(probation);
+  const firstPassMagnitude = Math.abs(probation.firstPassRateDelta);
+  const terminalMagnitude = Math.abs(passRateDelta);
+  const scopeLabel = probation.requestedModuleUid
+    ? `模块 ${probation.requestedModuleUid}`
+    : probation.projectUid
+    ? `项目 ${probation.projectUid}`
+    : '当前作用域';
+
+  if (firstPassMagnitude >= terminalMagnitude) {
+    return `${scopeLabel} 首次通过率 ${probation.beforeFirstPassRate}% -> ${probation.observedFirstPassRate}%`;
+  }
+
+  return `${scopeLabel} 终态通过率 ${probation.beforePassRate}% -> ${probation.observedPassRate}%`;
+}
+
+function summarizeRollbackEffect(rollback: IntentE2EInsightRollbackCandidate): string {
+  const firstPassMagnitude = Math.abs(rollback.firstPassRateDelta);
+  const terminalMagnitude = Math.abs(rollback.passRateDelta);
+  const scopeLabel = rollback.requestedModuleUid
+    ? `模块 ${rollback.requestedModuleUid}`
+    : rollback.projectUid
+    ? `项目 ${rollback.projectUid}`
+    : '当前作用域';
+
+  if (firstPassMagnitude >= terminalMagnitude) {
+    return `${scopeLabel} 首次通过率 ${rollback.beforeFirstPassRate}% -> ${rollback.afterFirstPassRate}%`;
+  }
+
+  return `${scopeLabel} 终态通过率 ${rollback.beforePassRate}% -> ${rollback.afterPassRate}%`;
+}
+
+function resolveInsightRuleLifecycle(
+  ruleId: string,
+  effect: Pick<
+    IntentE2EInsightProbationRule | IntentE2EInsightRollbackCandidate,
+    | 'addedRuleIds'
+    | 'mergedCandidates'
+    | 'selectedCandidateFeedbackStatuses'
+    | 'selectedRiskyCandidateIds'
+    | 'appliedOverrideCandidateIds'
+    | 'appliedOverrideCandidateFeedbackStatuses'
+    | 'appliedAcknowledgedRiskCandidateIds'
+    | 'appliedAcknowledgedRiskCandidateFeedbackStatuses'
+  >
+): {
+  mergedCandidates: IntentProjectKnowledgeMergedCandidateMeta[];
+  hasAppliedOverride: boolean;
+  hasAppliedRiskAcknowledgement: boolean;
+} {
+  const mergedCandidates = (effect.mergedCandidates || []).filter((candidate) => candidate.ruleId === ruleId);
+  if (mergedCandidates.length > 0) {
+    return {
+      mergedCandidates,
+      hasAppliedOverride: mergedCandidates.some((candidate) => candidate.overrideApplied),
+      hasAppliedRiskAcknowledgement: mergedCandidates.some((candidate) => candidate.riskAcknowledged),
+    };
+  }
+
+  if ((effect.mergedCandidates || []).length === 0 && effect.addedRuleIds.includes(ruleId)) {
+    return {
+      mergedCandidates: [],
+      hasAppliedOverride: effect.appliedOverrideCandidateIds.length > 0,
+      hasAppliedRiskAcknowledgement: effect.appliedAcknowledgedRiskCandidateIds.length > 0,
+    };
+  }
+
+  return {
+    mergedCandidates: [],
+    hasAppliedOverride: false,
+    hasAppliedRiskAcknowledgement: false,
+  };
+}
+
+function buildSuccessfulRunLifecyclePrefix(lifecycle: {
+  hasAppliedOverride: boolean;
+  hasAppliedRiskAcknowledgement: boolean;
+}): string {
+  if (lifecycle.hasAppliedOverride && lifecycle.hasAppliedRiskAcknowledgement) {
+    return '人工 override / 风险确认后';
+  }
+  if (lifecycle.hasAppliedOverride) {
+    return '人工 override 后';
+  }
+  if (lifecycle.hasAppliedRiskAcknowledgement) {
+    return '风险确认后';
+  }
+  return '历史';
+}
+
+function buildSuccessfulRunLifecycleShift(
+  lifecycle: {
+    hasAppliedOverride: boolean;
+    hasAppliedRiskAcknowledgement: boolean;
+  },
+  kind: 'negative' | 'positive' | 'watching' | 'neutral'
+): number {
+  if (!lifecycle.hasAppliedOverride && !lifecycle.hasAppliedRiskAcknowledgement) {
+    return 0;
+  }
+
+  if (kind === 'negative') {
+    return (lifecycle.hasAppliedOverride ? 4 : 0) + (lifecycle.hasAppliedRiskAcknowledgement ? 2 : 0);
+  }
+
+  if (kind === 'positive') {
+    return (lifecycle.hasAppliedOverride ? 3 : 0) + (lifecycle.hasAppliedRiskAcknowledgement ? 2 : 0);
+  }
+
+  if (kind === 'watching') {
+    return (lifecycle.hasAppliedOverride ? 2 : 0) + (lifecycle.hasAppliedRiskAcknowledgement ? 1 : 0);
+  }
+
+  return (lifecycle.hasAppliedOverride ? 2 : 0) + (lifecycle.hasAppliedRiskAcknowledgement ? 1 : 0);
+}
+
+function mapInsightLifecyclePolicyToDraftLifecyclePolicy(
+  policy: IntentE2EInsightRiskLifecyclePolicy
+): IntentProjectKnowledgeDraftCandidateLifecyclePolicy {
+  switch (policy) {
+    case 'block_default_merge':
+    case 'auto_promote_candidate':
+    case 'observe':
+      return policy;
+    case 'observe_guarded':
+      return 'observe';
+  }
+}
+
+function applyRiskLifecyclePolicyToFeedback(
+  baseFeedback: IntentProjectKnowledgeDraftCandidateFeedback | undefined,
+  lifecycleRule: IntentE2EInsightRiskLifecycleRule | undefined
+): IntentProjectKnowledgeDraftCandidateFeedback | undefined {
+  if (!lifecycleRule) return baseFeedback;
+
+  const supportingAuditIds = uniqueStrings([...(baseFeedback?.supportingAuditIds || []), ...lifecycleRule.supportingAuditIds], 12);
+  const draftLifecyclePolicy = mapInsightLifecyclePolicyToDraftLifecyclePolicy(lifecycleRule.policy);
+
+  if (lifecycleRule.policy === 'block_default_merge') {
+    const nextAdjustment = Math.min(baseFeedback?.confidenceAdjustment ?? -18, -18) - 6;
+    const nextReasons = uniqueStrings([lifecycleRule.policyReason, ...(baseFeedback?.reasons || [])], 6);
+
+    return {
+      status: 'deprioritized',
+      confidenceAdjustment: nextAdjustment,
+      reasons: nextReasons,
+      supportingAuditIds,
+      lifecyclePolicy: draftLifecyclePolicy,
+      lifecyclePolicyReason: lifecycleRule.policyReason,
+    };
+  }
+
+  if (lifecycleRule.policy === 'auto_promote_candidate') {
+    if (!baseFeedback) {
+      return {
+        status: 'preferred',
+        confidenceAdjustment: 10,
+        reasons: [lifecycleRule.policyReason],
+        supportingAuditIds,
+        lifecyclePolicy: draftLifecyclePolicy,
+        lifecyclePolicyReason: lifecycleRule.policyReason,
+      };
+    }
+
+    if (baseFeedback.status === 'deprioritized' || baseFeedback.status === 'probationary') {
+      return {
+        ...baseFeedback,
+        reasons: uniqueStrings([...(baseFeedback.reasons || []), lifecycleRule.policyReason], 6),
+        supportingAuditIds,
+        lifecyclePolicy: draftLifecyclePolicy,
+        lifecyclePolicyReason: lifecycleRule.policyReason,
+      };
+    }
+
+    return {
+      status: 'preferred',
+      confidenceAdjustment: baseFeedback.confidenceAdjustment + 6,
+      reasons: uniqueStrings([lifecycleRule.policyReason, ...(baseFeedback.reasons || [])], 6),
+      supportingAuditIds,
+      lifecyclePolicy: draftLifecyclePolicy,
+      lifecyclePolicyReason: lifecycleRule.policyReason,
+    };
+  }
+
+  if (!baseFeedback && (lifecycleRule.riskAcknowledgementCount > 0 || lifecycleRule.watchingCount > 0)) {
+    return {
+      status: 'probationary',
+      confidenceAdjustment: -5,
+      reasons: [lifecycleRule.policyReason],
+      supportingAuditIds,
+      lifecyclePolicy: draftLifecyclePolicy,
+      lifecyclePolicyReason: lifecycleRule.policyReason,
+    };
+  }
+
+  if (baseFeedback && baseFeedback.status === 'neutral') {
+    return {
+      ...baseFeedback,
+      status: lifecycleRule.watchingCount > 0 ? 'probationary' : baseFeedback.status,
+      confidenceAdjustment: lifecycleRule.watchingCount > 0 ? Math.min(baseFeedback.confidenceAdjustment, -3) : baseFeedback.confidenceAdjustment,
+      reasons: uniqueStrings([...(baseFeedback.reasons || []), lifecycleRule.policyReason], 6),
+      supportingAuditIds,
+      lifecyclePolicy: draftLifecyclePolicy,
+      lifecyclePolicyReason: lifecycleRule.policyReason,
+    };
+  }
+
+  if (baseFeedback) {
+    return {
+      ...baseFeedback,
+      reasons: uniqueStrings([...(baseFeedback.reasons || []), lifecycleRule.policyReason], 6),
+      supportingAuditIds,
+      lifecyclePolicy: draftLifecyclePolicy,
+      lifecyclePolicyReason: lifecycleRule.policyReason,
+    };
+  }
+
+  return baseFeedback;
+}
+
+function applyKnowledgeChangeRuleSummaryToFeedback(
+  baseFeedback: IntentProjectKnowledgeDraftCandidateFeedback | undefined,
+  knowledgeChangeRuleSummary: IntentE2EInsightKnowledgeChangeRuleSummary | undefined
+): IntentProjectKnowledgeDraftCandidateFeedback | undefined {
+  if (!knowledgeChangeRuleSummary) return baseFeedback;
+
+  const positiveCount = knowledgeChangeRuleSummary.improvingCount + knowledgeChangeRuleSummary.recoveredCount;
+  const negativeCount = knowledgeChangeRuleSummary.regressingCount + knowledgeChangeRuleSummary.stillAbnormalCount;
+  const supportingAuditIds = uniqueStrings(
+    [...(baseFeedback?.supportingAuditIds || []), ...knowledgeChangeRuleSummary.supportingAuditIds],
+    12
+  );
+  const positiveReason = `规则效果汇总偏正向：${knowledgeChangeRuleSummary.recommendation}`;
+
+  if (knowledgeChangeRuleSummary.decisionableCount === 0 || negativeCount === 0 || negativeCount <= positiveCount) {
+    if (
+      knowledgeChangeRuleSummary.decisionableCount > 0 &&
+      positiveCount > 0 &&
+      negativeCount === 0 &&
+      (!baseFeedback || baseFeedback.status === 'neutral' || baseFeedback.status === 'preferred')
+    ) {
+      if (!baseFeedback) {
+        return {
+          status: 'neutral',
+          confidenceAdjustment: 6,
+          reasons: [positiveReason],
+          supportingAuditIds,
+          knowledgeChangeSignal: 'positive',
+          knowledgeChangeSignalReason: positiveReason,
+        };
+      }
+
+      return {
+        ...baseFeedback,
+        confidenceAdjustment:
+          baseFeedback.status === 'preferred'
+            ? baseFeedback.confidenceAdjustment
+            : Math.max(baseFeedback.confidenceAdjustment, 6),
+        reasons: uniqueStrings([...(baseFeedback.reasons || []), positiveReason], 6),
+        supportingAuditIds,
+        knowledgeChangeSignal: 'positive',
+        knowledgeChangeSignalReason: positiveReason,
+      };
+    }
+
+    if (!baseFeedback) return baseFeedback;
+    return {
+      ...baseFeedback,
+      supportingAuditIds,
+    };
+  }
+
+  const reason = `规则效果汇总仍偏负向：${knowledgeChangeRuleSummary.recommendation}`;
+
+  if (!baseFeedback) {
+    return {
+      status: knowledgeChangeRuleSummary.stillAbnormalCount > 0 ? 'deprioritized' : 'probationary',
+      confidenceAdjustment: knowledgeChangeRuleSummary.stillAbnormalCount > 0 ? -12 : -6,
+      reasons: [reason],
+      supportingAuditIds,
+      knowledgeChangeSignal: 'negative',
+      knowledgeChangeSignalReason: reason,
+    };
+  }
+
+  if (baseFeedback.status === 'preferred') {
+    return {
+      ...baseFeedback,
+      status: 'neutral',
+      confidenceAdjustment: Math.min(baseFeedback.confidenceAdjustment, knowledgeChangeRuleSummary.stillAbnormalCount > 0 ? -2 : 0),
+      reasons: uniqueStrings([...(baseFeedback.reasons || []), reason], 6),
+      supportingAuditIds,
+      knowledgeChangeSignal: 'negative',
+      knowledgeChangeSignalReason: reason,
+    };
+  }
+
+  if (baseFeedback.status === 'neutral') {
+    return {
+      ...baseFeedback,
+      status: 'probationary',
+      confidenceAdjustment: Math.min(baseFeedback.confidenceAdjustment, knowledgeChangeRuleSummary.stillAbnormalCount > 0 ? -8 : -4),
+      reasons: uniqueStrings([...(baseFeedback.reasons || []), reason], 6),
+      supportingAuditIds,
+      knowledgeChangeSignal: 'negative',
+      knowledgeChangeSignalReason: reason,
+    };
+  }
+
+  return {
+    ...baseFeedback,
+    reasons: uniqueStrings([...(baseFeedback.reasons || []), reason], 6),
+    supportingAuditIds,
+    knowledgeChangeSignal: 'negative',
+    knowledgeChangeSignalReason: reason,
+  };
+}
+
+function buildDraftCandidateFeedback(
+  ruleId: string,
+  probationRules: IntentE2EInsightProbationRule[],
+  rollbackCandidates: IntentE2EInsightRollbackCandidate[],
+  lifecycleRule: IntentE2EInsightRiskLifecycleRule | undefined,
+  knowledgeChangeRuleSummary: IntentE2EInsightKnowledgeChangeRuleSummary | undefined,
+  thresholds: Required<GenerateIntentProjectKnowledgeDraftOptions>
+): IntentProjectKnowledgeDraftCandidateFeedback | undefined {
+  const scopedProbations = selectScopedSuccessfulRunEffects(probationRules, thresholds);
+  const scopedRollbacks = selectScopedSuccessfulRunEffects(rollbackCandidates, thresholds);
+  const supportingAuditIds = uniqueStrings(
+    [...scopedRollbacks.map((item) => item.auditId), ...scopedProbations.map((item) => item.auditId), ...(lifecycleRule?.supportingAuditIds || [])],
+    12
+  );
+  const finalize = (feedback: IntentProjectKnowledgeDraftCandidateFeedback | undefined) =>
+    applyKnowledgeChangeRuleSummaryToFeedback(applyRiskLifecyclePolicyToFeedback(feedback, lifecycleRule), knowledgeChangeRuleSummary);
+
+  if (scopedRollbacks.length > 0) {
+    const strongestRollback = [...scopedRollbacks].sort(
+      (a, b) =>
+        Math.max(b.passRateDelta, b.firstPassRateDelta) - Math.max(a.passRateDelta, a.firstPassRateDelta) ||
+        compareIsoDesc(a.occurredAt, b.occurredAt)
+    )[0];
+    const lifecycle = resolveInsightRuleLifecycle(ruleId, strongestRollback);
+    const lifecyclePrefix = buildSuccessfulRunLifecyclePrefix(lifecycle);
+    return finalize({
+      status: 'deprioritized',
+      confidenceAdjustment:
+        -28 - Math.min(8, Math.max(0, scopedRollbacks.length - 1) * 4) - buildSuccessfulRunLifecycleShift(lifecycle, 'negative'),
+      reasons: [`${lifecyclePrefix}仍出现 rollback 风险：${summarizeRollbackEffect(strongestRollback)}`],
+      supportingAuditIds,
+    });
+  }
+
+  const degradedProbations = scopedProbations.filter((item) => item.status === 'degraded');
+  if (degradedProbations.length > 0) {
+    const strongestDegraded = [...degradedProbations].sort(
+      (a, b) =>
+        Math.max(b.firstPassRateDelta, computeProbationPassRateDelta(b)) -
+          Math.max(a.firstPassRateDelta, computeProbationPassRateDelta(a)) ||
+        compareIsoDesc(a.occurredAt, b.occurredAt)
+    )[0];
+    const lifecycle = resolveInsightRuleLifecycle(ruleId, strongestDegraded);
+    const lifecyclePrefix = buildSuccessfulRunLifecyclePrefix(lifecycle);
+    return finalize({
+      status: 'deprioritized',
+      confidenceAdjustment:
+        (strongestDegraded.firstPassRateDelta >= 25 ? -20 : -16) - buildSuccessfulRunLifecycleShift(lifecycle, 'negative'),
+      reasons: [`${lifecyclePrefix}观察期已降级：${summarizeProbationEffect(strongestDegraded)}`],
+      supportingAuditIds,
+    });
+  }
+
+  const watchingProbations = scopedProbations.filter((item) => item.status === 'watching');
+  if (watchingProbations.length > 0) {
+    const latestWatching = [...watchingProbations].sort((a, b) => compareIsoDesc(a.occurredAt, b.occurredAt))[0];
+    const lifecycle = resolveInsightRuleLifecycle(ruleId, latestWatching);
+    const lifecyclePrefix = buildSuccessfulRunLifecyclePrefix(lifecycle);
+    return finalize({
+      status: 'probationary',
+      confidenceAdjustment: -4 - buildSuccessfulRunLifecycleShift(lifecycle, 'watching'),
+      reasons: [`${lifecyclePrefix} merge 仍在观察期：${summarizeProbationEffect(latestWatching)}`],
+      supportingAuditIds,
+    });
+  }
+
+  const promotedProbations = scopedProbations.filter((item) => item.status === 'promoted');
+  const improvingPromotions = promotedProbations.filter((item) => item.impactStatus === 'improving');
+  if (improvingPromotions.length > 0) {
+    const strongestImproving = [...improvingPromotions].sort(
+      (a, b) =>
+        Math.min(a.firstPassRateDelta, computeProbationPassRateDelta(a)) -
+          Math.min(b.firstPassRateDelta, computeProbationPassRateDelta(b)) ||
+        compareIsoDesc(a.occurredAt, b.occurredAt)
+    )[0];
+    const lifecycle = resolveInsightRuleLifecycle(ruleId, strongestImproving);
+    const lifecyclePrefix = buildSuccessfulRunLifecyclePrefix(lifecycle);
+    return finalize({
+      status: 'preferred',
+      confidenceAdjustment:
+        (strongestImproving.firstPassRateDelta <= -25 ? 16 : 12) + buildSuccessfulRunLifecycleShift(lifecycle, 'positive'),
+      reasons: [`${lifecyclePrefix} first-pass 提升：${summarizeProbationEffect(strongestImproving)}`],
+      supportingAuditIds,
+    });
+  }
+
+  const regressingPromotions = promotedProbations.filter((item) => item.impactStatus === 'regressing');
+  if (regressingPromotions.length > 0) {
+    const strongestRegressing = [...regressingPromotions].sort(
+      (a, b) =>
+        Math.max(b.firstPassRateDelta, computeProbationPassRateDelta(b)) -
+          Math.max(a.firstPassRateDelta, computeProbationPassRateDelta(a)) ||
+        compareIsoDesc(a.occurredAt, b.occurredAt)
+    )[0];
+    const lifecycle = resolveInsightRuleLifecycle(ruleId, strongestRegressing);
+    const lifecyclePrefix = buildSuccessfulRunLifecyclePrefix(lifecycle);
+    return finalize({
+      status: 'neutral',
+      confidenceAdjustment: -6 - buildSuccessfulRunLifecycleShift(lifecycle, 'neutral'),
+      reasons: [`${lifecyclePrefix}转正后表现偏弱：${summarizeProbationEffect(strongestRegressing)}`],
+      supportingAuditIds,
+    });
+  }
+
+  if (promotedProbations.length > 0) {
+    const latestPromoted = [...promotedProbations].sort((a, b) => compareIsoDesc(a.occurredAt, b.occurredAt))[0];
+    const lifecycle = resolveInsightRuleLifecycle(ruleId, latestPromoted);
+    const lifecyclePrefix = buildSuccessfulRunLifecyclePrefix(lifecycle);
+    return finalize({
+      status: 'neutral',
+      confidenceAdjustment: 4 + buildSuccessfulRunLifecycleShift(lifecycle, 'neutral'),
+      reasons: [`${lifecyclePrefix}已平稳转正：${summarizeProbationEffect(latestPromoted)}`],
+      supportingAuditIds,
+    });
+  }
+
+  return finalize(undefined);
+}
+
+function buildDraftCandidateFeedbackKey(target: DraftCandidateFeedbackTarget): string {
+  return `${target.source}:${target.ruleId}`;
+}
+
+function hasDraftCandidateFeedbackSource(
+  effect: Pick<
+    IntentE2EInsightProbationRule | IntentE2EInsightRollbackCandidate | IntentE2EInsightRiskLifecycleRule,
+    'mergedCandidateSources'
+  >,
+  source: IntentProjectKnowledgeDraftCandidateSource
+): boolean {
+  return effect.mergedCandidateSources.includes(source);
+}
+
+function applyDraftCandidateConfidence(
+  source: IntentProjectKnowledgeDraftCandidateSource,
+  baseConfidence: number,
+  feedback: IntentProjectKnowledgeDraftCandidateFeedback | undefined
+): number {
+  const rawAdjustment = feedback?.confidenceAdjustment || 0;
+
+  if (source === 'repair_memory') {
+    return Number(Math.max(0, Math.min(0.99, baseConfidence + rawAdjustment / 100)).toFixed(3));
+  }
+
+  return Math.max(1, Math.min(99, baseConfidence + rawAdjustment));
+}
+
+async function buildDraftCandidateFeedbackMap(
+  candidateTargets: DraftCandidateFeedbackTarget[],
+  thresholds: Required<GenerateIntentProjectKnowledgeDraftOptions>
+): Promise<Record<string, IntentProjectKnowledgeDraftCandidateFeedback>> {
+  const seenKeys = new Set<string>();
+  const normalizedTargets = candidateTargets.filter((target) => {
+    const ruleId = target.ruleId.trim();
+    if (!ruleId) return false;
+    const key = buildDraftCandidateFeedbackKey({
+      ruleId,
+      source: target.source,
+    });
+    if (seenKeys.has(key)) return false;
+    seenKeys.add(key);
+    return true;
+  });
+
+  if (normalizedTargets.length === 0) {
+    return {};
+  }
+
+  const [terminalRunSnapshots, audits] = await Promise.all([
+    listIntentE2ERunSnapshots(buildSuccessfulRunFeedbackSnapshotQuery(thresholds)).catch(
+      () => [] as IntentE2ERunSnapshotRecord[]
+    ),
+    listIntentProjectKnowledgeAuditEntries(SUCCESS_RUN_FEEDBACK_AUDIT_LIMIT, thresholds.projectUid).catch(() => ({
+      auditLogPath: '',
+      items: [],
+    })),
+  ]);
+  const insights = buildIntentE2EInsightsFromData(terminalRunSnapshots, audits.items, {
+    projectUid: thresholds.projectUid,
+    runLimit: terminalRunSnapshots.length || SUCCESS_RUN_FEEDBACK_RUN_LIMIT,
+    auditLimit: audits.items.length || SUCCESS_RUN_FEEDBACK_AUDIT_LIMIT,
+  });
+  const feedbackByKey: Record<string, IntentProjectKnowledgeDraftCandidateFeedback> = {};
+
+  for (const target of normalizedTargets) {
+    const ruleId = target.ruleId;
+    const lifecycleRule = insights.riskLifecycleRules.find(
+      (item) => item.ruleId === ruleId && hasDraftCandidateFeedbackSource(item, target.source)
+    );
+    const knowledgeChangeRuleSummary = insights.knowledgeChangeRuleSummaries.find((item) => item.ruleId === ruleId);
+    const feedback = buildDraftCandidateFeedback(
+      ruleId,
+      insights.probationRules.filter(
+        (item) => hasDraftCandidateFeedbackSource(item, target.source) && item.addedRuleIds.includes(ruleId)
+      ),
+      insights.rollbackCandidates.filter(
+        (item) => hasDraftCandidateFeedbackSource(item, target.source) && item.addedRuleIds.includes(ruleId)
+      ),
+      lifecycleRule,
+      knowledgeChangeRuleSummary,
+      thresholds
+    );
+    if (!feedback) continue;
+    feedbackByKey[buildDraftCandidateFeedbackKey(target)] = feedback;
+  }
+
+  return feedbackByKey;
+}
+
 export async function generateIntentProjectKnowledgeDraft(
   options: GenerateIntentProjectKnowledgeDraftOptions = {}
 ): Promise<IntentProjectKnowledgeDraft> {
@@ -529,25 +1389,34 @@ export async function generateIntentProjectKnowledgeDraft(
     minSeenCount: Math.max(1, Math.floor(options.minSeenCount ?? 2)),
     minResolvedCount: Math.max(1, Math.floor(options.minResolvedCount ?? 1)),
     maxCandidates: Math.max(1, Math.floor(options.maxCandidates ?? 12)),
+    projectUid: normalizeScopeValue(options.projectUid),
+    moduleUid: normalizeScopeValue(options.moduleUid),
   };
 
   const clusters = await listIntentRepairMemoryClusters();
+  const passedRunSnapshots = await listIntentE2ERunSnapshots(buildSuccessfulRunSnapshotQuery(thresholds)).catch(
+    () => [] as IntentE2ERunSnapshotRecord[]
+  );
   const existingProfile = getIntentProjectKnowledgeProfile();
   const sourceMemoryPath = getIntentRepairMemoryPath();
   const targetKnowledgePath = getIntentProjectKnowledgePath();
   const outputPath = getIntentProjectKnowledgeDraftPath();
   const { eligible, groups } = buildClustersGroups(clusters, thresholds);
+  const scopedPassedRunSnapshots = selectSuccessfulRunSnapshotsForDraft(passedRunSnapshots, thresholds);
+  const successfulRunGroups = buildSuccessfulRunCandidateGroups(scopedPassedRunSnapshots);
 
   const skipped: IntentProjectKnowledgeDraftSkippedItem[] = [];
-  const candidates = groups
+  const repairCandidatesBase = groups
     .map((group) => {
       const rule = buildRule(group);
       const coveredByRuleIds = resolveCoverage(rule, existingProfile.rules);
       return {
         candidateId: createHash('sha1').update(`${group.groupKey}|${group.clusterIds.join(',')}`).digest('hex').slice(0, 12),
-        confidence: buildConfidence(group),
+        source: 'repair_memory' as const,
+        baseConfidence: buildConfidence(group),
         category: group.category,
         clusterIds: [...group.clusterIds],
+        runIds: [],
         seenCount: group.seenCount,
         resolvedCount: group.resolvedCount,
         successRate: group.successRate,
@@ -560,17 +1429,86 @@ export async function generateIntentProjectKnowledgeDraft(
         alreadyCovered: coveredByRuleIds.length > 0,
         coveredByRuleIds,
         rule,
+      };
+    })
+    .sort((a, b) => b.baseConfidence - a.baseConfidence || b.resolvedCount - a.resolvedCount || b.seenCount - a.seenCount);
+  const successfulRunCandidatesBase = successfulRunGroups
+    .map((group) => {
+      const rule = buildSuccessfulRunCandidateRule(group);
+      const coveredByRuleIds = resolveCoverage(rule, existingProfile.rules);
+      return {
+        candidateId: createHash('sha1').update(`success|${group.groupKey}`).digest('hex').slice(0, 12),
+        source: 'successful_run' as const,
+        baseConfidence: buildSuccessfulRunCandidateConfidence(group),
+        category: 'successful-verification-plan',
+        clusterIds: [],
+        runIds: [...group.runIds],
+        seenCount: group.runIds.length,
+        resolvedCount: group.runIds.length,
+        successRate: 100,
+        sampleUrls: [...group.sampleUrls],
+        sampleTitles: [...group.sampleTitles],
+        sampleDescriptions: [...group.sampleDescriptions],
+        representativeErrors: [],
+        successfulStrategies: [...group.successfulStrategies],
+        antiPatterns: [],
+        ...(group.observationTags.length > 0 ? { observationTags: [...group.observationTags] } : {}),
+        ...(group.observationSummaries[0] ? { observationSummary: group.observationSummaries[0] } : {}),
+        alreadyCovered: coveredByRuleIds.length > 0,
+        coveredByRuleIds,
+        rule,
+      };
+    })
+    .sort((a, b) => b.baseConfidence - a.baseConfidence || b.resolvedCount - a.resolvedCount || b.seenCount - a.seenCount);
+  const feedbackByCandidateKey = await buildDraftCandidateFeedbackMap(
+    [...repairCandidatesBase, ...successfulRunCandidatesBase].map((candidate) => ({
+      ruleId: candidate.rule.id,
+      source: candidate.source,
+    })),
+    thresholds
+  );
+  const repairCandidates = repairCandidatesBase
+    .map((candidate) => {
+      const { baseConfidence, ...rest } = candidate;
+      const feedback = feedbackByCandidateKey[buildDraftCandidateFeedbackKey({
+        ruleId: rest.rule.id,
+        source: rest.source,
+      })];
+      return {
+        ...rest,
+        confidence: applyDraftCandidateConfidence(rest.source, baseConfidence, feedback),
+        ...(feedback ? { feedback } : {}),
       } satisfies IntentProjectKnowledgeDraftCandidate;
     })
-    .sort((a, b) => b.confidence - a.confidence || b.resolvedCount - a.resolvedCount || b.seenCount - a.seenCount)
-    .slice(0, thresholds.maxCandidates);
+    .sort((a, b) => b.confidence - a.confidence || b.resolvedCount - a.resolvedCount || b.seenCount - a.seenCount);
+  const successfulRunCandidates = successfulRunCandidatesBase
+    .map((candidate) => {
+      const { baseConfidence, ...rest } = candidate;
+      const feedback = feedbackByCandidateKey[buildDraftCandidateFeedbackKey({
+        ruleId: rest.rule.id,
+        source: rest.source,
+      })];
+      return {
+        ...rest,
+        confidence: applyDraftCandidateConfidence(rest.source, baseConfidence, feedback),
+        ...(feedback ? { feedback } : {}),
+      } satisfies IntentProjectKnowledgeDraftCandidate;
+    })
+    .sort((a, b) => b.confidence - a.confidence || b.resolvedCount - a.resolvedCount || b.seenCount - a.seenCount);
 
-  for (const group of groups.slice(thresholds.maxCandidates)) {
+  const combinedCandidates = [...repairCandidates, ...successfulRunCandidates].sort(
+    (a, b) => b.confidence - a.confidence || b.resolvedCount - a.resolvedCount || b.seenCount - a.seenCount
+  );
+  const candidates = combinedCandidates.slice(0, thresholds.maxCandidates);
+
+  for (const candidate of combinedCandidates.slice(thresholds.maxCandidates)) {
     skipped.push({
-      groupKey: group.groupKey,
-      category: group.category,
-      clusterIds: [...group.clusterIds],
-      sampleUrls: [...group.sampleUrls],
+      groupKey: candidate.rule.id,
+      source: candidate.source,
+      category: candidate.category,
+      clusterIds: [...candidate.clusterIds],
+      runIds: [...(candidate.runIds || [])],
+      sampleUrls: [...candidate.sampleUrls],
       reason: `超过 maxCandidates=${thresholds.maxCandidates}`,
     });
   }
@@ -590,7 +1528,10 @@ export async function generateIntentProjectKnowledgeDraft(
     summary: {
       totalClusters: clusters.length,
       eligibleClusters: eligible.length,
-      candidateGroups: groups.length,
+      totalPassedRuns: scopedPassedRunSnapshots.length,
+      candidateGroups: groups.length + successfulRunGroups.length,
+      repairMemoryCandidateGroups: groups.length,
+      successfulRunCandidateGroups: successfulRunGroups.length,
       suggestedCandidates: candidates.filter((item) => !item.alreadyCovered).length,
       alreadyCoveredCandidates: candidates.filter((item) => item.alreadyCovered).length,
       skippedItems: skipped.length,
@@ -611,20 +1552,33 @@ export async function writeIntentProjectKnowledgeDraft(
   return !relative || relative.startsWith('..') ? outputPath : relative;
 }
 
-export async function mergeIntentProjectKnowledgeDraftCandidates(
+export function resolveIntentProjectKnowledgeDraftCandidateSelection(
   draft: IntentProjectKnowledgeDraft,
   candidateIds: string[] = []
-): Promise<MergeIntentProjectKnowledgeDraftCandidatesResult> {
+): IntentProjectKnowledgeDraftCandidateSelection {
   const requestedCandidateIds = uniqueStrings(
-    candidateIds.length > 0
-      ? candidateIds
-      : draft.candidates.filter((candidate) => !candidate.alreadyCovered).map((candidate) => candidate.candidateId)
+    candidateIds.length > 0 ? candidateIds : defaultIntentProjectKnowledgeDraftCandidateIds(draft.candidates)
   );
   const selectedCandidates = draft.candidates.filter((candidate) => requestedCandidateIds.includes(candidate.candidateId));
   const selectedCandidateIdSet = new Set(selectedCandidates.map((candidate) => candidate.candidateId));
   const missingCandidateIds = requestedCandidateIds.filter((candidateId) => !selectedCandidateIdSet.has(candidateId));
   const coveredCandidates = selectedCandidates.filter((candidate) => candidate.alreadyCovered);
   const mergeCandidates = selectedCandidates.filter((candidate) => !candidate.alreadyCovered);
+
+  return {
+    requestedCandidateIds,
+    selectedCandidates,
+    missingCandidateIds,
+    coveredCandidates,
+    mergeCandidates,
+  };
+}
+
+export async function mergeIntentProjectKnowledgeDraftCandidates(
+  draft: IntentProjectKnowledgeDraft,
+  candidateIds: string[] = []
+): Promise<MergeIntentProjectKnowledgeDraftCandidatesResult> {
+  const { missingCandidateIds, coveredCandidates, mergeCandidates } = resolveIntentProjectKnowledgeDraftCandidateSelection(draft, candidateIds);
   const mergeResult = await mergeIntentProjectKnowledgeRules(mergeCandidates.map((candidate) => candidate.rule));
   const addedRuleIdSet = new Set(mergeResult.addedRuleIds);
 
@@ -639,6 +1593,17 @@ export async function mergeIntentProjectKnowledgeDraftCandidates(
     mergedCandidateIds: mergeCandidates
       .filter((candidate) => addedRuleIdSet.has(candidate.rule.id))
       .map((candidate) => candidate.candidateId),
+    mergedCandidateSources: uniqueStrings(
+      mergeCandidates
+        .filter((candidate) => addedRuleIdSet.has(candidate.rule.id))
+        .map((candidate) => candidate.source)
+    ) as IntentProjectKnowledgeDraftCandidateSource[],
+    mergedRunIds: uniqueStrings(
+      mergeCandidates
+        .filter((candidate) => addedRuleIdSet.has(candidate.rule.id))
+        .flatMap((candidate) => candidate.runIds || []),
+      200
+    ),
     coveredCandidateIds: coveredCandidates.map((candidate) => candidate.candidateId),
     missingCandidateIds,
     profile: mergeResult.profile,
@@ -648,15 +1613,20 @@ export async function mergeIntentProjectKnowledgeDraftCandidates(
 export function renderIntentProjectKnowledgeDraftSummary(draft: IntentProjectKnowledgeDraft): string {
   const lines = [
     `repair memory clusters=${draft.summary.totalClusters}`,
+    `passed runs=${draft.summary.totalPassedRuns}`,
     `eligible=${draft.summary.eligibleClusters}`,
     `candidateGroups=${draft.summary.candidateGroups}`,
+    `repairMemoryGroups=${draft.summary.repairMemoryCandidateGroups}`,
+    `successfulRunGroups=${draft.summary.successfulRunCandidateGroups}`,
     `suggested=${draft.summary.suggestedCandidates}`,
     `covered=${draft.summary.alreadyCoveredCandidates}`,
   ];
 
   for (const candidate of draft.candidates.slice(0, 5)) {
     lines.push(
-      `- ${candidate.rule.id} | category=${candidate.category} | confidence=${candidate.confidence} | seen=${candidate.seenCount} | resolved=${candidate.resolvedCount}${
+      `- ${candidate.rule.id} | source=${candidate.source} | category=${candidate.category} | confidence=${candidate.confidence} | seen=${candidate.seenCount} | resolved=${candidate.resolvedCount}${
+        candidate.feedback ? ` | feedback=${candidate.feedback.status}:${candidate.feedback.confidenceAdjustment >= 0 ? '+' : ''}${candidate.feedback.confidenceAdjustment}` : ''
+      }${
         candidate.alreadyCovered ? ` | coveredBy=${candidate.coveredByRuleIds.join(',')}` : ''
       }`
     );

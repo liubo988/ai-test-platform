@@ -3,6 +3,22 @@ import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import type { IntentActionDSL, IntentActionDSLStep, IntentActionStepType } from './intent-action-dsl';
+import {
+  normalizeIntentProjectKnowledgeMergeNoticeArray as normalizeIntentProjectKnowledgeAuditNoticeArray,
+  normalizeIntentProjectKnowledgeMergePreflightSummary as normalizeIntentProjectKnowledgeAuditPreflightSummary,
+  normalizeIntentProjectKnowledgeMergeSelectionSummary as normalizeIntentProjectKnowledgeAuditSelectionSummary,
+  type IntentProjectKnowledgeMergeNotice as SharedIntentProjectKnowledgeAuditNotice,
+  type IntentProjectKnowledgeMergeNoticeKind as SharedIntentProjectKnowledgeAuditNoticeKind,
+  type IntentProjectKnowledgeMergeNoticeLevel as SharedIntentProjectKnowledgeAuditNoticeLevel,
+  type IntentProjectKnowledgeMergeNoticeProvenanceType as SharedIntentProjectKnowledgeAuditNoticeProvenanceType,
+  type IntentProjectKnowledgeMergePreflightSummary as SharedIntentProjectKnowledgeAuditPreflightSummary,
+  type IntentProjectKnowledgeMergeSelectionSummary as SharedIntentProjectKnowledgeAuditSelectionSummary,
+} from './intent-project-knowledge-merge-provenance';
+import {
+  normalizeIntentSuccessfulRunKnowledgePromotionReceipt,
+  summarizeIntentSuccessfulRunKnowledgePromotionReceiptObservation,
+  type IntentSuccessfulRunKnowledgePromotionReceipt,
+} from './intent-successful-run-knowledge-promotion-receipt';
 import type { PageSnapshot } from './page-analyzer';
 
 export interface IntentProjectKnowledgeRuleMatch {
@@ -23,6 +39,61 @@ export interface IntentProjectKnowledgeStepPatch {
   addForbiddenPatterns?: string[];
 }
 
+export interface IntentProjectKnowledgeFieldPathHint {
+  label: string;
+  paths: string[];
+  stableIdentifiers?: string[];
+  whenStepTypes?: IntentActionStepType[];
+  stepTextIncludes?: string[];
+}
+
+export interface IntentProjectKnowledgeLocatorHint {
+  selector?: string;
+  placeholderIncludes?: string;
+  textIncludes?: string;
+}
+
+export interface IntentProjectKnowledgeResponseHint {
+  urlIncludes?: string;
+  method?: string;
+}
+
+export interface IntentProjectKnowledgeRecordLookupSearchSurfaceHint {
+  keywordInput?: IntentProjectKnowledgeLocatorHint;
+  searchButton?: IntentProjectKnowledgeLocatorHint;
+}
+
+export type IntentProjectKnowledgeDetailEntryTrigger = 'row_action' | 'row_click';
+export type IntentProjectKnowledgeDetailEntryTarget = 'drawer_or_modal' | 'page';
+
+export interface IntentProjectKnowledgeDetailEntryHint {
+  trigger?: IntentProjectKnowledgeDetailEntryTrigger;
+  actionLabel?: string;
+  target?: IntentProjectKnowledgeDetailEntryTarget;
+  urlIncludes?: string;
+}
+
+export interface IntentProjectKnowledgeRecordLookupHint {
+  stableIdentifiers?: string[];
+  whenStepTypes?: IntentActionStepType[];
+  stepTextIncludes?: string[];
+  listResponse?: IntentProjectKnowledgeResponseHint;
+  detailUrl?: string;
+  rowHasTexts?: string[];
+  searchSurface?: IntentProjectKnowledgeRecordLookupSearchSurfaceHint;
+  tableScope?: IntentProjectKnowledgeLocatorHint;
+  detailReadyLocator?: IntentProjectKnowledgeLocatorHint;
+  detailEntry?: IntentProjectKnowledgeDetailEntryHint;
+}
+
+export interface IntentProjectKnowledgeDetailSurfaceHint {
+  stableIdentifiers?: string[];
+  whenStepTypes?: IntentActionStepType[];
+  stepTextIncludes?: string[];
+  titleIncludes?: string;
+  scopeHints?: string[];
+}
+
 export interface IntentProjectKnowledgeRule {
   id: string;
   title: string;
@@ -34,6 +105,9 @@ export interface IntentProjectKnowledgeRule {
   addPreferredPrimitives: string[];
   addOutputContract: string[];
   stepPatches: IntentProjectKnowledgeStepPatch[];
+  fieldPathHints?: IntentProjectKnowledgeFieldPathHint[];
+  recordLookupHints?: IntentProjectKnowledgeRecordLookupHint[];
+  detailSurfaceHints?: IntentProjectKnowledgeDetailSurfaceHint[];
 }
 
 export interface IntentProjectKnowledgeProfile {
@@ -51,6 +125,9 @@ export interface IntentProjectKnowledgeMatchResult {
   addPreferredPrimitives: string[];
   addOutputContract: string[];
   stepPatches: IntentProjectKnowledgeStepPatch[];
+  fieldPathHints?: IntentProjectKnowledgeFieldPathHint[];
+  recordLookupHints?: IntentProjectKnowledgeRecordLookupHint[];
+  detailSurfaceHints?: IntentProjectKnowledgeDetailSurfaceHint[];
   score: number;
   baseScore?: number;
   feedback?: IntentProjectKnowledgeMatchFeedback;
@@ -66,6 +143,29 @@ export interface IntentProjectKnowledgeResolution {
 
 export type IntentProjectKnowledgeRuleProbationStatus = 'watching' | 'promoted' | 'degraded';
 
+export interface IntentProjectKnowledgeMergedCandidateMeta {
+  candidateId: string;
+  ruleId: string;
+  source: string;
+  feedbackStatus?: string;
+  risky: boolean;
+  overrideApplied: boolean;
+  riskAcknowledged: boolean;
+  runIds: string[];
+  observationTags?: string[];
+  observationSummary?: string;
+}
+
+export type IntentProjectKnowledgeAuditNoticeKind = SharedIntentProjectKnowledgeAuditNoticeKind;
+export type IntentProjectKnowledgeAuditNoticeLevel = SharedIntentProjectKnowledgeAuditNoticeLevel;
+export type IntentProjectKnowledgeAuditNoticeProvenanceType = SharedIntentProjectKnowledgeAuditNoticeProvenanceType;
+
+export type IntentProjectKnowledgeAuditNotice = SharedIntentProjectKnowledgeAuditNotice;
+
+export type IntentProjectKnowledgeAuditSelectionSummary = SharedIntentProjectKnowledgeAuditSelectionSummary;
+
+export type IntentProjectKnowledgeAuditPreflightSummary = SharedIntentProjectKnowledgeAuditPreflightSummary;
+
 export interface IntentProjectKnowledgeRuleProbation {
   status: IntentProjectKnowledgeRuleProbationStatus;
   observedRuns: number;
@@ -75,6 +175,12 @@ export interface IntentProjectKnowledgeRuleProbation {
   sourceTitle: string;
   backupPath: string | null;
   recommendation: string;
+  selectedCandidateFeedbackStatuses?: string[];
+  selectedRiskyCandidateIds?: string[];
+  appliedOverrideCandidateIds?: string[];
+  appliedOverrideCandidateFeedbackStatuses?: string[];
+  appliedAcknowledgedRiskCandidateIds?: string[];
+  appliedAcknowledgedRiskCandidateFeedbackStatuses?: string[];
 }
 
 export interface IntentProjectKnowledgeRulePerformance {
@@ -164,10 +270,26 @@ export type IntentProjectKnowledgeAuditOperation = 'merge' | 'restore';
 
 export interface IntentProjectKnowledgeAuditMeta {
   requestedCandidateIds?: string[];
+  requestedModuleUid?: string;
+  selectedCandidateFeedbackStatuses?: string[];
+  selectedRiskyCandidateIds?: string[];
+  overrideCandidateIds?: string[];
+  appliedOverrideCandidateIds?: string[];
+  appliedOverrideCandidateFeedbackStatuses?: string[];
+  acknowledgedRiskCandidateIds?: string[];
+  appliedAcknowledgedRiskCandidateIds?: string[];
+  appliedAcknowledgedRiskCandidateFeedbackStatuses?: string[];
   mergedCandidateIds?: string[];
+  mergedCandidates?: IntentProjectKnowledgeMergedCandidateMeta[];
+  mergedCandidateSources?: string[];
+  mergedRunIds?: string[];
   coveredCandidateIds?: string[];
   missingCandidateIds?: string[];
   skippedRuleIds?: string[];
+  selectionSummary?: IntentProjectKnowledgeAuditSelectionSummary;
+  preflightSummary?: IntentProjectKnowledgeAuditPreflightSummary;
+  mergeReceipts?: IntentProjectKnowledgeAuditNotice[];
+  successfulRunKnowledgePromotionReceipt?: IntentSuccessfulRunKnowledgePromotionReceipt;
   restoredFrom?: string;
   projectActivityLogged?: boolean;
   projectActivityError?: string;
@@ -270,6 +392,148 @@ function normalizeStepPatch(raw: unknown): IntentProjectKnowledgeStepPatch {
   };
 }
 
+function normalizeFieldPathHint(raw: unknown): IntentProjectKnowledgeFieldPathHint | null {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
+  if (!source) return null;
+
+  const label = typeof source.label === 'string' ? source.label.trim() : '';
+  const paths = normalizeStringArray(source.paths);
+  if (!label || paths.length === 0) return null;
+
+  const stableIdentifiersSource = Array.isArray(source.stableIdentifiers)
+    ? source.stableIdentifiers
+    : typeof source.stableIdentifier === 'string'
+    ? [source.stableIdentifier]
+    : [];
+
+  return {
+    label,
+    paths,
+    stableIdentifiers: normalizeStringArray(stableIdentifiersSource),
+    whenStepTypes: normalizeStepTypes(source.whenStepTypes),
+    stepTextIncludes: normalizeStringArray(source.stepTextIncludes),
+  };
+}
+
+function normalizeLocatorHint(raw: unknown): IntentProjectKnowledgeLocatorHint | null {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
+  if (!source) return null;
+
+  const selector = typeof source.selector === 'string' ? source.selector.trim() : '';
+  const placeholderIncludes = typeof source.placeholderIncludes === 'string' ? source.placeholderIncludes.trim() : '';
+  const textIncludes = typeof source.textIncludes === 'string' ? source.textIncludes.trim() : '';
+
+  if (!selector && !placeholderIncludes && !textIncludes) {
+    return null;
+  }
+
+  return {
+    selector: selector || undefined,
+    placeholderIncludes: placeholderIncludes || undefined,
+    textIncludes: textIncludes || undefined,
+  };
+}
+
+function normalizeResponseHint(raw: unknown): IntentProjectKnowledgeResponseHint | null {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
+  if (!source) return null;
+
+  const urlIncludes = typeof source.urlIncludes === 'string' ? source.urlIncludes.trim() : '';
+  const method = typeof source.method === 'string' ? source.method.trim().toUpperCase() : '';
+  if (!urlIncludes && !method) return null;
+
+  return {
+    urlIncludes: urlIncludes || undefined,
+    method: method || undefined,
+  };
+}
+
+function normalizeDetailEntryHint(raw: unknown): IntentProjectKnowledgeDetailEntryHint | null {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
+  if (!source) return null;
+
+  const trigger =
+    typeof source.trigger === 'string' && (source.trigger.trim() === 'row_action' || source.trigger.trim() === 'row_click')
+      ? (source.trigger.trim() as IntentProjectKnowledgeDetailEntryTrigger)
+      : undefined;
+  const actionLabel = typeof source.actionLabel === 'string' ? source.actionLabel.trim() : '';
+  const target =
+    typeof source.target === 'string' && (source.target.trim() === 'drawer_or_modal' || source.target.trim() === 'page')
+      ? (source.target.trim() as IntentProjectKnowledgeDetailEntryTarget)
+      : undefined;
+  const urlIncludes = typeof source.urlIncludes === 'string' ? source.urlIncludes.trim() : '';
+
+  if (!trigger && !actionLabel && !target && !urlIncludes) {
+    return null;
+  }
+
+  return {
+    trigger: trigger || undefined,
+    actionLabel: actionLabel || undefined,
+    target: target || undefined,
+    urlIncludes: urlIncludes || undefined,
+  };
+}
+
+function normalizeRecordLookupHint(raw: unknown): IntentProjectKnowledgeRecordLookupHint | null {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
+  if (!source) return null;
+
+  const stableIdentifiersSource = Array.isArray(source.stableIdentifiers)
+    ? source.stableIdentifiers
+    : typeof source.stableIdentifier === 'string'
+    ? [source.stableIdentifier]
+    : [];
+  const listResponse = normalizeResponseHint(source.listResponse);
+  const detailUrl = typeof source.detailUrl === 'string' ? source.detailUrl.trim() : '';
+  const rowHasTexts = normalizeStringArray(source.rowHasTexts);
+  const keywordInput = normalizeLocatorHint(source.searchSurface && typeof source.searchSurface === 'object' ? (source.searchSurface as Record<string, unknown>).keywordInput : null);
+  const searchButton = normalizeLocatorHint(source.searchSurface && typeof source.searchSurface === 'object' ? (source.searchSurface as Record<string, unknown>).searchButton : null);
+  const searchSurface = keywordInput || searchButton ? { keywordInput: keywordInput || undefined, searchButton: searchButton || undefined } : undefined;
+  const tableScope = normalizeLocatorHint(source.tableScope);
+  const detailReadyLocator = normalizeLocatorHint(source.detailReadyLocator);
+  const detailEntry = normalizeDetailEntryHint(source.detailEntry);
+
+  if (!listResponse && !detailUrl && rowHasTexts.length === 0 && !searchSurface && !tableScope && !detailReadyLocator && !detailEntry) {
+    return null;
+  }
+
+  return {
+    stableIdentifiers: normalizeStringArray(stableIdentifiersSource),
+    whenStepTypes: normalizeStepTypes(source.whenStepTypes),
+    stepTextIncludes: normalizeStringArray(source.stepTextIncludes),
+    listResponse: listResponse || undefined,
+    detailUrl: detailUrl || undefined,
+    rowHasTexts,
+    searchSurface,
+    tableScope: tableScope || undefined,
+    detailReadyLocator: detailReadyLocator || undefined,
+    detailEntry: detailEntry || undefined,
+  };
+}
+
+function normalizeDetailSurfaceHint(raw: unknown): IntentProjectKnowledgeDetailSurfaceHint | null {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
+  if (!source) return null;
+
+  const stableIdentifiersSource = Array.isArray(source.stableIdentifiers)
+    ? source.stableIdentifiers
+    : typeof source.stableIdentifier === 'string'
+    ? [source.stableIdentifier]
+    : [];
+  const titleIncludes = typeof source.titleIncludes === 'string' ? source.titleIncludes.trim() : '';
+  const scopeHints = normalizeStringArray(source.scopeHints);
+  if (!titleIncludes && scopeHints.length === 0) return null;
+
+  return {
+    stableIdentifiers: normalizeStringArray(stableIdentifiersSource),
+    whenStepTypes: normalizeStepTypes(source.whenStepTypes),
+    stepTextIncludes: normalizeStringArray(source.stepTextIncludes),
+    titleIncludes: titleIncludes || undefined,
+    scopeHints,
+  };
+}
+
 function normalizeRule(raw: unknown, index: number): IntentProjectKnowledgeRule | null {
   const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
   if (!source) return null;
@@ -291,6 +555,19 @@ function normalizeRule(raw: unknown, index: number): IntentProjectKnowledgeRule 
     addPreferredPrimitives: normalizeStringArray(source.addPreferredPrimitives),
     addOutputContract: normalizeStringArray(source.addOutputContract),
     stepPatches: Array.isArray(source.stepPatches) ? source.stepPatches.map(normalizeStepPatch) : [],
+    fieldPathHints: Array.isArray(source.fieldPathHints)
+      ? source.fieldPathHints.map(normalizeFieldPathHint).filter((item): item is IntentProjectKnowledgeFieldPathHint => Boolean(item))
+      : [],
+    recordLookupHints: Array.isArray(source.recordLookupHints)
+      ? source.recordLookupHints
+          .map(normalizeRecordLookupHint)
+          .filter((item): item is IntentProjectKnowledgeRecordLookupHint => Boolean(item))
+      : [],
+    detailSurfaceHints: Array.isArray(source.detailSurfaceHints)
+      ? source.detailSurfaceHints
+          .map(normalizeDetailSurfaceHint)
+          .filter((item): item is IntentProjectKnowledgeDetailSurfaceHint => Boolean(item))
+      : [],
   };
 }
 
@@ -327,16 +604,72 @@ function normalizeIntentProjectKnowledgeProfileComparison(raw: unknown): IntentP
   };
 }
 
+function normalizeIntentProjectKnowledgeMergedCandidateMeta(raw: unknown): IntentProjectKnowledgeMergedCandidateMeta | null {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const candidateId = typeof source.candidateId === 'string' ? source.candidateId.trim() : '';
+  const ruleId = typeof source.ruleId === 'string' ? source.ruleId.trim() : '';
+
+  if (!candidateId || !ruleId) return null;
+
+  return {
+    candidateId,
+    ruleId,
+    source: typeof source.source === 'string' ? source.source.trim() : '',
+    feedbackStatus: typeof source.feedbackStatus === 'string' ? source.feedbackStatus.trim() || undefined : undefined,
+    risky: source.risky === true,
+    overrideApplied: source.overrideApplied === true,
+    riskAcknowledged: source.riskAcknowledged === true,
+    runIds: normalizeStringArray(source.runIds),
+    observationTags: normalizeStringArray(source.observationTags),
+    observationSummary: typeof source.observationSummary === 'string' ? source.observationSummary.trim() || undefined : undefined,
+  };
+}
+
+function normalizeIntentProjectKnowledgeMergedCandidateMetaArray(raw: unknown): IntentProjectKnowledgeMergedCandidateMeta[] {
+  if (!Array.isArray(raw)) return [];
+
+  const seen = new Set<string>();
+  const items: IntentProjectKnowledgeMergedCandidateMeta[] = [];
+  for (const item of raw) {
+    const normalized = normalizeIntentProjectKnowledgeMergedCandidateMeta(item);
+    if (!normalized) continue;
+    const key = `${normalized.candidateId}::${normalized.ruleId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    items.push(normalized);
+  }
+  return items;
+}
+
 function normalizeIntentProjectKnowledgeAuditMeta(raw: unknown): IntentProjectKnowledgeAuditMeta {
   const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
   const projectActivityError = typeof source.projectActivityError === 'string' ? source.projectActivityError.trim() : '';
 
   return {
     requestedCandidateIds: normalizeStringArray(source.requestedCandidateIds),
+    requestedModuleUid: typeof source.requestedModuleUid === 'string' ? source.requestedModuleUid.trim() || undefined : undefined,
+    selectedCandidateFeedbackStatuses: normalizeStringArray(source.selectedCandidateFeedbackStatuses),
+    selectedRiskyCandidateIds: normalizeStringArray(source.selectedRiskyCandidateIds),
+    overrideCandidateIds: normalizeStringArray(source.overrideCandidateIds),
+    appliedOverrideCandidateIds: normalizeStringArray(source.appliedOverrideCandidateIds),
+    appliedOverrideCandidateFeedbackStatuses: normalizeStringArray(source.appliedOverrideCandidateFeedbackStatuses),
+    acknowledgedRiskCandidateIds: normalizeStringArray(source.acknowledgedRiskCandidateIds),
+    appliedAcknowledgedRiskCandidateIds: normalizeStringArray(source.appliedAcknowledgedRiskCandidateIds),
+    appliedAcknowledgedRiskCandidateFeedbackStatuses: normalizeStringArray(
+      source.appliedAcknowledgedRiskCandidateFeedbackStatuses
+    ),
     mergedCandidateIds: normalizeStringArray(source.mergedCandidateIds),
+    mergedCandidates: normalizeIntentProjectKnowledgeMergedCandidateMetaArray(source.mergedCandidates),
+    mergedCandidateSources: normalizeStringArray(source.mergedCandidateSources),
+    mergedRunIds: normalizeStringArray(source.mergedRunIds),
     coveredCandidateIds: normalizeStringArray(source.coveredCandidateIds),
     missingCandidateIds: normalizeStringArray(source.missingCandidateIds),
     skippedRuleIds: normalizeStringArray(source.skippedRuleIds),
+    selectionSummary: normalizeIntentProjectKnowledgeAuditSelectionSummary(source.selectionSummary),
+    preflightSummary: normalizeIntentProjectKnowledgeAuditPreflightSummary(source.preflightSummary),
+    mergeReceipts: normalizeIntentProjectKnowledgeAuditNoticeArray(source.mergeReceipts),
+    successfulRunKnowledgePromotionReceipt:
+      normalizeIntentSuccessfulRunKnowledgePromotionReceipt(source.successfulRunKnowledgePromotionReceipt) || undefined,
     restoredFrom: typeof source.restoredFrom === 'string' ? source.restoredFrom.trim() : undefined,
     projectActivityLogged: source.projectActivityLogged === true,
     projectActivityError: projectActivityError || undefined,
@@ -513,6 +846,73 @@ function matchRule(
       addRequiredAssertions: [...(patch.addRequiredAssertions || [])],
       addForbiddenPatterns: [...(patch.addForbiddenPatterns || [])],
     })),
+    fieldPathHints: (rule.fieldPathHints || []).map((hint) => ({
+      label: hint.label,
+      paths: [...hint.paths],
+      stableIdentifiers: [...(hint.stableIdentifiers || [])],
+      whenStepTypes: [...(hint.whenStepTypes || [])],
+      stepTextIncludes: [...(hint.stepTextIncludes || [])],
+    })),
+    recordLookupHints: (rule.recordLookupHints || []).map((hint) => ({
+      stableIdentifiers: [...(hint.stableIdentifiers || [])],
+      whenStepTypes: [...(hint.whenStepTypes || [])],
+      stepTextIncludes: [...(hint.stepTextIncludes || [])],
+      listResponse: hint.listResponse
+        ? {
+            urlIncludes: hint.listResponse.urlIncludes,
+            method: hint.listResponse.method,
+          }
+        : undefined,
+      detailUrl: hint.detailUrl,
+      rowHasTexts: [...(hint.rowHasTexts || [])],
+      searchSurface: hint.searchSurface
+        ? {
+            keywordInput: hint.searchSurface.keywordInput
+              ? {
+                  selector: hint.searchSurface.keywordInput.selector,
+                  placeholderIncludes: hint.searchSurface.keywordInput.placeholderIncludes,
+                  textIncludes: hint.searchSurface.keywordInput.textIncludes,
+                }
+              : undefined,
+            searchButton: hint.searchSurface.searchButton
+              ? {
+                  selector: hint.searchSurface.searchButton.selector,
+                  placeholderIncludes: hint.searchSurface.searchButton.placeholderIncludes,
+                  textIncludes: hint.searchSurface.searchButton.textIncludes,
+                }
+              : undefined,
+          }
+        : undefined,
+      tableScope: hint.tableScope
+        ? {
+            selector: hint.tableScope.selector,
+            placeholderIncludes: hint.tableScope.placeholderIncludes,
+            textIncludes: hint.tableScope.textIncludes,
+          }
+        : undefined,
+      detailReadyLocator: hint.detailReadyLocator
+        ? {
+            selector: hint.detailReadyLocator.selector,
+            placeholderIncludes: hint.detailReadyLocator.placeholderIncludes,
+            textIncludes: hint.detailReadyLocator.textIncludes,
+          }
+        : undefined,
+      detailEntry: hint.detailEntry
+        ? {
+            trigger: hint.detailEntry.trigger,
+            actionLabel: hint.detailEntry.actionLabel,
+            target: hint.detailEntry.target,
+            urlIncludes: hint.detailEntry.urlIncludes,
+          }
+        : undefined,
+    })),
+    detailSurfaceHints: (rule.detailSurfaceHints || []).map((hint) => ({
+      stableIdentifiers: [...(hint.stableIdentifiers || [])],
+      whenStepTypes: [...(hint.whenStepTypes || [])],
+      stepTextIncludes: [...(hint.stepTextIncludes || [])],
+      titleIncludes: hint.titleIncludes,
+      scopeHints: [...(hint.scopeHints || [])],
+    })),
     score,
   };
 }
@@ -585,11 +985,21 @@ function scoreProbationAdjustment(
     return { adjustment: 0, reasons: [], status: 'neutral' };
   }
 
+  const hasAppliedOverride = (probation.appliedOverrideCandidateIds?.length || 0) > 0;
+  const hasAppliedRiskAcknowledgement = (probation.appliedAcknowledgedRiskCandidateIds?.length || 0) > 0;
+  const probationSubject = hasAppliedOverride && hasAppliedRiskAcknowledgement
+    ? '经人工 override / 风险确认纳入的规则'
+    : hasAppliedOverride
+    ? '经人工 override 纳入的规则'
+    : hasAppliedRiskAcknowledgement
+    ? '经风险确认纳入的规则'
+    : '新规则';
+
   if (probation.status === 'degraded') {
     return {
-      adjustment: -10,
+      adjustment: -10 - (hasAppliedOverride ? 2 : 0) - (hasAppliedRiskAcknowledgement ? 1 : 0),
       reasons: [
-        `新规则观察期已判定为降级，已观察 ${probation.observedRuns} 次，通过率 ${probation.observedPassRate}%`,
+        `${probationSubject}观察期已判定为降级，已观察 ${probation.observedRuns} 次，通过率 ${probation.observedPassRate}%`,
       ],
       status: 'deprioritized',
     };
@@ -597,19 +1007,19 @@ function scoreProbationAdjustment(
 
   if (probation.status === 'watching') {
     return {
-      adjustment: -2,
+      adjustment: -2 - (hasAppliedOverride || hasAppliedRiskAcknowledgement ? 1 : 0),
       reasons: [
         probation.observedRuns > 0
-          ? `新规则仍在观察期，已观察 ${probation.observedRuns} 次，通过率 ${probation.observedPassRate}%`
-          : `新规则刚进入观察期，还需 ${probation.remainingRuns} 次终态运行后再转正`,
+          ? `${probationSubject}仍在观察期，已观察 ${probation.observedRuns} 次，通过率 ${probation.observedPassRate}%`
+          : `${probationSubject}刚进入观察期，还需 ${probation.remainingRuns} 次终态运行后再转正`,
       ],
       status: 'probationary',
     };
   }
 
   return {
-    adjustment: 1,
-    reasons: [`新规则已完成观察期并转正，最近通过率 ${probation.observedPassRate}%`],
+    adjustment: 1 + (hasAppliedOverride ? 2 : 0) + (hasAppliedRiskAcknowledgement ? 1 : 0),
+    reasons: [`${probationSubject}已完成观察期并转正，最近通过率 ${probation.observedPassRate}%`],
     status: 'neutral',
   };
 }
@@ -744,6 +1154,73 @@ export function getIntentProjectKnowledgeProfile(): IntentProjectKnowledgeProfil
         addRequiredAssertions: [...(patch.addRequiredAssertions || [])],
         addForbiddenPatterns: [...(patch.addForbiddenPatterns || [])],
       })),
+      fieldPathHints: (rule.fieldPathHints || []).map((hint) => ({
+        label: hint.label,
+        paths: [...hint.paths],
+        stableIdentifiers: [...(hint.stableIdentifiers || [])],
+        whenStepTypes: [...(hint.whenStepTypes || [])],
+        stepTextIncludes: [...(hint.stepTextIncludes || [])],
+      })),
+      recordLookupHints: (rule.recordLookupHints || []).map((hint) => ({
+        stableIdentifiers: [...(hint.stableIdentifiers || [])],
+        whenStepTypes: [...(hint.whenStepTypes || [])],
+        stepTextIncludes: [...(hint.stepTextIncludes || [])],
+        listResponse: hint.listResponse
+          ? {
+              urlIncludes: hint.listResponse.urlIncludes,
+              method: hint.listResponse.method,
+            }
+          : undefined,
+        detailUrl: hint.detailUrl,
+        rowHasTexts: [...(hint.rowHasTexts || [])],
+        searchSurface: hint.searchSurface
+          ? {
+              keywordInput: hint.searchSurface.keywordInput
+                ? {
+                    selector: hint.searchSurface.keywordInput.selector,
+                    placeholderIncludes: hint.searchSurface.keywordInput.placeholderIncludes,
+                    textIncludes: hint.searchSurface.keywordInput.textIncludes,
+                  }
+                : undefined,
+              searchButton: hint.searchSurface.searchButton
+                ? {
+                    selector: hint.searchSurface.searchButton.selector,
+                    placeholderIncludes: hint.searchSurface.searchButton.placeholderIncludes,
+                    textIncludes: hint.searchSurface.searchButton.textIncludes,
+                  }
+                : undefined,
+            }
+          : undefined,
+        tableScope: hint.tableScope
+          ? {
+              selector: hint.tableScope.selector,
+              placeholderIncludes: hint.tableScope.placeholderIncludes,
+              textIncludes: hint.tableScope.textIncludes,
+            }
+          : undefined,
+        detailReadyLocator: hint.detailReadyLocator
+          ? {
+              selector: hint.detailReadyLocator.selector,
+              placeholderIncludes: hint.detailReadyLocator.placeholderIncludes,
+              textIncludes: hint.detailReadyLocator.textIncludes,
+            }
+          : undefined,
+        detailEntry: hint.detailEntry
+          ? {
+              trigger: hint.detailEntry.trigger,
+              actionLabel: hint.detailEntry.actionLabel,
+              target: hint.detailEntry.target,
+              urlIncludes: hint.detailEntry.urlIncludes,
+            }
+          : undefined,
+      })),
+      detailSurfaceHints: (rule.detailSurfaceHints || []).map((hint) => ({
+        stableIdentifiers: [...(hint.stableIdentifiers || [])],
+        whenStepTypes: [...(hint.whenStepTypes || [])],
+        stepTextIncludes: [...(hint.stepTextIncludes || [])],
+        titleIncludes: hint.titleIncludes,
+        scopeHints: [...(hint.scopeHints || [])],
+      })),
     })),
   };
 }
@@ -833,6 +1310,23 @@ function buildIntentProjectKnowledgeAuditDetail(
   sourcePath: string | null,
   meta: IntentProjectKnowledgeAuditMeta
 ): string {
+  const successfulRunPromotionObservationSummary = summarizeIntentSuccessfulRunKnowledgePromotionReceiptObservation(
+    meta.successfulRunKnowledgePromotionReceipt
+  );
+  const successfulRunPromotionSummary = meta.successfulRunKnowledgePromotionReceipt
+    ? [
+        `Successful Run 回执：新增规则 ${meta.successfulRunKnowledgePromotionReceipt.summary.mergedRuleCount} 条`,
+        meta.successfulRunKnowledgePromotionReceipt.summary.runCount > 0
+          ? `关联通过运行 ${meta.successfulRunKnowledgePromotionReceipt.summary.runCount} 条`
+          : '',
+        meta.successfulRunKnowledgePromotionReceipt.summary.helperCount > 0
+          ? `涉及 helper ${meta.successfulRunKnowledgePromotionReceipt.summary.helperCount} 个`
+          : '',
+        successfulRunPromotionObservationSummary,
+      ]
+        .filter(Boolean)
+        .join('，')
+    : '';
   const details = [
     `规则 ${comparison.before.ruleCount} -> ${comparison.after.ruleCount}`,
     `能力 ${comparison.before.capabilitySlugCount} -> ${comparison.after.capabilitySlugCount}`,
@@ -842,10 +1336,44 @@ function buildIntentProjectKnowledgeAuditDetail(
     summarizeAuditIds('移除规则：', comparison.removedRuleIds),
     summarizeAuditIds('更新规则：', comparison.updatedRuleIds),
     operation === 'restore' && sourcePath ? `恢复来源：${sourcePath}` : '',
+    meta.requestedModuleUid ? `作用域模块：${meta.requestedModuleUid}` : '',
+    meta.selectedCandidateFeedbackStatuses && meta.selectedCandidateFeedbackStatuses.length > 0
+      ? `候选反馈：${meta.selectedCandidateFeedbackStatuses.join(' / ')}`
+      : '',
+    meta.selectedRiskyCandidateIds && meta.selectedRiskyCandidateIds.length > 0 ? `风险候选 ${meta.selectedRiskyCandidateIds.length} 条` : '',
+    meta.overrideCandidateIds && meta.overrideCandidateIds.length > 0 ? `请求 override ${meta.overrideCandidateIds.length} 条` : '',
+    meta.appliedOverrideCandidateIds && meta.appliedOverrideCandidateIds.length > 0
+      ? `人工 override 生效 ${meta.appliedOverrideCandidateIds.length} 条`
+      : '',
+    meta.appliedOverrideCandidateFeedbackStatuses && meta.appliedOverrideCandidateFeedbackStatuses.length > 0
+      ? `override 状态：${meta.appliedOverrideCandidateFeedbackStatuses.join(' / ')}`
+      : '',
+    meta.acknowledgedRiskCandidateIds && meta.acknowledgedRiskCandidateIds.length > 0
+      ? `请求风险确认 ${meta.acknowledgedRiskCandidateIds.length} 条`
+      : '',
+    meta.appliedAcknowledgedRiskCandidateIds && meta.appliedAcknowledgedRiskCandidateIds.length > 0
+      ? `风险确认生效 ${meta.appliedAcknowledgedRiskCandidateIds.length} 条`
+      : '',
+    meta.appliedAcknowledgedRiskCandidateFeedbackStatuses && meta.appliedAcknowledgedRiskCandidateFeedbackStatuses.length > 0
+      ? `风险确认状态：${meta.appliedAcknowledgedRiskCandidateFeedbackStatuses.join(' / ')}`
+      : '',
     meta.mergedCandidateIds && meta.mergedCandidateIds.length > 0 ? `已入库候选 ${meta.mergedCandidateIds.length} 条` : '',
+    meta.mergedCandidates && meta.mergedCandidates.length > 0 ? `规则映射候选 ${meta.mergedCandidates.length} 条` : '',
+    meta.mergedCandidateSources && meta.mergedCandidateSources.length > 0 ? `候选来源：${meta.mergedCandidateSources.join(' / ')}` : '',
+    meta.mergedRunIds && meta.mergedRunIds.length > 0 ? `关联通过运行 ${meta.mergedRunIds.length} 条` : '',
     meta.coveredCandidateIds && meta.coveredCandidateIds.length > 0 ? `已覆盖候选 ${meta.coveredCandidateIds.length} 条` : '',
     meta.missingCandidateIds && meta.missingCandidateIds.length > 0 ? `失效候选 ${meta.missingCandidateIds.length} 条` : '',
     meta.skippedRuleIds && meta.skippedRuleIds.length > 0 ? `重复规则 ${meta.skippedRuleIds.length} 条` : '',
+    meta.selectionSummary ? `结构化范围：选中 ${meta.selectionSummary.selectedCandidateCount} 条，实际 merge ${meta.selectionSummary.mergeCandidateCount} 条` : '',
+    meta.selectionSummary && meta.selectionSummary.autoPromoteCandidateIds.length > 0
+      ? `自动晋升候选 ${meta.selectionSummary.autoPromoteCandidateIds.length} 条`
+      : '',
+    meta.selectionSummary && meta.selectionSummary.blockDefaultMergeCandidateIds.length > 0
+      ? `默认阻断候选 ${meta.selectionSummary.blockDefaultMergeCandidateIds.length} 条`
+      : '',
+    meta.preflightSummary ? `结构化预检 ${meta.preflightSummary.itemCount} 项` : '',
+    meta.mergeReceipts && meta.mergeReceipts.length > 0 ? `结构化回执 ${meta.mergeReceipts.length} 条` : '',
+    successfulRunPromotionSummary,
   ].filter(Boolean);
 
   return details.join('；');

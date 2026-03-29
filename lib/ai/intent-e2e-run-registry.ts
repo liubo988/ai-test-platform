@@ -11,6 +11,12 @@ import {
   upsertIntentE2ERunSnapshot,
   type IntentE2ERunSnapshotRecord,
 } from '@/lib/db/repository';
+import {
+  cloneIntentCompiledExecutionTemplate,
+  cloneIntentExecutionStructuredPatch,
+  cloneIntentExecutionStructuredRepairOutput,
+} from '@/lib/intent-execution-artifacts';
+import type { RepairObservationReport } from '@/lib/test-generator';
 
 export type IntentE2ERunStatus = 'created' | 'running' | 'passed' | 'failed' | 'canceled';
 
@@ -43,9 +49,22 @@ export interface IntentE2ERunRecord {
   error: string | null;
 }
 
+function cloneRepairObservationReport(report?: RepairObservationReport | null): RepairObservationReport | undefined {
+  if (!report) return undefined;
+
+  return {
+    ...report,
+    probes: (report.probes || []).map((probe) => ({
+      ...probe,
+      evidence: [...(probe.evidence || [])],
+    })),
+  };
+}
+
 interface IntentE2ERunInternalRecord {
   state: IntentE2ERunRecord;
   projectUid: string;
+  moduleUid: string;
   abortController: AbortController;
   listeners: Set<(event: IntentE2EStreamEvent) => void>;
   completionPromise: Promise<void> | null;
@@ -96,6 +115,115 @@ function cloneRunState(state: IntentE2ERunRecord): IntentE2ERunRecord {
     result: state.result
       ? {
           ...state.result,
+          resolvedUrls: state.result.resolvedUrls
+            ? {
+                targetUrl: state.result.resolvedUrls.targetUrl,
+                scenarioEntryUrl: state.result.resolvedUrls.scenarioEntryUrl,
+                precheckUrl: state.result.resolvedUrls.precheckUrl,
+                analyzeUrl: state.result.resolvedUrls.analyzeUrl,
+              }
+            : undefined,
+          compiledTemplate: cloneIntentCompiledExecutionTemplate(state.result.compiledTemplate),
+          executionPlan: state.result.executionPlan
+            ? {
+                ...state.result.executionPlan,
+                sharedVariables: [...state.result.executionPlan.sharedVariables],
+                matchedRecipeSlugs: [...(state.result.executionPlan.matchedRecipeSlugs || [])],
+                globalRules: [...state.result.executionPlan.globalRules],
+                preferredPrimitives: [...state.result.executionPlan.preferredPrimitives],
+                outputContract: [...state.result.executionPlan.outputContract],
+                steps: state.result.executionPlan.steps.map((step) => ({
+                  ...step,
+                  allowedActions: [...step.allowedActions],
+                  preferredHelpers: [...step.preferredHelpers],
+                  requiredAssertions: [...step.requiredAssertions],
+                  sharedVariables: [...step.sharedVariables],
+                  dependsOnPlanStepUids: [...step.dependsOnPlanStepUids],
+                })),
+              }
+            : undefined,
+          verificationPlan: state.result.verificationPlan
+            ? {
+                ...state.result.verificationPlan,
+                matchedRecipeSlugs: [...(state.result.verificationPlan.matchedRecipeSlugs || [])],
+                policyNotes: [...(state.result.verificationPlan.policyNotes || [])],
+                checks: state.result.verificationPlan.checks.map((check) => ({
+                  ...check,
+                  stableIdentifiers: [...(check.stableIdentifiers || [])],
+                  expectedFields: [...(check.expectedFields || [])],
+                  fieldPathHints: (check.fieldPathHints || []).map((hint) => ({
+                    label: hint.label,
+                    paths: [...hint.paths],
+                  })),
+                  fieldSpecs: (check.fieldSpecs || []).map((spec) => ({
+                    label: spec.label,
+                    expectedSource: spec.expectedSource,
+                    preferredPaths: [...(spec.preferredPaths || [])],
+                    scopeHints: [...(spec.scopeHints || [])],
+                  })),
+                  recordLookup: check.recordLookup
+                    ? {
+                        listResponse: check.recordLookup.listResponse
+                          ? {
+                              urlIncludes: check.recordLookup.listResponse.urlIncludes,
+                              method: check.recordLookup.listResponse.method,
+                            }
+                          : undefined,
+                        detailUrl: check.recordLookup.detailUrl,
+                        rowHasTexts: [...(check.recordLookup.rowHasTexts || [])],
+                        searchSurface: check.recordLookup.searchSurface
+                          ? {
+                              keywordInput: check.recordLookup.searchSurface.keywordInput
+                                ? {
+                                    selector: check.recordLookup.searchSurface.keywordInput.selector,
+                                    placeholderIncludes: check.recordLookup.searchSurface.keywordInput.placeholderIncludes,
+                                    textIncludes: check.recordLookup.searchSurface.keywordInput.textIncludes,
+                                  }
+                                : undefined,
+                              searchButton: check.recordLookup.searchSurface.searchButton
+                                ? {
+                                    selector: check.recordLookup.searchSurface.searchButton.selector,
+                                    placeholderIncludes: check.recordLookup.searchSurface.searchButton.placeholderIncludes,
+                                    textIncludes: check.recordLookup.searchSurface.searchButton.textIncludes,
+                                  }
+                                : undefined,
+                            }
+                          : undefined,
+                        tableScope: check.recordLookup.tableScope
+                          ? {
+                              selector: check.recordLookup.tableScope.selector,
+                              placeholderIncludes: check.recordLookup.tableScope.placeholderIncludes,
+                              textIncludes: check.recordLookup.tableScope.textIncludes,
+                            }
+                          : undefined,
+                        detailReadyLocator: check.recordLookup.detailReadyLocator
+                          ? {
+                              selector: check.recordLookup.detailReadyLocator.selector,
+                              placeholderIncludes: check.recordLookup.detailReadyLocator.placeholderIncludes,
+                              textIncludes: check.recordLookup.detailReadyLocator.textIncludes,
+                            }
+                          : undefined,
+                        detailEntry: check.recordLookup.detailEntry
+                          ? {
+                              trigger: check.recordLookup.detailEntry.trigger,
+                              actionLabel: check.recordLookup.detailEntry.actionLabel,
+                              target: check.recordLookup.detailEntry.target,
+                              urlIncludes: check.recordLookup.detailEntry.urlIncludes,
+                            }
+                          : undefined,
+                      }
+                    : undefined,
+                  detailSurface: check.detailSurface
+                    ? {
+                        titleIncludes: check.detailSurface.titleIncludes,
+                        scopeHints: [...(check.detailSurface.scopeHints || [])],
+                      }
+                    : undefined,
+                  preferredHelpers: [...check.preferredHelpers],
+                  relatedPlanStepUids: [...check.relatedPlanStepUids],
+                })),
+              }
+            : undefined,
           knowledge: state.result.knowledge
             ? {
                 ...state.result.knowledge,
@@ -105,6 +233,110 @@ function cloneRunState(state: IntentE2ERunRecord): IntentE2ERunRecord {
                 suggestedHelpers: [...state.result.knowledge.suggestedHelpers],
               }
             : state.result.knowledge ?? null,
+          knowledgeCandidates: (state.result.knowledgeCandidates || []).map((candidate) => ({
+            candidateId: candidate.candidateId,
+            source: candidate.source,
+            createdAt: candidate.createdAt,
+            targetUrl: candidate.targetUrl,
+            description: candidate.description,
+            checkUid: candidate.checkUid,
+            stableIdentifiers: [...candidate.stableIdentifiers],
+            preferredHelpers: [...candidate.preferredHelpers],
+            matchedRuleIds: [...candidate.matchedRuleIds],
+            ...(candidate.observationTags ? { observationTags: [...candidate.observationTags] } : {}),
+            ...(candidate.observationSummary ? { observationSummary: candidate.observationSummary } : {}),
+            rule: {
+              ...candidate.rule,
+              match: {
+                urlIncludes: [...(candidate.rule.match.urlIncludes || [])],
+                titleIncludes: [...(candidate.rule.match.titleIncludes || [])],
+                bodyIncludes: [...(candidate.rule.match.bodyIncludes || [])],
+                descriptionIncludes: [...(candidate.rule.match.descriptionIncludes || [])],
+                frameUrlIncludes: [...(candidate.rule.match.frameUrlIncludes || [])],
+                frameSelectorIncludes: [...(candidate.rule.match.frameSelectorIncludes || [])],
+              },
+              promptNotes: [...candidate.rule.promptNotes],
+              capabilitySlugs: [...candidate.rule.capabilitySlugs],
+              addGlobalRules: [...candidate.rule.addGlobalRules],
+              addPreferredPrimitives: [...candidate.rule.addPreferredPrimitives],
+              addOutputContract: [...candidate.rule.addOutputContract],
+              stepPatches: candidate.rule.stepPatches.map((patch) => ({
+                whenStepTypes: [...(patch.whenStepTypes || [])],
+                stepTextIncludes: [...(patch.stepTextIncludes || [])],
+                addAllowedActions: [...(patch.addAllowedActions || [])],
+                addPreferredHelpers: [...(patch.addPreferredHelpers || [])],
+                addRequiredAssertions: [...(patch.addRequiredAssertions || [])],
+                addForbiddenPatterns: [...(patch.addForbiddenPatterns || [])],
+              })),
+              fieldPathHints: (candidate.rule.fieldPathHints || []).map((hint) => ({
+                label: hint.label,
+                paths: [...hint.paths],
+                stableIdentifiers: [...(hint.stableIdentifiers || [])],
+                whenStepTypes: [...(hint.whenStepTypes || [])],
+                stepTextIncludes: [...(hint.stepTextIncludes || [])],
+              })),
+              recordLookupHints: (candidate.rule.recordLookupHints || []).map((hint) => ({
+                stableIdentifiers: [...(hint.stableIdentifiers || [])],
+                whenStepTypes: [...(hint.whenStepTypes || [])],
+                stepTextIncludes: [...(hint.stepTextIncludes || [])],
+                listResponse: hint.listResponse
+                  ? {
+                      urlIncludes: hint.listResponse.urlIncludes,
+                      method: hint.listResponse.method,
+                    }
+                  : undefined,
+                detailUrl: hint.detailUrl,
+                rowHasTexts: [...(hint.rowHasTexts || [])],
+                searchSurface: hint.searchSurface
+                  ? {
+                      keywordInput: hint.searchSurface.keywordInput
+                        ? {
+                            selector: hint.searchSurface.keywordInput.selector,
+                            placeholderIncludes: hint.searchSurface.keywordInput.placeholderIncludes,
+                            textIncludes: hint.searchSurface.keywordInput.textIncludes,
+                          }
+                        : undefined,
+                      searchButton: hint.searchSurface.searchButton
+                        ? {
+                            selector: hint.searchSurface.searchButton.selector,
+                            placeholderIncludes: hint.searchSurface.searchButton.placeholderIncludes,
+                            textIncludes: hint.searchSurface.searchButton.textIncludes,
+                          }
+                        : undefined,
+                    }
+                  : undefined,
+                tableScope: hint.tableScope
+                  ? {
+                      selector: hint.tableScope.selector,
+                      placeholderIncludes: hint.tableScope.placeholderIncludes,
+                      textIncludes: hint.tableScope.textIncludes,
+                    }
+                  : undefined,
+                detailReadyLocator: hint.detailReadyLocator
+                  ? {
+                      selector: hint.detailReadyLocator.selector,
+                      placeholderIncludes: hint.detailReadyLocator.placeholderIncludes,
+                      textIncludes: hint.detailReadyLocator.textIncludes,
+                    }
+                  : undefined,
+                detailEntry: hint.detailEntry
+                  ? {
+                      trigger: hint.detailEntry.trigger,
+                      actionLabel: hint.detailEntry.actionLabel,
+                      target: hint.detailEntry.target,
+                      urlIncludes: hint.detailEntry.urlIncludes,
+                    }
+                  : undefined,
+              })),
+              detailSurfaceHints: (candidate.rule.detailSurfaceHints || []).map((hint) => ({
+                stableIdentifiers: [...(hint.stableIdentifiers || [])],
+                whenStepTypes: [...(hint.whenStepTypes || [])],
+                stepTextIncludes: [...(hint.stepTextIncludes || [])],
+                titleIncludes: hint.titleIncludes,
+                scopeHints: [...(hint.scopeHints || [])],
+              })),
+            },
+          })),
           attempts: state.result.attempts.map((attempt) => ({
             ...attempt,
             events: attempt.events.map((event) => ({ ...event })),
@@ -115,6 +347,9 @@ function cloneRunState(state: IntentE2ERunRecord): IntentE2ERunRecord {
                   usedSuggestedHelpers: [...attempt.helperUsage.usedSuggestedHelpers],
                 }
               : undefined,
+            structuredPatch: cloneIntentExecutionStructuredPatch(attempt.structuredPatch),
+            repairOutput: cloneIntentExecutionStructuredRepairOutput(attempt.repairOutput),
+            repairObservationReport: cloneRepairObservationReport(attempt.repairObservationReport),
             result: {
               ...attempt.result,
               steps: attempt.result.steps.map((step) => ({ ...step })),
@@ -234,10 +469,11 @@ function isRestoredRunStale(state: IntentE2ERunRecord, now = Date.now()): boolea
   return now - heartbeatTs > RUN_RECOVERY_STALE_MS;
 }
 
-function buildRunSnapshot(state: IntentE2ERunRecord, projectUid = '') {
+function buildRunSnapshot(state: IntentE2ERunRecord, projectUid = '', moduleUid = '') {
   return {
     runId: state.runId,
     projectUid,
+    moduleUid,
     status: state.status,
     stage: state.stage,
     requestInput: state.request.input,
@@ -252,7 +488,7 @@ function buildRunSnapshot(state: IntentE2ERunRecord, projectUid = '') {
 }
 
 function queueRunPersistence(record: IntentE2ERunInternalRecord): Promise<void> {
-  const snapshot = buildRunSnapshot(record.state, record.projectUid);
+  const snapshot = buildRunSnapshot(record.state, record.projectUid, record.moduleUid);
   const task = record.persistenceQueue
     .catch(() => {})
     .then(async () => {
@@ -377,6 +613,7 @@ export function createIntentE2ERun(request: IntentE2ERunRequest): IntentE2ERunRe
       error: null,
     },
     projectUid: request.projectUid?.trim() || '',
+    moduleUid: request.moduleUid?.trim() || '',
     abortController: new AbortController(),
     listeners: new Set(),
     completionPromise: null,
@@ -410,7 +647,7 @@ export async function loadIntentE2ERun(runId: string): Promise<IntentE2ERunRecor
   }
 
   const interrupted = markRunAsInterrupted(loaded);
-  await upsertIntentE2ERunSnapshot(buildRunSnapshot(interrupted, snapshot.projectUid));
+  await upsertIntentE2ERunSnapshot(buildRunSnapshot(interrupted, snapshot.projectUid, snapshot.moduleUid || ''));
   return cloneRunState(interrupted);
 }
 
@@ -473,6 +710,7 @@ export function startIntentE2ERun(runId: string, request: IntentE2ERunRequest): 
   }
 
   record.projectUid = record.projectUid || request.projectUid?.trim() || '';
+  record.moduleUid = record.moduleUid || request.moduleUid?.trim() || '';
   record.state.status = 'running';
   record.state.startedAt = nowIso();
   record.state.updatedAt = record.state.startedAt;

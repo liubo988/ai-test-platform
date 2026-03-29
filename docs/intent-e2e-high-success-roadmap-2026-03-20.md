@@ -1,0 +1,15416 @@
+# Intent E2E 首次高成功率与自主学习路线图（2026-03-20）
+
+## 文档目的
+
+这份文档从 2026-03-20 起作为 `intent-e2e` 下一阶段开发主文档。
+
+目标不是继续零散补 prompt 或单个 helper，而是把当前系统从“可运行的 AI 代码生成 MVP”推进到“高首次成功率、可量化、可自主学习”的结构化执行系统。
+
+后续每完成一个开发步骤，统一更新本文件的：
+
+- 阶段状态
+- 本轮完成内容
+- 验证结果
+- 当前风险
+- 下一步
+
+## 今日结论
+
+- 当前系统已经可以完成一部分端到端测试，但还不能视为高成功率可用系统。
+- 当前系统更接近“带 ScenarioCard、DSL、helper、repair memory 的代码生成器”，还不是“结构化执行 + grader 驱动学习”的 agent system。
+- 后续开发优先级应切换为：
+  1. 建立 eval 与 trace 基线
+  2. 把执行主链路从“自由代码生成”切到“结构化 ExecutionPlan/IR”
+  3. 把业务验收从 UI 文本断言升级到主键/API/详情三路验证
+  4. 把 repair memory 升级成 trace -> grader -> asset promotion 的学习闭环
+
+## 官方设计基线（2026-03-20 评审）
+
+本轮路线主要参考 OpenAI 官方文档中的以下能力方向：
+
+- Structured Outputs / JSON Schema：高风险中间产物应尽量结构化，而不是自由文本
+- Responses API：统一承接多轮、多模态、工具调用与流式输出
+- Building agents / tool use：复杂任务不应只依赖一次性大 prompt 生成最终代码
+- Evals guide：优化前先定义可量化目标和评测样本
+- Graders guide：需要 workflow 级 grader，而不是只看最终 pass/fail
+- Tracing / observability：需要 trace 级可观测性，才能定位链路问题并沉淀可复用能力
+
+## 当前状态快照
+
+### 真实运行数据
+
+基于 `GET /api/intent-e2e/insights?projectUid=proj_default` 的当前统计：
+
+- 总运行数：49
+- 通过：7
+- 失败：41
+- 取消：1
+- 通过率：14.3%
+- knowledge hit rate：0%
+- suggested helper reuse rate：0%
+
+当前最主要失败类别：
+
+- `assertion_too_strict`: 8
+- `unknown`: 7
+- `auth_failed`: 6
+- `selector_drift`: 3
+- `ui_anchor_missing`: 3
+
+当前使用频率较高的 helper：
+
+- `__e2e.ensureLoggedIn`: 25 次，pass rate 16%
+- `__e2e.selectAntdOption`: 25 次，pass rate 16%
+- `__e2e.switchBusinessListOwnershipView`: 17 次，pass rate 23.5%
+- `__e2e.observeSubmitState`: 11 次，pass rate 27.3%
+- `__e2e.waitForApiResponse`: 11 次，pass rate 27.3%
+
+### 真实 run 证据
+
+- `intent-run-8d0e3ee9-c903-44eb-8656-0e42ec84f362`
+  - 已完整进入 `planning -> prechecking -> analyzing -> generating -> executing`
+  - 提交后已经出现 `api response matched`、`submit state observed`
+  - 最终失败在 `未找到表格目标行`
+- `intent-run-a9fe3859-008c-4b62-8f0d-77b45514925e`
+  - 提交后也已经观察到成功信号和列表切换
+  - 最终失败在错行断言，不是“其实成功但 UI 误显示失败”
+
+结论：当前瓶颈已经不是链路跑不起来，而是业务结果验证和稳定执行仍不够强。
+
+## 当前设计里合理的部分
+
+- `ScenarioCard` 已经走 strict schema 结构化输出，这一步方向正确
+- 已有 `precheck -> analyze -> generate/repair -> execute -> insights/memory` 的完整闭环
+- 已有 DSL、动作库、starter helper、project knowledge，不再是纯 prompt 裸奔
+- 已对高频中后台问题沉淀执行层 helper，例如：
+  - `__e2e.ensureLoggedIn`
+  - `__e2e.selectAntdOption`
+  - `__e2e.waitForApiResponse`
+  - `__e2e.observeSubmitState`
+  - `__e2e.findAntdTableRow`
+- `analyzing` 阶段总超时已经补齐，系统不会再无限挂起
+
+## 当前设计的核心不足
+
+### 1. 结构化只做到规划，没有做到执行
+
+当前 `ScenarioCard` 是结构化的，但 `generateTest()` / `repairTest()` 主输出仍是整段自由文本代码。
+
+这导致最脆弱、最影响通过率的阶段仍然依赖模型一次性写出完整 Playwright 脚本。
+
+### 2. 执行主链路仍然是“一次分析 -> 一次生成 -> 失败后整段 repair”
+
+当前更像：
+
+`一次 snapshot -> prompt 生成完整脚本 -> 执行 -> triage -> repair 整段脚本`
+
+这对简单页面可用，但对复杂中后台、抽屉、弹层、列表刷新、数据回查并不稳。
+
+### 3. 页面理解还是一次性快照为主
+
+当前生成前主要依赖 `analyzePage()` 的一次性页面快照。
+
+运行过程中新出现的弹层、抽屉、错误态、刷新后的列表、二次路由切换，不属于生成时主上下文的一部分。
+
+### 4. 业务验收层仍偏 UI 文本断言
+
+最近真实失败已经证明：
+
+- 接口成功不等于业务成功已被稳定证明
+- 页面跳转不等于列表收敛已完成
+- 找到一行文本不等于找到了正确业务实体
+
+真正缺的是“主键提取 -> 主键检索 -> 列表/API/详情三路验收”的领域 verifier。
+
+### 5. 自主学习能力仍是雏形
+
+当前已有：
+
+- repair memory
+- starter helper 建议
+- project knowledge probation / rollback
+
+但它们还主要基于错误文本和规则命中统计，不是 trace 级、grader 级、eval 驱动的学习闭环。
+
+### 6. 执行面仍有隐性脆弱性
+
+当前执行前仍依赖 `tsToJs` 做 regex 级 TypeScript 剥离。
+
+这不是高置信执行面，后续应收口为：
+
+- 只允许主链路输出 JavaScript
+- 或直接改为结构化 IR 编译，不再接收自由代码
+
+## 后续开发总路线
+
+## 阶段状态
+
+- R0：架构评审与路线冻结，已完成
+- R1：Eval 基线与 Trace 结构化，已完成
+- R2：ExecutionPlan/IR 结构化执行主链路，已完成（当前 roadmap scope）
+- R3：业务 verifier 与主键优先验收，已完成（当前 roadmap scope）
+- R4：Recipe / Capability Registry，已完成
+- R5：学习闭环（trace -> grader -> asset promotion），已完成
+- R6：受控 repair 与 agent toolization，已完成（当前 roadmap scope）
+- R7：灰度、SLO 与治理闭环，已完成（第四刀：上线灰度策略已落地）
+
+## R1：Eval 基线与 Trace 结构化
+
+### 目标
+
+先把“好没好”定义清楚，避免后续继续凭感觉优化。
+
+### 交付物
+
+- 场景分层：至少区分 page task / simple scenario / complex enterprise flow
+- 指标分层：
+  - `first_pass_rate`
+  - `repair_pass_rate`
+  - `terminal_pass_rate`
+  - `auth_block_rate`
+  - `env_block_rate`
+  - `assertion_failure_rate`
+- trace schema：
+  - scenario family
+  - snapshot signature
+  - matched knowledge / starter helpers
+  - chosen helpers / chosen recipe
+  - key response events
+  - verifier results
+  - final grader result
+- 固定评测集：至少覆盖当前最高频的 5 到 10 个真实业务流
+
+### 完成标准
+
+- 后续任何策略变更都能量化对比 first pass 是否提升
+- 可以按 scenario family 看通过率，而不是只看全局平均值
+
+## R2：ExecutionPlan / IR 结构化执行主链路
+
+### 目标
+
+把执行主链路从“自由代码生成”切成“结构化计划 -> 编译执行”。
+
+### 交付物
+
+- 新的 `ExecutionPlan` schema
+- Planner 输出从 `ScenarioCard` 扩展到：
+  - `ScenarioCard`
+  - `ExecutionPlan`
+  - `VerificationPlan`
+- 编译器把 `ExecutionPlan` 转成稳定执行步骤
+- 主链路不再要求模型直接生成整段 Playwright 代码
+
+### 完成标准
+
+- 首轮主路径不再依赖 `generateTest()` 直接生成完整脚本
+- `tsToJs` 不再是主执行链路依赖
+
+## R3：业务 verifier 与主键优先验收
+
+### 目标
+
+把“业务成功”从模糊 UI 文本提升到稳定、可解释的验收证据。
+
+### 首批优先场景
+
+- 新建商机后回列表验收
+- 商机转订单
+- 列表搜索并进入详情
+- 弹层 / 抽屉编辑并保存
+
+### 交付物
+
+- 主键提取 helper / verifier：
+  - `businessId`
+  - `orderId`
+  - 其他真实业务主键
+- 三路验收策略：
+  - 列表结果验收
+  - API 响应验收
+  - 详情页 / 详情抽屉验收
+- 每个核心 scenario family 至少有一个稳定 verifier 模板
+
+### 完成标准
+
+- “接口成功但最终仍失败”的 run 显著下降
+- “错行命中 / 回列表找不到记录”的失败从主失败类退出
+
+## R4：Recipe / Capability Registry
+
+### 目标
+
+把高频成功路径从 prompt 经验升级成版本化能力资产。
+
+### 交付物
+
+- recipe schema：
+  - `slug`
+  - `matchers`
+  - `requiredContext`
+  - `executorPlan`
+  - `verifierPlan`
+  - `knownPitfalls`
+  - `successRate`
+  - `lastVerifiedAt`
+- 首批 recipe：
+  - unified login
+  - antd modal/drawer save
+  - antd table primary-key search
+  - business create
+  - business list ownership switch
+- 路由器：优先命中稳定 recipe，其次才回退通用 planner
+
+### 完成标准
+
+- 高频业务流的首轮执行优先走 deterministic recipe
+- helper 使用不再主要靠 prompt 建议，而靠 recipe/compiler 默认选择
+
+## R5：学习闭环（trace -> grader -> asset promotion）
+
+### 目标
+
+把“修成功一次”升级成“系统能学会下次更稳”。
+
+### 交付物
+
+- grader 体系：
+  - scenario grader
+  - verifier grader
+  - failure root-cause grader
+- success trace promotion：
+  - 从成功 trace 提炼 recipe/knowledge/helper 候选
+- 失败 trace promotion：
+  - 从高频失败 trace 提炼 verifier 缺口和 anti-pattern
+- 自动进入 probation，再决定转正或回滚
+
+### 完成标准
+
+- 学习来源不再主要依赖错误文本聚类
+- knowledge / starter helper / recipe 的提升有明确 trace 和 grader 证据
+
+## R6：受控 repair 与 agent toolization
+
+### 目标
+
+把 repair 从“整段脚本重写”改成“局部计划修补 + 受控观察”。
+
+### 交付物
+
+- repair 输入变成：
+  - failed plan node
+  - latest trace
+  - verifier result
+  - grader diagnosis
+- repair 输出变成：
+  - patched plan
+  - patched verifier
+  - patched recipe selection
+- 在 repair 阶段允许受控工具式观察，而不是只靠上一轮旧 snapshot
+
+### 完成标准
+
+- repair 不再以整段脚本重写为主
+- repair 成功经验可直接回流 recipe / verifier / knowledge
+
+## R7：灰度、SLO 与治理闭环
+
+### 目标
+
+确保这套系统后续不是“能做 demo”，而是“可持续演进”。
+
+### 交付物
+
+- 场景族 SLO
+- first pass 提升目标
+- regression watchlist
+- recipe / knowledge 自动降级与回滚规则
+- 上线灰度策略
+
+### 完成标准
+
+- 每轮迭代都能明确回答：
+  - 哪类场景提升了
+  - 哪类场景退化了
+  - 哪条规则应该转正
+  - 哪条规则应该回滚
+
+## 下一步固定顺序
+
+下一步开发从 `R1.1` 开始，不再继续零散补 prompt。
+
+### R1.1 第一优先级
+
+建立 `intent-e2e` 的评测与 trace 基线：
+
+- 定义 scenario family
+- 落 trace schema
+- 给洞察接口增加 `first_pass_rate / repair_pass_rate / terminal_pass_rate`
+- 建一批固定评测 run 样本
+
+没有这一步，后续任何“高成功率”都无法被证明。
+
+## 进度更新模板
+
+后续每次更新请追加一个新小节，格式固定为：
+
+### YYYY-MM-DD 第 N 次更新（标题）
+
+- 本轮目标：
+- 已完成：
+- 验证：
+- 当前阶段状态：
+- 风险 / 未完成：
+- 下一步：
+
+## 2026-03-20 首次落版
+
+- 已完成当前架构评审
+- 已冻结后续路线图
+- 已确认下一步从 `R1.1 Eval 基线与 Trace 结构化` 开始
+
+## 2026-03-20 第二次更新（R1.1 第一批量化基线：scenario family + first/repair/terminal pass）
+
+- 本轮目标：
+  - 先把 `R1.1` 里最影响后续评估的量化基线落下来，不直接进入执行链路重构
+  - 具体先做 `scenario family`、`first_pass_rate / repair_pass_rate / terminal_pass_rate`
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts` 已新增场景族分类：
+    - `page_task`
+    - `simple_scenario`
+    - `complex_enterprise_flow`
+    - `unknown`
+  - `GET /api/intent-e2e/insights` 的 `summary` 已新增：
+    - `firstPassPassedRuns`
+    - `firstPassPassRate`
+    - `repairedPassRuns`
+    - `repairedPassRate`
+    - `terminalPassRate`
+  - `GET /api/intent-e2e/insights` 已新增 `scenarioFamilies[]` 聚合，每个场景族都会返回：
+    - total / passed / failed / canceled
+    - first pass rate
+    - repair pass rate
+    - terminal pass rate
+  - 工作台洞察面板已同步展示：
+    - first pass
+    - repair pass
+    - 场景族基线
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中
+  - R1.1：已完成第一批量化基线，后续继续补 trace schema 和固定评测集
+- 风险 / 未完成：
+  - 当前 `scenario family` 还是基于 `ScenarioCard + requestInput` 的规则分类，不是最终版本
+  - trace schema 还没有显式版本化，也还没有整理成 grader 可直接消费的结构
+  - 固定评测样本集还没建，当前仍主要依赖历史真实 run 统计
+- 下一步：
+  - 继续做 `R1.1` 的第二批内容：定义 trace schema，先把 scenario family、attempt outcome、knowledge hit、helper choice、关键失败类整理成稳定 trace 摘要
+
+## 2026-03-20 第三次更新（R1.1 第二批 trace 摘要：recent traces + attempt chain）
+
+- 本轮目标：
+  - 不新增 DB schema，先把现有 run snapshot 里已经持久化的数据整理成稳定 trace 摘要
+  - 先补 run 级/attempt 级 summary、snapshot signature、key signals，给后续 grader、固定评测集和 recipe 提炼提供统一输入面
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts` 已新增 `recentTraces[]`，每条 trace 现在会稳定返回：
+    - `traceVersion`
+    - `runId / status / finishedAt`
+    - `scenarioFamily / taskMode / stepCount / stepTypes`
+    - `targetUrl / targetPath / snapshotSignature`
+    - `knowledgeHit / matchedRuleIds / matchedRuleTitles`
+    - `suggestedHelpers / usedHelpers / usedSuggestedHelpers`
+    - `attemptCount / repairAttempted / firstPassSucceeded / repairedSucceeded`
+    - `keySignals / failureClass`
+    - `attempts[]` 的结果链（attempt、kind、outcome、failureClass、helper、signals）
+  - 已补一个轻量 `snapshotSignature`：
+    - 当前按 `scenarioFamily + taskMode + targetPath + stepTypes` 生成
+    - 先作为 trace 聚类和固定评测集选样时的稳定 key
+  - 已从 attempt logs 中抽出第一批关键执行 signal：
+    - `env_login_completed`
+    - `api_response_matched`
+    - `submit_navigation_settled`
+    - `submit_success_locator_visible`
+    - `submit_state_observed`
+    - `ant_modal_resolved`
+    - `table_row_matched`
+    - `business_list_ownership_switched`
+  - `components/IntentE2EWorkbench.tsx` 的洞察面板已新增“最近 Trace 摘要”，可以直接看到：
+    - 最近终态运行的 snapshot signature
+    - attempt 链
+    - knowledge/helper 命中
+    - key signal
+    - 最终失败类
+  - 路由和单测已同步覆盖新字段
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中
+  - R1.1：已完成第二批 trace 摘要基线，固定评测样本集待开始
+- 风险 / 未完成：
+  - 当前 trace 还是从 run snapshot 派生，不是独立持久化的 trace schema/table
+  - `recipe / starter asset / verifier result / final grader result` 还没进入 trace 摘要
+  - 固定评测 run 样本集还没建，当前仍主要基于历史真实运行做洞察
+- 下一步：
+  - 继续完成 `R1.1` 最后一块：建立固定评测样本集，并把 `recentTraces` 和真实高频场景做映射
+  - `R1.1` 收口后，再进入 `R2 ExecutionPlan / IR` 主链路重构
+
+## 2026-03-20 第四次更新（R1.1 最后一批：固定评测候选集）
+
+- 本轮目标：
+  - 把 `recentTraces` 真正组织成可复用的固定评测候选集，不再只是“最近几条运行日志”
+  - 先基于 `snapshotSignature` 做稳定聚类，把高频、复杂、失败或依赖 repair 的真实业务流选成评测基线
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts` 已新增 `evaluationBaseline`：
+    - `generatedFromRuns`
+    - `candidateClusters`
+    - `recommendedCount`
+    - `recommendedFamilies`
+    - `selectionNote`
+    - `candidates[]`
+  - 每个 `evaluationBaseline.candidates[]` 现在会稳定返回：
+    - `evalCaseId`
+    - `snapshotSignature`
+    - `scenarioFamily / taskMode / targetPath / stepTypes / stepCount`
+    - `runCount / passedRuns / failedRuns / canceledRuns`
+    - `firstPassPassRate / repairedPassRate / terminalPassRate`
+    - `repairAttemptedRuns`
+    - `knowledgeHitRuns / knowledgeHitRate`
+    - `representativeScenarioTitle / representativeRequestInput / representativeRunIds`
+    - `matchedRuleIds / matchedRuleTitles / usedHelpers / keySignals / failureClasses`
+    - `priority`
+    - `selectionReason`
+  - 候选集当前按 `snapshotSignature` 聚类，并按以下优先级排序选样：
+    - 高复杂度企业流程优先
+    - 高频真实业务流优先
+    - 含失败样本、repair 样本的流优先
+  - `components/IntentE2EWorkbench.tsx` 的洞察面板已新增“固定评测候选集”，现在可以直接看到：
+    - 推荐评测簇数量
+    - 每个评测簇的 first / repair / terminal pass
+    - 代表 run
+    - 高频失败类
+    - 高频 helper / signal / 规则命中
+  - 路由 mock 和单测已同步覆盖新字段与聚类逻辑
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成，剩余 verifier / grader 相关 trace 字段在 R3 / R5 随能力落地）
+  - R1.1：已完成
+- 风险 / 未完成：
+  - 当前固定评测集还是“基于历史真实 run 自动推荐的候选集”，还不是独立持久化、人工冻结的正式 eval registry
+  - `chosen recipe / verifier result / final grader result` 还未进入 trace，因为相关执行结构本身还没正式落地
+  - 候选集目前以 `snapshotSignature` 为主键，后续若引入 `ExecutionPlan`，需要把聚类 key 升级成更稳定的 plan signature
+- 下一步：
+  - 开始 `R2 ExecutionPlan / IR`：
+    - 先定义 `ExecutionPlan` 最小 schema
+    - 把当前 `ScenarioCard -> generateTest()` 的自由代码主链路切出第一条结构化编译通路
+
+## 2026-03-20 第五次更新（R2.1 第一批：ExecutionPlan / VerificationPlan 最小落地）
+
+- 本轮目标：
+  - 先把 `R2` 的结构化执行输入面立住，不直接重写执行器
+  - 用确定性 builder 把最终 DSL 编译成 `ExecutionPlan / VerificationPlan`，并接入当前 prompt / run result / UI
+- 已完成：
+  - 已新增 `lib/intent-execution-plan.ts`，定义并实现：
+    - `IntentExecutionPlan`
+    - `IntentExecutionPlanStep`
+    - `IntentVerificationPlan`
+    - `IntentVerificationPlanCheck`
+    - `buildIntentExecutionPlan(...)`
+    - `buildIntentVerificationPlan(...)`
+    - `renderIntentExecutionPlan(...)`
+    - `renderIntentVerificationPlan(...)`
+  - `resolveIntentPromptPlanningContext(...)` 现在除了返回 `dsl / knowledge / starterHelpers`，还会返回：
+    - `executionPlan`
+    - `verificationPlan`
+  - 这两个 plan 不是从原始 `ScenarioCard` 直接生搬，而是从已经过：
+    - auth hint
+    - snapshot hint
+    - project knowledge
+    - starter asset
+    处理后的最终 DSL 确定性编译而来
+  - `buildPrompt(...)` 已新增结构化计划区块：
+    - `ExecutionPlan（结构化执行计划）`
+    - `VerificationPlan（结构化验收计划）`
+  - `IntentE2ERunResult` 已新增：
+    - `executionPlan`
+    - `verificationPlan`
+  - run registry 的 snapshot clone 链路已同步深拷贝新字段
+  - 工作台详情区已新增：
+    - `ExecutionPlan`
+    - `VerificationPlan`
+    现在能直接看到结构化步骤、allowed actions、preferred helpers 和验收检查项
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-plan.spec.ts tests/unit/scenario-card.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 第一批最小 schema + prompt integration 已落地）
+- 风险 / 未完成：
+  - 当前执行主链路仍然是“LLM 生成完整 JS 脚本”，`ExecutionPlan` 还没有成为真正的主执行 source of truth
+  - 还没有把 `ExecutionPlan` 编译成稳定的 Playwright 执行骨架，也还没有真正摆脱自由代码生成
+  - `VerificationPlan` 目前还是 deterministic heuristic，不是正式的 verifier / grader engine
+- 下一步：
+  - 继续做 `R2.2`：
+    - 先把 `ExecutionPlan` 编译成受控的 Playwright 测试骨架 / step skeleton
+    - 让主链路从“整段自由代码生成”切成“结构化 plan + 局部代码填充”
+
+## 2026-03-20 第六次更新（R2.2 第一批：ExecutionPlan -> 受控执行脚手架）
+
+- 本轮目标：
+  - 把 `ExecutionPlan` 真正往执行面推进一步，不再只停留在 prompt 里的结构化说明
+  - 先落一个“确定性外壳 + step slot + verification slot”的编译器，让首轮生成从空白整段 JS 改成基于受控脚手架补全
+- 已完成：
+  - 已新增 `lib/intent-execution-compiler.ts`，实现：
+    - `compileIntentExecutionTemplate(...)`
+    - `renderCompiledIntentExecutionTemplate(...)`
+  - 编译器现在会把 `ExecutionPlan / VerificationPlan` 确定性编译成：
+    - 固定 `test(...)` 外壳
+    - 固定 `shared / artifacts`
+    - 固定 `test.step(...)` 顺序
+    - 每个 `plan_step` 的受控 slot
+    - 最终 `verification` slot
+  - 编译产物会按 step 的 `preferredHelpers / allowedActions / requiredAssertions / extractVariable` 自动补充受控实现提示：
+    - `__e2e.ensureLoggedIn`
+    - `__e2e.waitForApiResponse`
+    - `__e2e.observeSubmitState`
+    - `__e2e.findAntdTableRow`
+    - `__e2e.selectAntdOption`
+    - `__e2e.clickAntdRowAction`
+    - `__e2e.waitForVisibleAntdModal`
+    - `__e2e.switchBusinessListOwnershipView`
+    - `__e2e.getFrame`
+  - `buildPrompt(...)` 已新增：
+    - `DeterministicExecutionTemplate（必须基于此脚手架补全）`
+  - 当前 prompt 已明确要求：
+    - 保留外层脚手架
+    - 只在 slot 内补 locator / action / assertion
+    - 不得残留 `__PLAN_SLOT_...__` 占位符
+  - `extractGeneratedCode(...)` 已新增保护：
+    - 如果模型仍返回未填完的 slot 占位脚本，会直接判为生成失败，不会带着半成品进入执行器
+  - `generateTest(...)` 的生成阶段提示已改成：
+    - 先编译 `ExecutionPlan` 受控脚手架
+    - 再调用模型填充 slot 细节
+  - 已新增/更新单测：
+    - `tests/unit/intent-execution-compiler.spec.ts`
+    - `tests/unit/test-generator.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控执行脚手架已落地）
+- 风险 / 未完成：
+  - 当前仍然是“LLM 输出完整 JS 文本”，只是外层结构已被强约束；还没有把模型输出进一步收口成 slot patch / structured output
+  - 执行器还没有直接消费 `ExecutionPlan`，真正的 source of truth 仍然是最终生成出来的 JS
+  - repair 链路仍然以整段脚本修复为主，还没有切到 slot 级 patch
+  - 编译产物目前只进入 prompt，没有作为独立 run artifact 在 UI / trace 中展示
+- 下一步：
+  - 继续做 `R2.3`：
+    - 把生成输出从“完整 JS 文本”进一步收口成“slot 级补全 / patch”
+    - 让 repair 优先修补失败 slot，而不是重写整段脚本
+    - 视需要把 compiled template / slot fill 挂到 run result 和工作台详情中
+
+## 2026-03-20 第七次更新（R2.3 第一批：slot patch 生成与定向 repair）
+
+- 本轮目标：
+  - 把 `R2.2` 的受控脚手架再往前推进一步，让模型不再返回完整 JS，而是返回结构化 `slot patch`
+  - 让 repair 优先只修失败 slot，避免每次失败都整段脚本重写
+- 已完成：
+  - 已新增 `lib/intent-execution-slot-patch.ts`，实现：
+    - `buildIntentExecutionSlotPatchSchema(...)`
+    - `normalizeIntentExecutionSlotPatch(...)`
+    - `applyIntentExecutionSlotPatch(...)`
+    - `extractIntentExecutionSlotCode(...)`
+    - `resolveIntentExecutionPatchTargetSlotUids(...)`
+  - `generateTest(...)` 现在在存在 `ExecutionPlan` 时会走结构化 slot patch 主链路：
+    - 先编译 `ExecutionTemplate`
+    - 再调用 `callLLMStructured(...)`
+    - 要求模型返回严格 JSON 的 `slot patch`
+    - 最后由本地确定性合成最终 JS
+  - `repairTest(...)` 现在在存在 `ExecutionPlan` 时会优先走定向 slot repair：
+    - 若上一轮脚本仍保留 slot markers，则只对失败 slot 发起 patch
+    - 若上一轮是旧脚本或缺少 slot markers，则自动回退成“全量 slot 重建”
+  - 失败定位现在会利用：
+    - `triage.diagnosis.failedStepTitle`
+    - Playwright `test.step(...)` 标题
+    来推断目标 slot，而不是继续整段 repair
+  - 已新增 `buildSlotPatchPrompt(...)`：
+    - 在保留原有执行约束、helper 约束和 repair 提示的前提下
+    - 覆盖输出格式为严格 JSON `slot patch`
+    - 明确 target slots、当前 slot 实现、slot 指令和 patch 边界
+  - `intent-e2e-service` 已补充 repair 上下文透传：
+    - `failedStepTitle`
+    - `failureSummary`
+    给 repair 阶段做 slot 级修补目标推断
+  - 已新增/更新单测：
+    - `tests/unit/intent-execution-slot-patch.spec.ts`
+    - `tests/unit/test-generator-structured.spec.ts`
+    - `tests/unit/test-generator.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-slot-patch.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair 已落地）
+- 风险 / 未完成：
+  - 当前执行器真正消费的仍然是最终合成后的 JS，不是原生 `ExecutionPlan`
+  - `compiled template / slot patch / slot fill result` 还没有进入 run result、trace 和工作台详情
+  - repair 目前是“按失败 slot 修补 JS”，还没有进一步下沉为 plan node 级诊断和 verifier 级 patch
+  - slot 级 patch 虽然已经结构化，但还没有引入独立 grader 去判断“是否改对了失败 slot”
+- 下一步：
+  - 继续做 `R2.4`：
+    - 把 compiled template / slot patch / target slot 挂到 run result 和工作台详情
+    - 让 trace 能记录“本轮修的是哪个 slot、patch 是否复用 starter helper / capability”
+    - 为后续 `R3 verifier` 和 `R5 学习闭环` 提供更细粒度的结构化执行证据
+
+## 2026-03-23 第八次更新（R2.4 compiled template / structured patch 工件透出）
+
+- 本轮目标：
+  - 把 `R2.3` 已经产出的 `compiled template / structured patch / target slot` 从“内部执行细节”提升为 run result、trace 和工作台可见工件
+  - 为后续 verifier、grader 和 asset promotion 准备更细粒度的执行证据，而不是继续只看最终 JS 和模糊失败文本
+- 已完成：
+  - 已新增 `lib/intent-execution-artifacts.ts`，统一定义并克隆：
+    - `IntentExecutionStructuredPatch`
+    - `IntentExecutionBaseCodeSource`
+    - `cloneIntentCompiledExecutionTemplate(...)`
+    - `cloneIntentExecutionStructuredPatch(...)`
+  - `lib/test-generator.ts` 已支持把结构化 patch 作为显式生成事件透出：
+    - `GenerateEvent` 新增 `structured_patch`
+    - 结构化 slot patch 生成完成后会先返回 patch 元数据，再返回最终合成代码
+  - `lib/ai/intent-e2e-service.ts` 已把结构化工件挂到运行结果：
+    - `IntentE2ERunResult.compiledTemplate`
+    - `IntentE2EAttempt.structuredPatch`
+    - 并在 planning 完成后只编译一次模板，避免每轮 attempt 重复编译
+  - `lib/ai/intent-e2e-run-registry.ts` 已补齐持久化/恢复时的工件 clone，避免 run 加载后丢失：
+    - `compiledTemplate`
+    - `structuredPatch`
+  - `lib/ai/intent-e2e-insights.ts` 已把最近 trace 摘要扩成 slot 级结构：
+    - compiled slot 数量 / slot UIDs
+    - 是否尝试 structured patch
+    - repair 是否进入定向 slot 修补
+    - 每个 attempt 的 target slots / returned slots / base code source
+  - `components/IntentE2EWorkbench.tsx` 已补齐前端本地类型和详情展示：
+    - 展示 `CompiledTemplate`
+    - 展示每次 attempt 的结构化 patch 元数据与原始 JSON
+    - 展示 recent trace 的 compiled slots、patched slots 和 per-attempt slot 摘要
+  - 为兼容新增 `structured_patch` 事件，`lib/services/test-plan-service.ts` 已同步接受该事件类型
+  - 已新增/更新单测：
+    - `tests/unit/intent-e2e-service.spec.ts`
+    - `tests/unit/intent-e2e-run-registry.spec.ts`
+    - `tests/unit/intent-e2e-insights.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/test-generator.spec.ts`
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts tests/unit/intent-e2e-insights.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+- 风险 / 未完成：
+  - 当前执行器消费的仍然是“编译模板 + slot patch 合成后的 JS”，还不是原生 plan node executor
+  - `slot fill result` 目前通过 `structuredPatch.returnedSlotUids + 最终 JS` 间接体现，还没有单独保存每个 slot 的最终落地代码版本
+  - trace 已能看到“修了哪个 slot”，但还没有 grader 判断“这次 patch 是否真正修对了目标 slot”
+  - verifier 仍偏弱，很多“接口成功但列表/详情未验稳”的问题还没有进入结构化验收层
+- 下一步：
+  - 进入 `R3.1`：
+    - 先做业务主键优先验收和三路 verifier（接口 / 列表 / 详情）
+    - 优先覆盖“新建后回列表验收”“弹层/抽屉保存后关闭并刷新”“搜索后按主键命中目标行”
+    - 让首轮高成功率不再只依赖 patch 能力，而是依赖稳定的业务验收闭环
+
+## 2026-03-23 第九次更新（R3.1 第一批：响应主键提取 helper）
+
+- 本轮目标：
+  - 把 `businessId / orderId` 这类关键共享变量的提取从“prompt 提示模型手写 `resp.json()` + `data.id` 猜测”下沉成执行层 helper
+  - 先补“接口主键提取 -> 回流到后续列表/详情验收”的最小执行闭环，给后续三路 verifier 打底
+- 已完成：
+  - 已新增 `lib/intent-shared-variable-utils.ts`，统一沉淀：
+    - `looksLikeIntentPrimaryKeyVariable(...)`
+    - `buildIntentSharedVariableJsonPaths(...)`
+  - `lib/test-worker.mjs` 已新增执行层 helper：
+    - `__e2e.readJsonResponse(response, options?)`
+    - `__e2e.pickJsonValue(json, { label, paths, required, defaultValue })`
+    - 并带上 response JSON 缓存、路径候选提取和更清晰的失败日志
+  - `lib/intent-action-dsl.ts` 已把“响应主键提取”提升到 DSL 层：
+    - 对需要从响应里提取共享变量的步骤，自动加入 `__e2e.readJsonResponse`
+    - 自动加入 `__e2e.pickJsonValue`
+    - 全局规则和推荐原语也会显式提示“优先从接口 JSON 提取主键”
+  - `lib/intent-action-library.ts` 已更新 submit-state / response / extract 动作库：
+    - 示例骨架改为优先使用 `readJsonResponse + pickJsonValue`
+    - 不再继续鼓励手写多层可选链猜 `businessId / id / data.id`
+  - `lib/intent-execution-compiler.ts` 已把主键提取 helper 写进结构化模板注释指令：
+    - 对带 `extractVariable` 且明显依赖接口响应的 plan step
+    - 明确要求优先从响应 JSON 中提取真实主键
+  - `lib/test-generator.ts` 已把该能力写回首轮生成与 repair 提示：
+    - 通用 runtime helper 区新增 JSON 提取 helper 指南
+    - 创建商机场景和 `findAntdTableRow` miss 的 repair 提示，都改为优先走 helper
+  - 已新增/更新单测：
+    - `tests/unit/test-executor.spec.ts`
+    - `tests/unit/intent-action-dsl.spec.ts`
+    - `tests/unit/intent-action-library.spec.ts`
+    - `tests/unit/intent-execution-compiler.spec.ts`
+    - `tests/unit/test-generator.spec.ts`
+    - `tests/unit/intent-shared-variable-utils.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/test-executor.spec.ts tests/unit/intent-action-dsl.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-shared-variable-utils.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.1 第一批：响应主键提取 helper 已落地）
+- 风险 / 未完成：
+  - 当前只是把“真实主键提取”变成稳定 helper；列表验收、详情验收和详情抽屉 fallback 仍主要靠 prompt 和通用 helper 组合
+  - `VerificationPlan` 还没有演进成“按 check kind 自动生成固定 verifier 模板”的确定性执行层
+  - 还缺少“按主键检索列表 -> 命中详情/抽屉 -> 回读字段”的可复用 verifier recipe
+- 下一步：
+  - 继续做 `R3.1` 第二批：
+    - 把 `table_row / variable / detail fallback` 这条验收链进一步模板化
+    - 优先补“主键检索列表命中 + 详情页/详情抽屉字段校验”的 verifier 骨架
+    - 让“接口成功但列表未稳”这类问题，首轮就能自动回退到详情验收，而不是只靠 repair 二次猜测
+
+## 2026-03-23 第十次更新（R3.1 第二批：主键列表回查 + detail fallback 骨架）
+
+- 本轮目标：
+  - 把“接口已拿到主键，但列表未稳导致首轮失败”的问题，从 prompt 级经验升级成执行层 helper + DSL / 动作库 / compiler / prompt 一致的骨架
+  - 先补“按主键检索列表 -> 若未命中则回退 detailUrl / 详情锚点”的最小 verifier 闭环，不扩 schema、不引入大而全 executor
+- 已完成：
+  - `lib/test-worker.mjs` 已新增执行层 helper：
+    - `__e2e.resolvePrimaryRecord(page, options)`
+    - 支持：
+      - 优先使用可见搜索框按主键检索
+      - 可选等待列表查询响应 `listResponse`
+      - 可选等待局部 loading 收敛
+      - 先尝试 `__e2e.findAntdTableRow(...)`
+      - 未命中时按 `detailUrl` 回退详情页
+  - `lib/intent-action-dsl.ts` 已把这条链提升到 DSL：
+    - 新增 `resolve_primary_record`
+    - 在“表格验收 + businessId/orderId 等主键上下文”下自动加入 `__e2e.resolvePrimaryRecord`
+    - 全局规则、推荐原语和禁止模式都会显式提示“主键回查优先走列表命中 + detail fallback”
+  - `lib/intent-action-library.ts` 已新增动作库能力：
+    - `assert.resolve-primary-record`
+    - `ui.find-antd-table-row` / `assert.watch-submit-state` 的说明和示例也已改为优先接入 `__e2e.resolvePrimaryRecord(...)`
+  - `lib/intent-execution-compiler.ts` 已把该骨架写进结构化模板指令：
+    - 对带表格验收且共享变量里包含主键的步骤
+    - 明确要求优先写 `const recordCheck = await __e2e.resolvePrimaryRecord(...)`
+    - 明确把“列表命中”和“详情回退”写成同一条验收链，而不是继续放宽文本匹配
+  - `lib/test-generator.ts` 已同步首轮生成与 repair 提示：
+    - runtime helper 区新增 `resolvePrimaryRecord` 用法
+    - 创建商机场景新增“businessId 回查列表 -> detail fallback”骨架
+    - repair 提示会把“用 businessId 精确定位目标行”和“查看 / 详情抽屉回退”一起指向新 helper
+  - 已新增/更新单测：
+    - `tests/unit/test-executor.spec.ts`
+    - `tests/unit/intent-action-dsl.spec.ts`
+    - `tests/unit/intent-action-library.spec.ts`
+    - `tests/unit/intent-execution-compiler.spec.ts`
+    - `tests/unit/test-generator.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/test-executor.spec.ts tests/unit/intent-action-dsl.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.1 第二批：主键列表回查 + detail fallback 骨架已落地）
+- 风险 / 未完成：
+  - 目前只是把“主键列表回查 + detail fallback”变成稳定 helper 和模板骨架；详情字段到底断言哪些 label / cell / section，仍主要由模型在 slot 内补全
+  - `detailUrl` / `detailReadyLocator` 仍需要 planner / prompt / recipe 提供正确上下文，系统还不会自动推导详情路由
+  - `VerificationPlan` 仍主要通过注释指令驱动生成，还没有按 `check.kind` 直接编译成固定 verifier 代码骨架
+  - helper 虽然支持返回列表查询响应对象，但还没有把“列表响应 JSON 命中记录”自动接进字段级验收
+- 下一步：
+  - 进入 `R3.2`：
+    - 把 `response / table_row / variable` 这几类高频 check 继续收口成固定 verifier slot skeleton
+    - 优先补“详情页 / 详情抽屉字段校验”模板，不再只告诉模型“自己去断言详情”
+    - 把 `resolvePrimaryRecord(...)` 的返回结果和列表响应 JSON 接进更确定性的字段级验收
+
+## 2026-03-23 第十一次更新（R3.2 第一批：固定 verifier skeleton）
+
+- 本轮目标：
+  - 把 verification slot 从“只有注释提示”推进到“每个 check 都带固定代码骨架注释”
+  - 先覆盖高频的 `response / table_row / variable`，让模型首轮补 slot 时不再自己发明 verifier 结构
+- 已完成：
+  - `lib/intent-execution-compiler.ts` 已新增固定 verifier skeleton 生成：
+    - 对每个 `VerificationPlan.check`
+    - 在 verification slot 注释中追加 `固定骨架 [checkUid]`
+    - 并给出更接近可直接照抄的代码骨架
+  - 已覆盖的骨架类型：
+    - `response`
+      - 优先从 `artifacts[planStepUid]` 读取响应
+      - 显式校验 `response.ok()`
+      - 再用 `__e2e.readJsonResponse(...)` 读取 payload
+    - `variable`
+      - 对主键变量优先给出
+        - `__e2e.readJsonResponse(...)`
+        - `__e2e.pickJsonValue(...)`
+        - `expect(shared.xxx).toBe(expected)`
+      - 不再只停留在“变量应该非空”的自然语言提示
+    - `table_row`
+      - 若关联共享变量是 `businessId / orderId` 等主键
+      - 固定骨架会优先给出 `__e2e.resolvePrimaryRecord(...)`
+      - 并把“列表命中 / 详情回退”写成同一段 if/else 结构
+    - 其他类型也已补最小骨架：
+      - `url`
+      - `modal_state`
+      - `ui_state`
+  - 详情字段模板提示已进入骨架：
+    - 会从 check instruction / related step assertion 中提取 `联系人 / 手机号 / 状态 / 创建时间 / 企业名称 / businessId / orderId` 等字段提示
+    - 在 detail fallback 分支里显式输出“在详情页 / 详情抽屉逐项断言 ...”的 TODO 骨架
+  - `tests/unit/test-generator-structured.spec.ts` 已补集成验证：
+    - 确认结构化 slot patch 调用拿到的 prompt 中，已经包含固定 verifier skeleton
+  - 已新增/更新单测：
+    - `tests/unit/intent-execution-compiler.spec.ts`
+    - `tests/unit/test-generator-structured.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/test-executor.spec.ts tests/unit/intent-action-dsl.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts tests/unit/test-generator-structured.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第一批：固定 verifier skeleton 已落地）
+- 风险 / 未完成：
+  - 当前“固定 skeleton”仍然是注释级脚手架，不是编译后直接可执行的 verifier 节点
+  - `detailUrl`、`listResponse.urlIncludes`、详情容器锚点等关键参数，还需要 planner / prompt / recipe 提供更准确上下文
+  - skeleton 虽然已经提示详情字段，但还没有把“字段来源 -> 定位器模板 -> 断言模板”彻底结构化
+  - 列表响应 JSON 目前还没有自动参与字段级验收，只是通过 helper 返回对象保留扩展点
+- 下一步：
+  - 继续做 `R3.2` 第二批：
+    - 把“详情页 / 详情抽屉字段校验”进一步收口成固定 detail verifier 模板
+    - 优先补 label/value、描述列表、表单回显、Drawer section 这几类高频详情结构
+    - 视效果把 verification skeleton 从注释骨架继续推进到更强的编译期模板
+
+## 2026-03-23 第十二次更新（R3.2 第二批：详情字段校验 helper）
+
+- 本轮目标：
+  - 把“列表主键回查失败后回退详情页 / 详情抽屉”的终态校验，从泛化 TODO 收口成统一 helper、统一 prompt 和统一 skeleton
+  - 优先补最小可用闭环：详情字段读取 helper + DSL / 动作库 / compiler / prompt 对齐 + 单测覆盖
+- 已完成：
+  - `lib/test-worker.mjs` 已补齐并暴露详情字段 helper：
+    - 新增 `tryReadDetailFieldFromScope(...)`
+    - 新增 `__e2e.readDetailField(page, { label, scope?, titleIncludes?, exact?, required?, timeoutMs? })`
+    - 支持优先读取：
+      - Ant Design `Descriptions`
+      - 表单回显 / `form-item`
+      - 通用 `label:value`
+      - 可见 Drawer / Modal / body fallback
+  - `lib/intent-action-dsl.ts` 已把详情字段校验提升到 DSL：
+    - 新增 `read_detail_field`
+    - 自动加入 `__e2e.readDetailField`
+    - 全局规则、推荐原语和禁止模式都会显式要求“按 label 读取详情字段，不要退回整页模糊断言”
+  - `lib/intent-action-library.ts` 已新增动作库能力：
+    - `assert.read-detail-field`
+    - 示例骨架明确引导在 Drawer / 详情容器中按 `联系人 / 手机号` 等字段读取
+  - `lib/intent-execution-compiler.ts` 已把 detail fallback 从 TODO 改成固定 helper 骨架：
+    - `buildStepInstructions(...)` 已显式提示优先用 `__e2e.readDetailField(...)`
+    - 主键回查的 step 指令已改成“列表未命中 -> 回退详情 -> 用 `readDetailField` 做字段验收”
+    - `buildVerificationHint(...)` 已把 detail fallback 提示收口到 `__e2e.readDetailField(...)`
+    - `buildVerificationSkeletonLines(...)` 在 `table_row` 主键分支里，已输出固定的 `readDetailField` 骨架
+    - 对 `businessId / orderId` 这类字段，固定骨架会优先与 `shared.xxx` 比较，而不是只留 TODO 字面量
+  - `lib/test-generator.ts` 已同步首轮生成与 repair 提示：
+    - runtime helper 区新增 `__e2e.readDetailField` 用法
+    - 创建商机 / 主键回查 fallback 指导明确要求“详情页 / 详情抽屉不要整页 `toContain`，优先按 label 读取字段”
+    - repair 提示中，针对列表 miss、弱化断言、详情抽屉补救等场景，已统一改为优先使用 `readDetailField`
+  - 已新增/更新单测：
+    - `tests/unit/test-executor.spec.ts`
+      - 覆盖 Drawer/Descriptions 布局
+      - 覆盖通用 label/value 布局
+    - `tests/unit/intent-action-dsl.spec.ts`
+    - `tests/unit/intent-action-library.spec.ts`
+    - `tests/unit/intent-execution-compiler.spec.ts`
+    - `tests/unit/test-generator.spec.ts`
+    - `tests/unit/test-generator-structured.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/test-executor.spec.ts tests/unit/intent-action-dsl.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts tests/unit/test-generator-structured.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第二批：详情字段校验 helper 已落地）
+- 风险 / 未完成：
+  - 详情字段集合目前仍主要靠 check instruction / step assertion 文本启发式推断，planner 还没有显式输出结构化 field map
+  - `readDetailField` 相关 skeleton 仍然是注释级可照抄骨架，不是编译后直接可执行的 verifier 节点
+  - `detailUrl`、`titleIncludes`、详情容器 `scope` 等上下文仍需要 planner / prompt / recipe 提供足够准的锚点
+  - 列表查询响应 JSON 还没有自动参与“详情字段 expected value”生成；联系人 / 手机号 / 状态等字段大多仍由模型补最终断言值
+- 下一步：
+  - 进入 `R3.2` 第三批：
+    - 把 `resolvePrimaryRecord(...).response` / 列表响应 JSON 接进详情字段 expected-value skeleton
+    - 优先补“共享稳定标识 / 主键变量 -> 列表记录 -> 详情字段”的半结构化 verifier recipe，不再绑定 `businessId / orderId` 这类具体业务名词
+    - 视效果再决定是否把 `VerificationPlan` 增补为显式 `expectedFields[]`，进一步减少模型首轮自由发挥
+
+## 2026-03-23 第十三次更新（R3.2 第三批预备：主键骨架去业务词汇化）
+
+- 本轮目标：
+  - 避免下一步继续把 verifier recipe 写成 `businessId / orderId` 专属优化
+  - 先把 compiler / shared-variable 抽象收口到“任意 `*Id` 共享变量”层，证明这条链是跨业务可复用的
+- 已完成：
+  - `lib/intent-execution-compiler.ts` 已进一步泛化：
+    - 详情字段 skeleton 不再只对 `businessId / orderId` 特判
+    - 关联 step / sharedVariables 中只要存在任意 `*Id` 主键变量，都会自动进入 detail-field label 推断
+    - detail fallback 的 expected-value 绑定已改为按通用 token 匹配共享变量，而不是写死 `businessId / orderId`
+  - `tests/unit/intent-shared-variable-utils.spec.ts` 已补通用主键覆盖：
+    - 明确验证 `customerId` 这类任意 `*Id` 共享变量也会被识别为主键变量
+    - JSON path fallback 也不再只验证 `businessId`
+  - `tests/unit/intent-execution-compiler.spec.ts` 已补泛化验证：
+    - 新增 `customerId` 场景
+    - 确认 `resolvePrimaryRecord(...) + readDetailField(...)` 的固定 skeleton 可直接落到非 CRM 专属主键变量
+- 验证：
+  - `npx vitest run tests/unit/intent-shared-variable-utils.spec.ts tests/unit/intent-execution-compiler.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批预备：主键骨架去业务词汇化已完成）
+- 风险 / 未完成：
+  - 当前泛化仍主要覆盖任意 `*Id` 变量；对 `code / no / serial / uid` 这类稳定标识，尚未建立独立 heuristic
+  - prompt 和动作库示例里仍有较多 CRM 语料，这是样例层偏置，不是执行层抽象边界；后续可逐步补通用示例
+  - “列表记录 -> 详情字段”的 expected-value 目前还没有从列表响应 JSON 自动取字段，只完成了变量层泛化
+- 下一步：
+  - 继续 `R3.2` 第三批主线：
+    - 把 `resolvePrimaryRecord(...).response` / 列表响应 JSON 接进详情字段 expected-value skeleton
+    - 先围绕“共享稳定标识 / 主键变量 -> 命中列表记录 -> 对应详情字段”建立通用 recipe
+    - 若后续真实项目出现 `uid / code / no` 等非 `*Id` 稳定标识，再单独补第二层 heuristic，而不是继续在 CRM 词汇上打补丁
+
+## 2026-03-23 第十四次更新（R3.2 第三批第一刀：列表响应记录参与详情 expected-value）
+
+- 本轮目标：
+  - 把 `resolvePrimaryRecord(...).response` 真正接进 detail fallback skeleton
+  - 在不绑定具体业务系统的前提下，把“共享稳定标识 -> 列表响应命中记录 -> 详情字段 expected-value”落成通用 helper + 通用骨架
+- 已完成：
+  - `lib/test-worker.mjs` 已新增通用 JSON 记录 helper：
+    - `__e2e.pickJsonRecord(source, { label, value, paths, collectionPaths?, required?, exact? })`
+    - 支持：
+      - 根对象 / 根数组
+      - 常见列表响应包装层（`data.list / rows / records / items / content / result.*`）
+      - 深度兜底扫描数组记录集合
+      - 结合稳定标识值和候选 paths 定位命中记录
+  - `lib/intent-execution-compiler.ts` 已把列表响应记录接进固定 verifier skeleton：
+    - detail fallback 分支会优先：
+      - `await __e2e.readJsonResponse(recordCheck.response, { required: false })`
+      - `__e2e.pickJsonRecord(...)`
+    - 然后再用：
+      - `__e2e.pickJsonValue(matchedRecord, { label, paths, required: false })`
+      - 给 `__e2e.readDetailField(...)` 提供 expected value
+    - 对能直接映射到共享变量的字段，仍优先比较 `shared.xxx`
+    - 对其他字段，则先尝试从命中的列表记录里提 expected value；拿不到时才回退 TODO
+  - compiler 的主键骨架继续保持去业务词汇化：
+    - 这次接入列表记录 expected-value 的逻辑，同样适用于任意 `*Id` 共享变量
+    - 没有再把 recipe 重新写回 `businessId / orderId` 专属逻辑
+  - `lib/intent-action-library.ts` 已同步动作库说明：
+    - `assert.resolve-primary-record` 现在会显式提示 `recordCheck.response -> readJsonResponse -> pickJsonRecord -> readDetailField`
+  - `lib/test-generator.ts` 已同步首轮生成与 repair 提示：
+    - runtime helper 区新增 `pickJsonRecord` 用法
+    - repair 提示在“列表 miss / 断言弱化”场景下，会显式引导用 `recordCheck.response + pickJsonRecord(...)` 反推出详情 expected value
+  - 已新增/更新单测：
+    - `tests/unit/test-executor.spec.ts`
+      - 新增 `pickJsonRecord` 执行层用例
+    - `tests/unit/intent-action-library.spec.ts`
+    - `tests/unit/intent-execution-compiler.spec.ts`
+    - `tests/unit/test-generator.spec.ts`
+    - `tests/unit/test-generator-structured.spec.ts`
+    - `tests/unit/intent-shared-variable-utils.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/test-executor.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/intent-shared-variable-utils.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第一刀：列表响应记录参与详情 expected-value 已落地）
+- 风险 / 未完成：
+  - 当前 `pickJsonRecord` 主要围绕任意 `*Id` 稳定标识工作；对 `uid / code / no / serial` 这类非 `*Id` 识别仍未进入执行层 heuristic
+  - 详情字段候选 paths 目前仍以通用启发式为主，尚未结合项目知识或历史成功样本动态排序
+  - prompt 示例里仍有部分 CRM 语料，但执行层与 skeleton 已不再依赖这些业务名词
+  - 还没有把“列表记录里命中的字段 expected value”进一步结构化回写到 `VerificationPlan`
+- 下一步：
+  - 继续 `R3.2` 第三批：
+    - 把非 `*Id` 稳定标识（`uid / code / no / serial`）补进第二层 heuristic
+    - 评估是否给 `VerificationPlan` 增补显式 `stableIdentifiers[] / expectedFields[]`
+    - 视项目知识命中情况，把详情字段 candidate paths 从纯通用启发式升级为“通用 heuristics + 项目级排序”
+
+## 2026-03-23 第十五次更新（R3.2 第三批第二刀：非 *Id 稳定标识 heuristic）
+
+- 本轮目标：
+  - 把“共享稳定标识”的识别范围从仅 `*Id` 扩到 `uid / code / no / serial`
+  - 同时保持 heuristic 保守，避免把 `smsCode / statusCode / pageNo` 这类临时码或序号误拉进主记录回查链
+  - 把这层抽象同步接进 DSL、compiler、动作库和 prompt，而不是只在执行层单点生效
+- 已完成：
+  - `lib/intent-shared-variable-utils.ts` 已新增稳定标识 heuristic：
+    - 新增 `looksLikeIntentStableIdentifierVariable(...)`
+    - 识别范围已扩到：
+      - `*Id`
+      - `*Uid`
+      - `*Code`
+      - `*No / *Number`
+      - `*Serial / *SerialNo / *SerialNumber`
+    - 同时新增保守排除：
+      - `statusCode`
+      - `smsCode`
+      - `pageNo`
+      - 以及同类明显偏状态码 / 验证码 / 列表序号的变量
+    - `buildIntentSharedVariableJsonPaths(...)` 已同步支持：
+      - `customerCode -> code`
+      - `serialNo -> serial / serialNumber / no / number`
+      - 非 `*Id` 稳定标识的通用 fallback path
+  - `lib/intent-action-dsl.ts` 已切到“共享稳定标识”抽象：
+    - `needsResponseJsonExtraction(...)` 不再只对 `*Id` 生效
+    - 列表回查 / 详情 fallback 触发条件已能识别 `customerCode / recordUid / serialNo`
+    - 全局规则、推荐原语、禁止模式文案已补“共享稳定标识（如 `businessId / orderId / uid / code / no / serial`）”
+  - `lib/intent-execution-compiler.ts` 已把固定 skeleton 泛化到非 `*Id` 稳定标识：
+    - `pickRelatedSharedVariable(...)` 已优先挑选任意共享稳定标识
+    - `response / table_row / variable` skeleton 已不再只依赖 `*Id`
+    - `customerCode` 这类变量现在也会自动进入：
+      - `resolvePrimaryRecord(...)`
+      - `pickJsonRecord(...)`
+      - `readDetailField(...)`
+      - `pickJsonValue(... paths=[..., "code", ...])`
+  - `lib/intent-action-library.ts` 已补通用说明：
+    - 保留现有 CRM 示例
+    - 但实现约束已显式说明同一条能力也适用于 `recordUid / customerCode / serialNo / bizNo`
+  - `lib/test-generator.ts` 已补首轮生成提示：
+    - 共享变量提取链和 `resolvePrimaryRecord(...)` 回查链已显式说明“不只适用于 `businessId / orderId`”
+    - 已增加“变量名不是 `*Id` 也不要退回模糊列表匹配”的 prompt 约束
+  - 已新增/更新单测：
+    - `tests/unit/intent-shared-variable-utils.spec.ts`
+    - `tests/unit/intent-action-dsl.spec.ts`
+    - `tests/unit/intent-execution-compiler.spec.ts`
+    - `tests/unit/test-generator.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-shared-variable-utils.spec.ts tests/unit/intent-action-dsl.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts tests/unit/test-generator-structured.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第二刀：非 `*Id` 稳定标识 heuristic 已落地）
+- 风险 / 未完成：
+  - 当前仍是词法 heuristic，不是 planner / verifier 明确输出的结构化 `stableIdentifiers[]`
+  - `code / no / serial` 的 path fallback 目前仍是通用启发式，还没有结合项目知识或历史成功样本做排序
+  - prompt 和动作库虽然已经去掉“只能 `businessId / orderId`”的含义，但示例主体仍然以 CRM 场景为主
+  - `detailUrl`、详情字段集合和 expected field priority 仍主要依赖 prompt / compiler 启发式，不是显式 schema
+- 下一步：
+  - 继续 `R3.2` 第三批：
+    - 评估给 `VerificationPlan` 增补显式 `stableIdentifiers[] / expectedFields[]`
+    - 把详情字段 candidate paths 从“纯通用 heuristic”推进到“通用 heuristic + 项目知识排序”
+    - 视效果决定是否把 `resolvePrimaryRecord(...)` / `readDetailField(...)` 的关键参数进一步结构化进 planner 输出
+
+## 2026-03-23 第十六次更新（R3.2 第三批第三刀：VerificationPlan 显式 stableIdentifiers / expectedFields）
+
+- 本轮目标：
+  - 不再让 compiler 只靠 `check.instruction` 猜“这次到底要用哪个稳定标识、详情里要核哪些字段”
+  - 先给 `VerificationPlan.check` 增补两组显式结构化字段：
+    - `stableIdentifiers[]`
+    - `expectedFields[]`
+  - 让 builder、prompt、compiled template、run snapshot 统一围绕这两组字段工作
+- 已完成：
+  - `lib/intent-execution-plan.ts` 已增强 `IntentVerificationPlanCheck`：
+    - 新增可选字段：
+      - `stableIdentifiers?: string[]`
+      - `expectedFields?: string[]`
+    - `buildIntentVerificationPlan(...)` 现在会在生成 checks 时同步推断：
+      - 关联步骤里的共享稳定标识
+      - 详情 fallback 需要核对的字段 label
+    - 首批结构化字段推断已覆盖：
+      - `response`
+      - `table_row`
+      - `variable`
+    - 对 `table_row` 场景，会显式产出类似：
+      - `stableIdentifiers: ['businessId']`
+      - `expectedFields: ['联系人', '手机号', '状态', 'businessId']`
+  - `renderIntentVerificationPlan(...)` 已把这两组字段输出到 prompt：
+    - 每个 Check 现在都会显式展示
+      - `stableIdentifiers`
+      - `expectedFields`
+    - 不再只剩一条自然语言 `instruction`
+  - `lib/intent-execution-compiler.ts` 已优先消费结构化字段：
+    - `pickCheckStableIdentifier(...)` 会优先使用 `check.stableIdentifiers`
+    - `inferDetailFieldLabels(...)` 会优先使用 `check.expectedFields`
+    - verification slot 注释里已额外输出：
+      - `结构化稳定标识：...`
+      - `结构化详情字段：...`
+    - 这意味着 compiler 现在不需要只凭“详情页核对状态”这类文案去猜联系人/手机号/状态，builder 给了什么字段，skeleton 就优先按什么字段展开
+  - `lib/ai/intent-e2e-run-registry.ts` 已同步 clone 新字段：
+    - `verificationPlan.checks[].stableIdentifiers`
+    - `verificationPlan.checks[].expectedFields`
+    - 避免 run snapshot / 内存态复制时把结构化字段丢掉
+  - 已新增/更新单测：
+    - `tests/unit/intent-execution-plan.spec.ts`
+      - 验证 builder 会产出 `stableIdentifiers / expectedFields`
+    - `tests/unit/intent-execution-compiler.spec.ts`
+      - 验证 compiler 会优先消费 `expectedFields`
+      - 即使 instruction 只写“核对状态”，只要 structured fields 给了 `联系人 / 手机号 / 状态 / customerCode`，骨架也会完整展开
+    - `tests/unit/test-generator-structured.spec.ts`
+      - 验证 structured slot patch prompt 已透出 `stableIdentifiers / expectedFields`
+    - `tests/unit/intent-e2e-run-registry.spec.ts`
+      - 作为回归验证 clone / snapshot 链路不丢字段
+- 验证：
+  - `npx vitest run tests/unit/intent-shared-variable-utils.spec.ts tests/unit/intent-action-dsl.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第三刀：VerificationPlan 显式 `stableIdentifiers / expectedFields` 已落地）
+- 风险 / 未完成：
+  - 当前 `stableIdentifiers / expectedFields` 仍然由 builder 启发式推断，不是上游 planner / model 显式产出的 schema 字段
+  - `expectedFields` 目前还只解决“要核哪些字段”，没有进一步结构化到：
+    - 字段期望来源
+    - 字段候选 JSON path 排序
+    - 详情字段读取 scope / titleIncludes / detailReadyLocator
+  - `customer / company / status` 这类字段的 path 仍以通用 heuristic 为主，尚未和项目知识或历史成功 trace 结合排序
+- 下一步：
+  - 继续 `R3.2` 第三批：
+    - 把详情字段 candidate paths 从“纯通用 heuristic”推进到“通用 heuristic + 项目知识排序”
+    - 评估是否给 `expectedFields[]` 继续升级成带 source/path priority 的结构化 field spec
+    - 视效果再决定是否把 `resolvePrimaryRecord(...)` / `readDetailField(...)` 的关键参数显式写回 planner 输出
+
+## 2026-03-23 第十七次更新（R3.2 第三批第四刀：详情字段 candidate paths 的项目知识排序）
+
+- 本轮目标：
+  - 不再让详情字段和共享稳定标识的 JSON path 只靠通用 heuristic 猜测
+  - 先引入一层轻量、可控、跨系统可复用的项目知识提示：
+    - `fieldPathHints[]`
+  - 让 `VerificationPlan` 和 compiler 在详情 fallback / 列表记录回填 expected-value 时优先消费这些提示，同时保留 generic fallback
+- 已完成：
+  - `lib/intent-project-knowledge.ts` 已增强项目知识 schema：
+    - 新增 `IntentProjectKnowledgeFieldPathHint`
+    - 每条规则现在可选配置：
+      - `label`
+      - `paths`
+      - `stableIdentifiers`
+      - `whenStepTypes`
+      - `stepTextIncludes`
+    - 命中规则后，`resolveIntentProjectKnowledge(...)` 会把这些字段路径提示一起透传到 resolution
+  - `lib/intent-execution-plan.ts` 已把项目知识路径提示结构化进 `VerificationPlan.check`：
+    - 新增可选字段：
+      - `fieldPathHints?: Array<{ label: string; paths: string[] }>`
+    - `buildIntentVerificationPlan(...)` 现在会结合：
+      - `expectedFields`
+      - `stableIdentifiers`
+      - `relatedSteps`
+      - 已命中的项目知识规则
+      - 自动为每个 check 生成最小可用的字段路径提示
+    - 为避免错误泛化，已额外收紧一层规则：
+      - 只有 `编号 / 单号 / code / id / no / serial` 这类稳定标识标签，才允许通过 `stableIdentifiers` 做别名映射
+      - 避免把“状态”的路径错误挂到 `customerCode` 这类共享稳定标识上
+    - `renderIntentVerificationPlan(...)` 现在也会把 `fieldPathHints` 输出进 prompt
+  - `lib/intent-execution-compiler.ts` 已优先消费结构化字段路径提示：
+    - 共享稳定标识的 `pickJsonRecord(...) / pickJsonValue(...)` 路径，改为：
+      - 先用 `check.fieldPathHints`
+      - 再 fallback 到 `buildIntentSharedVariableJsonPaths(...)`
+    - 详情字段 expected-value 的 record candidate paths，改为：
+      - 先用 `check.fieldPathHints`
+      - 再 fallback 到原有通用 heuristic
+    - verification slot 注释里新增：
+      - `结构化字段路径：...`
+    - 这意味着项目知识现在不只是提示“去核状态”，而是能直接影响 compiler 产出的候选 JSON path 顺序
+  - `lib/test-generator.ts` 已在 planning -> verification build 时显式传入 `knowledge`
+  - `lib/ai/intent-e2e-run-registry.ts` 已同步 clone：
+    - `verificationPlan.checks[].fieldPathHints`
+    - 避免 run snapshot / 内存态复制时丢失结构化路径提示
+  - 已新增/更新单测：
+    - `tests/unit/intent-project-knowledge.spec.ts`
+      - 验证规则命中后会保留 `fieldPathHints`
+      - 验证 `stableIdentifier` 单字段写法会被归一化
+    - `tests/unit/intent-execution-plan.spec.ts`
+      - 验证 builder 会把项目知识路径提示挂到 `table_row / variable` checks
+      - 验证渲染后的 `VerificationPlan` prompt 会透出 `fieldPathHints`
+    - `tests/unit/intent-execution-compiler.spec.ts`
+      - 验证 compiler 会把项目知识路径放到 generic paths 之前
+      - 验证详情字段与共享稳定标识两类路径都会优先消费知识提示
+- 验证：
+  - `npx vitest run tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts`
+  - `npx vitest run tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第四刀：详情字段 candidate paths 的项目知识排序已落地）
+- 风险 / 未完成：
+  - `fieldPathHints` 目前仍是人工维护的项目知识，不是 trace/grader 驱动自动学习产物
+  - 当前结构还只是 `label -> paths[]`，尚未继续结构化到：
+    - 字段期望来源
+    - 字段读取 scope / titleIncludes
+    - detailReadyLocator / detailUrl / listResponse 等执行参数
+  - 项目知识现在只影响“候选路径排序”，还没有反向沉淀“哪些路径在真实 run 里最终成功命中过”
+- 下一步：
+  - 继续 `R3.2` 第三批：
+    - 评估把 `expectedFields[]` 升级为更显式的 field spec：
+      - `label`
+      - `expectedSource`
+      - `preferredPaths`
+      - `scopeHints`
+    - 评估把 `resolvePrimaryRecord(...)` / `readDetailField(...)` 的关键参数逐步从 prompt 约定推进到 planner 显式 schema
+    - 为后续 `R5` 的 trace -> grader -> asset promotion 预留“成功路径自动回写 fieldPathHints / field spec”的入口
+
+## 2026-03-23 第十八次更新（R3.2 第三批第五刀：expectedFields 升级为 fieldSpecs）
+
+- 本轮目标：
+  - 不再让 `VerificationPlan.check` 只携带：
+    - `expectedFields[]`
+    - `fieldPathHints[]`
+  - 而是把“字段要核什么、期望值来自哪里、优先走哪些 path、详情面大致在哪个 scope”收敛成更明确的结构化对象：
+    - `fieldSpecs[]`
+- 已完成：
+  - `lib/intent-execution-plan.ts` 已增强 `IntentVerificationPlanCheck`：
+    - 新增：
+      - `fieldSpecs?: Array<{ label; expectedSource; preferredPaths; scopeHints }>`
+    - `expectedSource` 首批已结构化为：
+      - `shared_variable`
+      - `list_record`
+      - `response_json`
+      - `unknown`
+    - `buildIntentVerificationPlan(...)` 现在会结合：
+      - `stableIdentifiers`
+      - `expectedFields`
+      - `fieldPathHints`
+      - `relatedSteps`
+      - 自动构建 `fieldSpecs`
+    - 首批推断规则：
+      - 共享稳定标识字段：
+        - table/detail 验收时默认标成 `shared_variable`
+        - variable 提取校验时默认标成 `response_json`
+      - 详情 fallback 字段：
+        - 默认标成 `list_record`
+      - `preferredPaths`：
+        - 先拼接项目知识给出的 hint paths
+        - 再补通用 heuristic paths
+      - `scopeHints`：
+        - 先按 `详情页 / 详情抽屉 / 详情弹层` 这类上下文做最小启发式推断
+    - `renderIntentVerificationPlan(...)` 已把 `fieldSpecs` 一并渲染到 prompt
+  - `lib/intent-execution-compiler.ts` 已把 `fieldSpecs` 升为第一优先级消费对象：
+    - `inferDetailFieldLabels(...)` 先读 `fieldSpecs[].label`
+    - 共享稳定标识的 `pickJsonValue(...) / pickJsonRecord(...)` 路径顺序，改为：
+      - 先读 `fieldSpecs[].preferredPaths`
+      - 再读 `fieldPathHints`
+      - 最后 fallback 到通用 heuristic
+    - 详情字段 expected-value 的 record candidate paths，也改成同一优先级顺序
+    - verification slot 注释里新增：
+      - `结构化字段规格：...`
+    - 详情字段骨架里已额外补充 `fieldSpec` 注释，明确当前字段的：
+      - `label`
+      - `expectedSource`
+      - `paths`
+      - `scope`
+    - 这意味着 compiler 现在不只是“知道要核状态”，而是已经知道：
+      - 状态的 expected value 优先来自列表记录
+      - 优先尝试哪些 JSON paths
+      - 当前字段是否属于详情页 / 抽屉语义
+  - `lib/ai/intent-e2e-run-registry.ts` 已同步 clone：
+    - `verificationPlan.checks[].fieldSpecs`
+    - 避免 run snapshot / 内存态复制时丢失结构化字段规格
+  - `tests/unit/test-generator-structured.spec.ts` 已更新：
+    - 验证 slot patch prompt 已透出 `fieldSpecs`
+  - `tests/unit/intent-execution-plan.spec.ts` 已更新：
+    - 验证 builder 会为：
+      - `table_row`
+      - `variable`
+      - 详情 fallback 场景
+      - 项目知识命中场景
+      - 自动产出 `fieldSpecs`
+    - 验证 rendered verification plan 会透出 `fieldSpecs`
+  - `tests/unit/intent-execution-compiler.spec.ts` 已更新：
+    - 验证 compiler 会优先使用 `fieldSpecs.preferredPaths`
+    - 验证 shared variable / list record / response json 三类 source 会反映到 skeleton 注释和 path 顺序
+  - `tests/unit/intent-e2e-run-registry.spec.ts` 已更新：
+    - 验证 clone / persisted restore 不丢 `fieldSpecs`
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/intent-e2e-run-registry.spec.ts`
+  - `npx vitest run tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第五刀：`fieldSpecs` 已落地）
+- 风险 / 未完成：
+  - 当前 `fieldSpecs.scopeHints` 仍主要是轻量启发式，不是 planner 显式生成的精确 scope 参数
+  - `fieldSpecs` 现在还只是“结构化注释 + path/source priority”，还没有继续推进到：
+    - `readDetailField(...)` 的显式 `titleIncludes / scope locator`
+    - `resolvePrimaryRecord(...)` 的显式 `keywordInput / searchButton / listResponse / detailUrl`
+  - 还没有 trace 级机制把真实成功运行中的 fieldSpec 反向回写为项目资产
+- 下一步：
+  - 继续 `R3.2` 第三批：
+    - 把 `resolvePrimaryRecord(...)` / `readDetailField(...)` 的关键参数逐步推进成 planner 显式 schema
+    - 至少先收敛：
+      - `detailTitleIncludes`
+      - `detailScopeHints`
+      - `listResponse`
+      - `detailUrl`
+      - `rowHasTexts`
+    - 为后续 `R5` 预留“从成功 trace 自动抽取 fieldSpec / helper 参数模板”的升级入口
+
+## 2026-03-23 第十九次更新（R3.2 第三批第六刀：`resolvePrimaryRecord / readDetailField` helper 参数显式 schema）
+
+- 本轮目标：
+  - 不再主要依赖 compiler 对 `resolvePrimaryRecord(...)` / `readDetailField(...)` 做隐式硬编码拼装。
+  - 先把当前最有价值、最稳定的一批 helper 参数推进成 `VerificationPlan.check` 的显式 schema：
+    - `recordLookup`
+      - `listResponse`
+      - `detailUrl`
+      - `rowHasTexts`
+    - `detailSurface`
+      - `titleIncludes`
+      - `scopeHints`
+- 已完成：
+  - `lib/intent-execution-plan.ts` 已增强 `IntentVerificationPlanCheck`：
+    - 新增：
+      - `recordLookup?: { listResponse; detailUrl; rowHasTexts }`
+      - `detailSurface?: { titleIncludes; scopeHints }`
+    - `buildIntentVerificationPlan(...)` 现在会结合：
+      - `stableIdentifiers`
+      - `expectedFields`
+      - `fieldSpecs`
+      - `relatedSteps`
+      - 自动构建 `recordLookup / detailSurface`
+    - 当前首批启发式：
+      - `listResponse.urlIncludes`
+        - 从相关步骤路由 token 推断资源前缀
+      - `detailUrl`
+        - 统一产出 `{{primaryValue}}` 模板，交由 compiler 展开成共享变量访问
+      - `rowHasTexts`
+        - 基于稳定标识 + 状态/联系人/手机号等稳定字段产出保守 fallback token
+      - `detailSurface`
+        - 先保留 `scopeHints`
+        - 再尝试从文本中提取保守的 `titleIncludes`
+  - `lib/intent-execution-compiler.ts` 已开始优先消费显式 helper 参数：
+    - `resolvePrimaryRecord(...)` skeleton 现在优先读取：
+      - `check.recordLookup.listResponse`
+      - `check.recordLookup.rowHasTexts`
+      - `check.recordLookup.detailUrl`
+    - `readDetailField(...)` skeleton 现在优先读取：
+      - `check.detailSurface.titleIncludes`
+    - verification prompt / skeleton 注释里新增：
+      - `结构化回查参数：...`
+      - `结构化详情面：...`
+  - `lib/ai/intent-e2e-run-registry.ts` 已同步 clone：
+    - `verificationPlan.checks[].recordLookup`
+    - `verificationPlan.checks[].detailSurface`
+  - 为了避免把坏 schema 喂给生成器，`lib/intent-execution-plan.ts` 额外收紧了 `detailSurface.titleIncludes` 启发式：
+    - 不再把“创建客户并回列表后在详情页核对...”这类说明句误识别成标题
+    - 只保留更像“客户详情 / 商机详情 / 服务分佣配置”这类保守候选
+  - 单测已同步更新：
+    - `tests/unit/intent-execution-plan.spec.ts`
+    - `tests/unit/intent-execution-compiler.spec.ts`
+    - `tests/unit/test-generator-structured.spec.ts`
+    - `tests/unit/intent-e2e-run-registry.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/intent-e2e-run-registry.spec.ts`
+  - `npx vitest run tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第六刀：`recordLookup / detailSurface` 已落地）
+- 风险 / 未完成：
+  - `recordLookup / detailSurface` 目前仍只有部分参数显式化，列表检索控件本身仍主要靠模板硬编码或运行时兜底
+  - `titleIncludes` 仍是轻量启发式，不是 trace/knowledge 驱动的高置信资产
+  - `detailReadyLocator`、详情入口动作、搜索框/搜索按钮 locator 还没有进入显式 schema
+- 下一步：
+  - 继续 `R3.2` 第三批：
+    - 把列表检索控件从业务特定硬编码里拿出来
+    - 为 `resolvePrimaryRecord(...)` 增加更显式的 `searchSurface` schema
+    - 默认优先让 helper 自动探测搜索框/搜索按钮，只有已知时才显式透传
+
+## 2026-03-23 第二十次更新（R3.2 第三批第七刀：`searchSurface` 显式 schema + 默认取消业务特定搜索 locator）
+
+- 本轮目标：
+  - 解决 `resolvePrimaryRecord(...)` skeleton 仍默认硬编码：
+    - `input#businessList_keywords:visible`
+    - `搜索`按钮
+  - 让主链路默认更通用：
+    - 已知搜索控件时，通过 schema 显式传
+    - 未知时，省略 locator，让 worker helper 自动探测
+- 已完成：
+  - `lib/intent-execution-plan.ts` 已扩展 `IntentVerificationRecordLookupSpec`：
+    - 新增：
+      - `searchSurface?: {`
+      - `  keywordInput?: { selector?; placeholderIncludes?; textIncludes? }`
+      - `  searchButton?: { selector?; placeholderIncludes?; textIncludes? }`
+      - `}`
+    - `renderIntentVerificationPlan(...)` 现在也会把 `searchSurface` 渲染出来，避免 prompt 看不到这类显式参数
+  - `lib/intent-execution-compiler.ts` 已改为：
+    - 默认 skeleton 不再生成业务特定：
+      - `keywordInput: page.locator('input#businessList_keywords:visible').first()`
+      - `searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first()`
+    - 当 `recordLookup.searchSurface` 已提供时，才生成：
+      - `keywordInput`
+      - `searchButton`
+    - 若 schema 未提供，则只保留：
+      - `primaryValue`
+      - `listResponse`
+      - `rowHasTexts`
+      - `detailUrl`
+      - 由 `__e2e.resolvePrimaryRecord(...)` 内部自动探测可见搜索框/搜索按钮
+    - verification prompt 的 `结构化回查参数` 已能额外透出：
+      - `searchSurface=...`
+    - step instructions / verification hint 也已统一改成：
+      - “已知搜索控件再显式传；未知时先省略，让 helper 自动探测”
+  - `lib/ai/intent-e2e-run-registry.ts` 已同步 clone：
+    - `verificationPlan.checks[].recordLookup.searchSurface`
+  - 提示层已同步对齐：
+    - `lib/intent-action-library.ts`
+      - `resolvePrimaryRecord(...)` 能力说明改成“searchSurface 显式传参优先，但不是强制”
+    - `lib/test-generator.ts`
+      - 通用生成提示里补充“未知时可省略 keywordInput/searchButton，让 helper 自动探测”
+  - 单测已补：
+    - `tests/unit/intent-execution-compiler.spec.ts`
+      - 验证默认 skeleton 不再硬编码 `businessList_keywords`
+      - 验证显式 `searchSurface` 会正确编译为 locator
+    - `tests/unit/intent-e2e-run-registry.spec.ts`
+      - 验证 clone / restore 不丢 `searchSurface`
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-compiler.spec.ts tests/unit/intent-e2e-run-registry.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/test-generator.spec.ts`
+  - `npx vitest run tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts tests/unit/intent-action-library.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第七刀：`searchSurface` schema + helper 自探测默认链已落地）
+- 风险 / 未完成：
+  - `searchSurface` 目前只是显式 pass-through schema，builder 还不会自动推断，也还没有从 project knowledge / trace 中自动回填
+  - `resolvePrimaryRecord(...)` 仍缺更显式的：
+    - `detailReadyLocator`
+    - 详情入口动作 / 详情打开策略
+    - 列表作用域 / table scope 的 planner 级显式结构
+  - 真实成功 run 中到底是哪一组 `searchSurface` 命中的，还没有被沉淀成可学习资产
+- 下一步：
+  - 继续 `R3.2` 第三批：
+    - 把 `detailReadyLocator / detail entry strategy / table scope` 继续推进成显式 schema
+    - 让 project knowledge 能提供 `recordLookup.searchSurface / detailSurface` 这类 helper 参数
+    - 为后续 `R5` 预留“真实 run 成功参数 -> 项目资产回写”的 trace 入口
+
+## 2026-03-23 第二十一次更新（R3.2 第三批第八刀：`tableScope / detailReadyLocator` schema + project knowledge helper hints）
+
+- 本轮目标：
+  - 把 `resolvePrimaryRecord(...)` 已有但 planner 还看不见的两个高价值参数显式化：
+    - `tableScope`
+    - `detailReadyLocator`
+  - 同时让 project knowledge 不再只能提供 `fieldPathHints`，而是也能提供这类 helper 参数资产。
+- 已完成：
+  - `lib/intent-execution-plan.ts` 已扩展 `IntentVerificationRecordLookupSpec`：
+    - 新增：
+      - `tableScope?: { selector?; placeholderIncludes?; textIncludes? }`
+      - `detailReadyLocator?: { selector?; placeholderIncludes?; textIncludes? }`
+    - `renderIntentVerificationPlan(...)` 现在会把这两个参数和 `searchSurface` 一起渲染到 `recordLookup`
+  - `lib/intent-execution-compiler.ts` 已改为：
+    - 当 `recordLookup.tableScope` 已提供时，skeleton 会显式生成：
+      - `table: ...`
+    - 当 `recordLookup.detailReadyLocator` 已提供时，skeleton 会显式生成：
+      - `detailReadyLocator: ...`
+    - `结构化回查参数` 注释里也会同步透出：
+      - `tableScope=...`
+      - `detailReadyLocator=...`
+    - 因此 `resolvePrimaryRecord(...)` 的“搜索面 / 表格作用域 / 详情 ready 锚点”三类参数，现在都可以由 planner 显式驱动，而不是只能依赖 prompt 描述或局部硬编码。
+  - `lib/intent-project-knowledge.ts` 已增强规则 schema：
+    - 新增：
+      - `recordLookupHints[]`
+      - `detailSurfaceHints[]`
+    - 其中 `recordLookupHints[]` 当前已支持：
+      - `listResponse`
+      - `detailUrl`
+      - `rowHasTexts`
+      - `searchSurface`
+      - `tableScope`
+      - `detailReadyLocator`
+      - `stableIdentifiers / whenStepTypes / stepTextIncludes`
+    - `detailSurfaceHints[]` 当前已支持：
+      - `titleIncludes`
+      - `scopeHints`
+      - `stableIdentifiers / whenStepTypes / stepTextIncludes`
+    - `resolveIntentProjectKnowledge(...)` / `getIntentProjectKnowledgeProfile()` 已能返回这些结构化 helper hints
+  - `lib/intent-execution-plan.ts` 的 verification builder 已接入 project knowledge helper hints：
+    - 对 `recordLookup`：
+      - 知识命中时优先采用知识里的 `listResponse / detailUrl / rowHasTexts / searchSurface / tableScope / detailReadyLocator`
+      - 未命中的字段再回退到当前 heuristic
+    - 对 `detailSurface`：
+      - 知识里的 `titleIncludes / scopeHints` 优先于轻量启发式
+  - `lib/ai/intent-e2e-run-registry.ts` 已同步 clone：
+    - `verificationPlan.checks[].recordLookup.tableScope`
+    - `verificationPlan.checks[].recordLookup.detailReadyLocator`
+  - 提示层已同步对齐：
+    - `lib/intent-action-library.ts`
+      - 增加“已知表格 wrapper 或详情 ready 锚点时，优先显式传 `table / detailReadyLocator`”的实现说明
+    - `lib/test-generator.ts`
+      - 通用生成提示里增加“已知表格容器 / 详情 ready 锚点时显式透传”的说明
+  - 单测已补：
+    - `tests/unit/intent-project-knowledge.spec.ts`
+      - 验证 project knowledge 可解析 `recordLookupHints / detailSurfaceHints`
+    - `tests/unit/intent-execution-plan.spec.ts`
+      - 验证 verification builder 会把知识里的 `searchSurface / tableScope / detailReadyLocator / detailSurface` 接进最终 check
+    - `tests/unit/intent-execution-compiler.spec.ts`
+      - 验证 compiler 会正确编译：
+        - `table: page.locator(...).first()`
+        - `detailReadyLocator: page.getByText(...).first()`
+    - `tests/unit/intent-e2e-run-registry.spec.ts`
+      - 验证 clone / restore 不丢这两个新字段
+- 验证：
+  - `npx vitest run tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/intent-e2e-run-registry.spec.ts`
+  - `npx vitest run tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts tests/unit/intent-action-library.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第八刀：`tableScope / detailReadyLocator` schema + project knowledge helper hints 已落地）
+- 风险 / 未完成：
+  - `detail entry strategy` 仍未显式结构化：
+    - 现在还主要依赖：
+      - `detailUrl`
+      - 或列表未命中后的外部 prompt/slot 逻辑
+    - 还没有 planner 级表达：
+      - “点击目标行查看”
+      - “打开 Drawer/Modal”
+      - “通过行尾动作进入详情”
+  - project knowledge 目前虽然能提供 helper 参数，但仍是静态资产：
+    - 还没有 trace 级成功参数自动回填
+    - 还没有按 run 结果自动晋升/降权某一组 helper 参数
+  - `tableScope / detailReadyLocator` 目前仍是 locator hint，不是更高层的语义能力（例如“详情抽屉标题”“第一个主表”）
+- 下一步：
+  - 继续 `R3.2` 第三批：
+    - 把 `detail entry strategy` 推进成显式 schema
+    - 首批至少覆盖：
+      - 直接 `detailUrl`
+      - 行内“查看/详情”动作
+      - 详情 Drawer/Modal 打开策略
+    - 为后续 `R5` 预留“真实成功 trace -> helper 参数 / 详情进入策略资产回写”的入口
+
+## 2026-03-23 第二十二次更新（R3.2 第三批第九刀：`detailEntry` 显式 schema 首批 `row_action`）
+
+- 本轮目标：
+  - 把“列表命中后如何进入详情”的策略从隐式 prompt 约束，推进成 planner / compiler 都能看见的显式 schema。
+  - 首批只做最小高价值闭环：
+    - `trigger=row_action`
+    - `target=drawer_or_modal | page`
+- 已完成：
+  - `lib/intent-project-knowledge.ts` 已扩展 `recordLookupHints[].detailEntry`：
+    - 新增字段：
+      - `trigger`
+      - `actionLabel`
+      - `target`
+      - `urlIncludes`
+    - 当前支持的触发器首批限定为：
+      - `row_action`
+    - project knowledge 的 normalize / match / profile clone 已全链路接通，不会在规则命中、返回 profile 或 registry clone 时丢字段。
+  - `lib/intent-execution-plan.ts` 已扩展 verification schema：
+    - 新增：
+      - `IntentVerificationDetailEntrySpec`
+      - `recordLookup.detailEntry`
+    - `renderIntentVerificationPlan(...)` 现在会显式输出：
+      - `detailEntry{ trigger=...; actionLabel=...; target=...; urlIncludes=... }`
+    - verification builder 已能把 knowledge 中的 `detailEntry` 合并进最终 `recordLookup`
+  - `lib/intent-execution-compiler.ts` 已接通 `detailEntry` 骨架编译：
+    - 当 `recordLookup.detailEntry.trigger === row_action` 且列表命中记录时，优先生成固定动作链，而不是留给模型自由发挥：
+      - `await __e2e.clickAntdRowAction(page, record.row, "...");`
+    - 若 `target === drawer_or_modal`：
+      - 自动等待可见 Drawer / Modal
+      - 后续详情字段读取会显式把该容器作为 `scope`
+    - 若 `target === page`：
+      - 复用现有 `detailUrl / detailReadyLocator` 等等待链路进入详情页稳定态
+    - `结构化回查参数` 注释里也会同步透出：
+      - `detailEntry=trigger=row_action / actionLabel=... / target=...`
+  - `lib/ai/intent-e2e-run-registry.ts` 已同步 clone / restore：
+    - `verificationPlan.checks[].recordLookup.detailEntry`
+  - 单测已补：
+    - `tests/unit/intent-project-knowledge.spec.ts`
+      - 验证 `detailEntry` 可被 project knowledge 解析和返回
+    - `tests/unit/intent-execution-plan.spec.ts`
+      - 验证 verification check 会带上 `recordLookup.detailEntry`
+    - `tests/unit/intent-execution-compiler.spec.ts`
+      - 验证 row action 详情入口会编译出固定 helper 骨架
+    - `tests/unit/intent-e2e-run-registry.spec.ts`
+      - 验证 clone / restore 不丢 `detailEntry`
+- 验证：
+  - `npx vitest run tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/intent-e2e-run-registry.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第九刀：`detailEntry` 显式 schema 首批 `row_action` 已落地）
+- 风险 / 未完成：
+  - `detailEntry` 当前仍是首批最小实现：
+    - 只有 `row_action` 触发器
+    - 还没有覆盖“点击整行进入详情”“双击行”“卡片项进入详情”等其它入口
+  - 提示层还没有充分强调：
+    - 已知 `detailEntry` 时，应优先依赖固定骨架，而不是继续自由手写“点查看 -> 猜容器 -> 猜等待”
+  - 成功 run 命中的 `detailEntry` 参数还没有自动回流为项目资产
+- 下一步：
+  - 继续 `R3.2` 第三批：
+    - 对齐 `intent-action-library / test-generator` 提示层，让 `detailEntry` 成为默认优先路径
+    - 再继续扩充更多详情进入触发器
+    - 为后续 `R5` 预留“真实成功 trace -> detailEntry / helper 参数资产回写”的入口
+
+## 2026-03-23 第二十三次更新（R3.2 第三批第十刀：`detailEntry` 提示层对齐）
+
+- 本轮目标：
+  - 不只让 planner / compiler 看见 `detailEntry`，还要让生成模型默认服从这条结构化详情入口链。
+  - 核心是把“有 `detailEntry` 时不要自由手写点查看”提升到 capability 和 prompt 的硬约束级别。
+- 已完成：
+  - `lib/intent-action-library.ts` 已补齐 capability 说明：
+    - `assert.resolve-primary-record`
+      - 明确说明：若 verification plan / project knowledge 已给出 `detailEntry`，应优先沿用固定链：
+        - 命中目标行
+        - `__e2e.clickAntdRowAction(...)`
+        - 等待 Drawer / Modal 或详情页 ready
+        - 再 `__e2e.readDetailField(...)`
+      - 显式禁止退回整页 `page.getByText('查看')` + 猜容器
+    - `ui.click-antd-row-action`
+      - 新增说明：若行动作本身是详情入口，点击后不能立刻对整页文本断言，必须先等待详情容器稳定
+  - `lib/test-generator.ts` 已补齐通用 prompt 规则：
+    - 新增 `13.3`
+      - 当 `VerificationPlan` / 固定骨架已经给出 `recordLookup.detailEntry` 时，必须优先沿用这条结构化详情入口
+      - 同时分别说明：
+        - `target=drawer_or_modal` 时先等 `__e2e.waitForVisibleAntdModal(...)`
+        - `target=page` 时先等 `detailReadyLocator` / URL ready
+    - 在最终“输出要求”里新增硬约束：
+      - 若已给出 `recordLookup.detailEntry`，必须保留
+        - 命中目标行
+        - 行动作点击
+        - 容器 / ready 等待
+        - 字段读取
+      - 禁止改写成全局点击“查看”或点击后再猜容器
+  - 单测已补：
+    - `tests/unit/intent-action-library.spec.ts`
+      - 验证 primary-record capability 已显式提到 `detailEntry` 和 `__e2e.clickAntdRowAction`
+    - `tests/unit/test-generator.spec.ts`
+      - 验证生成 prompt 已包含 `recordLookup.detailEntry` 规则、固定 `查看` 动作链和输出约束
+    - `tests/unit/test-generator-structured.spec.ts`
+      - 验证结构化 prompt 会带出：
+        - `detailEntry{ trigger=row_action; actionLabel=查看; target=drawer_or_modal }`
+        - `__e2e.clickAntdRowAction(...)`
+        - `__e2e.waitForVisibleAntdModal(...)`
+        - `scope: verify_*DetailScope`
+- 验证：
+  - `npx vitest run tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts tests/unit/intent-action-library.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十刀：`detailEntry` 提示层对齐已落地）
+- 风险 / 未完成：
+  - `detailEntry` 触发器仍只有：
+    - `row_action`
+  - 还没有覆盖更通用的：
+    - 点击整行进入详情
+    - 双击行进入详情
+    - 卡片项 / 列表项点击进入详情
+  - 成功 run 命中的详情进入策略仍未自动回流项目资产
+- 下一步：
+  - 继续 `R3.2` 第三批：
+    - 先把 `detailEntry` 扩到更通用的 `row_click`
+    - 再评估是否补 `double_click / card_click`
+    - 然后继续推进“真实成功 trace -> 详情进入策略资产回写”
+
+## 2026-03-23 第二十四次更新（R3.2 第三批第十一刀：`detailEntry.trigger` 扩展到 `row_click`）
+
+- 本轮目标：
+  - 把详情进入策略从“只有行尾动作”扩到更通用的“点击整行进入详情”。
+  - 这一步优先覆盖大量后台系统常见的：
+    - 列表命中后点击整行或主行区域直接打开详情页 / Drawer
+- 已完成：
+  - `lib/intent-project-knowledge.ts`
+    - `IntentProjectKnowledgeDetailEntryTrigger` 已从仅支持 `row_action` 扩展为：
+      - `row_action`
+      - `row_click`
+    - `normalizeDetailEntryHint(...)` 已支持解析：
+      - `trigger=row_click`
+    - 因此 project knowledge 现在可以显式表达：
+      - “命中目标行后直接点击整行进入详情”
+  - `lib/intent-execution-plan.ts`
+    - `IntentVerificationDetailEntryTrigger` 已同步支持 `row_click`
+    - verification plan 渲染会正确输出：
+      - `detailEntry{ trigger=row_click; target=page; urlIncludes=... }`
+  - `lib/intent-execution-compiler.ts`
+    - 原先只支持 `row_action` 的详情入口骨架，已改成通用 `detailEntry` 编译链
+    - 对 `row_click`：
+      - 会先对目标行执行：
+        - `scrollIntoViewIfNeeded()`
+        - `row.click()`
+      - 然后继续复用现有稳定化逻辑：
+        - `target=page` 时等待 URL / `detailReadyLocator`
+        - `target=drawer_or_modal` 时等待可见详情容器
+      - 这样 `row_click` 和 `row_action` 现在都能落在同一条结构化详情校验骨架上
+  - 单测已补：
+    - `tests/unit/intent-project-knowledge.spec.ts`
+      - 验证 `row_click` 可被解析且不要求 `actionLabel`
+    - `tests/unit/intent-execution-plan.spec.ts`
+      - 验证 verification check 会透出 `detailEntry.trigger=row_click`
+    - `tests/unit/intent-execution-compiler.spec.ts`
+      - 验证 compiler 会生成：
+        - `row.scrollIntoViewIfNeeded()`
+        - `row.click()`
+        - URL / `detailReadyLocator` 等待链
+      - 并确认不会误退回 `__e2e.clickAntdRowAction(...)`
+- 验证：
+  - `npx vitest run tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts`
+  - `npx vitest run tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts tests/unit/intent-action-library.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+- 风险 / 未完成：
+  - `detailEntry` 当前已支持：
+    - `row_action`
+    - `row_click`
+  - 但还没覆盖：
+    - `double_click`
+    - `card_click`
+    - 非表格 item click
+  - 更关键的是，成功 run 命中的这些详情进入策略还没有自动回流为项目知识资产
+- 下一步：
+  - 继续 `R3.2 / R5` 交界面：
+    - 为成功 run 增加“结构化 helper 参数 / detailEntry 命中链”的 trace 沉淀入口
+    - 先做到可回放、可审计，再决定是否自动 merge 到项目知识
+
+## 2026-03-23 第二十五次更新（R5 预备第一刀：成功 run 的结构化候选资产 `knowledgeCandidates`）
+
+- 本轮目标：
+  - 不直接自动 merge 项目知识，先把成功 run 里的高价值结构化验收链提炼成“候选资产”。
+  - 重点沉淀：
+    - `recordLookup`
+    - `detailSurface`
+    - `detailEntry`
+    - 与之配套的 `fieldPathHints / preferredHelpers / stepPatches`
+- 已完成：
+  - `lib/ai/intent-e2e-service.ts`
+    - 新增成功 run 候选资产工件：
+      - `knowledgeCandidates[]`
+    - 候选来源当前首批限定为：
+      - `finalResult.success === true`
+      - 且 verification check 中存在
+        - `recordLookup`
+        - 或 `detailSurface`
+    - 每个 candidate 当前会携带：
+      - `candidateId`
+      - `checkUid`
+      - `stableIdentifiers`
+      - `preferredHelpers`
+      - `matchedRuleIds`
+      - `rule`
+    - `rule` 会把成功 run 的结构化验收信息翻译为可学习的项目知识候选：
+      - `match.urlIncludes`
+      - `promptNotes`
+      - `capabilitySlugs`
+      - `stepPatches`
+      - `fieldPathHints`
+      - `recordLookupHints`
+      - `detailSurfaceHints`
+    - `preferredHelpers` 会做受控补全，而不只照抄 check：
+      - 有 `recordLookup` 时自动补 `__e2e.resolvePrimaryRecord`
+      - `detailEntry.trigger=row_action` 时自动补 `__e2e.clickAntdRowAction`
+      - `target=drawer_or_modal` 时自动补 `__e2e.waitForVisibleAntdModal`
+      - 有详情面时自动补 `__e2e.readDetailField`
+    - 这样成功 run 结束后，已经不只是保存 `verificationPlan`，而是额外产出一份更接近项目知识 rule 的中间候选资产。
+  - `lib/ai/intent-e2e-run-registry.ts`
+    - 已补 `knowledgeCandidates[]` 的深拷贝 / 持久化恢复
+    - 因此候选资产现在会跟 run 结果一起进入 registry / snapshot，不会在刷新或加载时丢失
+  - 单测已补：
+    - `tests/unit/intent-e2e-service.spec.ts`
+      - 验证成功 run 的 `table_row + detailEntry` 验收链会产出 `knowledgeCandidates`
+      - 验证 candidate 内的：
+        - `preferredHelpers`
+        - `recordLookupHints.detailEntry`
+        - `detailSurfaceHints`
+        - `stepPatches`
+        都被正确生成
+    - `tests/unit/intent-e2e-run-registry.spec.ts`
+      - 验证 `knowledgeCandidates` 在内存态、持久化加载态都完整保留
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts`
+  - `npx vitest run tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts tests/unit/intent-action-library.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（成功 run 候选资产沉淀入口已落地）
+- 风险 / 未完成：
+  - `knowledgeCandidates` 目前只挂在 run result / registry：
+    - 还没有写入单独 draft 文件
+    - 还没有接到 merge UI / merge route
+  - 当前候选生成主要依赖 verificationPlan：
+    - 还没有读取真实执行日志去判断“哪一组 helper 参数真正命中”
+    - 还没有 success-rate / 覆盖度 / 冲突检测
+  - 还没有把 `knowledgeCandidates` 与现有 `intent-project-knowledge-draft` 流程打通
+- 下一步：
+  - 继续 `R5`：
+    - 把 `knowledgeCandidates` 接到 draft / review 流程
+    - 评估是否需要单独 trace 文件与审计路径
+    - 再决定自动 merge 或只做人工确认 merge
+
+## 2026-03-23 第二十六次更新（R5 预备第二刀：`knowledgeCandidates` 接入 draft / review 流程）
+
+- 本轮目标：
+  - 让成功 run 产出的 `knowledgeCandidates` 不再只停留在 run result / registry，而是能进入现有项目知识草稿流。
+  - 保持现有入口不变：
+    - `generateIntentProjectKnowledgeDraft()`
+    - draft route
+    - merge route
+- 已完成：
+  - `lib/intent-project-knowledge-draft.ts`
+    - 已从“单源 repair memory 草稿”扩展为“双源候选草稿”：
+      - `repair_memory`
+      - `successful_run`
+    - 现在 `generateIntentProjectKnowledgeDraft()` 会同时：
+      - 读取 repair memory clusters
+      - 读取最近通过的 run snapshots
+    - 对成功 run：
+      - 从 snapshot.state.result.knowledgeCandidates 中提取候选
+      - 按 rule 维度聚合重复成功 run
+      - 产出 draft candidate，source 标记为 `successful_run`
+    - 成功 run candidate 会映射到现有草稿结构：
+      - `seenCount = passed run 数`
+      - `resolvedCount = passed run 数`
+      - `successRate = 100`
+      - `successfulStrategies = preferredHelpers`
+      - `rule = knowledgeCandidate.rule`，并补充“来自 successful runs 自动草拟”的 prompt note
+    - draft summary 已补充成功 run 维度：
+      - `totalPassedRuns`
+      - `repairMemoryCandidateGroups`
+      - `successfulRunCandidateGroups`
+    - `renderIntentProjectKnowledgeDraftSummary(...)` 现在也会透出：
+      - `passed runs=...`
+      - candidate 的 `source=...`
+  - `tests/unit/intent-project-knowledge-draft.spec.ts`
+    - 已增加成功 run 候选用例：
+      - mock 通过的 run snapshot
+      - 内含 `knowledgeCandidates`
+      - 验证 draft 会产出 `source=successful_run` 的候选
+      - 验证 `runIds / detailEntry / summary` 都正确
+    - 同时把 run snapshot 数据源 mock 掉，避免 draft spec 意外依赖真实 DB
+  - route 层保持兼容：
+    - `app/api/intent-e2e/project-knowledge/draft/route.ts` 无需改参数面
+    - `app/api/intent-e2e/project-knowledge/merge` 也无需改接口
+    - 因为成功 run 候选已经在 draft 内部被自动纳入
+- 验证：
+  - `npx vitest run tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/api-intent-project-knowledge-draft-route.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+  - `npx vitest run tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/api-intent-project-knowledge-draft-route.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（成功 run 候选资产已进入 draft / review）
+- 风险 / 未完成：
+  - 当前成功 run draft 候选仍是“直接使用 run 内 rule 草稿”：
+    - 还没有做跨 run 冲突消解
+    - 还没有对真实命中的 helper 参数做 success-rate 统计
+  - 候选虽然已进入 draft / merge 流，但还没有单独 audit：
+    - 还看不到“某条 merged rule 来自哪个 success candidate / 哪些 run”
+  - 目前仍以最近通过 run 为主，还没有更细的项目/模块粒度过滤
+- 下一步：
+  - 继续 `R5`：
+    - 为 success candidate merge 增加 audit / provenance
+    - 记录 merged candidate 与 runId 的可追溯关系
+    - 再评估是否要做 projectUid / moduleUid 级过滤与排序
+
+## 2026-03-23 第二十七次更新（R5 预备第三刀：success candidate merge provenance / audit）
+
+- 本轮目标：
+  - 补齐 successful run 候选进入 merge 后的可追溯链路。
+  - 让项目知识规则一旦入库，就能反查“来自哪类候选、关联了哪些通过 run”。
+- 已完成：
+  - `lib/intent-project-knowledge-draft.ts`
+    - `MergeIntentProjectKnowledgeDraftCandidatesResult` 已新增：
+      - `mergedCandidateSources`
+      - `mergedRunIds`
+    - merge 草稿候选时，会只从“实际成功入库的 candidate”里提取来源与 runId，避免把未入库或已覆盖项混进 provenance。
+  - `lib/intent-project-knowledge.ts`
+    - `IntentProjectKnowledgeAuditMeta` 已支持：
+      - `mergedCandidateSources`
+      - `mergedRunIds`
+    - 审计 detail 现在会额外写出：
+      - `候选来源：...`
+      - `关联通过运行 N 条`
+    - audit normalize / read path 也已兼容新字段，避免历史记录读写时丢字段。
+  - `app/api/intent-e2e/project-knowledge/merge/route.ts`
+    - merge route 已把 provenance 同时写入：
+      - 审计记录 meta
+      - project activity meta
+      - API response
+    - 这样无论是 merge API、活动流还是后续审计分析，都能看到 successful run 候选的来源与关联运行。
+  - `tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+    - 已补充 merge route 新 contract 的断言：
+      - `createIntentProjectKnowledgeAuditEntry(...)`
+      - `insertProjectActivityLog(...)`
+      - response JSON
+    - 断言都已对齐：
+      - `mergedCandidateSources`
+      - `mergedRunIds`
+- 验证：
+  - `npx vitest run tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts`
+  - `npx vitest run tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/api-intent-project-knowledge-draft-route.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（成功 run 候选已具备 merge provenance / audit）
+- 风险 / 未完成：
+  - 当前 successful run 候选仍主要按最近 passed runs 聚合：
+    - 还没有 `projectUid / moduleUid` 级过滤
+    - 还没有更细的“同类系统 / 同模块优先”排序
+  - provenance 已可追溯，但还没有做反向效果评估：
+    - 还看不到“某批 successful run 候选入库后，对首次通过率提升了多少”
+  - 目前 merge provenance 只进入 audit / activity / response：
+    - UI 侧还没有单独做更强的来源展示或 drill-down
+- 下一步：
+  - 继续 `R5`：
+    - 为 successful run 候选增加 `projectUid / moduleUid` 级过滤与排序
+    - 降低跨项目、跨系统候选互相污染的概率
+    - 为后续首次成功率评估建立更可信的学习样本边界
+
+## 2026-03-23 第二十八次更新（R5 预备第四刀：successful run 候选作用域化）
+
+- 本轮目标：
+  - 把 successful run 学习样本从“全局最近通过记录”收敛到“可信的 project / module 作用域”。
+  - 降低跨项目、跨系统候选互相污染，避免学习链被错误成功样本带偏。
+- 已完成：
+  - `lib/ai/intent-e2e-service.ts`
+    - `IntentE2ERunRequest` 已新增 `moduleUid`
+    - 后续 run、snapshot、draft 学习链现在可以携带模块上下文，而不只剩 project 级别
+  - `lib/ai/intent-e2e-request.ts`
+    - run 请求体标准化已支持 `moduleUid`
+  - `lib/server/intent-e2e-project-auth.ts`
+    - 当请求直接带 `moduleUid` 时，已支持反查所属项目并补齐 `projectUid`
+    - 当 `projectUid + moduleUid` 同时存在但不匹配时，会直接拒绝，避免脏样本进入 run registry
+  - `lib/ai/intent-e2e-run-registry.ts`
+    - registry 内部记录已新增 `moduleUid`
+    - 持久化 snapshot 时会把 `moduleUid` 一起写入
+    - stale run 恢复回写时也会保留模块作用域
+  - `lib/db/repository.ts`
+    - `intent_e2e_runs` 表已兼容 `module_uid`
+    - `IntentE2ERunSnapshotInput / Record / listIntentE2ERunSnapshots(...)` 已支持 `moduleUid`
+    - 这样 successful run 候选后续不再只能按 project 维度学习
+  - `lib/intent-project-knowledge-draft.ts`
+    - `GenerateIntentProjectKnowledgeDraftOptions` 已新增：
+      - `projectUid`
+      - `moduleUid`
+    - successful run 候选抽样策略已改成：
+      - 有 `projectUid` 时，先硬限制在同项目 passed runs
+      - 同时给了 `moduleUid` 时，优先只取 exact-module 成功样本
+      - 若该模块还没有 passed runs，则回退到同项目样本，而不是回退到全局
+    - `summary.totalPassedRuns` 现在表示“本次真正参与 successful run 候选聚合的作用域样本数”
+  - route / workbench 对齐：
+    - `app/api/intent-e2e/project-knowledge/draft/route.ts`
+      - GET / POST 已支持 `projectUid / moduleUid`
+    - `app/api/intent-e2e/project-knowledge/merge/route.ts`
+      - merge 前后的 draft 重新生成会沿用同一作用域
+    - `components/IntentE2EWorkbench.tsx`
+      - 创建 run 时已补发 `moduleUid`
+      - 预览 / 写出 / merge 项目知识草稿时也会带上当前 workspace 的 `projectUid / moduleUid`
+    - `components/ProjectWorkspace.tsx`
+      - 从意图草稿直接启动 run 时，已把 draft.moduleUid 一起传入
+  - 单测已补：
+    - `tests/unit/intent-e2e-project-auth.spec.ts`
+      - 验证 `moduleUid -> projectUid` 反查补齐
+      - 验证项目与模块不匹配时直接拒绝
+    - `tests/unit/api-intent-e2e-runs-route.spec.ts`
+      - 验证 run route 会把 `moduleUid` 继续传给 registry
+    - `tests/unit/intent-e2e-run-registry.spec.ts`
+      - 验证 snapshot 持久化时会保留 `projectUid / moduleUid`
+    - `tests/unit/intent-project-knowledge-draft.spec.ts`
+      - 验证 exact-module successful runs 优先
+      - 验证模块无样本时，回退到同项目而不是全局
+    - `tests/unit/api-intent-project-knowledge-draft-route.spec.ts`
+      - 验证 draft route 会把 `projectUid / moduleUid` 透传到 draft 生成器
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-project-auth.spec.ts tests/unit/api-intent-e2e-runs-route.spec.ts tests/unit/intent-e2e-run-registry.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/api-intent-project-knowledge-draft-route.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+  - `npx vitest run tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/api-intent-project-knowledge-draft-route.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-e2e-project-auth.spec.ts tests/unit/api-intent-e2e-runs-route.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（successful run 候选已完成作用域化）
+- 风险 / 未完成：
+  - 当前作用域仍依赖显式 `projectUid / moduleUid`：
+    - 还没有在缺失作用域时自动从 targetUrl / scenario family 反推“同类系统”边界
+  - successful run 候选虽然已更可信，但还没有效果评估：
+    - 还看不到“某批 scoped candidates 入库后，首次通过率提升了多少”
+  - UI 侧目前只是在请求层透传作用域：
+    - 还没有把“当前草稿来自哪个 project / module scope”做更明确展示
+- 下一步：
+  - 继续 `R5`：
+    - 为 scoped successful run 候选增加效果评估 / probation
+    - 记录它们入库后对 first-pass / terminal-pass 的影响
+    - 再决定是否要把 scoped provenance 在 UI 上做更强展示
+
+## 2026-03-23 第二十九次更新（R5 预备第五刀：scoped successful run 候选效果评估 / probation）
+
+- 本轮目标：
+  - 让 successful run 候选不只“能 merge”，还要能回答 merge 之后到底有没有提升首次通过率。
+  - 继续沿用现有 probation / rollback 框架，不另起一套平行评估系统。
+- 已完成：
+  - `lib/intent-project-knowledge.ts`
+    - `IntentProjectKnowledgeAuditMeta` 已新增 `requestedModuleUid`
+    - merge 审计 detail 现在会记录：
+      - `作用域模块：...`
+      - 结合之前已有的 `候选来源 / 关联通过运行`
+    - 这样后续观察窗口就不只知道“是哪个项目”，还知道“是不是某个模块下的 scoped merge”
+  - `app/api/intent-e2e/project-knowledge/merge/route.ts`
+    - merge route 已把当前 draft / merge 的 `moduleUid` 写进：
+      - audit meta
+      - project activity meta
+    - 作用域信息现在会跟随 provenance 一起持久化，而不只停留在请求参数里
+  - `lib/ai/intent-e2e-insights.ts`
+    - `buildProbationRules(...)` 与 `buildRollbackCandidates(...)` 已升级为“按 audit scope 观察”：
+      - 仍按 `projectUid` 限制
+      - 若 audit meta 带了 `requestedModuleUid`，则进一步只看同模块终态 runs
+    - `successful_run` 来源的 merge 批次，除了原来的终态通过率，还会计算：
+      - `beforeFirstPassRate`
+      - `observedFirstPassRate` / `afterFirstPassRate`
+      - `firstPassRateDelta`
+    - probation / rollback 现在都会透出：
+      - `mergedCandidateSources`
+      - `mergedRunIds`
+      - `requestedModuleUid`
+      - `impactStatus`
+    - 对 `successful_run` 批次新增一条更贴近目标的保护逻辑：
+      - 即使终态通过率没明显下滑，如果首次通过率显著回退，也会进入降级 / 回滚观察
+    - rollback 候选的判定也从“只看终态通过率”扩展为：
+      - 终态通过率显著回退
+      - 或首次通过率显著回退
+  - `components/IntentE2EWorkbench.tsx`
+    - 观察期卡片现在会显示：
+      - 来源是否包含 `successful_run`
+      - 作用域模块
+      - 终态通过率基线 vs 当前
+      - 首次通过率基线 vs 当前
+      - 当前 impact status
+      - 关联通过运行数
+    - 回滚候选卡片也已同步显示：
+      - `successful_run` 来源标记
+      - module scope
+      - terminal / first-pass 双维度变化
+    - 最近审计记录也会补充：
+      - `模块`
+      - `来源`
+      方便直接反查某次 merge 的学习样本边界
+  - 单测已补：
+    - `tests/unit/intent-e2e-insights.spec.ts`
+      - 验证 successful run merge 在 `moduleUid` 作用域下只观察同模块 runs
+      - 验证即使终态还能通过，只要 first-pass 明显退化，仍会触发 degraded / rollback candidate
+    - `tests/unit/intent-project-knowledge.spec.ts`
+      - 验证 audit meta / detail 会保留 `requestedModuleUid`
+    - `tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+      - 验证 merge route 会把 `requestedModuleUid` 写进 activity meta
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-project-knowledge.spec.ts`
+  - `npx vitest run tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/api-intent-project-knowledge-draft-route.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-e2e-project-auth.spec.ts tests/unit/api-intent-e2e-runs-route.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（scoped successful run 候选已具备效果评估 / probation）
+- 风险 / 未完成：
+  - 当前 scope 仍依赖显式 `projectUid / moduleUid` 或 merge 时保留的 audit meta：
+    - 还没有在缺失 scope 时自动从 targetPath / scenario family / source runs 回推“最近似边界”
+  - 现在已经能看“某批 successful run 候选是否回退”：
+    - 但还没有把这份结果反向喂给 draft ranking / auto-promotion
+  - UI 已能看到来源、模块和 first-pass 变化：
+    - 但还没有做更深的 drill-down，比如直接展开 `mergedRunIds` 对应的代表 trace
+- 下一步：
+  - 继续 `R5`：
+    - 把 probation / rollback 的效果评估反向接回 candidate ranking
+    - 让 first-pass 提升过的 successful run 候选更容易被再次推荐
+    - 让已证明会拉低首次成功率的候选自动降权
+
+## 2026-03-23 第三十次更新（R5 预备第六刀：successful run 候选 feedback-aware ranking）
+
+- 本轮目标：
+  - 把已经落地的 `probation / rollback / first-pass impact` 结果，真正反向接回 successful run candidate 的 draft 排序。
+  - 避免 successful run 候选永远只按“最近 passed runs 数量”排序，导致已证明会拉低 first-pass 的候选继续排在前面。
+- 已完成：
+  - `lib/intent-project-knowledge-draft.ts`
+    - successful run candidate 现在会额外拉取：
+      - 同 scope 的 terminal runs
+      - 项目知识 merge audit
+    - 并直接复用 `buildIntentE2EInsightsFromData(...)` 的现有结果：
+      - `probationRules`
+      - `rollbackCandidates`
+    - 新增 feedback-aware ranking：
+      - 若历史 merge 已进入 rollback candidate，则 candidate 直接降权
+      - 若历史 probation 已 degraded，也会继续降权
+      - 若仍在 watching，则只给轻微 probationary 惩罚
+      - 若历史 successful run merge 已完成观察且 first-pass 明显提升，则给显式 boost
+      - 若只是平稳转正，则只给轻量正向或中性反馈，不会误当成强收益候选
+    - 作用域规则与前一轮保持一致：
+      - 有 `moduleUid` 时优先 exact-module feedback
+      - exact-module 没有时才回退到同项目 project-level feedback
+    - `IntentProjectKnowledgeDraftCandidate` 已新增可解释反馈：
+      - `feedback.status`
+      - `feedback.confidenceAdjustment`
+      - `feedback.reasons`
+      - `feedback.supportingAuditIds`
+    - draft summary 现在会直接打印：
+      - `feedback=preferred:+...`
+      - `feedback=deprioritized:-...`
+      这样生成草稿时能看出排序变化来自哪类历史效果信号
+  - `tests/unit/intent-project-knowledge-draft.spec.ts`
+    - 新增 improving 场景：
+      - 历史 successful run merge 若确实抬升了 `first_pass_rate`，candidate 会被 boost 并排到前面
+    - 新增 regressing 场景：
+      - 历史 successful run merge 若触发 rollback 风险，candidate 会被 downrank
+    - 同时补齐 audit 隔离：
+      - draft spec 现在使用独立临时 audit 文件，避免误读本地旧审计数据
+- 验证：
+  - `npx vitest run tests/unit/intent-project-knowledge-draft.spec.ts`
+  - `npx vitest run tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-project-knowledge.spec.ts tests/unit/api-intent-project-knowledge-draft-route.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+  - `npx vitest run tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/api-intent-project-knowledge-draft-route.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-e2e-project-auth.spec.ts tests/unit/api-intent-e2e-runs-route.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 15 个测试文件通过
+    - 125 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（successful run 候选已接入 feedback-aware ranking）
+- 风险 / 未完成：
+  - 当前 feedback 只回流到 draft ranking：
+    - 还没有直接作用到 workbench UI 的候选展示
+    - 也还没有作用到 merge 默认勾选 / auto-promotion
+  - 当前反馈粒度仍以 `rule.id` + merge audit 为主：
+    - 还没有细化到同 rule 下不同 `checkUid / verifier shape` 的更小粒度
+  - 当前 still 依赖已有 observation window：
+    - 对刚 merge 但样本不足的候选，只能给轻度 probationary 惩罚，不能过早定性
+- 下一步：
+  - 继续 `R5`：
+    - 把 `preferred / probationary / deprioritized` 反馈直接透出到 workbench candidate UI
+    - 让 merge 默认选择与排序也吃到这份 feedback，而不只停留在 draft JSON
+    - 为后续 auto-promotion / safe merge gating 准备可直接复用的候选状态
+
+## 2026-03-23 第三十一次更新（R5 预备第七刀：feedback-aware candidate UI / default merge selection）
+
+- 本轮目标：
+  - 把 `preferred / probationary / deprioritized` 从 draft JSON 真正带到 workbench 交互层。
+  - 让默认 merge 选择不再是“所有未覆盖项全选”，而是能自动跳过已被证明确实有 first-pass 风险的候选。
+- 已完成：
+  - `components/IntentE2EWorkbench.tsx`
+    - 已补齐前端 draft 类型：
+      - `source`
+      - `runIds`
+      - `feedback`
+      - `totalPassedRuns / repairMemoryCandidateGroups / successfulRunCandidateGroups`
+      - `projectUid / moduleUid` scope 信息
+    - 新增前端纯 helper：
+      - feedback 状态排序
+      - default merge recommendation 判定
+      - `deprioritized` 判定
+      - draft 置信度 / successRate 的混合百分比格式化
+    - workbench 里的 candidate 列表现在会：
+      - 优先展示 `preferred`
+      - 其次 `neutral`
+      - 再到 `probationary`
+      - 最后 `deprioritized`
+    - 默认选择逻辑已改为：
+      - 仍跳过 `alreadyCovered`
+      - 额外默认跳过 `deprioritized`
+      - `probationary` 继续允许默认进入 merge，但会明确标成观察期
+    - UI 交互已新增：
+      - `全选推荐项`
+      - 当存在降权项时，额外显示 `包含降权项全选`
+      - 这样既能走安全默认，也保留人工强选入口
+    - candidate 卡片现在会直接展示：
+      - 来源：`Repair Memory / Successful Run`
+      - 反馈状态：`优先推荐 / 常规候选 / 观察期 / 自动降权`
+      - 历史反馈原因
+      - supporting audit ids
+      - successful run 候选的关联通过运行数
+    - 顶部提示和错误文案也已对齐：
+      - 明确提示自动降权项默认不会进入 merge
+      - 若用户没有勾选任何候选，错误文案也会说明需要手工确认降权项
+  - 额外修正：
+    - 由于 successful run candidate 的 `confidence / successRate` 不是 0~1，而是百分比值，workbench 现已做混合格式化兼容，避免显示成 `6800%` 这类错误数值
+- 验证：
+  - `npm run build`
+  - `npx vitest run tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/api-intent-project-knowledge-draft-route.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+  - 当前结果：
+    - `build` 通过
+    - 3 个测试文件通过
+    - 12 个测试通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（candidate feedback 已进入 workbench UI 与默认 merge 选择）
+- 风险 / 未完成：
+  - 当前 safe default 仍主要是 client-side：
+    - 用户仍可通过手工勾选把 `deprioritized` 候选纳入 merge
+    - API 层还没有记录“这是一次人工 override”
+  - 当前 UI 已经能解释“为什么默认跳过”：
+    - 但 merge 后的审计 / activity 里还没有把候选 feedback status 一起落库
+  - 当前 `probationary` 仍默认允许进入 merge：
+    - 还没有进一步加 `small-batch / canary` 级别的服务端护栏
+- 下一步：
+  - 继续 `R5`：
+    - 把 candidate feedback status 带入 merge request / audit provenance
+    - 为 `deprioritized / probationary` 候选增加 server-side safe merge gating 或至少显式 override 记录
+    - 为后续 auto-promotion / auto-rollback 准备可审计的人工干预轨迹
+
+## 2026-03-23 第三十二次更新（R5 预备第八刀：server-side safe merge gating / override provenance）
+
+- 本轮目标：
+  - 把上一轮仅停留在 workbench 默认勾选层的安全策略，下沉到 merge API。
+  - 让 `deprioritized` 候选即使被前端手工勾选，也必须有明确 override 才能真正落库。
+  - 把“本次 merge 选了哪些风险候选、哪些是人工 override”写进 audit / activity，后续才能做可追责的 auto-promotion / auto-rollback。
+- 已完成：
+  - `lib/intent-project-knowledge-draft.ts`
+    - 新增 candidate selection 解析能力：
+      - `resolveIntentProjectKnowledgeDraftCandidateSelection(draft, candidateIds)`
+      - 统一返回 `selectedCandidates / selectedFeedbackStatuses / selectedRiskyCandidateIds / overrideRequiredCandidateIds`
+    - 默认 merge 推荐逻辑已与服务端对齐：
+      - 无参数默认选择时，不仅跳过 `alreadyCovered`
+      - 也会跳过 `deprioritized`
+    - `mergeIntentProjectKnowledgeDraftCandidates(...)` 已复用统一 selection helper，避免前后端、route/service 规则漂移
+  - `app/api/intent-e2e/project-knowledge/merge/route.ts`
+    - merge request 新增 `overrideCandidateIds`
+    - API 在 merge 前会先解析 candidate selection，并识别风险候选：
+      - `probationary`
+      - `deprioritized`
+    - 对 `deprioritized` 已加服务端硬护栏：
+      - 如果命中但没有显式 `overrideCandidateIds`，直接返回 `409`
+      - 不再依赖前端默认行为兜底
+    - merge 成功响应新增 `overrideWarning`
+      - 当本次确实手工 override 风险候选时，会明确提示状态和规则 id
+  - `lib/intent-project-knowledge.ts`
+    - audit meta 已新增可追踪字段：
+      - `selectedCandidateFeedbackStatuses`
+      - `selectedRiskyCandidateIds`
+      - `overrideCandidateIds`
+      - `appliedOverrideCandidateIds`
+      - `appliedOverrideCandidateFeedbackStatuses`
+    - 审计详情渲染已能展示这些 provenance 信息
+  - `components/IntentE2EWorkbench.tsx`
+    - 当前 workbench 在提交 merge 时，会把手工选中的 `deprioritized` candidate ids 一并作为 `overrideCandidateIds` 发送
+    - merge 成功 feed 里也会展示服务端返回的 `overrideWarning`
+    - 这样 UI 不再只是“默认不选”，而是和服务端 override 语义完全对齐
+  - `tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+    - 已补 route 级覆盖：
+      - 正常 merge 时记录新的 selection / risk meta
+      - 手工选中 `deprioritized` 但未 override 时返回 `409`
+      - 手工 override 后允许 merge，并把 override provenance 持久化
+- 验证：
+  - `npx vitest run tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 21 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已从 client-only safe default 进入 server-enforced merge gating）
+- 风险 / 未完成：
+  - 当前服务端硬拒绝只覆盖了 `deprioritized`：
+    - `probationary` 仍允许直接 merge
+    - 只是已经被标记为 risky 并写入 provenance
+  - 当前 override warning 只在 merge 成功响应和 audit meta 可见：
+    - 还没有在更集中式的“人工干预回放 / override drill-down”视图里聚合
+  - 当前 selection 风险仍以 candidate feedback status 为核心：
+    - 还没有再叠加更细的 rollout 约束，例如“小样本通过后才自动放量”
+- 下一步：
+  - 继续 `R5`：
+    - 给 `probationary` 增加更强的 server-side guardrail，至少要求显式确认或小流量策略
+    - 补 override provenance 的 workbench / audit drill-down 展示，方便后续人工复盘
+    - 为 auto-promotion / auto-rollback 预留更明确的“人工 override 之后表现如何”反馈闭环
+
+## 2026-03-23 第三十三次更新（R5 预备第九刀：`probationary` 显式确认协议）
+
+- 本轮目标：
+  - 把 `probationary` 从“只是打标签”升级到“进入 merge 前必须显式确认风险”。
+  - 保持这套协议是通用风险语义，而不是绑定某个业务 id / 订单号路径。
+  - 让前端确认动作、服务端兜底、audit provenance 三处语义完全一致。
+- 已完成：
+  - `app/api/intent-e2e/project-knowledge/merge/route.ts`
+    - merge request 新增 `acknowledgedRiskCandidateIds`
+    - 对被选中的 `probationary` candidate 已加服务端硬校验：
+      - 如果没有显式风险确认，直接返回 `409`
+      - 不再允许旧客户端“无感吞掉观察期风险”直接落库
+    - merge 成功响应新增 `riskAcknowledgementWarning`
+      - 会明确写出本次确认了多少条观察期候选、涉及哪些规则 id
+  - `components/IntentE2EWorkbench.tsx`
+    - 当前选中的 `probationary` candidate 会在 merge 前弹出显式确认
+    - 用户确认后，workbench 会把对应 candidate ids 作为 `acknowledgedRiskCandidateIds` 发送到服务端
+    - 候选列表顶部也会在已选中观察期项时给出风险提示，避免“默认推荐里混进观察期项但用户完全无感”
+    - merge feed 已能展示 `风险确认` 提示
+  - `lib/intent-project-knowledge.ts`
+    - audit meta 已新增：
+      - `acknowledgedRiskCandidateIds`
+      - `appliedAcknowledgedRiskCandidateIds`
+      - `appliedAcknowledgedRiskCandidateFeedbackStatuses`
+    - 审计 detail 文案也会显示：
+      - 请求风险确认数量
+      - 风险确认实际生效数量
+      - 风险确认状态
+  - `tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+    - 已补 route 级用例：
+      - `probationary` 未确认时返回 `409`
+      - 明确确认后允许 merge，并记录 acknowledgement provenance
+  - `tests/unit/intent-project-knowledge.spec.ts`
+    - 已补 audit 归档 / detail 渲染覆盖，确保风险确认字段不会只存在于内存对象里
+- 验证：
+  - `npx vitest run tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 23 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（`deprioritized` override + `probationary` 风险确认协议均已进入服务端强约束）
+- 风险 / 未完成：
+  - 当前“风险确认”已经有显式协议，但还没有独立的 drill-down 视图：
+    - override / acknowledgement 仍主要通过 merge feed 和 audit detail 回看
+  - 当前协议还没有自动转成 rollout policy：
+    - 例如“观察期规则仅允许在后续若干次 run 中小范围命中，再自动 promotion”
+  - 当前 candidate feedback 仍主要依赖历史 merge 表现：
+    - 还没有把“本次人工确认后，后续实际表现如何”单独做成聚合面板
+- 下一步：
+  - 继续 `R5`：
+    - 做 override / risk acknowledgement 的集中式 drill-down 展示，降低人工复盘成本
+    - 把确认后的观察期规则和后续真实 run 表现挂钩，为 auto-promotion / auto-rollback 提供更直接的依据
+    - 逐步从“可审计人工确认”推进到“有节奏的自动放量 / 自动降级”
+
+## 2026-03-23 第三十四次更新（R5 预备第十刀：override / risk acknowledgement drill-down）
+
+- 本轮目标：
+  - 不再只依赖 audit detail 的长文本回放风险操作。
+  - 让 workbench 的审计卡片直接结构化展示：
+    - 本次 merge 是否包含风险候选
+    - 是否触发人工 override
+    - 是否触发观察期风险确认
+  - 降低后续人工复盘和核对 provenance 的成本。
+- 已完成：
+  - `components/IntentE2EWorkbench.tsx`
+    - 项目知识审计卡片已新增结构化风险摘要：
+      - `风险候选 N`
+      - `override N`
+      - `风险确认 N`
+      - `状态 preferred / probationary / deprioritized ...`
+    - 对包含风险 provenance 的 merge 审计，卡片内部新增专门 drill-down 区块：
+      - 风险候选 candidate ids
+      - 实际生效的 override candidate ids
+      - 实际生效的风险确认 candidate ids
+      - 对应 feedback status
+    - 这部分和已有的规则新增 / 移除 / 更新概览并列展示，形成“规则变更 + 风险操作”双维度回放
+- 验证：
+  - `npx vitest run tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-project-knowledge.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 2 个测试文件通过
+    - 16 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（风险 merge 已具备“服务端强约束 + 审计卡片 drill-down”）
+- 风险 / 未完成：
+  - 当前 drill-down 还是“按单条 merge audit 回放”：
+    - 还没有跨多次 merge 聚合查看“哪些规则长期处于 override / 风险确认状态”
+  - 当前只把 provenance 展示出来：
+    - 还没有进一步关联“这些被人工确认的规则，后续 run 到底表现如何”
+  - 当前还没有自动 promotion / auto-rollback 入口：
+    - 仍需人工从 insights / audit 两侧联动判断
+- 下一步：
+  - 继续 `R5`：
+    - 把风险 provenance 和后续真实 run 表现关联起来，做一层“人工确认后表现”聚合视图
+    - 为观察期规则的 auto-promotion / auto-rollback 提供更直接的证据面板
+    - 尽量把判断口径保持在通用反馈语义，不引入业务特定 id 依赖
+
+## 2026-03-23 第三十五次更新（R5 预备第十一刀：风险 provenance 进入 insights 观察/回滚卡片）
+
+- 本轮目标：
+  - 让“人工怎么把规则 merge 进去的”直接和“merge 后表现如何”出现在同一张洞察卡片里。
+  - 避免人工在 `audit -> insights -> backup` 三个区域来回切换才能判断一次回滚/转正。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - `probationRules` 和 `rollbackCandidates` 已补齐风险 provenance 字段：
+      - `selectedCandidateFeedbackStatuses`
+      - `selectedRiskyCandidateIds`
+      - `appliedOverrideCandidateIds`
+      - `appliedOverrideCandidateFeedbackStatuses`
+      - `appliedAcknowledgedRiskCandidateIds`
+      - `appliedAcknowledgedRiskCandidateFeedbackStatuses`
+    - 这些字段直接从 merge audit meta 继承，不额外引入新存储
+  - `components/IntentE2EWorkbench.tsx`
+    - “新规则观察期”卡片现在会直接显示：
+      - 风险候选数量
+      - override 数量
+      - 风险确认数量
+      - candidate feedback 状态
+      - 对应 candidate ids
+    - “可疑回滚候选”卡片同样已接入相同 provenance
+    - 现在可以在同一张卡里同时看到：
+      - 这批规则是如何进入系统的
+      - merge 后的通过率 / 首次通过率变化
+      - 是否值得继续观察、降级或直接回滚
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 已补 `audit meta -> insights` 的透传断言
+    - 确保 provenance 不会只停留在审计层
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-project-knowledge.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 4 个测试文件通过
+    - 26 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（风险规则已具备“merge 入口 provenance + 审计 drill-down + insights 表现联动”）
+- 风险 / 未完成：
+  - 当前仍是“展示证据”，还没有自动决策：
+    - `promoted / degraded` 结果还没有直接反写成 candidate feedback / project knowledge 状态迁移
+  - 当前 provenance 仍按 merge batch 维度呈现：
+    - 还没有聚合成“某条 rule 最近 N 次人工确认后的长期表现”
+  - 当前 rollback / probation 判断还是基于固定窗口：
+    - 还没有把不同项目规模、样本量差异纳入更细粒度策略
+- 下一步：
+  - 继续 `R5`：
+    - 把 `promoted / degraded` 洞察结果回写到 candidate feedback / rule probation 状态，形成真正的状态迁移闭环
+    - 补长期聚合视图，回答“哪些规则反复依赖人工 override / 风险确认”
+    - 在保持通用语义前提下，逐步把人工判断过渡成自动 promotion / auto-rollback
+
+## 2026-03-23 第三十六次更新（R5 预备第十二刀：按规则回写 lifecycle provenance）
+
+- 本轮目标：
+  - 不再按整批 merge audit 粗粒度猜测风险来源。
+  - 让 `promoted / degraded / watching` 的后续反馈能精确回写到具体规则，而不是把同批别的风险状态串进去。
+- 已完成：
+  - `lib/intent-project-knowledge.ts`
+    - audit meta 新增 `mergedCandidates`
+      - 记录 `candidateId -> ruleId` 精确映射
+      - 同时保留 `source / feedbackStatus / risky / overrideApplied / riskAcknowledged / runIds`
+    - `IntentProjectKnowledgeRuleProbation` 已补 provenance 字段：
+      - `selectedCandidateFeedbackStatuses`
+      - `selectedRiskyCandidateIds`
+      - `appliedOverrideCandidateIds`
+      - `appliedOverrideCandidateFeedbackStatuses`
+      - `appliedAcknowledgedRiskCandidateIds`
+      - `appliedAcknowledgedRiskCandidateFeedbackStatuses`
+    - 运行时知识规则反馈现在会明确区分：
+      - 普通新规则观察期
+      - 经风险确认纳入的规则观察期
+      - 经人工 override 纳入的规则转正 / 降级
+  - `app/api/intent-e2e/project-knowledge/merge/route.ts`
+    - merge 成功时已把每条实际入库 candidate 的 rule 映射一起写入 audit / activity meta
+    - 后续不再只能依赖整批 `addedRuleIds` 反推 provenance
+  - `lib/ai/intent-e2e-insights.ts`
+    - `probationRules / rollbackCandidates` 已携带 `mergedCandidates`
+    - `buildIntentE2ERulePerformanceMapFromData(...)` 会按 rule 精确抽取 provenance
+    - 旧审计若没有 `mergedCandidates`，仍保留 batch 级 fallback，避免历史数据直接失效
+  - `lib/intent-project-knowledge-draft.ts`
+    - successful-run candidate feedback 现已按 rule 级 provenance 回写
+    - 同一批 audit 内：
+      - 被风险确认后转正的规则会获得更强正反馈
+      - 被人工 override 后仍回滚的规则会获得更强降权
+      - 同批普通规则不会再误继承这层风险语义
+  - 测试已补：
+    - route 审计写入 `mergedCandidates`
+    - audit roundtrip / detail 渲染
+    - rule performance 读取 rule 级 provenance
+    - successful-run draft 在同批 merge 内不串味
+- 验证：
+  - `npx vitest run tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 4 个测试文件通过
+    - 31 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（risk lifecycle 已从 batch 级线索升级为 rule 级精确回写）
+- 风险 / 未完成：
+  - 当前已经能精确回写到 rule，但仍偏单次观察窗口：
+    - 还没有聚合回答“哪条规则反复依赖人工 override / 风险确认”
+  - 当前 provenance 已影响规则反馈和 candidate feedback：
+    - 但还没有形成独立的长期运营视图
+  - 当前 rollback 归因仍主要以 merge batch 为单位：
+    - 还没有更细地定位“同批多规则里究竟谁在反复拖累”
+- 下一步：
+  - 继续 `R5`：
+    - 补长期聚合视图，按 rule 汇总 override / 风险确认次数及后续 promoted / degraded 结果
+    - 为后续自动 promotion / auto-rollback 提供更稳定的历史依据
+    - 继续保持通用反馈语义，不依赖业务特定 id 规则
+
+## 2026-03-23 第三十七次更新（R5 预备第十三刀：rule 级长期风险生命周期聚合）
+
+- 本轮目标：
+  - 从“单次 merge / 单次 probation / 单次 rollback”视角，升级到 rule 级长期视角。
+  - 直接回答：
+    - 哪些规则反复依赖人工 override
+    - 哪些规则经常要先做风险确认
+    - 这些规则后续更多是转正，还是继续降级 / 进入回滚候选
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - 新增 `riskLifecycleRules`
+    - 按 rule 聚合：
+      - `mergeAuditCount`
+      - `riskySelectionCount`
+      - `overrideAppliedCount`
+      - `riskAcknowledgementCount`
+      - `promotedCount / watchingCount / degradedCount`
+      - `rollbackCandidateCount`
+      - `latestStatus / latestImpactStatus / latestRecommendation / latestBackupPath`
+      - `selectedCandidateFeedbackStatuses / mergedCandidateSources / supportingAuditIds`
+    - 这层聚合直接复用 `mergedCandidates` 精确映射，不再退回 batch 级猜测
+    - 同时修正了旧的内部截断问题：
+      - 展示层仍保留 `probationRules` 前 6 条、`rollbackCandidates` 前 3 条
+      - 但 `rulePerformance / riskLifecycleRules` 内部计算已改为全量审计视角，避免后面的规则被统计遗漏
+  - `components/IntentE2EWorkbench.tsx`
+    - insights 区新增“风险生命周期规则”卡片
+    - 每条规则会直接展示：
+      - 最新状态：`回滚候选 / 已降级 / 观察中 / 已转正`
+      - override / 风险确认次数
+      - merge 次数、风险候选次数
+      - 转正 / 观察 / 降级统计
+      - 历史候选初始反馈状态
+      - 最新 recommendation / 最近备份 / supporting audit ids
+    - 这张卡片本质上把“规则运营视角”补上了
+  - 测试已补：
+    - `riskLifecycleRules` 空态
+    - module-scoped successful-run regression 场景下的 rule 聚合断言
+    - insights route mock 返回结构已同步新字段
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 5 个测试文件通过
+    - 33 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“rule 级 provenance 回写 + 长期生命周期聚合”）
+- 风险 / 未完成：
+  - 当前已经能聚合历史，但还没有自动状态迁移动作：
+    - 例如满足条件后自动 promotion 某些 helper / capability
+    - 或对持续回滚候选自动生成降级建议 / merge 阻断策略
+  - 当前长期视图仍偏 rule 级：
+    - 还没有更细粒度地看到同 rule 下不同 verifier / checkUid 的长期差异
+  - 当前 rollback 仍是结果层信号：
+    - 还没有自动把这些信号回写成下一轮 merge 的更强默认策略
+- 下一步：
+  - 继续 `R5`：
+    - 把 `riskLifecycleRules` 的长期结果回写成更主动的策略，例如自动 promotion 候选、持续高风险 merge 阻断建议
+    - 视需要把粒度继续下探到 `rule + checkUid / verifier shape`
+    - 让“学习闭环”从可观测进一步推进到可执行
+
+## 2026-03-23 第三十八次更新（R5 预备第十四刀：riskLifecycleRules 策略化回写）
+
+- 本轮目标：
+  - 不只停留在“看见长期风险生命周期”，而是把 `riskLifecycleRules` 直接回写成下一轮候选草稿的默认策略。
+  - 先把长期稳定的规则显式识别为自动晋升候选，把持续高风险规则显式识别为默认阻断建议。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - `riskLifecycleRules` 新增策略字段：
+      - `policy`
+      - `policyReason`
+    - 当前策略口径已固定为：
+      - `block_default_merge`
+      - `auto_promote_candidate`
+      - `observe`
+    - `buildRiskLifecycleRules(...)` 现已根据长期 `override / 风险确认 / promoted / degraded / rollback candidate` 统计自动给出策略建议
+    - 同时修正内部计算口径：
+      - 展示层仍可截断
+      - 但 `rulePerformance / riskLifecycleRules` 内部聚合已使用审计窗口全量数据，避免后部规则被漏算
+  - `lib/intent-project-knowledge-draft.ts`
+    - successful-run candidate feedback 现已按 `ruleId` 消费 `insights.riskLifecycleRules`
+    - `block_default_merge` 会强制或保持候选为 `deprioritized`，并强化负向置信度调整
+    - `auto_promote_candidate` 会把长期稳定候选提升为更强 `preferred` 倾向
+    - `observe` 会把仅需持续观察的候选维持在 `neutral / probationary` 语义内
+    - 策略没有单独改写 merge 协议，而是折叠进现有：
+      - `feedback.status`
+      - `confidenceAdjustment`
+      - `reasons`
+      - `supportingAuditIds`
+      以便继续复用现有默认合并 / override / 风险确认约束
+  - `components/IntentE2EWorkbench.tsx`
+    - 风险生命周期卡片现已直接展示：
+      - `阻断默认合并`
+      - `自动晋升候选`
+      - `继续观察`
+    - 同时展示 `策略建议：{policyReason}`，让长期策略不再只体现在后台聚合对象里
+  - 测试已补：
+    - `tests/unit/intent-e2e-insights.spec.ts`
+    - `tests/unit/intent-project-knowledge-draft.spec.ts`
+    - `tests/unit/api-intent-e2e-insights-route.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-project-knowledge.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 5 个测试文件通过
+    - 35 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“rule 级长期生命周期聚合 -> 草稿候选默认策略回写”）
+- 风险 / 未完成：
+  - 当前策略主要通过 `feedback.status / reasons` 间接体现：
+    - 草稿候选列表里还不能一眼看到“这是自动晋升”还是“这是默认阻断”
+  - 当前 `block_default_merge` 还是通过既有 `deprioritized` 语义生效：
+    - 还没有在 merge preflight / workbench 提示层做更显式的话术
+  - 当前策略仍偏 rule 级：
+    - 还没有继续下探到 `rule + verifier/checkUid` 粒度
+- 下一步：
+  - 继续 `R5`：
+    - 把 lifecycle policy 直接显式展示到项目知识草稿候选 UI
+    - 让用户在合并前就能区分“自动晋升候选 / 默认阻断 / 继续观察”
+    - 再进一步补 merge preflight 的策略提示，避免只靠长 reasons 文本理解风险
+
+## 2026-03-23 第三十九次更新（R5 预备第十五刀：草稿候选显式展示 lifecycle policy）
+
+- 本轮目标：
+  - 不再让 lifecycle policy 只藏在 `feedback.reasons` 里。
+  - 让项目知识草稿候选卡片在合并前就能一眼看出：
+    - `自动晋升候选`
+    - `阻断默认合并`
+    - `继续观察`
+- 已完成：
+  - `lib/intent-project-knowledge-draft.ts`
+    - `IntentProjectKnowledgeDraftCandidateFeedback` 已补可选展示字段：
+      - `lifecyclePolicy`
+      - `lifecyclePolicyReason`
+    - `applyRiskLifecyclePolicyToFeedback(...)` 在 `block_default_merge / auto_promote_candidate / observe` 各分支都会把策略元信息一并挂回 feedback
+    - 这一步只补 UI 解释元信息，不改变现有 merge / override / 风险确认语义
+  - `components/IntentE2EWorkbench.tsx`
+    - 项目知识草稿候选卡片头部已新增 lifecycle policy badge
+    - 历史反馈区已新增显式策略说明：
+      - 策略 badge
+      - `策略建议：{lifecyclePolicyReason}`
+    - 同时把 `policyReason` 从通用 `reasons` 中剥离出来单独展示，避免和历史依据重复堆在一行里
+  - `tests/unit/intent-project-knowledge-draft.spec.ts`
+    - 已补断言，确保自动晋升候选不仅保留 `preferred` 反馈，还会带上：
+      - `lifecyclePolicy=auto_promote_candidate`
+      - 对应 `lifecyclePolicyReason`
+- 验证：
+  - `npx vitest run tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-project-knowledge.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 5 个测试文件通过
+    - 35 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“长期 lifecycle 策略 -> 草稿候选显式展示 -> 现有 merge 语义承接”）
+- 风险 / 未完成：
+  - 当前策略虽然已在草稿卡片显式展示，但 merge 提交前的 preflight 话术还不够直接：
+    - 用户仍需要自己把 badge、默认勾选状态和服务端 guardrail 联想到一起
+  - 当前 UI 解释已增强，但服务端返回体还没有专门给出“为什么这次默认阻断 / 为什么需要人工确认”的摘要字段
+  - 当前 lifecycle policy 仍主要落在 successful-run candidate 路径：
+    - repair-memory 候选的长期策略化回写还可以继续扩展
+- 下一步：
+  - 继续 `R5`：
+    - 把 lifecycle policy 继续前推到 merge preflight / 提交反馈层
+    - 对 `阻断默认合并`、`观察期需确认` 给出更直接的提交前提示和提交后回执
+    - 让用户无需阅读长文本，也能理解本次 merge 为什么默认选中或默认跳过
+
+## 2026-03-23 第四十次更新（R5 预备第十六刀：merge preflight 摘要与提交回执）
+
+- 本轮目标：
+  - 把 lifecycle policy 从“候选卡片可见”进一步前推到“提交前可判断、提交后可复盘”。
+  - 避免用户在 merge 前后还要自己从勾选状态、feed 文本和 guardrail 提示里拼语义。
+- 已完成：
+  - `components/IntentE2EWorkbench.tsx`
+    - 草稿选择区已新增“本次选择预检”摘要，提交前会直接按当前选择显示：
+      - 自动晋升数量
+      - 继续观察数量
+      - 默认阻断数量
+      - 风险确认数量
+    - merge 提交前的确认弹窗已升级为统一 preflight 文案：
+      - 若包含 `阻断默认合并` / 自动降权候选，会明确说明将写入 `override provenance`
+      - 若包含观察期候选，会明确说明将写入 `风险确认 provenance`
+      - 若包含自动晋升候选，也会在提交前显式说明
+    - merge 成功后的页面级回执已新增：
+      - `Override 回执`
+      - `风险确认回执`
+    - 这些回执不再只埋进 feed 文本里，而是和既有：
+      - `审计提醒`
+      - `护栏提醒`
+      并列展示，方便提交后立即复盘
+  - 本轮没有新增后端协议约束：
+    - 优先复用现有 `overrideWarning / riskAcknowledgementWarning / guardrailWarning`
+    - 先把用户侧解释链路补齐，不扩大接口面
+- 验证：
+  - `npx vitest run tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-project-knowledge.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 5 个测试文件通过
+    - 35 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“长期策略 -> 草稿显式展示 -> 提交前预检 -> 提交后回执”）
+- 风险 / 未完成：
+  - 当前 preflight 仍主要是前端摘要：
+    - 服务端返回体还没有独立的 `selectionSummary / preflightSummary` 结构化字段
+  - 当前回执复用了既有 warning 字段：
+    - 还没有把 `override / 风险确认 / guardrail` 统一成更稳定的结构化回执对象
+  - 当前策略解释主要覆盖 successful-run candidate 路径：
+    - repair-memory 候选的长期策略化展示还可以继续补齐
+- 下一步：
+  - 继续 `R5`：
+    - 给 merge route 增加结构化 `selectionSummary / preflightSummary / mergeReceipts`
+    - 让前端不再只消费拼接好的 warning 文本，而能稳定渲染策略原因、影响范围和 provenance 类型
+    - 再往下把这套结构化回执接入 audit / insights，形成更统一的长期运营视图
+
+## 2026-03-24 第四十一次更新（R5 预备第十七刀：merge route 结构化 summary / receipts）
+
+- 本轮目标：
+  - 把上一轮前端 preflight/回执补丁继续收口到后端协议层。
+  - 不再只返回 `overrideWarning / riskAcknowledgementWarning / guardrailWarning` 这类拼接文本，而是返回可稳定消费的结构化对象。
+- 已完成：
+  - `app/api/intent-e2e/project-knowledge/merge/route.ts`
+    - 新增结构化返回：
+      - `selectionSummary`
+      - `preflightSummary`
+      - `mergeReceipts`
+    - `selectionSummary` 现已覆盖：
+      - requested / selected / merge / covered / missing candidate 计数
+      - 选中规则 ids
+      - source / feedback status / lifecycle policy 分布
+      - risky / auto-promote / observe / block-default-merge / override-required / risk-ack-required candidate ids
+    - `preflightSummary` 现已按结构化 notice 输出：
+      - `自动晋升候选`
+      - `继续观察候选`
+      - `默认阻断候选`
+      - `需显式 Override`
+      - `需确认观察期风险`
+    - `mergeReceipts` 现已按结构化 receipt 输出：
+      - override 已记录
+      - 风险确认已记录
+      - 历史回滚护栏
+      - 审计 / 活动写入提醒
+    - 对于服务端直接 409 拦截的场景：
+      - 也会一并返回 `selectionSummary / preflightSummary / mergeReceipts=[]`
+      - 后续前端若需要，可以直接复用这些结构化字段而不是重新解析错误文本
+    - 兼容层仍保留：
+      - `auditWarning`
+      - `overrideWarning`
+      - `riskAcknowledgementWarning`
+      - `guardrailWarning`
+      避免现有调用方立即断裂
+  - `components/IntentE2EWorkbench.tsx`
+    - merge 成功后已优先消费结构化返回，而不是继续依赖 warning 拼接文本
+    - 工作台现已新增三层结构化展示：
+      - `本次合并范围`
+      - `本次合并预检`
+      - `本次合并回执`
+    - 旧 warning 卡片仅作为 fallback 保留
+    - feed 文本也已优先使用 `mergeReceipts` 生成，减少标题和文案漂移
+  - `tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+    - 已补断言覆盖：
+      - 成功态 `selectionSummary / preflightSummary / mergeReceipts`
+      - 409 override 拦截时的结构化 preflight
+      - 409 风险确认拦截时的结构化 preflight
+      - override / 风险确认 / guardrail 成功回执的结构化 receipt
+- 验证：
+  - `npx vitest run tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/intent-project-knowledge.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 5 个测试文件通过
+    - 35 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“长期策略 -> 候选显式展示 -> preflight 摘要 -> route 结构化 summary/receipts -> 回执展示”）
+- 风险 / 未完成：
+  - 当前 409 返回虽然已带 `selectionSummary / preflightSummary`：
+    - workbench 失败分支还没有直接消费这些结构化字段，仍主要显示错误文本
+  - 当前 `selectionSummary / receipts` 仍只存在于 merge route 实时返回：
+    - 尚未落到 audit detail / insights 聚合视图
+  - 当前 notice/receipt 还是 route 内局部定义：
+    - 还没有抽成跨服务端 / 前端共享的稳定 schema
+- 下一步：
+  - 继续 `R5`：
+    - 让 workbench 在 409 拦截时也直接渲染服务端返回的 `preflightSummary`
+    - 再把 `selectionSummary / mergeReceipts` 写进 audit detail 或可复用的 meta 视图
+    - 逐步把这些局部结构抽成可复用 schema，减少前后端重复定义
+
+## 2026-03-24 第四十二次更新（R5 预备第十八刀：409 拦截也消费结构化 preflight）
+
+- 本轮目标：
+  - 把上一轮 route 返回的结构化 `selectionSummary / preflightSummary / mergeReceipts` 真正走完整条前端链路。
+  - 不只在 merge 成功后渲染，而是让服务端 409 拒绝时也能保留这份结构化上下文。
+- 已完成：
+  - `components/IntentE2EWorkbench.tsx`
+    - 新增 `ProjectKnowledgeMergeRouteResponse` 与 `ProjectKnowledgeMergeError`
+    - `mergeProjectKnowledgeFromWorkbench(...)` 现已在失败时保留服务端 JSON，而不是只抛一条纯文本错误
+    - merge 失败分支现在会直接消费并落状态：
+      - `selectionSummary`
+      - `preflightSummary`
+      - `mergeReceipts`
+      - `auditWarning / overrideWarning / riskAcknowledgementWarning / guardrailWarning`
+    - 这意味着当服务端因为：
+      - 缺少 override candidate ids
+      - 缺少风险确认 candidate ids
+      而返回 `409` 时，workbench 仍然可以显示“本次合并范围 / 本次合并预检”，不再只剩一行错误文本
+  - 这一步没有新增后端协议：
+    - 直接复用第四十一次更新里已加好的结构化返回
+    - 只是把客户端错误承接层补齐
+- 验证：
+  - `npx vitest run tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/intent-project-knowledge.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 5 个测试文件通过
+    - 35 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“服务端结构化策略摘要 + 成功态消费 + 409 失败态消费”）
+- 风险 / 未完成：
+  - 当前结构化 `selectionSummary / mergeReceipts` 仍主要停留在当前 merge 会话中：
+    - 还没有写进 audit detail 的专门视图或独立 schema
+  - 当前前后端 notice/receipt 结构仍有重复定义：
+    - 还未抽成共享类型
+  - 当前 insights 仍主要消费长期聚合：
+    - 还没有直接聚合这些结构化 receipt 的 provenance 形状
+- 下一步：
+  - 继续 `R5`：
+    - 把 `selectionSummary / mergeReceipts` 进一步写进 audit detail 或结构化 meta 展示层
+    - 抽共享 schema，减少 route 和 workbench 双端重复定义
+    - 再把 receipt/provenance 逐步接进 insights 的长期运营视图
+
+## 2026-03-24 第四十三次更新（R5 预备第十九刀：结构化 merge provenance 进入审计层）
+
+- 本轮目标：
+  - 不再让 `selectionSummary / preflightSummary / mergeReceipts` 只停留在当前 merge 响应里。
+  - 让这批结构化 provenance 能进入 audit 持久化与 audit detail 展示，后续离开当前会话也能复盘。
+- 已完成：
+  - `lib/intent-project-knowledge.ts`
+    - 审计模型已新增：
+      - `IntentProjectKnowledgeAuditNotice`
+      - `IntentProjectKnowledgeAuditSelectionSummary`
+      - `IntentProjectKnowledgeAuditPreflightSummary`
+    - `IntentProjectKnowledgeAuditMeta` 现已正式支持：
+      - `selectionSummary`
+      - `preflightSummary`
+      - `mergeReceipts`
+    - normalize / roundtrip 已补齐，旧审计记录仍可兼容读取
+    - `buildIntentProjectKnowledgeAuditDetail(...)` 已增加结构化摘要：
+      - 结构化范围
+      - 自动晋升 / 默认阻断计数
+      - 结构化预检项数
+      - 结构化回执条数
+  - `app/api/intent-e2e/project-knowledge/merge/route.ts`
+    - merge 成功后，结构化：
+      - `selectionSummary`
+      - `preflightSummary`
+      - `mergeReceipts`
+      现在会一并写入 audit meta
+    - 对项目活动日志写入也同步透传这批结构化字段
+    - route 在 project activity warning 产生后，会重新生成最终 `mergeReceipts`，再写入审计与响应，避免回执丢掉 audit 侧 warning
+  - `components/IntentE2EWorkbench.tsx`
+    - 项目知识审计卡片已新增结构化视图：
+      - `结构化合并范围`
+      - `结构化预检`
+      - `结构化回执`
+    - 审计列表现在不再只依赖 `detail` 文本和旧风险字段，而能直接消费结构化 provenance
+    - 头部 badge 也会直接提示：
+      - 自动晋升
+      - 默认阻断
+      - 预检项数
+      - 回执条数
+  - `tests/unit/intent-project-knowledge.spec.ts`
+    - 已补审计 roundtrip 断言：
+      - `selectionSummary`
+      - `preflightSummary`
+      - `mergeReceipts`
+    - 并补 detail 文案断言，确保结构化计数不会只留在 meta 对象里
+- 验证：
+  - `npx vitest run tests/unit/intent-project-knowledge.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 5 个测试文件通过
+    - 35 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“route 结构化策略摘要 -> 工作台实时展示 -> 审计持久化与 detail 回放”）
+- 风险 / 未完成：
+  - 当前前后端 notice / selection summary 结构仍有重复定义：
+    - route / workbench / intent-project-knowledge 三侧还没有抽成单一共享 schema
+  - 当前 insights 仍主要消费长期 rule lifecycle 聚合：
+    - 还没有直接利用 audit 里的 `mergeReceipts / preflightSummary` 做更细粒度聚合
+  - 当前结构化 provenance 主要覆盖 merge：
+    - restore 侧还没有同等级的结构化 receipt 视角
+- 下一步：
+  - 继续 `R5`：
+    - 抽共享 schema，减少 route / workbench / intent-project-knowledge 的重复定义
+    - 把 `mergeReceipts / preflightSummary` 进一步接入 insights 的长期运营聚合
+    - 视需要给 restore 流程补对称的结构化回执语义
+
+## 2026-03-24 第四十四次更新（R5 预备第二十刀：merge provenance 共享 schema 收口）
+
+- 本轮目标：
+  - 把 `selectionSummary / preflightSummary / mergeReceipts` 从“三处重复定义”收口成单一共享 schema。
+  - 让 route、workbench、audit normalize 都消费同一份 merge provenance 类型和解析规则，避免后续继续漂移。
+- 已完成：
+  - `lib/intent-project-knowledge-merge-provenance.ts`
+    - 新增共享 merge provenance 模块
+    - 统一导出：
+      - `IntentProjectKnowledgeMergeNotice`
+      - `IntentProjectKnowledgeMergeSelectionSummary`
+      - `IntentProjectKnowledgeMergePreflightSummary`
+    - 同步收口底层枚举：
+      - candidate source
+      - feedback status
+      - lifecycle policy
+      - notice kind / level / provenance type
+    - 并补齐共享 normalize helper，后续不需要再在 audit 侧手写一套 notice / summary 解析逻辑
+  - `app/api/intent-e2e/project-knowledge/merge/route.ts`
+    - 已移除本地重复的 merge provenance 类型定义
+    - `buildMergeNotice(...)`、`buildSelectionSummary(...)`、`buildPreflightSummary(...)` 现在直接基于共享 schema 输出
+    - route 内部的 feedback status / lifecycle policy / selected source 也统一对齐到共享类型
+  - `lib/intent-project-knowledge.ts`
+    - audit notice / selection summary / preflight summary 已改为共享 schema alias
+    - audit meta 读取不再保留本地重复 normalize，而是直接复用共享 provenance normalize
+    - 这意味着后续如果 merge provenance 字段再扩展，不需要同时改三套解析器
+  - `components/IntentE2EWorkbench.tsx`
+    - 已移除前端本地重复的：
+      - `ProjectKnowledgeMergeNotice`
+      - `ProjectKnowledgeMergeSelectionSummary`
+      - `ProjectKnowledgeMergePreflightSummary`
+    - workbench 现在直接消费共享 provenance 类型
+    - draft candidate 的 source / feedback status / lifecycle policy 也与共享 schema 对齐，减少“草稿层和 merge 层字面量不一致”的风险
+  - `tests/unit/intent-project-knowledge-merge-provenance.spec.ts`
+    - 新增共享模块直测
+    - 覆盖：
+      - selection summary 枚举归一化
+      - notice 去重
+      - preflight summary 结构化归一化
+- 验证：
+  - `npx vitest run tests/unit/intent-project-knowledge-merge-provenance.spec.ts tests/unit/intent-project-knowledge.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 18 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“共享 merge provenance schema -> route / workbench / audit 同构消费”）
+- 风险 / 未完成：
+  - 当前 insights 仍没有直接聚合：
+    - `mergeReceipts`
+    - `preflightSummary`
+    这意味着结构化 provenance 虽然已被持久化，但还没有进入长期运营统计
+  - 当前 `mergedCandidates` / project activity meta 仍有部分相邻字段没有进一步收口到共享 provenance 模块
+  - restore 流程仍未具备与 merge 对称的结构化 receipt 语义
+- 下一步：
+  - 继续 `R5`：
+    - 把 `mergeReceipts / preflightSummary` 接进 insights 聚合
+    - 先补 receipt provenance 维度的长期计数和趋势视图
+    - 再评估是否给 restore 流程补对称的结构化回执
+
+## 2026-03-24 第四十五次更新（R5 预备第二十一刀：merge provenance 接入 insights 长期聚合）
+
+- 本轮目标：
+  - 不再让结构化 `preflightSummary / mergeReceipts` 只停留在单次 merge 会话和 audit 明细里。
+  - 把这批结构化 provenance 正式接入 `insights`，形成“最近审计窗口内的长期计数视图”。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - 新增 `IntentE2EInsightMergeProvenanceStat`
+    - `IntentE2EInsightsResult` 现已新增：
+      - `mergeProvenanceStats`
+    - 新增 `buildMergeProvenanceStats(...)`
+      - 直接消费 audit meta 里的：
+        - `preflightSummary.items`
+        - `mergeReceipts`
+      - 按 `stage + kind + provenanceType` 聚合结构化 notice
+      - 当前输出可直接回答：
+        - 最近多少次审计出现 `block_default_merge`
+        - 最近多少次审计需要 `override`
+        - 最近多少次审计记录了 `risk_acknowledgement`
+        - 最近多少次审计命中了 `guardrail`
+      - 每类 provenance 还会同时输出：
+        - 审计数
+        - notice 条数
+        - 关联 candidate 数
+        - 关联 rule 数
+        - 最近发生时间
+        - supporting audit ids
+  - `components/IntentE2EWorkbench.tsx`
+    - 洞察页新增“Merge Provenance 趋势”区块
+    - 该区块直接渲染 `mergeProvenanceStats`
+    - 复用已有 merge notice tone / provenance label 语义，不再造第四套展示颜色和标签
+    - 当前能在工作台直接看见：
+      - 预检类 provenance
+      - 回执类 provenance
+      - 每类 provenance 的长期命中频率和覆盖范围
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 新增结构化 provenance 聚合断言
+    - 覆盖跨多次审计时：
+      - `block_default_merge`
+      - `override`
+      - `guardrail`
+      的长期聚合计数
+  - 同轮回归里也继续覆盖：
+    - 共享 provenance schema
+    - merge route
+    - audit roundtrip
+    - insights route
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/intent-project-knowledge-merge-provenance.spec.ts tests/unit/intent-project-knowledge.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 5 个测试文件通过
+    - 30 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“共享 merge provenance schema -> route / workbench / audit / insights 同构消费”）
+- 风险 / 未完成：
+  - 当前 `mergeProvenanceStats` 还是“最近审计窗口”的聚合：
+    - 还不是完整 timeline / trend chart
+  - 当前 provenance 统计还是按 notice 维度聚合：
+    - 还没有进一步和 `riskLifecycleRules` 做更深的 rule-level receipt 计数融合
+  - restore 流程仍缺对称的结构化 receipt / provenance 统计
+- 下一步：
+  - 继续 `R5`：
+    - 把 provenance 聚合进一步压进 `riskLifecycleRules`，补每条规则的 preflight / receipt 计数
+    - 评估是否需要给洞察层增加真正的时间序列趋势
+    - 再决定 restore 流程是否补对称结构化回执
+
+## 2026-03-24 第四十六次更新（R5 预备第二十二刀：rule-level provenance 进入风险生命周期）
+
+- 本轮目标：
+  - 不只做全局 `mergeProvenanceStats`。
+  - 把结构化 `preflight / receipt` 计数进一步压进每条 `riskLifecycleRule`，让规则级别也能解释“为什么它被判成继续观察 / 阻断默认合并 / 回滚候选”。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - 新增：
+      - `IntentE2EInsightMergeProvenanceKindCounts`
+      - `IntentE2EInsightRiskLifecycleRuleMergeProvenance`
+    - `IntentE2EInsightRiskLifecycleRule` 现已新增：
+      - `mergeProvenance`
+    - 新增 rule-level provenance 解析与累加逻辑：
+      - `noticeMatchesRule(...)`
+      - `resolveRuleLevelMergeProvenance(...)`
+      - `accumulateRiskLifecycleRuleMergeProvenance(...)`
+    - 规则聚合时会直接把 audit 里的：
+      - `preflightSummary.items`
+      - `mergeReceipts`
+      按 rule 归因后累计进对应 `riskLifecycleRule`
+    - 当前每条规则都可以拿到：
+      - `preflightNoticeCount`
+      - `receiptNoticeCount`
+      - `preflight.blockDefaultMergeCount`
+      - `preflight.overrideCount`
+      - `preflight.riskAcknowledgementCount`
+      - `receipt.overrideCount`
+      - `receipt.riskAcknowledgementCount`
+      - `receipt.guardrailCount`
+      - `receipt.auditCount`
+    - `policyReason` 也开始引用这批结构化 provenance，不再只看 override / 风险确认 / 回滚候选等旧统计
+    - `riskLifecycleRules` 的纳入条件已扩展：
+      - 除了 override / 风险确认 / 回滚候选外
+      - 现在也会考虑默认阻断预检、风险预检、护栏回执、审计回执等结构化风险信号
+  - `components/IntentE2EWorkbench.tsx`
+    - 风险生命周期规则卡片现在会直接展示：
+      - `预检 x`
+      - `回执 x`
+    - 并在明细中展开每条规则的结构化 provenance 摘要：
+      - 结构化预检：默认阻断 / override / 风险确认 / 观察 / 自动晋升
+      - 结构化回执：override / 风险确认 / 护栏 / 审计
+    - 这样“全局 provenance 趋势”和“单规则 provenance 原因”已经形成上下联动
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 新增 rule-level provenance 断言
+    - 已覆盖单条规则同时命中：
+      - `block_default_merge`
+      - `override`
+      - `guardrail`
+      时的累计结果
+    - 并校验 `policyReason` 已包含结构化 provenance 解释
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 2 个测试文件通过
+    - 12 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“共享 merge provenance schema -> route / workbench / audit / insights -> rule-level lifecycle 同构消费”）
+- 风险 / 未完成：
+  - 当前 rule-level provenance 仍是累计计数：
+    - 还没有时间序列分桶
+  - `riskLifecycleRules` 里虽然已经有结构化 provenance 数字：
+    - 还没有把它进一步反哺成 lifecycle policy 的更细粒度阈值
+  - restore 流程仍无对称 provenance 统计
+- 下一步：
+  - 继续 `R5`：
+    - 给 provenance 增加时间维度，评估是否要做近 7 次 / 近 N 条审计分桶
+    - 再决定 lifecycle policy 是否要正式切到“结构化 provenance + 运行结果”的联合判定
+    - 评估 restore 流程是否补对称结构化回执
+
+## 2026-03-24 第四十七次更新（R5 预备第二十三刀：lifecycle policy 开始消费结构化 provenance）
+
+- 本轮目标：
+  - 不只让 `riskLifecycleRules` 展示 provenance 数字。
+  - 让 lifecycle policy 本身开始消费这批结构化风险信号，避免规则连续命中默认阻断 / 护栏后仍长期停留在“继续观察”。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - `resolvePolicy(...)` 已新增 provenance 风险判定：
+      - 重复 `block_default_merge` 预检
+      - 重复 `guardrail` 回执
+      - 或“默认阻断预检 + 护栏/降级/回滚候选”混合信号
+      现在都可直接推动规则进入 `block_default_merge`
+    - 这意味着 policy 判定已从“只看 override / 风险确认 / 回滚结果”升级为“运行结果 + 结构化 provenance 联合判定”
+    - `policyReason` 继续补强：
+      - 不只说 override / 风险确认 / 降级 / 回滚候选
+      - 还会显式带出默认阻断、预检 override、风险确认回执、护栏回执等 provenance 解释
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 已补断言：当单条规则虽然尚未进入 rollback / degraded，但连续两次命中：
+      - `block_default_merge`
+      - `guardrail`
+      时，policy 也会直接进入 `block_default_merge`
+    - 并校验新的 `policyReason` 会带出：
+      - `默认阻断 2 次`
+      - `护栏回执 2 次`
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 2 个测试文件通过
+    - 12 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“结构化 provenance 展示 -> rule-level 聚合 -> policy 联合判定”）
+- 风险 / 未完成：
+  - 当前 provenance 风险阈值仍是首版启发式：
+    - 还没有引入时间窗口 / 衰减
+  - 目前只把明显风险信号接进 policy：
+    - `auto_promote / observe` 这类 info 型 provenance 还没有进入正向晋升判定
+  - restore 流程仍缺对称 provenance 统计
+- 下一步：
+  - 继续 `R5`：
+    - 给 provenance 判定增加时间维度，避免历史老信号无限累积
+    - 评估 `auto_promote / observe` 是否进入正向晋升逻辑
+    - 再决定 restore 流程是否补对称结构化回执
+
+## 2026-03-24 第四十八次更新（R5 预备第二十四刀：provenance 引入近期窗口降温）
+
+- 本轮目标：
+  - 让 provenance 风险判定具备“近期窗口”，避免历史老信号无限累积。
+  - 让后续 clean merge 能自然冲淡早期 `block_default_merge / guardrail` 风险，而不是一旦命中过几次就永久卡死。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - 新增：
+      - `IntentE2EInsightRiskLifecycleRuleRecentMergeProvenance`
+      - `RISK_LIFECYCLE_RECENT_MERGE_AUDIT_WINDOW = 3`
+    - 每条 `riskLifecycleRule` 现已新增：
+      - `recentMergeProvenance`
+        - `auditWindowSize`
+        - `consideredAuditCount`
+        - `mergeProvenance`
+    - 规则聚合时会为每次 merge 审计记录一条 provenance event，哪怕该次 merge 没有结构化风险 notice，也会进入窗口
+    - 新增 `resolveRecentRiskLifecycleRuleMergeProvenance(...)`
+      - 直接按最近 `3` 次 merge 审计回放 provenance
+      - clean merge 会把旧风险从近期窗口里挤出去
+    - lifecycle policy 的结构化风险判定现已切到“近期窗口优先”：
+      - 连续 `block_default_merge`
+      - 连续 `guardrail`
+      - 或近期默认阻断 + 护栏/降级/回滚候选混合信号
+      才会推动 `block_default_merge`
+    - `policyReason` 也会显示：
+      - `近 x/3 次 merge 审计`
+      - 如果近期没有结构化风险，会明确写 `未出现结构化风险信号`
+  - `components/IntentE2EWorkbench.tsx`
+    - 风险生命周期规则卡片新增近期窗口视图：
+      - 近 `x/3` 次 merge
+      - 近期预检摘要
+      - 近期回执摘要
+    - 这样 UI 能同时对比：
+      - 累计 provenance
+      - 近期 provenance
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 新增“老风险信号会被近期 clean merge 冲淡”的断言
+    - 已验证：
+      - lifetime 上仍有 `block_default_merge / guardrail`
+      - 但最近 3 次 merge 全干净时
+      - policy 会回落到 `observe`
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 2 个测试文件通过
+    - 13 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“结构化 provenance + 近期窗口 + policy 联合判定”）
+- 风险 / 未完成：
+  - 当前近期窗口是“最近 3 次 merge 审计”：
+    - 还不是按自然时间分桶
+  - 当前正向 provenance 还没正式进入 auto-promote 判定
+  - restore 流程仍缺对称 provenance 统计
+- 下一步：
+  - 继续 `R5`：
+    - 把 `recent auto_promote` 接入正向晋升逻辑
+    - 评估 `observe` 是否也要进入更细粒度的保守判定
+    - 再看 restore 侧是否补对称结构化回执
+
+## 2026-03-24 第四十九次更新（R5 预备第二十五刀：recent auto_promote 提前进入正向晋升）
+
+- 本轮目标：
+  - 不只让 policy 更快阻断。
+  - 还要让连续命中 `auto_promote` 的规则能更早进入 `auto_promote_candidate`，避免策略层长期偏保守。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - lifecycle policy 已新增正向 provenance 判定：
+      - 最近窗口内 `auto_promote` 连续命中
+      - 且近期没有默认阻断 / 预检 override / 风险确认 / 护栏 / 审计等结构化负信号
+      - 且没有 degraded / rollback candidate
+      时，可直接进入 `auto_promote_candidate`
+    - `buildRiskLifecycleProvenanceReason(...)` 现已把正向信号纳入解释：
+      - `自动晋升 x 次`
+      - `继续观察 x 次`
+    - `riskLifecycleRules` 的纳入条件也已扩展：
+      - 不再只收风险侧 provenance
+      - 现在纯 `auto_promote` 规则也会进入规则生命周期视图
+  - `components/IntentE2EWorkbench.tsx`
+    - 风险生命周期区块文案已从“人工 override / 风险确认”扩成“结构化 merge provenance + 人工风险操作”
+    - 避免对纯正向 auto-promote 规则出现误导性描述
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 新增 recent auto-promote 正向用例
+    - 已验证：
+      - 最近 2 次 merge 连续命中 `auto_promote`
+      - 且无近期负信号时
+      - policy 会直接进入 `auto_promote_candidate`
+    - 并校验 `policyReason` 已显式包含：
+      - `近 2/3 次 merge 审计：自动晋升 2 次`
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 2 个测试文件通过
+    - 14 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“近期风险降温 + 正向 auto-promote 提前晋升”的双向 provenance policy）
+- 风险 / 未完成：
+  - 当前 `observe` 仍只进入解释，不进入正向/保守细分 policy
+  - 近期窗口还是按 merge audit 数量，不是自然时间分桶
+  - restore 流程仍无对称 provenance 统计
+- 下一步：
+  - 继续 `R5`：
+    - 评估 `observe` 是否进入更细粒度保守 policy
+    - 评估近期窗口是否升级成自然时间维度
+    - 再看 restore 是否补对称结构化回执
+
+## 2026-03-24 第五十次更新（R5 预备第二十六刀：observe provenance 进入 guarded observation policy）
+
+- 本轮目标：
+  - 不让 provenance policy 只会“阻断”或“提早转正”。
+  - 对连续命中 `observe`、但又迟迟没有收敛成正向晋升或风险阻断的规则，补一层更保守的中间态，避免策略解释长期过于粗糙。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - lifecycle policy 新增 `observe_guarded`
+    - 当最近窗口内连续命中 `observe`
+      - 且没有 `auto_promote`
+      - 没有 `block_default_merge / override / risk_acknowledgement / guardrail / audit`
+      - 也没有 `degraded / rollback candidate`
+      时，规则会从普通 `observe` 升级到更保守的 `observe_guarded`
+    - `policyReason` 会显式写出：
+      - `连续处于 observe provenance`
+      - `近 x/3 次 merge 审计：继续观察 x 次`
+  - `components/IntentE2EWorkbench.tsx`
+    - 风险生命周期策略文案新增 `observe_guarded` 展示：
+      - 标签显示为“谨慎观察”
+    - 这样 UI 能区分：
+      - 普通继续观察
+      - 连续 observe、但仍未收敛的 guarded observation
+  - `lib/intent-project-knowledge-draft.ts`
+    - 明确把 draft candidate lifecycle policy 与 insights policy 解耦
+    - 新增显式映射：
+      - insights `observe_guarded` 在 draft feedback 中回落为 merge 侧已存在的 `observe`
+    - 保留 `lifecyclePolicyReason` 原文，避免把 `observe_guarded` 这种 insights-only policy 泄漏到 merge provenance 类型域
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 新增 repeated recent observe 用例
+    - 已验证：
+      - 最近 2 次 merge 连续命中 `observe`
+      - 且无近期正向/负向收敛信号时
+      - policy 会进入 `observe_guarded`
+  - `tests/unit/intent-project-knowledge-draft.spec.ts`
+    - 新增 draft feedback 边界用例
+    - 已验证：
+      - 当 insights policy 为 `observe_guarded`
+      - draft feedback 仍只写回 `observe`
+      - 但继续保留 guarded reason 文案
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 24 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“近期风险降温 + auto-promote 提前晋升 + observe_guarded 保守中间态”的三段 provenance policy）
+- 风险 / 未完成：
+  - 当前近期窗口仍按最近 `3` 次 merge 审计，不是自然时间维度
+  - `observe_guarded` 目前只存在于 insights policy：
+    - merge / draft 仍只消费 `block_default_merge / auto_promote_candidate / observe`
+  - restore 流程仍无对称 provenance 统计
+- 下一步：
+  - 继续 `R5`：
+    - 把近期窗口从“按 merge audit 数量”升级到“自然时间维度优先”
+    - 再评估是否需要同时保留 audit-count fallback
+    - 然后再看 restore 是否补对称结构化回执
+
+## 2026-03-24 第五十一次更新（R5 预备第二十七刀：近期窗口切到自然时间维度优先）
+
+- 本轮目标：
+  - 让“近期 provenance”真正代表最近时间段，而不只是数组尾部的最近几次 merge。
+  - 避免很久以前的 `block_default_merge / guardrail / auto_promote / observe` 信号，仅因为刚好还在最近 3 次审计里，就继续影响当前 policy。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - `recentMergeProvenance` 现已扩成：
+      - `dayWindowSize`
+      - `windowMode`
+      - `windowLabel`
+    - 近期窗口选择策略改为：
+      - 优先使用“近 7 天内”的 merge provenance event
+      - 若近 7 天完全没有样本，再 fallback 到最近 `3` 次 merge 审计
+    - `policyReason` 不再写死 `近 x/3 次 merge 审计`
+      - 现在统一消费 `windowLabel`
+      - 例如：
+        - `近 7 天（2 次 merge 审计）`
+        - `最近 1/3 次 merge 审计（近 7 天无样本）`
+    - 因此：
+      - 一旦近 7 天已有新的 clean merge
+      - 老的风险 provenance 不会再通过 count window 被误判成“近期”
+  - `components/IntentE2EWorkbench.tsx`
+    - 风险生命周期卡片的“近期窗口”展示已改为直接消费 `windowLabel`
+    - UI 现在可以明确区分：
+      - 自然时间窗口
+      - audit-count fallback
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 更新原有 recent-window 文案断言
+    - 新增两类验证：
+      - 当存在近 7 天 clean merge 时，优先用时间窗口，不再把更早的高风险 audit 混进近期 policy
+      - 当近 7 天无样本时，会回退到最近 `3` 次 merge 审计
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 26 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“风险降温 + auto-promote 提前晋升 + guarded observe + 时间窗口优先”的 provenance policy）
+- 风险 / 未完成：
+  - 当前自然时间窗口使用服务端当前时间：
+    - 还没有项目级时区或更细粒度的时间策略
+  - 当前仍保留 audit-count fallback：
+    - 当近 7 天无样本时，旧 provenance 仍会继续提供弱上下文
+  - restore 流程仍无对称 provenance 统计 / receipt 展示
+- 下一步：
+  - 继续 `R5`：
+    - 给 restore 流程补对称的结构化 provenance summary / receipt
+    - 让 merge / restore 在 insights 和工作台里形成统一的来源视图
+
+## 2026-03-24 第五十二次更新（R5 预备第二十八刀：restore provenance 对称接入 route / workbench / insights）
+
+- 本轮目标：
+  - 不让 restore 继续停留在“只有一条普通审计”的状态。
+  - 让 restore 和 merge 一样，也能产出结构化 preflight / receipt，并进入统一 provenance 视图。
+- 已完成：
+  - `app/api/intent-e2e/project-knowledge/backups/restore/route.ts`
+    - 新增 restore 结构化 preflight summary：
+      - `准备回滚项目知识规则`
+    - 新增 restore 结构化 receipts：
+      - `回滚已完成`
+      - 若活动 / 审计写入失败，则追加 `审计 / 活动写入提醒`
+    - route 响应、审计 entry、项目 activity meta 现都会携带：
+      - `preflightSummary`
+      - `mergeReceipts`
+    - 这样 restore 不再是 route 成功了但结构化层“失声”的孤岛操作
+  - `components/IntentE2EWorkbench.tsx`
+    - restore 响应现在会像 merge 一样，回填：
+      - `knowledgeMergePreflightSummary`
+      - `knowledgeMergeReceipts`
+    - 页面顶部反馈流也会直接展示 restore receipt
+    - provenance 趋势区标题和说明已从 merge-only 调整成 merge / restore 统一视图
+  - `lib/ai/intent-e2e-insights.ts`
+    - `mergeProvenanceStats` 现在不再只看 `operation === 'merge'`
+    - restore 的结构化 preflight / receipt 也会进入全局 provenance stats
+    - 每条 provenance stat 新增 `operations`
+      - 可以明确标记来源是 `merge` 还是 `restore`
+    - 风险生命周期规则仍保持 merge-only：
+      - restore 先进入全局 provenance / 审计视图
+      - 暂不直接干扰 rule-level merge policy
+  - `tests/unit/api-intent-project-knowledge-backup-restore-route.spec.ts`
+    - 已验证 restore route 会返回并审计结构化 preflight / receipt
+  - `tests/unit/intent-project-knowledge.spec.ts`
+    - 已验证 restore audit 记录会保留结构化 preflight / receipt，并进入 detail 文案
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 新增 restore provenance stats 用例
+    - 已验证 restore notice 会进入全局 provenance 趋势，并显式标记 `operations: ['restore']`
+- 验证：
+  - `npx vitest run tests/unit/api-intent-project-knowledge-backup-restore-route.spec.ts tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 5 个测试文件通过
+    - 38 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“merge / restore 统一 provenance 视图 + 时间窗口优先 + guarded observe / auto-promote policy”的结构化基础）
+- 风险 / 未完成：
+  - restore 的 `preflightSummary` 目前仍是 route 结果已知后的结构化摘要：
+    - 还不是严格意义上的“执行前预检”
+  - restore 目前只进入全局 provenance / 工作台 / 审计视图：
+    - 还没有进入“restore 是否真正修复了后续运行表现”的 grader
+  - risk lifecycle 仍保持 merge-only：
+    - 这次是有意隔离，避免 restore 直接污染 merge rule policy
+- 下一步：
+  - 继续 `R5`：
+    - 把 merge / restore provenance 与后续真实 run 结果接成结构化 efficacy grader
+    - 区分“合并后表现改善 / 恶化”和“回滚后表现恢复 / 仍异常”
+    - 为后续 trace -> grader -> asset promotion 正式闭环做第一版决策证据
+
+## 2026-03-24 第五十三次更新（R5 预备第二十九刀：merge / restore knowledge change efficacy grader）
+
+- 本轮目标：
+  - 不让 merge / restore provenance 只停留在“发生过什么”。
+  - 让每次知识变更都能结合后续真实 run，产出一条可解释的效果判定证据，开始形成 grader 驱动学习闭环。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - 新增 `knowledgeChangeGraders`：
+      - 每条 audit 都会结合变更前后窗口运行表现，输出：
+        - `impactStatus`
+        - `efficacyStatus`
+        - `evidenceLevel`
+    - merge / restore 现已区分操作语义：
+      - merge：
+        - `improving`
+        - `neutral`
+        - `regressing`
+        - `watching`
+      - restore：
+        - `recovered`
+        - `still_abnormal`
+        - `watching`
+    - grader 会同时携带：
+      - `affectedRuleIds`
+      - `restoredFrom`
+      - `mergedCandidateSources / mergedRunIds`
+      - `selectedRiskyCandidateIds / appliedOverrideCandidateIds`
+      - `preflightNoticeCount / receiptNoticeCount`
+    - recommendation 文案也已改成 operation-aware：
+      - merge 改善会显式给出正向 merge 证据
+      - merge 恶化会显式给出负向 merge 证据
+      - restore 恢复会显式给出恢复证据
+      - restore 后仍异常会显式提示回滚后仍异常
+  - `components/IntentE2EWorkbench.tsx`
+    - insights 面板新增 `变更效果 Grader` 区块
+    - 可以直接看到：
+      - merge / restore 操作类型
+      - efficacy status
+      - impact status
+      - evidence level
+      - 变更前后 pass / first-pass 表现
+      - preflight / receipt 证据数量
+      - grader recommendation
+    - 这样工作台不再只展示 provenance“事件”，也开始展示 provenance“效果”
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 新增 merge 改善 / merge 恶化用例
+    - 新增 restore 恢复 / restore 后仍异常用例
+    - 已验证 grader recommendation、状态分类和 operation-aware 文案都符合预期
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/api-intent-project-knowledge-backup-restore-route.spec.ts tests/unit/intent-project-knowledge.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 5 个测试文件通过
+    - 41 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“merge / restore provenance + operation-aware efficacy grader”的第一版学习证据面）
+- 风险 / 未完成：
+  - 当前 grader 仍是 audit 级证据：
+    - 还没有聚合成 rule / helper / starter asset 级长期效果结论
+  - 当前窗口仍使用固定的前后运行样本数：
+    - 还没有按 scenario family / snapshot cluster 做更细粒度对照
+  - 当前 grader 只进入 insights / workbench：
+    - 还没有反向作用到 draft ranking、auto-promotion 或 safer merge 默认选择
+- 下一步：
+  - 继续 `R5`：
+    - 把 knowledge change grader 聚合成 rule / helper 级 efficacy summary
+    - 让“哪些变更长期改善、哪些变更持续恶化、哪些 restore 只是止损未修复”进入后续决策输入
+    - 为下一步接入 draft ranking / auto-promotion / safer merge gating 准备可复用的结构化汇总
+
+## 2026-03-24 第五十四次更新（R5 预备第三十刀：knowledge change rule summaries）
+
+- 本轮目标：
+  - 不让 `knowledgeChangeGraders` 继续停留在 audit 卡片层。
+  - 先把 grader 汇总到规则层，直接回答“哪些规则长期改善、哪些规则持续恶化、哪些规则回滚后仍异常”。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - 新增 `knowledgeChangeRuleSummaries`
+    - 汇总维度已落到 rule 级：
+      - `auditCount`
+      - `mergeCount / restoreCount`
+      - `improving / recovered / regressing / still_abnormal / watching / neutral`
+      - `decisionableCount / earlyCount`
+      - `latestOperation / latestEfficacyStatus / latestImpactStatus`
+      - `netPassRateDelta / netFirstPassRateDelta`
+    - 汇总 recommendation 已改成 rule-aware：
+      - 纯负向证据会提示继续保守处理
+      - 纯正向 / 恢复证据会提示后续可进入 safer merge / 规则转正 / 资产提升观察对象
+      - 混合或早期样本会明确提示继续观察
+    - 规则汇总使用全量 grader 构建：
+      - 不受工作台只展示前几条 audit 卡片的限制
+  - `components/IntentE2EWorkbench.tsx`
+    - insights 面板新增 `规则效果汇总`
+    - 现在工作台除了看单次 audit 效果，还能直接看到：
+      - 每条规则累计命中过多少次 merge / restore 变更
+      - 正向证据和负向证据各有多少
+      - 证据充分与早期样本的占比
+      - 净 pass / first-pass 变化
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 已补基础空结果断言
+    - 已验证 merge 改善 / merge 恶化 / restore 恢复 / restore 后仍异常场景都会同步产出 rule summary
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/api-intent-project-knowledge-backup-restore-route.spec.ts tests/unit/intent-project-knowledge.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 5 个测试文件通过
+    - 41 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“audit grader -> rule summary”的第一版聚合证据链）
+- 风险 / 未完成：
+  - 当前只聚合到 rule 级：
+    - helper / starter asset 级长期效果还没有正式建模
+  - 当前 summary 仍只进入 insights / workbench：
+    - 还没有直接影响 draft ranking、merge 默认选择或 auto-promotion
+  - 当前 rule title 主要依赖真实 run 命中时的 title 映射：
+    - 某些仅出现在 restore / audit、未重新命中的规则仍可能回退为 ruleId 展示
+- 下一步：
+  - 继续 `R5`：
+    - 把 rule-level efficacy summary 接进 draft ranking / safer merge 默认决策
+    - 先让持续负向规则更保守、持续正向规则获得更高观察优先级
+    - 再评估 helper / starter asset 级 summary 应该如何基于真实 run 证据补齐
+
+## 2026-03-24 第五十五次更新（R5 预备第三十一刀：负向 rule summary 接入 draft ranking）
+
+- 本轮目标：
+  - 不让 `knowledgeChangeRuleSummaries` 继续只停留在看板展示。
+  - 先把“持续负向规则更保守”这条链路接进 successful-run candidate 的 draft ranking，让 safer merge 默认选择开始消费 grader 证据。
+- 已完成：
+  - `lib/intent-project-knowledge-draft.ts`
+    - successful-run candidate feedback 新增：
+      - `applyKnowledgeChangeRuleSummaryToFeedback(...)`
+    - 接线位置保持最小：
+      - 仍先走原有 `rollback / probation / lifecycle policy`
+      - 再在最终 feedback 上追加 rule summary 修正
+    - 当前接入策略刻意保守，只消费“负向且证据充分”的 rule summary：
+      - 若某规则 `regressing / still_abnormal` 证据占优
+      - 且已有 `decisionable` 样本
+      - draft ranking 会自动更保守
+    - 具体行为：
+      - 无历史 feedback 时：
+        - `still_abnormal` 直接降为 `deprioritized`
+        - 其他持续负向降为 `probationary`
+      - 已有 `preferred / neutral` 时：
+        - 会降级并附加 rule summary 原因
+      - 已有更强的 `rollback / degraded` 负反馈时：
+        - 保持原主因优先，只把 summary 作为补充说明，不覆盖原主因顺序
+  - `tests/unit/intent-project-knowledge-draft.spec.ts`
+    - 新增 restore-still-abnormal 用例
+    - 已验证：
+      - 当某 successful-run 规则在 restore 后仍持续异常
+      - 且没有更早的 probation / rollback 反馈时
+      - draft candidate 也会被直接保守化处理
+    - 同时回归验证：
+      - 原有 rollback / probation reason 仍保持第一主因，不被新 summary 覆盖
+- 验证：
+  - `npx vitest run tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/api-intent-project-knowledge-backup-restore-route.spec.ts tests/unit/intent-project-knowledge.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 5 个测试文件通过
+    - 42 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“audit grader -> rule summary -> draft ranking 保守化”的第一条真实消费链）
+- 风险 / 未完成：
+  - 当前只把负向 rule summary 接进 draft ranking：
+    - 正向 summary 还没有正式进入自动提级逻辑
+  - 当前接入面只覆盖 successful-run candidate：
+    - repair-memory candidate 还没消费这层长期效果证据
+  - 当前仍是 rule-level：
+    - helper / starter asset 级 summary 还未落地
+- 下一步：
+  - 继续 `R5`：
+    - 评估正向 rule summary 是否进入更保守的“观察优先级提升”，而不是直接自动 promotion
+    - 把同一套 rule summary 逐步接入 merge 默认勾选 / safer merge gating
+    - 再设计 helper / starter asset 级 summary 的证据归因方式，避免做成噪声聚合
+
+## 2026-03-24 第五十六次更新（R5 预备第三十二刀：正向 rule summary 接入排序与 merge preflight）
+
+- 本轮目标：
+  - 不让正向 `knowledgeChangeRuleSummaries` 只停留在“看起来不错”的解释层。
+  - 先以保守方式把它接到 draft 排序和 merge 预检里，但避免直接升级成自动 promotion。
+- 已完成：
+  - `lib/intent-project-knowledge-draft.ts`
+    - `IntentProjectKnowledgeDraftCandidateFeedback` 新增：
+      - `knowledgeChangeSignal`
+      - `knowledgeChangeSignalReason`
+    - `applyKnowledgeChangeRuleSummaryToFeedback(...)` 现已同时处理正向 signal：
+      - 仅当 rule summary 为 `decisionable`
+      - 且正向证据存在、负向证据为 0
+      时才生效
+    - 接入策略保持保守：
+      - 没有旧 feedback 时：
+        - 只给 `neutral:+6`
+        - 不直接改成 `preferred`
+      - 已有 `neutral` 时：
+        - 只提升排序优先级
+      - 已有 `preferred` 时：
+        - 只附加正向 signal / reason
+        - 不再继续叠加加分
+      - 已有 `probationary / deprioritized` 时：
+        - 不用正向 signal 覆盖现有风险主因
+  - `app/api/intent-e2e/project-knowledge/merge/route.ts`
+    - merge preflight 新增正向历史证据 notice：
+      - `已有正向历史证据`
+    - 这样服务端在最终 merge 选择阶段，不只会提示 override / 风险确认 / observe
+    - 也能结构化标记：
+      - 哪些候选已有长期正向 rule summary 证据
+      - 适合作为 safer merge 的优先验证对象
+  - `tests/unit/intent-project-knowledge-draft.spec.ts`
+    - 新增 restore-recovered 正向样例
+    - 已验证：
+      - 当某 successful-run 规则在 restore 后已有恢复证据
+      - 且没有旧风险主因时
+      - draft candidate 会获得保守型正向提升
+  - `tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+    - 新增 merge preflight 正向 notice 用例
+    - 已验证：
+      - 带 `knowledgeChangeSignal=positive` 的候选
+      - 会在服务端 preflight 返回结构化 `recommended` notice
+- 验证：
+  - `npx vitest run tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/api-intent-project-knowledge-backup-restore-route.spec.ts tests/unit/intent-project-knowledge.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 6 个测试文件通过
+    - 51 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“audit grader -> rule summary -> draft ranking + merge preflight”的双向消费链）
+- 风险 / 未完成：
+  - 当前正向 signal 还只是“优先验证”：
+    - 还没有正式进入 merge 默认勾选策略分层
+  - 当前 preflight 只提示“已有正向历史证据”：
+    - 还没有把同类证据汇总成更细的 safer merge policy 分桶
+  - 当前仍只覆盖 successful-run candidate：
+    - repair-memory candidate 还没消费这层正向/负向长期证据
+- 下一步：
+  - 继续 `R5`：
+    - 把正向 / 负向 rule summary 进一步接入 merge 默认勾选分层
+    - 评估是否把 repair-memory candidate 也纳入同一套长期效果证据
+    - 再决定 helper / starter asset 级 summary 的归因口径，避免误把共现当因果
+
+## 2026-03-24 第五十七次更新（R5 预备第三十三刀：merge 默认勾选分层）
+
+- 本轮目标：
+  - 不让长期正负向证据只停留在“排序提示 + preflight notice”层。
+  - 进一步把 `knowledgeChangeSignal` 接到 merge 默认勾选策略本身，默认只勾选安全候选，把观察期 / 负向历史 / 自动降权候选转成保守复核项。
+- 已完成：
+  - `lib/intent-project-knowledge-draft-merge-policy.ts`
+    - 新增共享 merge policy helper：
+      - `isIntentProjectKnowledgeDraftCandidateMergeRecommended(...)`
+      - `isIntentProjectKnowledgeDraftCandidateDeferredByDefault(...)`
+      - `defaultIntentProjectKnowledgeDraftCandidateIds(...)`
+      - `allSelectableIntentProjectKnowledgeDraftCandidateIds(...)`
+    - 默认推荐规则已明确分层：
+      - `alreadyCovered` 不再进入可选 merge 默认集
+      - `deprioritized` 不默认勾选
+      - `probationary` 不默认勾选
+      - `knowledgeChangeSignal=negative` 不默认勾选
+      - `preferred / neutral / positive` 仍可进入默认推荐集
+  - `lib/intent-project-knowledge-draft.ts`
+    - `resolveIntentProjectKnowledgeDraftCandidateSelection(...)` 已改为复用共享 merge policy。
+    - 当调用方不显式传入 candidate ids 时：
+      - 服务端默认勾选集合不再是“几乎全选”
+      - 而是严格落到“默认只勾选安全候选”
+    - 这样 draft 预览、merge 解析和服务端最终选择口径已经对齐，不再依赖前端局部约定。
+  - `app/api/intent-e2e/project-knowledge/merge/route.ts`
+    - merge preflight 在原有：
+      - 观察期风险确认 notice
+      - 正向历史证据 notice
+      基础上，新增：
+      - `存在负向历史证据`
+    - 该 warning 只针对“被手工纳入本次 merge、但存在长期负向历史”的候选：
+      - 不直接硬阻断
+      - 但会结构化提示应先复核 grader / rollback 记录
+  - `components/IntentE2EWorkbench.tsx`
+    - 前端默认勾选逻辑改为复用共享 merge policy helper，去掉本地重复判断。
+    - UI 文案从“全选所有非降级项”调整为“默认只勾选安全候选”。
+    - Deferred 候选已按保守复核项展示，并显式透出：
+      - 观察期数量
+      - 负向历史证据数量
+      - 自动降权数量
+    - 交互按钮改为：
+      - `全选推荐项`
+      - `包含保守项全选`
+    - 提交前提示也已同步更新：
+      - 观察期、负向历史证据、自动降权项默认不会勾选
+      - 需要人工确认后再并入项目知识
+  - `tests/unit/intent-project-knowledge-draft-merge-policy.spec.ts`
+    - 新增 merge policy 单测：
+      - 已验证负向历史 / 观察期 / 降权项会被默认延后
+      - 已验证正向或中性安全项仍会进入默认推荐集合
+  - `tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+    - 新增负向历史证据 preflight warning 用例
+    - 已验证：
+      - 若用户手工勾选带 `knowledgeChangeSignal=negative` 的候选
+      - 服务端会返回结构化 warning notice，而不是静默放行
+- 验证：
+  - `npx vitest run tests/unit/intent-project-knowledge-draft-merge-policy.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/api-intent-project-knowledge-backup-restore-route.spec.ts tests/unit/intent-project-knowledge.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 7 个测试文件通过
+    - 54 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（已形成“audit grader -> rule summary -> draft ranking + merge preflight + default-selection 分层”的保守闭环）
+- 风险 / 未完成：
+  - 当前长期证据仍主要作用于 successful-run candidate：
+    - `repair-memory` candidate 还没有消费同一套正向 / 负向效果证据
+  - 当前 merge 默认勾选仍是 rule-level 分层：
+    - helper / starter asset 级 summary 尚未落地
+  - 当前对负向历史候选仍然采取“默认不勾选 + warning”：
+    - 还没有更细的分桶策略来区分“轻微异常”和“持续伤害”
+- 下一步：
+  - 继续 `R5`：
+    - 把同一套长期正负向证据接入 `repair-memory` candidate 的排序与 merge 建议
+    - 评估 helper / starter asset 级 summary 的归因方式，避免把共现误判为因果
+    - 再决定是否把负向历史候选进一步细分为不同强度的 merge 建议层级
+
+## 2026-03-24 第五十八次更新（R5 预备第三十四刀：repair-memory 候选接入长期证据）
+
+- 本轮目标：
+  - 不让长期正负向 evidence 只服务于 `successful_run` candidate。
+  - 把同一套 `riskLifecycleRules + knowledgeChangeRuleSummaries` 扩到 `repair_memory` candidate，让 repair-memory 的排序和默认 merge 建议也能吃到长期效果反馈。
+  - 同时处理好置信度尺度差异：
+    - `repair_memory` 目前仍是 `0~1` 浮点置信度
+    - `successful_run` 仍是 `1~99` 的百分位式置信度
+- 已完成：
+  - `lib/intent-project-knowledge-draft.ts`
+    - 原先只面向 successful-run 的 feedback map，已抽成共享入口：
+      - `buildDraftCandidateFeedbackMap(...)`
+    - 该入口现在按：
+      - `ruleId`
+      - `source`
+      来复用同一套长期证据：
+      - `riskLifecycleRules`
+      - `probationRules`
+      - `rollbackCandidates`
+      - `knowledgeChangeRuleSummaries`
+    - `repair_memory` candidate 现在也会拿到：
+      - `feedback.status`
+      - `confidenceAdjustment`
+      - `knowledgeChangeSignal`
+      - `knowledgeChangeSignalReason`
+      - `supportingAuditIds`
+      - `lifecyclePolicy`
+    - 新增 `applyDraftCandidateConfidence(...)`：
+      - 对 `successful_run` 仍保持原有整数分调整
+      - 对 `repair_memory` 则按“百分点评分”映射为 `/100`
+      - 避免把 `repair_memory` 的 `0~1` 基础置信度被 `+6 / -12` 这类调整直接打穿
+    - 因为 `repair_memory` 候选现在也会生成 `knowledgeChangeSignal=negative`
+      - 所以后续共享 merge policy 会自动把它们纳入“默认延后/保守复核项”
+      - 不需要再为 repair-memory 单独维护一套 merge 默认选择规则
+  - `tests/unit/intent-project-knowledge-draft.spec.ts`
+    - 新增 repair-memory 正向恢复样例
+    - 已验证：
+      - restore 后若 rule summary 呈 `decisionable + recovered`
+      - repair-memory candidate 会获得保守型正向提升
+      - 且仍保留在默认 merge 推荐集合中
+    - 新增 repair-memory 负向持续异常样例
+    - 已验证：
+      - restore 后若 rule summary 仍为 `still_abnormal`
+      - repair-memory candidate 会被降权并标记 `knowledgeChangeSignal=negative`
+      - 默认 merge 选择会自动把它排除出推荐集合
+- 验证：
+  - `npx vitest run tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/intent-project-knowledge-draft-merge-policy.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/api-intent-project-knowledge-backup-restore-route.spec.ts tests/unit/intent-project-knowledge.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 7 个测试文件通过
+    - 56 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（长期 evidence 已不再局限于 successful-run，已扩展到 repair-memory 候选的排序与默认 merge 建议）
+- 风险 / 未完成：
+  - 当前长期 evidence 仍是 rule-level：
+    - helper / starter asset 级 summary 还没有建立归因边界
+  - 当前 repair-memory 虽然已接入长期 evidence：
+    - 但还没有把“哪些 helper / capability 真正持续带来改善”提炼成更上层资产
+  - 当前默认 merge 建议仍按候选规则分层：
+    - 还没有进入 starter helper / capability preset 的自动提级或自动降权
+- 下一步：
+  - 继续 `R5`：
+    - 设计 helper / starter asset 级 summary 的保守归因口径
+    - 先只在“rule summary 已 decisionable、且同一 helper 在多条规则上重复出现”时考虑上浮为 starter asset 证据
+    - 避免把一次偶然共现误当成 helper 级因果
+
+## 2026-03-24 第五十九次更新（R5 预备第三十五刀：starter helper 接入长期 evidence）
+
+- 本轮目标：
+  - 不让 helper / starter asset 级 evidence 只停留在“未来再看”的设计层。
+  - 先把长期正负向 rule evidence 以保守方式接到 `starterHelpers`：
+    - 正向 helper 轻微提级并透出理由
+    - 负向 helper 直接退出 starter 建议，避免继续污染首轮生成
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - `IntentE2EInsightStarterHelper` 新增可选长期 evidence 字段：
+      - `knowledgeChangeSignal`
+      - `knowledgeChangeSignalReason`
+      - `knowledgeChangeDecisionableRuleCount`
+      - `knowledgeChangeSupportingAuditIds`
+    - `buildStarterHelpers(...)` 现已消费 `knowledgeChangeRuleSummaries`。
+    - helper 级归因口径保持保守：
+      - 只看 `decisionable` 的 rule summary
+      - 只在“同一 helper 对应至少 2 条 supporting rules”时才尝试形成 helper 级 signal
+      - 若 2 条及以上规则都持续偏正向，helper 记为正向 evidence
+      - 若 2 条及以上规则都持续偏负向，helper 直接退出 starter helper 列表
+      - 正负混合或证据不足时，不做 helper 级结论
+    - 这样 `starterHelpers` 不再只是“复用次数高”：
+      - 现在还会检查这些 helper 背后的规则长期效果是否真的稳定
+  - `lib/intent-starter-assets.ts`
+    - starter asset 解析后的排序已接入 helper 长期 evidence：
+      - 带正向长期 evidence 的 helper 会优先靠前
+      - 便于首轮生成时先命中更稳的 starter asset
+  - `lib/test-generator.ts`
+    - Starter Helper prompt section 现会显式标注：
+      - `长期证据=正向`
+      - 以及对应的 `decisionable` supporting rule 数量
+    - 这样生成器在首轮写代码时，不只是看到“常用 helper”
+    - 还知道哪些 helper 已经有跨规则的长期正向证明
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 新增 helper 长期正向 evidence 用例
+    - 已验证：
+      - 同一 helper 若被两条已恢复的 supporting rules 共同支撑
+      - 会出现在 `starterHelpers` 中并带 `knowledgeChangeSignal=positive`
+    - 新增 helper 长期负向 evidence 用例
+    - 已验证：
+      - 同一 helper 若被两条 restore 后仍异常的 supporting rules 支撑
+      - 会被直接过滤出 `starterHelpers`
+  - `tests/unit/test-generator.spec.ts`
+    - 已验证 starter helper prompt 会把长期正向 evidence 写进生成提示词
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/intent-starter-assets.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 6 个测试文件通过
+    - 92 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（长期 evidence 已从 rule ranking / merge 建议延伸到 starter helper 下发链路，负向 helper 不再默认进入首轮生成）
+- 风险 / 未完成：
+  - 当前 helper 级 evidence 仍是“starter helper 是否下发”的保守 gating：
+    - 还没有进一步影响 capability preset 的自动 promotion / demotion
+  - 当前 UI 里仍主要展示正向 starter helper：
+    - 被过滤掉的负向 helper 还没有单独的 explain 面板
+  - 当前 helper 级归因仍依赖 supporting rules：
+    - 还没有更细的 asset-level 反事实验证能力
+- 下一步：
+  - 继续 `R5`：
+    - 评估是否把同一套 helper 级长期 evidence 接入 capability preset / starter capability 草稿
+    - 补一个“被过滤的负向 starter helper”可解释面板或审计摘要，避免黑盒
+    - 再决定是否需要更细的 helper 归因阈值，防止高频但偶然的共现被误提级
+
+## 2026-03-24 第六十次更新（R5 预备第三十六刀：starter capability preset 接入长期 evidence）
+
+- 本轮目标：
+  - 不让 helper 级长期正向 evidence 停留在 `starterHelpers` 列表本身。
+  - 把这层 evidence 继续写进 `starter capability preset -> capability origin -> project workbench` 消费链，让后续能力沉淀和复盘时也能看到“为什么这条 starter capability 更值得保留”。
+- 已完成：
+  - `lib/intent-starter-capability-preset.ts`
+    - starter capability preset 现在会把 helper 级长期 evidence 写进 preset：
+      - `description`
+      - `steps`
+      - `assertions`
+      - `meta`
+    - 新增的 preset meta 字段包括：
+      - `starterKnowledgeChangeSignal`
+      - `starterKnowledgeChangeSignalReason`
+      - `starterKnowledgeChangeDecisionableRuleCount`
+      - `starterKnowledgeChangeSupportingAuditIds`
+    - 对带 `knowledgeChangeSignal=positive` 的 starter asset：
+      - 会在 starter capability 草稿中显式写出“长期效果持续偏正向”
+      - 并把 `sortOrder` 从 `60` 保守提到 `55`
+      - 让这类 starter capability 在项目能力库里略微前排，但不做激进自动 promotion
+  - `lib/intent-capability-origin.ts`
+    - capability origin 解析已能读取 starter helper 的长期 evidence 字段。
+    - `buildIntentCapabilityMetaSearchText(...)` 也已把：
+      - `长期正向证据`
+      - `已判定规则数量`
+      - supporting audit ids
+      写入搜索文本，便于后续在项目能力工作台里检索和定位。
+  - `components/ProjectIntentWorkbench.tsx`
+    - Starter 资产来源的 capability 卡片现在会显示：
+      - helper 来源（转正规则 / 稳定规则）
+      - 长期 evidence badge（当前为正向）
+      - decisionable supporting rule 数量
+      - 长期 evidence 原因摘要
+    - 这样在项目能力库里看 starter-derived capability 时，不再只看到“来源于 starter asset”
+    - 还能直接看到它背后的长期正向证据。
+  - `components/IntentE2EWorkbench.tsx`
+    - 运行页的：
+      - `Starter Helper 建议`
+      - `Starter 资产沉淀`
+      两块也已透出 helper 长期正向 evidence。
+    - 这样在保存前你就能看到：
+      - 哪些 starter helper 已经有跨规则的长期正向证明
+      - 哪些更适合作为 starter capability 继续沉淀
+  - `tests/unit/intent-starter-capability-preset.spec.ts`
+    - 已验证：
+      - 带长期正向 evidence 的 starter asset
+      - 会把对应字段写进 starter capability preset
+      - 且会触发保守型 `sortOrder` 提级
+  - `tests/unit/intent-capability-preset.spec.ts`
+    - 已验证 starter capability preset 的长期 evidence meta 在 serialize / parse 后保持不丢失
+  - `tests/unit/intent-capability-origin.spec.ts`
+    - 已验证 capability origin 能解析这层长期 evidence
+    - 且搜索文本会包含正向 evidence 与 supporting audit 信息
+- 验证：
+  - `npx vitest run tests/unit/intent-starter-capability-preset.spec.ts tests/unit/intent-capability-preset.spec.ts tests/unit/intent-capability-origin.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-starter-assets.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 6 个测试文件通过
+    - 43 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（helper 级长期正向 evidence 已贯通到 starter capability 草稿与项目能力工作台，不再只停留在 insights 列表）
+- 风险 / 未完成：
+  - 当前 starter capability 只展示正向长期 evidence：
+    - 被过滤掉的负向 starter helper 仍主要是“消失”，缺少专门 explain 面板
+  - 当前 helper 级 evidence 仍是保守排序 / 展示信号：
+    - 还没有进一步影响 capability preset 的验证策略或默认启用策略
+  - 当前 helper 级归因仍依赖 supporting rules 聚合：
+    - 还没有独立的 helper-level counterfactual 验证
+- 下一步：
+  - 继续 `R5`：
+    - 补一个“被过滤的负向 starter helper”可解释面板或审计摘要，避免黑盒
+    - 评估是否把 helper 级 evidence 继续接入 capability preset 的验证策略或默认启用排序
+    - 再决定是否需要更细的 helper 归因阈值，防止高频但偶然的共现被误提级
+
+## 2026-03-24 第六十一次更新（R5 预备第三十七刀：负向 starter helper explainability）
+
+- 本轮目标：
+  - 不让被过滤的负向 starter helper 继续以“静默消失”的方式存在。
+  - 把“原本满足 starter 基线，但因长期负向 evidence 被过滤”的 helper 单独结构化输出，并在 insights UI 上明确展示原因与 supporting audit。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - 新增 `suppressedStarterHelpers` 结构化输出。
+    - 该列表只收录满足 starter helper 基线、但因 helper 级长期 evidence 为负向而被过滤的 helper。
+    - 每条 suppressed helper 现在都会带上：
+      - `knowledgeChangeSignal=negative`
+      - `knowledgeChangeSignalReason`
+      - `knowledgeChangeDecisionableRuleCount`
+      - `knowledgeChangeSupportingAuditIds`
+      - `suppressionReason`
+    - 这样 `starterHelpers` 与 `suppressedStarterHelpers` 的边界已明确：
+      - 前者可继续下发到首轮生成
+      - 后者只做解释展示，不再进入下游 starter asset / starter capability 生成链
+  - `components/IntentE2EWorkbench.tsx`
+    - Insights 面板新增：
+      - `已过滤的 Starter Helper`
+    - 现在会显式展示：
+      - helper 名称
+      - 来源（转正规则 / 稳定规则）
+      - 长期负向 badge
+      - supporting rules
+      - decisionable rule 数量
+      - supporting audit ids
+      - suppression reason
+    - 同时保留正向 `Starter Helper 建议` 区，避免把“可推荐”和“被过滤”混成一块。
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 已验证：
+      - 负向 helper 仍不会进入 `starterHelpers`
+      - 但会进入 `suppressedStarterHelpers`
+      - 且包含长期负向 reason 与 supporting audit 信息
+  - `tests/unit/api-intent-e2e-insights-route.spec.ts`
+    - 已同步适配 `suppressedStarterHelpers` 返回结构
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/intent-starter-capability-preset.spec.ts tests/unit/intent-capability-origin.spec.ts tests/unit/intent-capability-preset.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 6 个测试文件通过
+    - 40 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（starter helper 的正向/负向长期 evidence 已都有下游消费与 explainability，不再停留在隐式过滤）
+- 风险 / 未完成：
+  - 当前 helper 级 evidence 主要影响：
+    - starter helper 下发
+    - starter capability 草稿排序与说明
+    - insights explainability
+    但还没有进一步作用到 capability 验证策略
+  - 当前 suppressed helper 仍只在 insights 页面解释：
+    - 还没有沉淀到 capability 工作台的历史审计视角
+  - 当前 helper 级归因阈值仍偏保守：
+    - 对“部分正向、部分混合”的 helper 还没有中间态分层
+- 下一步：
+  - 继续 `R5`：
+    - 评估是否把 helper 级 evidence 接入 capability preset 的验证策略或默认启用排序
+    - 再决定是否给“部分正向 / 混合信号”的 helper 增加中间层级，而不是只分正向与过滤
+    - 视需要把 suppressed helper 的历史解释同步到 capability 工作台或审计摘要
+
+## 2026-03-24 第六十二次更新（R5 预备第三十八刀：starter helper evidence 接入 capability 验证优先级）
+
+- 本轮目标：
+  - 不让 helper 级长期正向 evidence 只停留在 starter helper 展示和 starter capability 草稿说明。
+  - 在不把其误判成 `execution_verified` 的前提下，让这类能力对 capability 验证优先级和默认排序产生保守、可解释的影响。
+- 已完成：
+  - `lib/capability-verification.ts`
+    - 新增 `hasPositiveStarterKnowledgeEvidence(meta)`。
+    - 归因口径保持保守：
+      - 必须存在 `starterHelper` 或 `starterAssetSlug`
+      - `starterKnowledgeChangeSignal=positive`
+      - `starterKnowledgeChangeDecisionableRuleCount >= 2`
+    - `describeCapabilityVerification(...)` 现在对满足上述条件、且仍属于 `knowledge_inferred` 的能力做轻微优先级提升：
+      - 普通知识提炼：`priority=10`
+      - 带长期正向 starter evidence 的知识提炼：`priority=15`
+      - 仍不升级为 `execution_verified`
+    - 新增共享排序 helper：
+      - `compareCapabilityVerificationOrder(...)`
+      - 排序口径为：
+        - active 优先于 archived
+        - `verificationPriority` 高的优先
+        - `sortOrder` 更小的优先
+        - 最后再按 `name / slug` 做稳定收敛
+  - `lib/project-knowledge.ts`
+    - recipe 匹配排序已改为复用 `compareCapabilityVerificationOrder(...)`。
+    - 现在当 requirement 命中分数相同的时候：
+      - `execution_verified` 仍最高
+      - 带长期正向 starter evidence 的 `knowledge_inferred` 会排在普通 `knowledge_inferred` 前面
+  - `components/ProjectIntentWorkbench.tsx`
+    - capability 目录已改为复用同一套共享排序 helper。
+    - 现在工作台默认顺序与 recipe 排序口径一致，不再出现：
+      - recipe 里更优先
+      - 但 capability 列表里又埋在后面
+    - 因为批量验证的选择集复用了目录顺序，所以默认批量验证路径也会优先消费这类“已有长期正向 starter evidence”的能力。
+  - `tests/unit/capability-verification.spec.ts`
+    - 新增：
+      - 正向 starter evidence 会把 `knowledge_inferred` 提升到更高 priority
+      - evidence 不足时仍保持普通 `knowledge_inferred`
+      - 共享排序 helper 会保持 `execution_verified > starter-positive knowledge > regular knowledge > archived`
+  - `tests/unit/project-knowledge.spec.ts`
+    - 新增同分场景用例：
+      - 带长期正向 starter evidence 的能力会排在普通知识提炼能力之前
+- 验证：
+  - `npx vitest run tests/unit/capability-verification.spec.ts tests/unit/project-knowledge.spec.ts tests/unit/intent-capability-origin.spec.ts tests/unit/intent-starter-capability-preset.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 4 个测试文件通过
+    - 17 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（starter helper 长期 evidence 已进一步作用到 capability 验证优先级与默认排序，不再只停留在展示层）
+- 风险 / 未完成：
+  - 当前提升仍是保守排序信号：
+    - 不会把能力升级成 `execution_verified`
+    - 也还没有引入独立的 helper-level counterfactual 证据
+  - 当前 mixed signal 仍没有中间层：
+    - 只有“正向轻微提级”与“负向过滤”
+    - 对“部分正向 / 部分混合”的 helper 还没有细分
+  - 当前 capability verification service 仍没有单独的推荐队列策略：
+    - 现在主要依赖 workbench 默认排序把更值得验证的能力排在前面
+  - 当前 suppressed helper 的历史解释仍主要停留在 insights：
+    - 还没有完整同步到 capability 工作台的审计视角
+- 下一步：
+  - 继续 `R5`：
+    - 再决定是否给“部分正向 / 混合信号”的 helper 增加中间层级，而不是只分正向与过滤
+    - 视需要把 suppressed helper 的历史解释同步到 capability 工作台或审计摘要
+    - 评估是否让 capability verification service 直接产出推荐验证队列，而不是只依赖 UI 默认排序
+
+## 2026-03-24 第六十三次更新（R5 预备第三十九刀：starter helper mixed signal 观察层）
+
+- 本轮目标：
+  - 不再把 helper 级长期 evidence 只粗暴分成“正向提级 / 负向过滤”两档。
+  - 给“部分正向但证据覆盖不足”以及“正负混合”的 helper 增加一个保守中间层，避免：
+    - 明明已有局部恢复证据，却仍被当成完全无结论
+    - 或者因为不是纯正向，就只能在 UI 里隐身
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - starter helper evidence 新增 `knowledgeChangeTier`：
+      - `preferred`
+      - `watching`
+    - 现有强语义保持不变：
+      - `knowledgeChangeSignal=positive` 仍只代表“至少 2 条 decisionable supporting rules 持续偏正向”
+      - `knowledgeChangeSignal=negative` 仍只代表“至少 2 条 decisionable supporting rules 持续偏负向”
+    - 新增保守观察层规则：
+      - 若 helper 同时命中正向和负向 rule summary，标记为 `knowledgeChangeTier=watching`
+      - 若 helper 已有局部正向 rule summary，但还不足以形成“2 条纯正向 supporting rules”，同样标记为 `watching`
+    - 这类 helper：
+      - 仍会留在 `starterHelpers`
+      - 不会进入 `suppressedStarterHelpers`
+      - 但也不会带 `knowledgeChangeSignal=positive`
+      - recommendation / reason 会明确说明“继续观察”
+  - `lib/intent-starter-assets.ts`
+    - starter asset 排序已升级为：
+      - 强正向 `preferred/positive`
+      - 观察层 `watching`
+      - 普通 neutral
+    - 这样“已有局部正向证据”的 helper 不会再被完全埋在中性 helper 后面。
+  - `lib/test-generator.ts`
+    - `Starter Helper 建议` prompt 已能显式写出：
+      - `长期证据=正向`
+      - `长期证据=观察中`
+    - 让模型知道这类 helper 可以复用，但不要把它误当成已完全证明的强正向资产。
+  - `lib/intent-starter-capability-preset.ts`
+    - starter capability preset 现已保留 `starterKnowledgeChangeTier`
+    - 对观察层 asset：
+      - description / steps / assertions 会写出“当前仍处于观察层”
+      - `sortOrder` 调整为介于强正向与普通中性之间
+        - 正向：`55`
+        - 观察层：`58`
+        - 中性：`60`
+  - `lib/intent-capability-origin.ts`
+    - capability meta / origin 现已可读取 `starterKnowledgeChangeTier`
+    - 搜索文本已加入：
+      - `长期观察层`
+      - `观察中`
+    - 为 capability workbench 和搜索过滤提供 explainability 基础
+  - `components/IntentE2EWorkbench.tsx`
+    - `Starter Helper 建议` 区和 starter capability launch 区已能显示：
+      - 强正向 badge
+      - 观察中 badge
+    - 对观察层 helper / asset，不再统一写“长期依据”，而是会显示：
+      - `观察依据`
+  - `components/ProjectIntentWorkbench.tsx`
+    - capability 目录和 starter evidence 面板已能展示观察层 tier
+    - 现在 starter-derived capability 不再只能显示：
+      - 长期正向
+      - 长期负向
+      还可显示：
+      - `观察中`
+  - 新增 / 补强测试：
+    - `tests/unit/intent-e2e-insights.spec.ts`
+      - mixed signal helper 会保留在 `starterHelpers`
+      - 且带 `knowledgeChangeTier=watching`
+      - 不会误进入 `suppressedStarterHelpers`
+    - `tests/unit/intent-starter-capability-preset.spec.ts`
+      - 观察层 asset 会生成保守 capability draft
+    - `tests/unit/intent-capability-origin.spec.ts`
+      - capability meta 已可读取观察层 tier
+    - `tests/unit/intent-starter-assets.spec.ts`
+      - 观察层 starter asset 排序高于 neutral、低于强正向
+    - `tests/unit/capability-verification.spec.ts`
+      - 观察层 evidence 不会触发 verification priority boost
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-starter-capability-preset.spec.ts tests/unit/intent-capability-origin.spec.ts tests/unit/intent-starter-assets.spec.ts tests/unit/capability-verification.spec.ts tests/unit/project-knowledge.spec.ts tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 7 个测试文件通过
+    - 90 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（starter helper 长期 evidence 已形成“强正向 / 观察层 / 负向过滤”的三层保守消费链）
+- 风险 / 未完成：
+  - 当前观察层仍主要是 explainability + 排序信号：
+    - 不会触发 capability verification priority boost
+    - 也不会自动 promotion 为长期正向能力
+  - 当前 mixed / partial positive 仍是单一 `watching` 层：
+    - 还没有进一步区分“偏正向观察”与“强混合观察”
+  - 当前 suppressed helper 的历史解释仍主要集中在 insights：
+    - capability 工作台虽然能看 starter tier
+    - 但还没有完整接入“已过滤 helper 的历史审计列表”
+  - 当前 capability verification service 仍没有直接输出推荐验证队列：
+    - 现在主要还是通过 workbench 默认排序间接影响验证顺序
+- 下一步：
+  - 继续 `R5`：
+    - 视需要把 suppressed helper 的历史解释同步到 capability 工作台或审计摘要
+    - 评估是否让 capability verification service 直接产出推荐验证队列，而不是只依赖 UI 默认排序
+    - 再决定是否要把观察层继续细分成“偏正向观察 / 强混合观察”
+
+## 2026-03-24 第六十四次更新（R5 预备第四十刀：suppressed helper 历史进入 capability 工作台）
+
+- 本轮目标：
+  - 不再让被过滤的 starter helper 历史只停留在 insights 页面。
+  - 把这类历史风险同步到 capability 工作台，让用户在看项目能力时，能直接知道：
+    - 哪些 helper 已被长期 evidence 过滤
+    - 是否还有已沉淀 capability 仍在复用这些 helper
+- 已完成：
+  - `lib/intent-suppressed-starter-helper-history.ts`
+    - 新增纯函数：
+      - `buildIntentSuppressedStarterHelperHistory(...)`
+    - 负责把：
+      - `suppressedStarterHelpers`
+      - 项目 capability 列表
+      归并成 workbench 可直接展示的结构化历史项。
+    - 每条历史项现在都会带上：
+      - `linkedCapabilities`
+      - `activeLinkedCapabilityCount`
+      - `archivedLinkedCapabilityCount`
+    - 排序策略保持保守：
+      - 先看仍关联多少条启用 capability
+      - 再看归档能力数量
+      - 再看 decisionable rule 数量和 helper 通过率
+  - `components/ProjectIntentWorkbench.tsx`
+    - capability workbench 已新增：
+      - `Starter Helper 历史风险` 顶部只读面板
+    - 数据来源直接复用项目级 insights API：
+      - `/api/intent-e2e/insights?projectUid=...`
+      - 不新增新的后端聚合口径
+    - 面板现在会展示：
+      - 被过滤 helper 名称
+      - 来源（转正规则 / 稳定规则）
+      - 长期负向 badge
+      - suppression reason
+      - supporting rules
+      - supporting audit ids
+      - 关联启用能力数 / 已归档能力数
+      - 关联 capability 名称摘要
+    - 同时在单条 capability 卡片上增加局部风险说明：
+      - 若该 capability 的 `starterHelper` 命中已过滤 helper
+      - 会直接显示 `Starter 历史风险`
+      - 避免用户只在全局列表里看到风险，却不知道具体影响到了哪条能力
+    - 已补充项目切换保护：
+      - capability workbench 只消费当前项目已加载的 suppressed-helper 历史
+      - 避免跨项目短暂串数据
+  - `tests/unit/intent-suppressed-starter-helper-history.spec.ts`
+    - 已验证：
+      - suppressed helper 能正确回链到 starter-derived capability
+      - active capability 会优先排在 archived capability 前
+      - 多条 helper 会按“影响启用能力数量”优先展示
+- 验证：
+  - `npx vitest run tests/unit/intent-suppressed-starter-helper-history.spec.ts tests/unit/intent-capability-origin.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 2 个测试文件通过
+    - 6 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（suppressed helper 历史已不再局限于 insights 页面，capability 工作台已可直接看到关联能力风险）
+- 风险 / 未完成：
+  - 当前这条链路仍是只读 explainability：
+    - 还不会自动阻断 capability 编辑 / 验证
+    - 也不会自动建议归档或替换 capability
+  - 当前历史面板仍依赖实时 insights 拉取：
+    - 还没有单独沉淀成 capability 审计快照
+  - 当前 capability verification service 仍没有直接输出推荐验证队列：
+    - 还没有把“被 suppressed helper 命中的能力优先复核”变成服务端推荐顺序
+  - 当前观察层 helper 和 suppressed helper 仍是两块展示：
+    - 还没有进一步整合成统一的 starter helper 健康视图
+- 下一步：
+  - 继续 `R5`：
+    - 评估是否让 capability verification service 直接产出推荐验证队列，而不是只依赖 UI 默认排序
+    - 再决定是否把“命中 suppressed helper 的 capability”纳入更明确的复核建议或验证优先级
+    - 视需要把观察层与 suppressed helper 进一步整合成统一的 starter helper 健康视图
+
+## 2026-03-24 第六十五次更新（R5 预备第四十一刀：capability verification 推荐队列服务化）
+
+- 本轮目标：
+  - 不再只依赖 capability workbench 的前端默认排序来暗示“先验证谁”。
+  - 把：
+    - 最近失败可修复
+    - 命中 suppressed helper 需复核
+    - 具备转正价值的 starter asset
+    统一收口成服务侧可解释推荐队列。
+- 已完成：
+  - `lib/capability-verification-service.ts`
+    - 新增：
+      - `buildCapabilityVerificationRecommendationQueue(...)`
+      - `listCapabilityVerificationRecommendationQueue(...)`
+    - capability verification service 现在会直接产出结构化推荐队列，而不是只暴露单条 verify config 创建能力。
+    - 推荐优先级改为明确分层：
+      - `repair_failed`
+      - `suppressed_helper_review`
+      - `starter_promotion`
+      - `watching_starter_verification`
+      - `knowledge_verification`
+      - `unknown_verification`
+    - 规则保持保守：
+      - 只纳入 `active capability`
+      - 普通 `execution_verified` 不会再进入推荐队列
+      - 但若命中 suppressed helper，即使已经 `execution_verified`，仍会进入“复核”队列，而不是被静默忽略
+    - 每条推荐项现在都带：
+      - `recommendationKind`
+      - `recommendationLabel`
+      - `recommendedMode`
+      - `reason`
+      - `suppressedStarterReason`
+      - `supportingRuleNames`
+      - `lastVerificationExecutionUid`
+  - `app/api/projects/[projectUid]/capabilities/verification-queue/route.ts`
+    - 新增 capability 推荐队列接口：
+      - 支持 `limit`
+      - `runLimit`
+      - `auditLimit`
+    - 让 capability workbench 不再需要在前端重新拼接“谁该先验证”的优先级。
+  - `components/ProjectIntentWorkbench.tsx`
+    - capability workbench 已新增：
+      - `建议验证队列` 面板
+    - 面板直接消费服务侧推荐结果，并展示：
+      - 推荐动作（修复 / 复核 / 转正 / 验证）
+      - 当前验证状态
+      - 来源类型
+      - starter helper
+      - supporting rules
+      - suppressed reason
+      - 最近失败运行
+    - 交互保持最小闭环：
+      - 可刷新队列
+      - 可一键选中当前筛选下的推荐能力
+      - 继续复用现有“批量验证 / 批量修复”动作，不额外引入新的自动混合执行器
+    - 已补充项目切换保护：
+      - `capabilityVerificationQueueLoadedProjectUid`
+      - 避免跨项目短暂串队列数据
+  - `tests/unit/capability-verification-service.spec.ts`
+    - 新增覆盖：
+      - 服务侧推荐队列顺序会优先：
+        - 失败修复
+        - suppressed helper 复核
+        - starter 转正
+      - 命中 suppressed helper 的 `execution_verified` capability 仍会进入复核队列
+      - service wrapper 会真正调用：
+        - `listProjectCapabilities(..., { status: 'all' })`
+        - `getIntentE2EInsights(...)`
+- 验证：
+  - `npx vitest run tests/unit/capability-verification-service.spec.ts tests/unit/capability-verification.spec.ts tests/unit/intent-suppressed-starter-helper-history.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 10 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（capability verification 推荐顺序已服务化，suppressed helper 命中能力也已进入明确复核队列，不再只靠 UI 默认排序）
+- 风险 / 未完成：
+  - 当前推荐队列仍是“推荐 + 选中”模式：
+    - 还没有自动把 `repair` 与 `verify` 两类能力拆成一键分组执行
+  - 当前推荐依据仍依赖实时 insights：
+    - 还没有沉淀成 capability audit snapshot
+  - 当前队列已经能看到观察层 / suppressed 风险：
+    - 但还没有把这两类 helper 汇总成统一的 starter helper 健康视图
+  - 当前命中 suppressed helper 的 capability 仍只是进入高优先复核：
+    - 不会自动降级
+    - 也不会自动阻断编辑或归档
+- 下一步：
+  - 继续 `R5`：
+    - 把观察层 helper、suppressed helper、推荐验证队列进一步整合成统一的 starter helper 健康视图
+    - 视需要再补“按推荐队列自动拆分 verify / repair 批次”的保守执行器
+    - 若统一健康视图稳定，再决定是否细分 `watching` 为更明确的子层级
+
+## 2026-03-24 第六十六次更新（R5 预备第四十二刀：starter helper 健康视图统一）
+
+- 本轮目标：
+  - 不再让 capability workbench 里关于 starter helper 的信号继续碎成三块：
+    - 观察层 / 正向 helper
+    - suppressed helper 历史风险
+    - capability 推荐治理队列
+  - 先补一个“以 helper 为中心”的统一健康视图，降低用户理解成本。
+- 已完成：
+  - `lib/intent-starter-helper-health.ts`
+    - 新增纯函数：
+      - `buildIntentStarterHelperHealthView(...)`
+    - 负责把：
+      - `starterHelpers`
+      - `suppressedStarterHelpers`
+      - 项目 capability 列表
+      - capability verification 推荐队列
+      统一归并成 helper 级健康视图。
+    - 每条 helper 健康项现在都会带：
+      - `healthStatus`
+        - `preferred`
+        - `watching`
+        - `neutral`
+        - `suppressed`
+      - `linkedCapabilities`
+      - `recommendedCapabilityCount`
+      - `recommendedRepairCount`
+      - `recommendedReviewCount`
+      - `queueItems`
+    - 排序保持治理导向：
+      - 先看是否有待治理 capability
+      - 再看 suppressed / watching 等健康状态
+      - 再看启用 capability 影响范围
+  - `components/ProjectIntentWorkbench.tsx`
+    - capability workbench 里原先只展示负向 helper 的 `Starter Helper 历史风险` 已升级为：
+      - `Starter Helper 健康视图`
+    - 现在同一个面板会统一展示：
+      - 优先层 helper
+      - 观察层 helper
+      - 已过滤 helper
+      - 每个 helper 关联的 capability 治理数量
+    - 面板摘要新增：
+      - helper 总数
+      - 优先层数
+      - 观察中数
+      - 已过滤数
+      - 待治理 helper 数
+    - 每张 helper 卡片现在可直接看到：
+      - helper 健康状态
+      - 来源（转正规则 / 稳定规则）
+      - 长期 evidence / suppression reason
+      - 关联启用 / 归档 capability
+      - 推荐治理 capability 摘要
+    - 交互保持保守：
+      - 可直接“筛选此 helper”
+      - 若该 helper 已命中推荐治理队列，仍复用现有“选中推荐能力”动作
+    - 数据拉取已从“只拿 suppressed helper 历史”扩展成：
+      - 一次 insights 拉取同时消费 `starterHelpers + suppressedStarterHelpers`
+  - `tests/unit/intent-starter-helper-health.spec.ts`
+    - 已验证：
+      - 观察层 / 正向 / suppressed helper 能正确合并进统一健康视图
+      - capability 链接数与推荐治理计数能正确回填
+      - 没有 capability / queue 的 neutral helper 也不会被吞掉
+- 验证：
+  - `npx vitest run tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-suppressed-starter-helper-history.spec.ts tests/unit/capability-verification-service.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 8 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（starter helper 的正向 / 观察 / 负向与 capability 推荐治理已进入统一健康视图，不再只靠多个散点面板拼理解）
+- 风险 / 未完成：
+  - 当前健康视图已经统一到了 helper 级：
+    - 但 capability 级动作仍在独立推荐队列里
+    - 还没有做到按健康视图一键分流成 verify / repair 两类批次
+  - 当前健康视图仍依赖实时 insights + queue 聚合：
+    - 还没有单独沉淀成 starter helper audit snapshot
+  - 当前 `watching` 仍是单层：
+    - 还没有进一步拆成更细粒度的观察子层级
+- 下一步：
+  - 继续 `R5`：
+    - 评估是否补“按推荐队列自动拆分 verify / repair 批次”的保守执行器
+    - 若批次执行器稳定，再决定是否把 `watching` 细分成更明确的观察子层级
+    - 视需要再把 helper 健康视图沉淀成独立 audit snapshot，而不只依赖实时聚合
+
+## 2026-03-24 第六十七次更新（R5 预备第四十三刀：推荐队列拆批执行器）
+
+- 本轮目标：
+  - 不再让推荐验证队列只停留在“看得到 / 选得到”。
+  - 给它补一个保守执行器，但不做混合魔法，而是明确拆成：
+    - 推荐验证
+    - 推荐修复
+- 已完成：
+  - `lib/capability-verification-recommendation-queue.ts`
+    - 新增纯函数：
+      - `resolveCapabilityVerificationRecommendationTargets(...)`
+    - 负责把 capability 推荐队列解析成可执行 target：
+      - `verifyItems`
+      - `repairItems`
+    - 行为保持保守：
+      - 保留推荐队列原始顺序
+      - 自动去重
+      - 自动跳过缺失或已归档 capability
+  - `components/ProjectIntentWorkbench.tsx`
+    - `launchCapabilityVerificationBatch(...)` 已扩展为可接受轻量 options：
+      - `confirmMessage`
+      - `batchTitle`
+      - `clearSelection`
+    - 避免为了推荐队列再次复制一套批量启动逻辑。
+    - `建议验证队列` 面板已新增两个显式动作：
+      - `启动推荐验证`
+      - `启动推荐修复`
+    - 执行策略保持透明：
+      - 推荐验证仍走当前模块
+      - 推荐修复仍基于各自最近失败执行
+      - 两类批次分别启动，不做混跑
+    - recommendation queue 现在从“建议列表”升级为“建议 + 分流执行”的闭环入口。
+  - `tests/unit/capability-verification-recommendation-queue.spec.ts`
+    - 已验证：
+      - 推荐队列会按 mode 正确拆成 verify / repair 两组
+      - 会跳过 archived / missing capability
+      - 会自动去重并保留原始推荐顺序
+- 验证：
+  - `npx vitest run tests/unit/capability-verification-recommendation-queue.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/capability-verification-service.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 9 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（推荐队列已可按 verify / repair 两类显式拆批执行，helper 健康视图不再只是展示层）
+- 风险 / 未完成：
+  - 当前拆批执行器仍是两按钮显式分流：
+    - 没有做“一键混合启动全部推荐项”
+    - 这是刻意保守，避免把 verify / repair 的依赖和语义混在一起
+  - 当前 `watching` 仍是单层：
+    - 还没有细分成更明确的观察子层级
+  - 当前 helper 健康视图与推荐执行器仍依赖实时聚合：
+    - 还没有独立 snapshot / 审计落盘
+- 下一步：
+  - 继续 `R5`：
+    - 评估是否把 `watching` 细分成更明确的观察子层级
+    - 或把 helper 健康视图沉淀成独立 audit snapshot，减少对实时聚合的依赖
+
+## 2026-03-24 第六十八次更新（R5 预备第四十四刀：watching 细分为恢复观察 / 混合观察）
+
+- 本轮目标：
+  - 不改 `watching` 顶层保守语义，只把它从单一观察层细分成两类可解释子层：
+    - `recovering`
+    - `mixed`
+  - 让 starter helper 的长期 evidence 不再只停留在“观察中”这一个模糊标签，而是能继续作用到：
+    - 排序
+    - capability 推荐治理
+    - starter capability 草稿
+    - prompt 下发
+    - helper 健康视图
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - starter helper evidence 新增 `knowledgeChangeWatchingKind`
+    - 保守规则保持不变：
+      - 顶层仍只有 `preferred / watching / negative-filtered`
+      - 没有因为新子层而直接放宽 promotion 条件
+    - 观察层现在区分为：
+      - `recovering`
+        - 已出现局部正向恢复证据
+        - 但 supporting rule 覆盖面还不足以直接视为长期正向
+      - `mixed`
+        - 已同时命中正向与负向已判定 rule summary
+        - 仍需按更保守的混合信号处理
+    - starter helper 排序已升级为：
+      - `positive`
+      - `watching/recovering`
+      - `watching/mixed`
+      - `neutral`
+  - `lib/intent-starter-assets.ts`
+    - starter asset 排序同步消费新的观察子层级：
+      - 强正向仍最高
+      - `recovering` 明确高于 `mixed`
+      - `mixed` 仍高于完全中性
+  - `lib/intent-starter-capability-preset.ts`
+    - starter capability draft 文案不再统一写“观察层”
+    - 现已显式区分：
+      - `恢复观察层`
+      - `混合观察层`
+    - `sortOrder` 保持保守细分：
+      - 正向：`55`
+      - 恢复观察：`57`
+      - 混合观察：`58`
+      - 中性：`60`
+    - preset `meta` 已补 `starterKnowledgeChangeWatchingKind`
+  - `lib/intent-capability-origin.ts`
+    - capability meta / origin 现已能读取 `starterKnowledgeChangeWatchingKind`
+    - 搜索文本已加入：
+      - `恢复观察`
+      - `混合观察`
+    - capability workbench 与目录检索不再只能看到笼统的“观察中”
+  - `lib/capability-verification-service.ts`
+    - capability 推荐队列已接入观察子层 explainability
+    - 对来自 starter asset 的待验证能力：
+      - `recovering` 会给出更偏“值得补验证确认转正”的 reason
+      - `mixed` 会给出更偏“继续保守复核”的 reason
+    - 排序上也会优先把 `recovering` 放在 `mixed` 前面
+  - `lib/intent-starter-helper-health.ts`
+    - helper 健康视图摘要新增：
+      - `recoveringWatchingCount`
+      - `mixedWatchingCount`
+    - helper 卡片的 `watching` 文案现在不再统一写“观察中”，而是显式写：
+      - `恢复观察`
+      - `混合观察`
+  - `components/ProjectIntentWorkbench.tsx`
+    - capability workbench 的健康摘要 badge、queue badge、capability badge、helper card 已统一接入：
+      - `恢复观察`
+      - `混合观察`
+    - starter helper 治理面板不再把两类观察 helper 混成一个视觉层级
+  - `components/IntentE2EWorkbench.tsx`
+    - insights 页面的 starter helper 建议区、starter capability launch 区已同步区分观察子层
+    - UI 呈现现在能和排序语义保持一致，不再出现“内部已细分、外部仍只写观察中”的断层
+  - `lib/test-generator.ts`
+    - prompt 下发的 `Starter Helper 建议` 现已显式输出：
+      - `长期证据=恢复观察`
+      - `长期证据=混合观察`
+    - 让模型在首轮生成时知道：
+      - 哪些 helper 是“偏正向但证据不足”
+      - 哪些 helper 是“已出现恢复但仍有冲突信号”
+  - 新增 / 补强测试：
+    - `tests/unit/intent-e2e-insights.spec.ts`
+      - 新增 `recovering` 场景断言
+      - mixed 场景补 `knowledgeChangeWatchingKind='mixed'`
+    - `tests/unit/intent-starter-assets.spec.ts`
+      - 已验证 starter asset 排序为：
+        - `positive > recovering > mixed > neutral`
+    - `tests/unit/intent-starter-capability-preset.spec.ts`
+      - 已验证：
+        - `recovering` 对应 `sortOrder=57`
+        - `mixed` 对应 `sortOrder=58`
+    - `tests/unit/intent-capability-origin.spec.ts`
+      - 已验证 capability meta / search text 可读取并暴露：
+        - `恢复观察`
+        - `混合观察`
+    - `tests/unit/intent-starter-helper-health.spec.ts`
+      - 已验证摘要计数和 helper 卡片标签可区分两类观察层
+    - `tests/unit/capability-verification-service.spec.ts`
+      - 已验证推荐 reason 与排序会优先 `recovering`，再 `mixed`
+    - `tests/unit/test-generator.spec.ts`
+      - 已验证 prompt 可输出两类观察层文案
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-starter-assets.spec.ts tests/unit/intent-starter-capability-preset.spec.ts tests/unit/intent-capability-origin.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/capability-verification-service.spec.ts tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 7 个测试文件通过
+    - 88 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（starter helper 长期 evidence 已从“强正向 / 观察 / 负向过滤”进一步细化为“强正向 / 恢复观察 / 混合观察 / 中性 / 负向过滤”的保守消费链）
+- 风险 / 未完成：
+  - 当前 `recovering / mixed` 仍主要用于 explainability、排序和治理优先级：
+    - 还没有独立的执行策略分叉
+    - 也没有基于子层级做自动 promotion / 自动降级
+  - 当前 helper 健康视图、推荐队列、观察子层都仍依赖实时 insights 聚合：
+    - 还没有沉淀成独立 snapshot / 审计落盘
+  - 当前 prompt 虽然已经知道 `recovering / mixed` 区别：
+    - 但后续 repair memory 是否要学习这种差异化优先级，还没有贯通
+- 下一步：
+  - 继续 `R5`：
+    - 把 starter helper 健康视图沉淀成独立 audit snapshot，减少对实时聚合的依赖
+    - 再评估是否让 `recovering` 与 `mixed` 在后续 repair / verify 批次策略上继续分化
+
+## 2026-03-24 第六十九次更新（R5 预备第四十五刀：starter helper 健康视图独立 snapshot 审计）
+
+- 本轮目标：
+  - 不再让 capability 工作台里的 `Starter Helper 健康视图` 只能依赖每次打开页面时的实时拼装。
+  - 把它沉淀成一份独立 snapshot 审计，并且让 UI 默认先读最近快照，手动刷新时再重算。
+- 已完成：
+  - `lib/intent-starter-helper-health-snapshot.ts`
+    - 新增独立 JSONL 审计层：
+      - 默认文件：`reports/intent-starter-helper-health.audit.jsonl`
+      - 支持环境变量覆盖：`INTENT_E2E_STARTER_HELPER_HEALTH_AUDIT_PATH`
+    - 已支持：
+      - `createIntentStarterHelperHealthSnapshotEntry(...)`
+      - `writeIntentStarterHelperHealthSnapshot(...)`
+      - `listIntentStarterHelperHealthSnapshots(...)`
+      - `getLatestIntentStarterHelperHealthSnapshot(...)`
+    - snapshot 现已持久化：
+      - `summary`
+      - `items`
+      - `capturedAt`
+      - `actorLabel`
+      - source 侧上下文
+        - `runLimit / auditLimit / queueLimit`
+        - helper/capability/queue 计数
+  - `lib/intent-starter-helper-health-service.ts`
+    - 新增服务层：
+      - `getIntentStarterHelperHealthSnapshot(...)`
+    - 负责把以下实时数据做一次统一聚合并写 snapshot：
+      - `insights.starterHelpers`
+      - `insights.suppressedStarterHelpers`
+      - `project capabilities`
+      - `capability verification recommendation queue`
+    - 默认行为保持保守：
+      - 若已有最新 snapshot 且没有显式 `refresh`，直接返回最近快照
+      - 若显式刷新，则实时重算并落新 snapshot
+      - 若刷新失败但本地已有旧快照，则回退返回旧快照
+        - `staleFallback=true`
+        - `refreshError` 透出原始错误
+  - `app/api/projects/[projectUid]/capabilities/helper-health/route.ts`
+    - 新增 project-scoped route：
+      - `GET /api/projects/[projectUid]/capabilities/helper-health`
+    - 权限与参数约束已补齐：
+      - 需要 `owner/editor/viewer`
+      - 支持：
+        - `refresh`
+        - `runLimit`
+        - `auditLimit`
+        - `queueLimit`
+  - `components/ProjectIntentWorkbench.tsx`
+    - capability workbench 的 `Starter Helper 健康视图` 已改为默认消费 snapshot route，不再本地实时拼装
+    - “刷新健康视图”现在会显式触发 `refresh=1`，强制实时重算并写新 snapshot
+    - 面板已新增快照上下文展示：
+      - 最近快照时间
+      - 审计文件路径
+      - 若实时刷新失败，会提示当前正在回退展示旧快照
+    - capability 卡片里原先依赖实时 `suppressedStarterHelpers` 拼出来的 `Starter 历史风险` 也已改为消费 snapshot 内的 suppressed helper 结果
+  - 新增 / 补强测试：
+    - `tests/unit/intent-starter-helper-health-snapshot.spec.ts`
+      - 已验证 snapshot 可写入、按项目过滤、读取最新
+    - `tests/unit/intent-starter-helper-health-service.spec.ts`
+      - 已验证：
+        - 首次无缓存会实时生成并写新快照
+        - 默认优先返回最近快照
+        - 刷新失败时会回退旧快照并透出 `refreshError`
+    - `tests/unit/api-project-capability-helper-health-route.spec.ts`
+      - 已验证权限校验与 query 参数透传
+- 验证：
+  - `npx vitest run tests/unit/intent-starter-helper-health-snapshot.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts tests/unit/api-project-capability-helper-health-route.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/capability-verification-service.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 5 个测试文件通过
+    - 12 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（starter helper 健康视图已不再完全依赖实时 insights 拼装，现已具备“最近快照优先 + 强制刷新重算 + 刷新失败回退旧快照”的独立审计层）
+- 风险 / 未完成：
+  - 当前 snapshot 仍然只提供“最近快照优先”的消费模式：
+    - 还没有把历史 snapshot 列表显式展示到 UI
+    - 也没有做多次快照之间的 diff / 演进对比
+  - 当前 `recovering / mixed` 虽然已经进入 snapshot：
+    - 还没有继续下钻到 verify / repair 策略差异化
+  - 当前 recommendation queue 仍是单独实时 route：
+    - helper 健康快照和推荐队列不保证完全同一时刻生成
+    - 这是刻意保守，先优先保证 snapshot 层独立可用
+- 下一步：
+  - 继续 `R5`：
+    - 评估是否让 `recovering` 与 `mixed` 在 verify / repair 批次优先级上继续分化
+    - 或把 helper health snapshot 历史列表 / diff 视图透到工作台，补足长期运营回放能力
+
+## 2026-03-24 第七十次更新（R5 预备第四十六刀：recommended verify 再拆成验证 / 保守复核）
+
+- 本轮目标：
+  - 不改服务端推荐队列协议，先在执行分流层把原来的单一 `verifyItems` 再细分。
+  - 让 `recovering` 和 `mixed` 不再只停留在排序区别，而是真正进入不同批次入口：
+    - 推荐验证
+    - 保守复核
+    - 推荐修复
+- 已完成：
+  - `lib/capability-verification-recommendation-queue.ts`
+    - `resolveCapabilityVerificationRecommendationTargets(...)` 现已从两路拆分扩成三路：
+      - `verifyItems`
+      - `reviewItems`
+      - `repairItems`
+    - 分流规则保持保守：
+      - `repair` 仍只进修复批次
+      - `suppressed_helper_review` 进入 `reviewItems`
+      - `watching_starter_verification + mixed` 进入 `reviewItems`
+      - `watching_starter_verification + recovering` 继续进入 `verifyItems`
+      - 其余 verify 型推荐保持在 `verifyItems`
+    - 去重 / 保序 / 跳过 archived / missing 的行为保持不变
+  - `components/ProjectIntentWorkbench.tsx`
+    - capability workbench 的推荐队列执行入口已从两按钮扩成三按钮：
+      - `启动推荐验证`
+      - `启动保守复核`
+      - `启动推荐修复`
+    - 其中：
+      - `启动推荐验证`
+        - 更偏 `starter_promotion`
+        - `recovering`
+        - 常规 `knowledge/unknown verification`
+      - `启动保守复核`
+        - 更偏 `suppressed helper review`
+        - `mixed watching`
+    - 顶部摘要 badge 也同步显式区分：
+      - 验证
+      - 保守复核
+      - 修复
+    - 行为仍然透明：
+      - `reviewItems` 本质上仍走 verify 模式
+      - 只是 UI 与默认批次入口不再把它们和更积极的验证目标混在一起
+  - `tests/unit/capability-verification-recommendation-queue.spec.ts`
+    - 已补：
+      - mixed watching 会进入 `reviewItems`
+      - recovering 仍留在 `verifyItems`
+      - suppressed helper review 会进入 `reviewItems`
+- 验证：
+  - `npx vitest run tests/unit/capability-verification-recommendation-queue.spec.ts tests/unit/capability-verification-service.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 10 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（starter helper 的长期 evidence 已不再只影响排序，`recovering / mixed / suppressed` 已开始进入不同默认批次入口）
+- 风险 / 未完成：
+  - 当前 review 批次仍然复用 verify 执行模式：
+    - 还没有独立的 prompt / verifier 策略差分
+    - 只是启动入口和默认分流不同
+  - 当前服务端 summary 仍只保留原有统计口径：
+    - `mixed` 进入 review 的数量目前仍在前端分流层计算
+    - 还没有单独写回 queue summary schema
+  - 当前 helper health snapshot 历史虽然已经持久化：
+    - 但还没有历史列表 / diff / 回放 UI
+- 下一步：
+  - 继续 `R5`：
+    - 评估是否把 review 批次的 prompt / verifier 策略也独立出来
+    - 或把 helper health snapshot 历史列表 / diff 视图补到工作台
+
+## 2026-03-24 第七十一次更新（R5 预备第四十七刀：review 验证意图进入服务端配置）
+
+- 本轮目标：
+  - 不把 `review` 扩成第三种全局执行模式，但要让“保守复核”不再只是前端按钮分流。
+  - 让推荐队列里的 `reviewItems` 真正把“保守复核”意图透传到验证配置，供后续 prompt / verifier / triage 继续消费。
+- 已完成：
+  - `lib/capability-verification-service.ts`
+    - `createCapabilityVerificationConfig(...)` 现已稳定支持 `verificationIntent`
+    - `review` 场景下：
+      - config 名称改为 `复核能力：...`
+      - `featureDescription` 会写入 `能力验证意图：review`
+      - 同时补入：
+        - `验证策略：保守复核`
+        - `复核要求：...`
+        - `复核标准：...`
+    - 保持设计边界不变：
+      - `review` 不是新的 execution mode
+      - 仍然只是 `verify` 分支下的服务端配置差分
+  - `components/ProjectIntentWorkbench.tsx`
+    - `requestCapabilityVerification(...)` / `launchCapabilityVerificationBatch(...)` 已支持 `verificationIntent`
+    - 普通验证默认透传 `verify`
+    - “启动保守复核”已显式透传 `review`
+    - 因此推荐队列现在不只是 UI 分按钮，而是能把保守意图一路送到服务端配置
+  - `app/api/projects/[projectUid]/capabilities/[capabilityUid]/verify/route.ts`
+    - verify route 已读取 `verificationIntent`
+    - `mode === 'verify'` 时会透传给 `createCapabilityVerificationConfig(...)`
+    - `mode === 'repair'` 时仍然直接走最近失败执行修复，不消费该字段，避免把 repair / review 语义混淆
+  - 新增 / 补强测试：
+    - `tests/unit/capability-verification-service.spec.ts`
+      - 已补 `review` 场景断言：
+        - config 名称为 `复核能力：...`
+        - `featureDescription` 包含 `能力验证意图：review`
+        - 包含 `验证策略：保守复核`
+    - `tests/unit/api-project-capability-verify-route.spec.ts`
+      - 已验证：
+        - verify 请求会把 `verificationIntent: 'review'` 透传给 service
+        - repair 请求即使带了 `review` 也会被忽略，仍直接走 `repairExecution(...)`
+- 验证：
+  - `npx vitest run tests/unit/capability-verification-service.spec.ts tests/unit/capability-verification-recommendation-queue.spec.ts tests/unit/api-project-capability-verify-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 10 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（review 批次已从“前端按钮分流”升级为“前端分流 -> route 透传 -> 服务端配置差分”的完整链路）
+- 风险 / 未完成：
+  - 当前 `review` 的差异化还只停留在验证配置文本层：
+    - 生成 prompt / repair prompt / verifier 还没有显式消费 `能力验证意图：review`
+    - 也就是说，执行链虽然已经知道这是保守复核，但下游模型策略还没有真正分叉
+  - 当前批次监控仍只展示 `verify / repair`：
+    - 这是刻意保守，避免把 `review` 误建模成第三种 execution mode
+    - 但 UI 级回放还不能直接从批次状态区分“普通验证”与“保守复核”
+  - 当前推荐队列 summary 仍没有单独回写 `review` 统计 schema：
+    - `reviewItems` 仍主要由前端分流结果体现
+- 下一步：
+  - 继续 `R5`：
+    - 让 generator / verifier / repair prompt 显式消费 `能力验证意图：review`
+    - 优先把“保守复核”真正落实成 prompt / grading 策略差分，而不是只停留在配置文案
+
+## 2026-03-24 第七十二次更新（R5 预备第四十八刀：review 策略进入 generator / verifier / repair prompt）
+
+- 本轮目标：
+  - 不再让 `review` 只停留在 config 描述文本里，而是把它真正送进生成链路、结构化验收链路和 repair prompt。
+  - 保持架构边界不变：
+    - 仍然不新增第三种 execution mode
+    - 只把 `review` 当作 `verify` 内部的保守策略意图
+- 已完成：
+  - `lib/intent-execution-plan.ts`
+    - `buildIntentVerificationPlan(...)` 现已显式解析 `能力验证意图：review`
+    - `IntentVerificationPlan` 已新增可选字段：
+      - `intent`
+      - `policyNotes`
+    - `review` 场景下会自动生成保守复核策略说明，例如：
+      - 优先确认既有 helper / selector / 断言 / 入口是否仍稳定可复用
+      - 不要为了通过主动扩写需求外业务链路
+      - 若 mixed observing / suppressed helper 风险仍在，宁可明确失败，也不要模糊放过
+    - `renderIntentVerificationPlan(...)` 现会把 `intent` 与 `policyNotes` 显式渲染进 prompt 文本
+  - `lib/intent-execution-compiler.ts`
+    - 编译 `DeterministicExecutionTemplate` 时，verification instructions 已开始消费 `verificationPlan.intent / policyNotes`
+    - `review` 场景下，固定骨架的最终验收说明会显式带出“保守复核”约束，而不是只给通用验收提示
+  - `lib/test-generator.ts`
+    - `buildPrompt(...)` 现已在 prompt 前部新增 `## 当前能力验证意图`
+    - `review` 场景下会明确告诉模型：
+      - 当前是保守复核
+      - 目标是确认旧 helper / selector / 断言 / 入口是否仍稳定
+      - 不要主动扩写新的业务链路
+    - `buildRepairPrompt(...)` 也已新增 `## 保守复核修复边界`
+      - repair 时只能在当前失败点收敛 helper / selector / wait / assertion
+      - 不允许把成功判定降级成 toast / 整页模糊文本 / truthy
+      - 如果旧入口或旧 helper 已明显漂移，应暴露真实失败，而不是发明新旁路
+    - `buildRepairPrompt(...)` 现在即使直接独立调用，也会先 resolve planning，上述 review 边界不会丢
+  - 新增 / 补强测试：
+    - `tests/unit/intent-execution-plan.spec.ts`
+      - 已验证 review 场景会写入 `intent: review` 与 `policyNotes`
+    - `tests/unit/test-generator.spec.ts`
+      - 已验证生成 prompt 会出现 `## 当前能力验证意图`
+      - 已验证 repair prompt 会出现 `## 保守复核修复边界`
+    - `tests/unit/intent-execution-compiler.spec.ts`
+      - 已回归确认 deterministic compiler 未被本轮改动破坏
+    - `tests/unit/test-generator-structured.spec.ts`
+      - 已回归确认 structured generation / slot patch 主链未被本轮改动破坏
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts tests/unit/test-generator-structured.spec.ts`
+  - `npx vitest run tests/unit/capability-verification-service.spec.ts tests/unit/capability-verification-recommendation-queue.spec.ts tests/unit/api-project-capability-verify-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 4 个 prompt / plan / compiler 相关测试文件通过
+    - 60 个测试通过
+    - 3 个 capability verification 相关测试文件通过
+    - 10 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（review 已不再只是按钮/配置文案差分，而是正式进入 `VerificationPlan`、deterministic compiler、generate prompt、repair prompt 的执行约束链）
+- 风险 / 未完成：
+  - 当前 `review` 虽已进入 prompt / verifier / repair 约束，但执行结果侧仍未显式标记：
+    - execution / audit / insights 还没有把 `review` 与普通 `verify` 分桶统计
+    - 学习闭环目前还看不到“保守复核通过率 / 失败率 / helper 漂移率”这类独立证据
+  - 当前批次监控仍只展示 `verify / repair`：
+    - 这仍然是刻意保守
+    - 但 UI 回放还不能直接区分“普通验证批次”和“保守复核批次”
+  - 当前推荐队列 summary 仍没有单独 `review` schema：
+    - 仍主要由前端分流结果体现
+- 下一步：
+  - 继续 `R5`：
+    - 把 `review` intent 继续写入 execution / audit / insights / 学习闭环
+    - 让后续长期 evidence 能独立区分“普通验证成功”与“保守复核成功/失败”
+
+## 2026-03-24 第七十三次更新（R5 预备第四十九刀：review intent 进入 execution detail / audit meta）
+
+- 本轮目标：
+  - 不先改库表结构，先用现有的 activity log / execution artifact / execution detail 返回链，把 `review` context 串起来。
+  - 为下一刀的 UI 回放和 insights 分桶准备最小稳定元数据面。
+- 已完成：
+  - `lib/services/test-plan-service.ts`
+    - 新增 capability verification execution context 解析：
+      - `capabilityUid`
+      - `chainCapabilityUids`
+      - `intent`
+      - `targetName`
+      - `strategyLabel`
+    - 解析来源直接复用 `featureDescription` 里的 marker / 策略行，不引入新的配置来源分叉
+  - plan / execution / repair 审计链已开始消费该上下文：
+    - `generatePlanFromConfig(...)`
+      - `plan_generated` activity log meta 已带上 `capabilityVerification`
+    - `restoreHistoricalPlanAsLatest(...)`
+      - `plan_restored_from_history` activity log meta 已带上 `capabilityVerification`
+    - `repairExecution(...)`
+      - `plan_repaired` activity log meta 已带上 `capabilityVerification`
+    - `executePlan(...)`
+      - `execution_started` activity log meta 已带上 `capabilityVerification`
+      - 后台执行线程也会继续把这段 context 带入 pass / fail / exception 的 activity log 与 artifact meta
+  - execution artifact 已开始写入 review context：
+    - `generated_spec` 的 `meta` 里现会补 `capabilityVerification`
+    - 包括：
+      - 正常通过 / 失败产物
+      - 异常分支产物
+    - 这样即使后续 config 不可用，也能从 artifact meta 回退读出 review intent
+  - `getExecutionDetail(...)`
+    - 现已新增顶层 `capabilityVerification`
+    - 优先从 config 的 `featureDescription` 解析
+    - 若 config 不可用，则回退到 execution artifact meta
+    - `app/api/execution-details/[executionUid]/route.ts` 与 `app/api/test-executions/[executionUid]/route.ts` 会自然返回这段上下文，无需额外 route 分叉
+- 新增 / 补强测试：
+  - `tests/unit/test-plan-service.spec.ts`
+    - 已验证：
+      - execution detail 能返回 `capabilityVerification.intent = review`
+      - execution_started / execution_failed activity log meta 已写入 `capabilityVerification`
+      - `generated_spec.meta` 已写入 `capabilityVerification`
+  - `tests/unit/api-execution-details-route.spec.ts`
+    - 已回归确认 route 返回执行详情的权限与返回行为未被本轮改动破坏
+- 验证：
+  - `npx vitest run tests/unit/test-plan-service.spec.ts tests/unit/api-execution-details-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 2 个执行详情 / service 相关测试文件通过
+    - 12 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（review 已从“前端分流 / prompt 差分”继续延伸到 execution detail / activity log / artifact meta，后续已有可追踪元数据面）
+- 风险 / 未完成：
+  - 当前 review context 还只是被写进 execution detail / audit meta：
+    - capability workbench 的批次监控 UI 还没有显式显示 `review`
+    - insights / 长期 evidence 也还没有按 `review` 独立分桶
+  - 当前 execution 主记录本身仍是固定字段：
+    - review context 主要依赖 detail 聚合与 artifact / activity log meta 回退
+    - 这是刻意保守，先不引入 execution 表结构迁移
+  - 当前推荐队列 summary 仍没有单独 `review` schema：
+    - 仍主要由前端分流结果体现
+- 下一步：
+  - 继续 `R5`：
+    - 让 capability workbench 的批次监控 / 执行详情 UI 显式展示 `review`
+    - 再把 `review` context 接入 insights / learning 闭环，形成独立通过率与漂移证据
+
+## 2026-03-24 第七十四次更新（R5 预备第五十刀：review 批次监控 UI 显式展示）
+
+- 本轮目标：
+  - 不新增第三种 execution mode，先让 capability workbench 的批次监控能直接区分普通验证、保守复核、失败修复。
+  - 以前端启动参数为初始值、以后端 execution detail 的 `capabilityVerification.intent` 为回填依据，补齐最小稳定回放面。
+- 已完成：
+  - `components/ProjectIntentWorkbench.tsx`
+    - `CapabilityVerificationMonitorItem` / `CapabilityVerificationBatch` 已增加可选 `verificationIntent`
+    - `CapabilityExecutionDetailResponse` 已开始消费顶层 `capabilityVerification`
+    - `registerCapabilityVerificationBatch(...)`
+      - 启动批次时会保留 `verificationIntent`
+      - 推荐队列里的 `review` 启动后不再在前端监控面板里丢失语义
+    - `refreshCapabilityVerificationBatches()`
+      - 轮询 `/api/test-executions/:executionUid` 后会优先使用 execution detail 返回的 `capabilityVerification.intent`
+      - 因此前端本地 state 不再是 review 语义唯一来源
+    - 新增最小 UI helper：
+      - `normalizeCapabilityVerificationIntent(...)`
+      - `describeCapabilityVerificationBatchKind(...)`
+      - `describeCapabilityVerificationSyncLabel(...)`
+      - `describeCapabilityVerificationLaunchLabel(...)`
+    - 批次 badge 现在已显式区分：
+      - `repair` -> `失败修复`
+      - `verify + intent=review` -> `保守复核`
+      - `verify + intent=verify` -> `验证升级`
+    - 批次内单条执行的同步标签也已修正：
+      - review 成功并回写后显示 `已完成保守复核`
+      - 不再把 review 结果误显示为 `已升级执行验证`
+    - 批量启动提示文案也会跟随显示：
+      - `能力验证`
+      - `保守复核`
+      - `验证修复`
+- 验证：
+  - `npm run build`
+  - 当前结果：
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（review 已具备“服务端配置 -> prompt/verifier -> execution detail -> workbench 批次监控”的最小完整可视链路）
+- 风险 / 未完成：
+  - 当前 review 的 UI 区分仍主要停留在 capability workbench 的批次面板：
+    - 独立 execution detail 页面还没有额外 review badge / 解释文案
+  - insights / 长期 learning evidence 仍未按 `review` 单独分桶：
+    - 现在可以看见保守复核批次
+    - 但还不能统计保守复核通过率、失败率、helper 漂移命中率
+  - 当前执行通过后 review 与 verify 都可能进入相同的能力升级结果：
+    - 这是刻意保守
+    - 先保证监控可见性，不引入新的 execution mode / schema 分叉
+- 下一步：
+  - 继续 `R5`：
+    - 把 `review` context 接入 `insights` 与 learning 聚合
+    - 先补 `review vs verify` 的独立分桶统计，再看是否需要把 execution detail 页也补专门 review 展示
+
+## 2026-03-24 第七十五次更新（R5 预备第五十一刀：review intent 接入 insights 分桶）
+
+- 本轮目标：
+  - 先不改 learning policy，只把 `review` 从“execution detail 可见”推进到“insights / recent trace 可聚合、可展示”。
+  - 保持最小实现边界：
+    - 不新建 execution mode
+    - 不先改库表
+    - 先复用已有 run snapshot 中的 `verificationPlan` / `featureDescription` 线索做被动分桶
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - 新增 `IntentE2EInsightVerificationIntent`：
+      - `verify`
+      - `review`
+      - `unknown`
+    - 新增 `IntentE2EInsightVerificationIntentStat`
+      - 每个 intent 都会独立统计：
+        - `totalRuns`
+        - `passedRuns`
+        - `failedRuns`
+        - `canceledRuns`
+        - `firstPassPassedRuns`
+        - `firstPassPassRate`
+        - `repairedPassRuns`
+        - `repairedPassRate`
+        - `terminalPassRate`
+    - `normalizeTerminalRun(...)` 现会优先读取：
+      - `result.verificationPlan.intent`
+      - 若缺失，再回退解析 `scenarioCard.featureDescription` / `description` 中的 `能力验证意图：...`
+    - `recentTraces` 现已新增：
+      - `verificationIntent`
+      - `verificationIntentLabel`
+    - `buildIntentE2EInsightsFromData(...)` 顶层结果现已新增 `verificationIntents`
+      - 这样 review / verify / unknown 已能在洞察层被独立分桶
+  - `components/IntentE2EWorkbench.tsx`
+    - 洞察响应类型已同步接入 `verificationIntents`
+    - 历史洞察区新增“验证意图分桶”面板：
+      - `标准验证`
+      - `保守复核`
+      - `未标注意图`
+    - 最近 trace 摘要现在也会直接显示：
+      - `标准验证`
+      - `保守复核`
+      的 badge，不再只能靠执行细节侧猜测
+  - 测试补强：
+    - `tests/unit/intent-e2e-insights.spec.ts`
+      - 已补 `verificationIntents` 分桶断言
+      - 已补 `recentTraces` 的 `review / verify / unknown` 标签断言
+    - `tests/unit/api-intent-e2e-insights-route.spec.ts`
+      - 已同步 response mock 结构
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 2 个测试文件通过
+    - 26 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（review 已具备“prompt / verifier / execution detail / batch monitor / intent insights”的第一层闭环）
+- 风险 / 未完成：
+  - 当前 `review` 分桶优先依赖 intent run snapshot 中的 `verificationPlan.intent`：
+    - 这让 intent 洞察页已经能识别 review
+    - 但 `test-plan-service` 那条 capability verification execution 链路还没有完全并入同一份 snapshot 学习池
+  - 当前只是“看得见 review 通过率 / 首轮率 / repair 率”：
+    - 还没有让这些分桶结果真正回流到 helper health / recommendation queue / promotion policy
+  - 当前 execution detail 页虽然已有 capability verification context：
+    - 但还没有额外补充 review 专属汇总页或历史趋势页
+- 下一步：
+  - 继续 `R5`：
+    - 先决定把 capability verification execution 结果接到同一 learning 聚合，还是单独做 capability verification grader
+    - 然后让 `review vs verify` 的分桶结果开始反向影响 helper health / recommendation / promotion 优先级
+
+## 2026-03-24 第七十六次更新（R5 预备第五十二刀：capability verification execution 接入 insights 聚合）
+
+- 本轮目标：
+  - 不再只看 intent run snapshot 的 `review / verify`，而是把 `test-plan-service` 这条 capability verification execution 链路的真实终态结果也接进同一洞察面。
+  - 继续保持保守边界：
+    - 先做只读 bridge
+    - 不先改 recommendation / promotion policy
+    - 不新增库表
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - 新增 capability verification activity 聚合能力，直接复用 project activity log 中已有的 `meta.capabilityVerification`
+    - `getIntentE2EInsights(...)` 现已在项目维度并行读取：
+      - `intent_e2e_run_snapshots`
+      - `intent project knowledge audits`
+      - `project_activity_logs`
+    - 新增 capability verification 洞察结构：
+      - `capabilityVerificationIntents`
+        - `verify / review` 两桶
+        - 每桶统计：
+          - `totalExecutions`
+          - `passedExecutions`
+          - `failedExecutions`
+          - `passRate`
+      - `recentCapabilityVerifications`
+        - 最近的 capability verification 终态执行
+        - 包含：
+          - `executionUid`
+          - `configUid`
+          - `configName`
+          - `capabilityUid`
+          - `chainCapabilityUids`
+          - `status`
+          - `intent`
+          - `intentLabel`
+          - `targetName`
+          - `strategyLabel`
+          - `summary`
+          - `errorMessage`
+          - `createdAt`
+    - 这意味着 capability verification execution 已正式进入同一 insights 聚合，而不再只是 detail 页可见、学习面不可见
+  - `components/IntentE2EWorkbench.tsx`
+    - 历史运行洞察区新增“能力验证执行趋势”面板
+    - 现在可以直接看到：
+      - `标准验证 / 保守复核` 的 capability verification 执行数与通过率
+      - 最近几条 capability verification 终态执行记录
+    - 与上一刀的 `recent trace` / `verificationIntents` 形成互补：
+      - 一组看 intent run snapshot
+      - 一组看 capability verification execution
+  - 测试补强：
+    - `tests/unit/intent-e2e-insights.spec.ts`
+      - 新增 activity log 专项用例
+      - 已验证 capability verification 的 `review / verify` 会从 `execution_passed / execution_failed` 日志被正确聚合
+    - `tests/unit/api-intent-e2e-insights-route.spec.ts`
+      - 已同步 response mock 结构
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 2 个测试文件通过
+    - 27 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（review 已同时进入 intent run 洞察与 capability verification execution 洞察，学习面开始具备双通道证据）
+- 风险 / 未完成：
+  - 当前这一步仍是只读聚合：
+    - helper health snapshot
+    - capability verification recommendation queue
+    - promotion / suppressed / watching policy
+    还没有直接消费这些 capability verification intent 结果
+  - activity log 当前只稳定覆盖 `execution_passed / execution_failed`：
+    - capability verification 的取消态/中断态还没有单独口径
+  - 当前 intent 洞察与 capability verification execution 洞察虽然都在一个接口里：
+    - 但它们还只是并排展示
+    - 还没有进入统一 grader / scorer
+- 下一步：
+  - 继续 `R5`：
+    - 让 helper health / verification queue 开始消费 capability verification execution 的 `review vs verify` 结果
+    - 至少先把“最近 review 失败 / verify 失败”的能力或 helper 风险显式反馈到 recommendation / health 层
+
+## 2026-03-24 第七十七次更新（R5 预备第五十三刀：helper health / verification queue 消费 review 失败证据）
+
+- 本轮目标：
+  - 不再只把 `review / verify` 失败证据停留在 insights 展示层。
+  - 让 helper health snapshot 和 capability verification recommendation queue 真正消费 capability meta 里的最近失败意图。
+  - 保持边界不变：
+    - 不新增第三种 execution mode
+    - 不修改 promotion policy
+    - 不改 DB schema
+- 已完成：
+  - capability verification 元数据回写闭环补齐：
+    - `lib/capability-verification.ts`
+      - `CapabilityLastVerificationAttempt` 新增 `intent`
+      - `buildVerificationAttemptMeta(...)` / `buildExecutionVerifiedCapabilityMeta(...)` 统一写入 `lastVerificationIntent`
+      - `getCapabilityLastVerificationAttempt(...)` 现可读回最近一次 `review / verify`
+    - `lib/capability-verification-service.ts`
+      - `finalizeCapabilityVerification(...)` 现会从 `featureDescription` 解析 verification intent，并在失败/成功回写时写入 `lastVerificationIntent`
+      - chain capability 在执行通过时也会同步写入同一 intent
+      - repair 推荐原因现会区分：
+        - 最近一次保守复核失败
+        - 最近一次标准验证失败
+  - helper health 开始消费最近失败意图：
+    - `lib/intent-starter-helper-health.ts`
+      - queue item 新增 `lastVerificationIntent`
+      - 每个 helper 新增：
+        - `recentFailedReviewCapabilityCount`
+        - `recentFailedVerifyCapabilityCount`
+      - summary 也会汇总这两类失败数
+      - 统计口径只看 active capability，避免 archived 噪声回流
+    - `lib/intent-starter-helper-health-snapshot.ts`
+      - 快照规范化逻辑已支持上述新字段，旧快照缺字段时按 `0 / ''` 保守回退
+  - 工作台展示层已接住这批证据：
+    - `components/ProjectIntentWorkbench.tsx`
+      - Starter Helper 健康视图 summary 新增：
+        - `复核失败`
+        - `验证失败`
+      - helper 单卡片新增：
+        - 最近失败的 `review / verify` 计数 chip
+      - “推荐治理”文案对 repair 项会显式展示：
+        - `修复 / 保守复核`
+        - `修复 / 标准验证`
+      - verification queue 卡片的“最近失败”现会直接展示失败意图标签，而不再只有 executionUid
+  - 单测补强：
+    - `tests/unit/capability-verification.spec.ts`
+      - 新增最近一次 verification intent 的读回断言
+    - `tests/unit/capability-verification-service.spec.ts`
+      - 新增 repair queue 对 `lastVerificationIntent` 的暴露断言
+      - 新增 `finalizeCapabilityVerification(...)` 写入 `review / verify` intent 的断言
+    - `tests/unit/intent-starter-helper-health.spec.ts`
+      - 新增 helper health 对最近失败 `review / verify` 的分桶统计断言
+    - `tests/unit/intent-starter-helper-health-snapshot.spec.ts`
+    - `tests/unit/intent-starter-helper-health-service.spec.ts`
+    - `tests/unit/api-project-capability-helper-health-route.spec.ts`
+      - 已同步新增字段结构
+- 验证：
+  - `npx vitest run tests/unit/capability-verification.spec.ts tests/unit/capability-verification-service.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-snapshot.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts tests/unit/api-project-capability-helper-health-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 6 个测试文件通过
+    - 19 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（helper health / verification queue 已开始显式消费最近 `review vs verify` 失败证据）
+- 风险 / 未完成：
+  - 当前只做到“感知最近失败意图并展示/排序”：
+    - promotion policy
+    - suppressed 恢复策略
+    - starter helper 自动提级门槛
+    还没有反向吃进这批 `review / verify` 失败证据
+  - repair queue 现在只区分“最近一次失败属于 review 还是 verify”：
+    - 还没有进一步结合失败类型、漂移点位、页面类别做更细的优先级评分
+  - helper health 目前统计口径基于 capability 的 latest attempt：
+    - 还没有做多次失败序列趋势判断
+- 下一步：
+  - 继续 `R5`：
+    - 把 `review / verify` 失败证据进一步喂给 recommendation / promotion policy，而不只是展示层和基础 queue 文案
+    - 优先做“保守复核失败不应误提级，标准验证失败应更强压制复用”的策略闭环
+
+## 2026-03-24 第七十八次更新（R5 预备第五十四刀：review / verify 失败证据进入 capability 排序与 repair 优先级）
+
+- 本轮目标：
+  - 不让最近失败意图只停留在 helper health / queue 文案层。
+  - 先把它真正接到 capability 选择与 repair 队列顺序上：
+    - 保守复核失败不再误提级
+    - 标准验证失败更强降权，并优先进入修复
+- 已完成：
+  - `lib/capability-verification.ts`
+    - 新增最近失败强度判定：
+      - `review_failed`
+      - `verify_failed`
+    - `hasPositiveStarterKnowledgeEvidence(...)`
+      - 若最近一次 verification 为失败，则不再把该 capability 视作“可正向提级”的 starter 正证据
+      - 这意味着：
+        - 最近保守复核失败，不再继续吃 `positive` boost
+        - 避免 capability 仍按“长期正向 starter 资产”被误前排
+    - `describeCapabilityVerification(...)`
+      - 对最近失败的 capability 施加优先级惩罚：
+        - 最近 `review` 失败：
+          - 已执行验证能力不再保留原先最高优先级
+        - 最近 `verify` 失败：
+          - 无论此前是 `execution_verified` 还是 `knowledge_inferred`
+          - 都会被更强降权
+      - 这会直接影响：
+        - `compareCapabilityVerificationOrder(...)`
+        - capability 目录排序
+        - recipe / requirement 场景下的 capability 命中选择顺序
+  - `lib/capability-verification-service.ts`
+    - repair 队列内部新增失败意图优先级：
+      - 最近 `verify` 失败的 repair candidate
+      - 会排在最近 `review` 失败之前
+    - 含义是：
+      - 标准验证已经明确失败的能力
+      - 会比“保守复核先暴露风险”的能力更早进入修复闭环
+  - 当前策略闭环效果：
+    - review failure：
+      - 不再误当成“还能继续提级”的正证据
+    - verify failure：
+      - 既会在 capability 选择里被压后
+      - 也会在 repair queue 里被提到更前
+- 测试补强：
+  - `tests/unit/capability-verification.spec.ts`
+    - 新增：
+      - 最近保守复核失败不会继续吃 starter positive boost
+      - 最近标准验证失败会显著降低 verification priority
+      - capability 排序会把“再次失败的执行验证能力”压到健康能力之后
+  - `tests/unit/capability-verification-service.spec.ts`
+    - 新增 repair queue 顺序断言：
+      - `verify` 失败排在 `review` 失败之前
+  - `tests/unit/project-knowledge.spec.ts`
+    - 已一并回归，确认 recipe 选择链路未被破坏
+- 验证：
+  - `npx vitest run tests/unit/capability-verification.spec.ts tests/unit/capability-verification-service.spec.ts tests/unit/project-knowledge.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 23 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（`review / verify` 失败证据已开始进入 capability 排序与 repair 优先级）
+- 风险 / 未完成：
+  - 当前还是 capability 级策略闭环：
+    - 还没有直接反向改写 `getIntentE2EStarterHelpers(...)` 的 starter helper 出榜顺序
+    - 也还没有把这批失败证据喂给 starter asset preset 的生成门槛
+  - 对最近失败的处理目前仍是 latest-attempt 口径：
+    - 还没有引入连续失败次数、时间窗口、页面类别等更细粒度 penalty
+  - helper 层虽然已有失败计数与健康视图：
+    - 但“何时降级为 observing / 何时禁止进入 starter 首轮推荐”还没有正式服务化
+- 下一步：
+  - 继续 `R5`：
+    - 把最新 `review / verify` 失败证据继续接到 starter helper 供给侧
+    - 让 `getIntentE2EStarterHelpers(...)` / starter asset resolution 也能感知“最近 verify 失败应更强压制复用”
+
+## 2026-03-24 第七十九次更新（R5 预备第五十五刀：starter helper 供给侧消费 verify 失败证据）
+
+- 本轮目标：
+  - 不只在 capability 排序里降权失败能力，还要把这份证据真正推进生成器供给侧。
+  - 让首轮生成少拿到“最近标准验证已经失败”的 starter helper。
+- 已完成：
+  - 新增 `lib/intent-starter-helper-verification-feedback.ts`
+    - 统一汇总 active capability 里按 helper 归因的最近失败反馈：
+      - `recentFailedReviewCapabilityCount`
+      - `recentFailedVerifyCapabilityCount`
+    - 只统计 latest attempt，且只看 active capability，避免 archived 噪声污染 starter helper 供给
+    - 会把失败计数回挂到 starter helper 上，并在 recommendation 里追加保守提示：
+      - 最近标准验证失败
+      - 最近保守复核失败
+  - `lib/ai/intent-e2e-insights.ts`
+    - `IntentE2EInsightStarterHelper` 新增可选字段：
+      - `recentFailedReviewCapabilityCount`
+      - `recentFailedVerifyCapabilityCount`
+    - `getIntentE2EInsights(...)`
+      - 现在会并行读取项目 capability，并把最近失败反馈回挂到 `starterHelpers`
+    - `getIntentE2EStarterHelpers(...)`
+      - 现在返回的 starter helper 也已带上最近失败计数
+      - 这意味着生成链路拿到的 helper 反馈已不再只有 run / passRate / long-term evidence
+  - `lib/intent-starter-assets.ts`
+    - starter asset 解析新增供给侧约束：
+      - 最近 `verify` 失败的 helper 直接不再注入 starter asset
+      - 最近 `review` 失败的 helper 不会被完全禁用，但会被明显后排
+    - 这样首轮 DSL / preferredHelpers 注入已经开始回避“最近明确标准验证失败”的 helper
+  - `lib/test-generator.ts`
+    - Starter Helper 建议区现在会显式显示：
+      - `最近标准验证失败`
+      - `最近保守复核失败`
+    - 生成器 prompt 已能看到这份供给侧风险提示
+- 当前策略闭环效果：
+  - 最近 `verify` 失败：
+    - capability 排序降权
+    - repair queue 提前
+    - starter asset 注入直接跳过
+  - 最近 `review` 失败：
+    - capability 不再误提级
+    - helper 仍可见，但改为保守观察供给
+- 测试补强：
+  - `tests/unit/intent-starter-helper-verification-feedback.spec.ts`
+    - 新增 helper 失败反馈聚合与 recommendation 追加断言
+  - `tests/unit/intent-starter-assets.spec.ts`
+    - 新增 starter asset 解析层断言：
+      - verify-failed helper 被跳过
+      - review-failed helper 会被保守后排
+  - `tests/unit/capability-verification.spec.ts`
+  - `tests/unit/capability-verification-service.spec.ts`
+    - 继续一起回归，确保 capability 排序 / repair queue 逻辑未退化
+- 验证：
+  - `npx vitest run tests/unit/intent-starter-helper-verification-feedback.spec.ts tests/unit/intent-starter-assets.spec.ts tests/unit/capability-verification.spec.ts tests/unit/capability-verification-service.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 4 个测试文件通过
+    - 22 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（失败证据已开始进入 capability 排序、repair 优先级与 starter helper 供给侧）
+- 风险 / 未完成：
+  - 当前 starter helper 供给侧的抑制仍是 latest-attempt 口径：
+    - 还没有做基于连续失败次数的更平滑衰减
+  - `getIntentE2EInsights(...)` 虽然已经带上失败计数：
+    - 但 UI 侧 starter helper 面板还没有单独把这两项直接展示在 insights 面板里
+  - 目前跳过策略只对 `verify` 失败做强阻断：
+    - `review` 失败仍是保守后排，而不是完全禁用
+- 下一步：
+  - 继续 `R5`：
+    - 决定是否把 review / verify 失败计数继续接到 starter helper insights UI 本身
+    - 再评估是否需要引入“连续失败次数 / 时间窗口”来替代单次 latest-attempt 阻断
+
+## 2026-03-25 第八十次更新（R5 预备第五十六刀：starter helper 的 review / verify 失败计数进入 insights 面板）
+
+- 本轮目标：
+  - 不让 starter helper 的失败反馈只停留在供给侧与内部 recommendation。
+  - 直接把 `review / verify` 失败计数展示到 insights 的 Starter Helper 面板里，让治理判断和首轮下发风险在同一视图可见。
+- 已完成：
+  - `components/IntentE2EWorkbench.tsx`
+    - `IntentE2EInsightStarterHelper` 前端响应类型补齐：
+      - `recentFailedReviewCapabilityCount`
+      - `recentFailedVerifyCapabilityCount`
+    - Starter Helper 面板头部新增汇总 chip：
+      - `复核失败`
+      - `验证失败`
+    - 每张 starter helper 卡片新增失败计数 chip：
+      - `复核失败 N`
+      - `验证失败 N`
+    - 卡片详情新增“最近能力反馈”文本，直接说明：
+      - 最近多少条保守复核失败
+      - 最近多少条标准验证失败
+    - 面板说明文案同步明确：
+      - 这里显示的失败计数已经会影响首轮下发，不再只是观察信息
+- 当前效果：
+  - 现在在同一 insights 面板里，已经能同时看到：
+    - helper 的长期正向 / observing / suppressed evidence
+    - helper 关联能力最近的 `review / verify` 失败压力
+  - 用户不再需要跳到 capability workbench 或 helper health 才能理解：
+    - 为什么某个 helper 仍在面板里
+    - 但首轮生成时已经被保守处理
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 2 个测试文件通过
+    - 27 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（starter helper 的失败证据已贯通到排序、供给侧和 insights 展示层）
+- 风险 / 未完成：
+  - 当前面板展示的仍是 latest-attempt 聚合结果：
+    - 还没有区分“偶发一次失败”和“连续失败多次”
+  - insights 面板现在已经能显示失败计数：
+    - 但还没有进一步给出“建议临时禁用 / 继续观察 / 需要修复”的更强服务端判定
+  - review failure 当前仍主要走“保守后排”：
+    - 尚未引入时间窗口衰减或自动恢复规则
+- 下一步：
+  - 继续 `R5`：
+    - 把 latest-attempt 口径升级成“连续失败次数 / 时间窗口”口径
+    - 再决定是否把 review failure 从“保守后排”进一步服务化为更明确的观察阈值
+
+## 2026-03-25 第八十一次更新（R5 预备第五十七刀：starter helper 失败抑制升级为 14 天窗口口径）
+
+- 本轮目标：
+  - 不再只用 latest-attempt 一刀切抑制 starter helper。
+  - 先把 starter helper 的失败反馈升级成“最近窗口内失败次数”口径，再据此区分：
+    - 连续/多次失败的硬阻断
+    - 单次失败的保守后排
+- 已完成：
+  - `lib/intent-starter-helper-verification-feedback.ts`
+    - helper 失败反馈从单一 latest-attempt 扩展为双层结构：
+      - latest capability 失败计数
+        - `recentFailedReviewCapabilityCount`
+        - `recentFailedVerifyCapabilityCount`
+      - 最近窗口失败执行计数
+        - `recentFailedReviewExecutionCount`
+        - `recentFailedVerifyExecutionCount`
+        - `recentFailureWindowDays`
+    - 当前默认窗口：
+      - 最近 `14` 天
+    - 失败活动数据来源继续复用现有 `project_activity_logs`
+      - 只读 `execution_failed + meta.capabilityVerification`
+      - 不改 schema
+  - `lib/ai/intent-e2e-insights.ts`
+    - `getIntentE2EInsights(...)`
+      - 现会把 capability + activity log 一起喂给 starter helper 失败反馈聚合
+    - `getIntentE2EStarterHelpers(...)`
+      - 也已同步读取 activity log，不再只看 capability 最新状态
+    - starter helper 输出现在会带上最近窗口失败执行计数
+  - `lib/intent-starter-assets.ts`
+    - starter helper 供给侧抑制策略升级为：
+      - 最近 `14` 天内 `verify` 失败执行 `>= 2` 次：
+        - 直接阻断，不再注入 starter asset
+      - 仅有单次最新 `verify` 失败：
+        - 不再硬阻断
+        - 但会明显后排
+      - `review` 失败：
+        - 继续保守后排
+        - 尚未升级为硬禁用
+    - 这意味着“偶发一次失败”和“近期连续失败”终于被区分开
+  - `lib/test-generator.ts`
+    - Starter Helper 建议区现会把最近窗口失败信息一起透出：
+      - `近 14 天标准验证失败`
+      - `近 14 天保守复核失败`
+- 当前策略闭环效果：
+  - `verify` 失败：
+    - 单次最新失败：
+      - capability 降权
+      - starter helper 后排
+    - 近 14 天失败 `>= 2`：
+      - starter helper 直接停止首轮下发
+  - `review` 失败：
+    - 仍不会误提级
+    - 但当前主要是观察与后排，不做强阻断
+- 测试补强：
+  - `tests/unit/intent-starter-helper-verification-feedback.spec.ts`
+    - 新增窗口计数断言
+    - 已验证超出窗口的旧失败不会继续计入
+  - `tests/unit/intent-starter-assets.spec.ts`
+    - 新增阈值断言：
+      - `verify` 失败执行次数达到阈值才会被跳过
+      - 单次失败只会后排，不会直接消失
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 一并回归，确认 insights 聚合未被这次反馈扩展打坏
+- 验证：
+  - `npx vitest run tests/unit/intent-starter-helper-verification-feedback.spec.ts tests/unit/intent-starter-assets.spec.ts tests/unit/intent-e2e-insights.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 33 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（starter helper 失败抑制已从 latest-attempt 升级为窗口阈值口径）
+- 风险 / 未完成：
+  - 当前窗口策略只对 helper 供给侧正式生效：
+    - helper health / queue / insights 虽然已能显示失败证据
+    - 但“连续失败 >= N 次”的统一阈值还没有完全服务化到所有面板
+  - 当前阈值仍是固定值：
+    - `14 天`
+    - `verify >= 2 次`
+    - 还没有按 helper 类型 / 页面类别做差异化阈值
+  - `review` failure 仍以保守观察为主：
+    - 还没有进一步区分“偶发 review 失败”和“连续 review 失败”
+- 下一步：
+  - 继续 `R5`：
+    - 把 `review` failure 也升级成窗口阈值口径
+    - 再评估是否把 helper health / verification queue 里的失败判断统一切到这套时间窗口统计
+
+## 2026-03-25 第八十二次更新（R5 预备第五十八刀：helper health 失败压力切换为窗口优先口径）
+
+- 本轮目标：
+  - 不改 helper health 的返回结构和前端消费字段。
+  - 先把 helper health 的失败计数语义统一成：
+    - 优先消费 starter helper insights 已算好的最近窗口执行失败次数
+    - 缺失时才回退到 linked capability 的 latest-attempt 失败态
+- 已完成：
+  - `lib/intent-starter-helper-health.ts`
+    - 新增 helper failure feedback 归一化逻辑：
+      - `recentFailedReviewExecutionCount`
+      - `recentFailedVerifyExecutionCount`
+      - `recentFailedReviewCapabilityCount`
+      - `recentFailedVerifyCapabilityCount`
+    - `buildIntentStarterHelperHealthView(...)` 现已改成：
+      - 若 starter helper insights 自带最近窗口失败执行计数：
+        - 优先使用窗口计数
+      - 若没有这组字段：
+        - 回退到 helper 关联 active capability 的最新失败态统计
+    - 对外输出字段名继续保持不变：
+      - `recentFailedReviewCapabilityCount`
+      - `recentFailedVerifyCapabilityCount`
+    - 这意味着：
+      - 现有 API / snapshot / workbench 不需要同步改字段
+      - 但 helper health 面板里的失败计数，已经不再默认等同于“latest failed capability 数”
+      - 而是变成“优先反映最近窗口执行失败压力”的兼容输出
+  - 兼容性边界保持不变：
+    - suppressed helper 若还没有 execution-window feedback：
+      - 继续走 linked capability latest failure fallback
+    - 不改 schema
+    - 不改 verification queue
+    - 不新开第三种 execution mode
+- 测试补强：
+  - `tests/unit/intent-starter-helper-health.spec.ts`
+    - 更新主用例，确认：
+      - starter helper 一旦携带窗口执行失败计数
+      - health item / health summary 会优先消费该计数
+      - 不再被 linked capability latest-attempt 覆盖
+    - 新增零值优先断言，确认：
+      - 即便 linked capability 仍停留在最新失败态
+      - 只要 helper insights 已给出 `recentFailedVerifyExecutionCount = 0`
+      - health view 也不会再错误回退成 `1`
+    - 同时保留 suppressed helper fallback 场景，确认旧行为未被打坏
+- 验证：
+  - `npx vitest run tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-snapshot.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts tests/unit/api-project-capability-helper-health-route.spec.ts`
+  - 当前结果：
+    - 4 个测试文件通过
+    - 8 个测试通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（starter helper 的供给侧和 helper health 已开始统一到窗口失败压力口径）
+- 风险 / 未完成：
+  - 当前 helper health 只是“优先窗口、兼容旧字段”：
+    - 还没有把 execution-window 计数正式单独暴露成新字段
+    - 前端展示也还没有把文案升级成“最近窗口失败次数”
+  - suppressed helper 目前仍没有单独注入 execution-window feedback：
+    - 这部分 helper health 仍依赖 latest-attempt fallback
+  - verification queue / repair queue 仍主要按 latest failure intent 排序：
+    - 还没有消费最近窗口失败压力
+- 下一步：
+  - 继续 `R5`：
+    - 评估是否把 verification queue / repair queue 也统一切到最近窗口失败压力
+    - 再决定 suppressed helper 是否也补同一套 execution-window feedback 注入
+
+## 2026-03-25 第八十三次更新（R5 预备第五十九刀：verification queue 开始消费 capability 级窗口失败压力）
+
+- 本轮目标：
+  - 不改能力验证主流程，不引入新 mode。
+  - 先把 verification / repair queue 里最关键的 `repair_failed` 排序升级成“最近窗口失败压力优先”，避免只看 latest-attempt 时间戳。
+- 已完成：
+  - `lib/capability-verification-service.ts`
+    - 新增 capability 级最近失败压力聚合：
+      - 复用 `project_activity_logs`
+      - 只读 `execution_failed + meta.capabilityVerification`
+      - 默认窗口继续使用最近 `14` 天
+    - `CapabilityVerificationRecommendationItem` 现已透出：
+      - `recentFailedReviewExecutionCount`
+      - `recentFailedVerifyExecutionCount`
+      - `recentFailureWindowDays`
+    - `buildCapabilityVerificationRecommendationQueue(...)` 现已支持额外输入 `activityLogs`
+    - `repair_failed` 队列排序升级为：
+      - 先比最近窗口 `verify` 失败次数
+      - 再比最近窗口 `review` 失败次数
+      - 再回退到既有的 latest intent / 最近失败时间 / capability 顺序
+    - `repair_failed` reason 现在会在高频失败场景下补充窗口说明：
+      - 例如最近 `14` 天内累计 `2` 次标准验证失败
+      - 方便直接在队列里判断这是不是“应优先止血”的能力
+    - `listCapabilityVerificationRecommendationQueue(...)`
+      - service 层已直接读取 activity log
+      - 不再只能依赖 capability meta 的最新失败态
+  - `components/ProjectIntentWorkbench.tsx`
+    - 能力验证推荐队列面板现会显示：
+      - 近窗口保守复核失败次数
+      - 近窗口标准验证失败次数
+    - 这样前端终于能直接看到：
+      - 为什么某条 repair 建议被前排
+      - 是偶发失败，还是近窗口内重复失败
+- 当前闭环效果：
+  - helper health：
+    - 已是“窗口优先、旧字段兼容”
+  - verification / repair queue：
+    - `repair_failed` 已开始消费 capability 级窗口失败压力
+    - 而不是只按 latest-attempt 时间排序
+  - workbench：
+    - 队列面板已能把这组压力直接展示出来
+- 测试补强：
+  - `tests/unit/capability-verification-service.spec.ts`
+    - 新增 repeated-failure 排序用例：
+      - 即使单次最新失败时间更旧
+      - 只要最近窗口累计标准验证失败更多
+      - repair queue 也会把它排到前面
+    - service 层加载队列时，新增断言：
+      - 会同步调用 `listProjectActivityLogs(projectUid, 100)`
+  - health / queue 相关回归一并通过，避免前后两刀互相打架
+- 验证：
+  - `npx vitest run tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-snapshot.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts tests/unit/api-project-capability-helper-health-route.spec.ts tests/unit/capability-verification-service.spec.ts tests/unit/capability-verification-recommendation-queue.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 6 个测试文件通过
+    - 18 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（helper health 与 repair queue 都已开始统一到最近窗口失败压力口径）
+- 风险 / 未完成：
+  - 当前 queue 的窗口压力只先落到了 `repair_failed`：
+    - `suppressed_helper_review`
+    - `watching_starter_verification`
+    - `starter_promotion`
+    - 这些类别还没有正式消费 helper 级窗口失败压力做排序
+  - suppressed helper 自身仍未单独注入 execution-window feedback：
+    - 相关队列项当前更多依赖 suppressed history + active linked capability 数
+  - 前端虽然已经能显示“最近失败压力”：
+    - 但还没有进一步做更明确的高频失败徽标 / 批量治理提示
+- 下一步：
+  - 继续 `R5`：
+    - 把 helper 级窗口失败压力进一步接到 `suppressed_helper_review / watching_starter_verification` 排序
+    - 再评估是否需要把高频失败能力自动推成更强的批量 repair 候选
+
+## 2026-03-25 第八十四次更新（R5 预备第六十刀：suppressed / watching queue 排序接入 helper 级窗口失败压力）
+
+- 本轮目标：
+  - 继续保持 execution mode 不变。
+  - 不改 schema。
+  - 只把 helper 级窗口失败压力正式接到：
+    - `suppressed_helper_review`
+    - `watching_starter_verification`
+    - 这两类推荐队列排序与说明文案
+- 已完成：
+  - `lib/capability-verification-service.ts`
+    - verification queue 已复用现有 helper failure feedback 聚合：
+      - `summarizeIntentStarterHelperVerificationFeedback(...)`
+    - 推荐项现会额外携带 helper 级窗口失败压力：
+      - `recentStarterHelperFailedReviewExecutionCount`
+      - `recentStarterHelperFailedVerifyExecutionCount`
+      - `recentStarterHelperFailureWindowDays`
+    - `suppressed_helper_review` 排序现已升级为：
+      - 先比 helper 最近窗口 `verify` 失败次数
+      - 再比 helper 最近窗口 `review` 失败次数
+      - 再回退到既有的 active linked capability 数 / rule count / 时间戳等旧排序
+    - `watching_starter_verification` 排序也已同步升级为：
+      - 先比 helper 最近窗口 `verify` 失败次数
+      - 再比 helper 最近窗口 `review` 失败次数
+      - 再回退到既有的 recovering / mixed、rule count 等旧排序
+    - `suppressed_helper_review / watching_starter_verification` 的 reason 现在会在高频 helper 失败场景下补充窗口说明：
+      - 例如最近 `14` 天内该 helper 关联能力累计 `2` 次标准验证失败
+  - `components/ProjectIntentWorkbench.tsx`
+    - 推荐队列卡片新增 `Helper 压力` 展示：
+      - 近窗口复核失败次数
+      - 近窗口验证失败次数
+    - 现在前端可以直接区分：
+      - 这是某条 capability 自己最近反复失败
+      - 还是它背后的 starter helper 在多个能力上一起漂移
+- 当前闭环效果：
+  - `repair_failed`
+    - 已按 capability 级窗口失败压力排序
+  - `suppressed_helper_review`
+    - 已按 helper 级窗口失败压力排序
+  - `watching_starter_verification`
+    - 已按 helper 级窗口失败压力排序
+  - workbench
+    - 已把 capability 压力与 helper 压力同时透出
+- 测试补强：
+  - `tests/unit/capability-verification-service.spec.ts`
+    - 新增 suppressed helper 场景：
+      - 当前 capability 自己没有失败
+      - 但同 helper 的兄弟 capability 最近连续失败
+      - 队列会因此把该 capability 前排
+    - 新增 watching helper 场景：
+      - 同样验证 helper 级窗口压力会推动观察类能力前排
+    - 两类场景都额外断言：
+      - capability 自身失败计数仍为 `0`
+      - helper 级失败计数正确反映为 `2`
+      - reason 会带出窗口失败说明
+- 验证：
+  - `npx vitest run tests/unit/capability-verification-service.spec.ts tests/unit/capability-verification-recommendation-queue.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 2 个测试文件通过
+    - 12 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（helper health、repair queue、suppressed / watching queue 已开始统一到窗口失败压力口径）
+- 风险 / 未完成：
+  - 当前 helper 级窗口压力还没有接到 `starter_promotion`：
+    - 正向转正能力的排序仍主要依赖正向 evidence 与既有规则数
+  - suppressed helper 自身的 insights / history 结构仍未直接带 execution-window feedback 字段：
+    - queue 目前是在 service 内部现算 helper pressure
+    - 还不是一套完全统一的公共输出结构
+  - UI 现在虽然能看到 helper 压力：
+    - 但还没有更强的高频失败 badge / 批量修复 CTA
+- 下一步：
+  - 继续 `R5`：
+    - 评估是否把 `starter_promotion` 也接入 helper 级窗口失败压力，避免正向 evidence 与近期漂移冲突
+    - 再决定是否把高频 helper / capability 失败统一升级成更强的批量 repair 候选策略
+
+## 2026-03-25 第八十五次更新（R5 预备第六十一刀：starter_promotion 接入 helper 级窗口失败压力防误提级）
+
+- 本轮目标：
+  - 继续保持现有 queue 结构，不新开推荐类型。
+  - 解决一个关键冲突：
+    - helper 的长期 evidence 仍是正向
+    - 但最近窗口内已经出现明显漂移
+    - 此时队列不应继续把 capability 标成 `建议转正`
+- 已完成：
+  - `lib/capability-verification-service.ts`
+    - `starter_promotion` 现在已正式接入 helper 级窗口失败压力
+    - 新增保守判定：
+      - 若 helper 最近窗口内 `verify` 失败执行 `>= 2`
+      - 或 `review` 失败执行 `>= 2`
+      - 则原本的 `starter_promotion`
+      - 会自动降级成 `watching_starter_verification`
+    - 这意味着：
+      - 长期正向 evidence 仍会保留在 reason 中
+      - 但不会再继续以“建议转正”的标签误导前排治理
+    - 同时补了 `starter_promotion` 内部排序：
+      - helper 近期失败压力更低的 promotion 候选
+      - 会优先排在前面
+      - 轻微漂移（例如近窗口单次失败）虽然暂不降级
+      - 但会被排到更后
+    - 新增保守 reason：
+      - 当 promotion 被 helper 高频失败压力拦下时
+      - 会明确给出：
+        - 当前不宜直接按转正优先级处理
+        - 建议先按观察对象补一次执行验证
+- 当前闭环效果：
+  - `starter_promotion`
+    - 已不再只看长期正向 evidence
+    - 也会受 helper 最近窗口失败压力约束
+  - promotion 候选现在被拆成两层：
+    - 干净 helper：
+      - 继续保留 `建议转正`
+    - 高频漂移 helper：
+      - 自动降成 `继续观察`
+  - 这让队列在“高成功率优先”路线上更一致：
+    - 不会一边把 helper 判成近期漂移
+    - 一边又把同 helper 的 capability 顶到转正队列前排
+- 测试补强：
+  - `tests/unit/capability-verification-service.spec.ts`
+    - 新增轻微漂移 promotion 场景：
+      - helper 近窗口只有单次失败
+      - capability 仍保留 `starter_promotion`
+      - 但会排在无压力 promotion 之后
+    - 新增高频漂移 promotion 场景：
+      - helper 近窗口累计 `2` 次标准验证失败
+      - capability 会从 `starter_promotion` 自动降成 `watching_starter_verification`
+      - reason 会明确说明：
+        - 当前不宜直接按转正优先级处理
+        - 最近窗口失败压力来源于 helper
+- 验证：
+  - `npx vitest run tests/unit/capability-verification-service.spec.ts tests/unit/capability-verification-recommendation-queue.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 2 个测试文件通过
+    - 14 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（repair / suppressed / watching / promotion 四类推荐已经开始统一到窗口失败压力口径）
+- 风险 / 未完成：
+  - 当前 helper 压力仍是 queue service 内部现算：
+    - 还没有完全沉到一套公共的 suppressed helper / promotion insight 输出结构
+  - 目前只做了“降级为 watching”：
+    - 还没有把高频漂移 helper 直接升级成更激进的批量 repair / review 批处理策略
+  - UI 已能看到 capability / helper pressure：
+    - 但还没有进一步做高频失败 badge、快速筛选、批量 CTA
+- 下一步：
+  - 继续 `R5`：
+    - 评估是否把高频 helper / capability 失败统一升级成更强的批量 repair 候选策略
+    - 再决定是否把这套窗口压力抽成统一的 queue / health / insight 公共输出结构
+
+## 2026-03-25 第八十六次更新（R5 预备第六十二刀：高频失败压力升级为 queue 公共输出信号）
+
+- 本轮目标：
+  - 不直接改推荐 mode。
+  - 先把“高频失败”从隐式排序逻辑升级成明确的服务端契约，给后续批量 repair / 筛选 / badge 复用。
+- 已完成：
+  - `lib/capability-verification-service.ts`
+    - 推荐项现新增统一公共字段：
+      - `highFailurePressure`
+      - `highFailurePressureSource`
+        - `capability`
+        - `starter_helper`
+        - `mixed`
+    - 判定标准当前统一为：
+      - capability 最近窗口 `verify / review` 失败执行达到高频阈值
+      - 或 starter helper 最近窗口 `verify / review` 失败执行达到高频阈值
+    - 推荐队列 summary 现新增：
+      - `highFailureCandidateCount`
+      - `highFailureRepairCount`
+      - `highFailureGovernanceCount`
+    - 这意味着 queue 已经不只是“排序上更靠前”：
+      - 还可以明确告诉前端和后续服务：
+      - 哪些项属于真正的高频失败对象
+      - 高频来自能力自身、helper 漂移，还是两者叠加
+  - `components/ProjectIntentWorkbench.tsx`
+    - 推荐队列顶部新增：
+      - `高频失败 X`
+    - 队列卡片新增：
+      - `高频失败` badge
+      - `高频来源` 字段
+    - 现在 workbench 可以直接区分：
+      - 能力自己近期反复失败
+      - starter helper 在多个能力上整体漂移
+      - 或两者同时发生
+- 当前闭环效果：
+  - queue 排序仍保持之前的保守策略
+  - 但高频失败对象已经被正式服务化：
+    - 可以被 badge 展示
+    - 可以被 summary 统计
+    - 也可以成为下一步批量 repair / review 策略的稳定输入
+- 测试补强：
+  - `tests/unit/capability-verification-service.spec.ts`
+    - 高频 capability repair 场景：
+      - 断言 `highFailurePressure = true`
+      - 来源为 `capability`
+    - 高频 suppressed / watching / downgraded promotion 场景：
+      - 断言 `highFailurePressure = true`
+      - 来源为 `starter_helper`
+    - 干净或轻微漂移 promotion 场景：
+      - 断言 `highFailurePressure = false`
+    - service 层加载队列时：
+      - 无 activity log 的 summary 会正确回落到 `0`
+- 验证：
+  - `npx vitest run tests/unit/capability-verification-service.spec.ts tests/unit/capability-verification-recommendation-queue.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 2 个测试文件通过
+    - 14 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（窗口失败压力已在 queue 里形成统一公共信号）
+- 风险 / 未完成：
+  - 当前 `highFailurePressure` 只是公共输出信号：
+    - 还没有正式驱动新的批量 CTA / 自动筛选策略
+  - helper health / insights / queue 三处虽然已经都能感知窗口失败压力：
+    - 但还没有完全抽成单一共享结构
+  - UI 现在能显示高频失败：
+    - 但还没有“只看高频失败”筛选，也没有“一键选中高频修复对象”
+- 下一步：
+  - 继续 `R5`：
+    - 把 `highFailurePressure` 正式接到更强的批量 repair / review 候选策略
+    - 再评估是否把 queue / health / insight 的窗口失败压力抽成一套共享输出层
+
+## 2026-03-25 第八十七次更新（R5 预备第六十三刀：高频失败进入批量治理入口）
+
+- 本轮目标：
+  - 不改变现有能力验证 / 修复底层流程。
+  - 直接复用 `highFailurePressure`，把“高频失败”从展示信号升级成可操作的批量治理入口。
+- 已完成：
+  - `components/ProjectIntentWorkbench.tsx`
+    - 基于推荐队列中已有的 `highFailurePressure` 信号，新增高频失败目标集拆分：
+      - `highFailureRecommendedReviewCapabilityItems`
+      - `highFailureRecommendedRepairCapabilityItems`
+      - 并沿用现有 `resolveCapabilityVerificationRecommendationTargets(...)`
+    - 推荐队列顶部现新增更强的批量入口：
+      - `启动高频复核`
+      - `启动高频修复`
+      - `选中高频失败`
+    - 推荐队列 summary 现同步透出：
+      - `高频修复`
+      - `高频治理`
+    - 这些入口底层仍走原来的 `launchCapabilityVerificationBatch(...)`
+      - 没有新起一套特殊执行链路
+      - 只是把高频失败对象提炼成优先可操作的批量集合
+- 当前闭环效果：
+  - 高频失败对象现在已经具备三层能力：
+    - 服务端可识别
+    - workbench 可展示
+    - 用户可直接批量复核 / 修复
+  - 这意味着后续日常治理时，不需要再人工从长队列里挑：
+    - 哪些是明显应该先止血的 repair
+    - 哪些是 suppressed / drifting helper 导致的保守复核对象
+- 验证：
+  - `npx vitest run tests/unit/capability-verification-service.spec.ts tests/unit/capability-verification-recommendation-queue.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 2 个测试文件通过
+    - 14 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（高频失败已经形成从排序、信号到批量治理入口的最小闭环）
+- 风险 / 未完成：
+  - 当前高频治理仍然是人工触发入口：
+    - 还没有自动筛选视图
+    - 也没有默认只展示高频失败队列的快捷模式
+  - helper health / insights / queue 的窗口失败压力仍是多处输出：
+    - 还没有完全抽成统一共享层
+  - 批量入口虽然已经打通：
+    - 但还没有额外的执行后复盘或“连续高频失败自动升级告警”策略
+- 下一步：
+  - 继续 `R5`：
+    - 评估是否把 queue / health / insight 的窗口失败压力抽成一套共享输出层
+    - 再决定是否补高频失败专用筛选 / 自动聚焦视图
+
+## 2026-03-25 第八十八次更新（R5 预备第六十四刀：窗口失败压力收敛为共享输出层）
+
+- 本轮目标：
+  - 不改推荐策略本身。
+  - 先把 queue / starter helper feedback 里重复的窗口失败压力聚合、阈值判定、来源判定抽成同一底层模块。
+- 已完成：
+  - 新增 `lib/intent-verification-failure-pressure.ts`
+    - 现在统一承接：
+      - execution_failed activity 解析
+      - capability 级最近窗口失败压力聚合
+      - starter helper 级最近窗口失败压力聚合
+      - 高频失败阈值判定
+      - 高频来源判定
+      - 高压失败说明文案构造
+    - 共享导出包括：
+      - `summarizeCapabilityVerificationFailurePressure(...)`
+      - `summarizeStarterHelperVerificationFeedback(...)`
+      - `hasHighIntentVerificationFailurePressure(...)`
+      - `resolveHighIntentVerificationFailurePressureSource(...)`
+      - `describeElevatedIntentVerificationFailurePressure(...)`
+  - `lib/intent-starter-helper-verification-feedback.ts`
+    - 已改成直接复用共享模块
+    - 不再单独维护第二套：
+      - failure activity 解析
+      - 14 天窗口聚合
+      - helper 执行失败计数器
+    - 原有导出接口保持不变：
+      - `summarizeIntentStarterHelperVerificationFeedback(...)`
+      - `attachIntentStarterHelperVerificationFeedback(...)`
+      - 外部调用方无需改用法
+  - `lib/capability-verification-service.ts`
+    - queue service 已改成直接复用共享模块
+    - capability pressure / helper pressure / 高频来源判定不再本地重复实现
+    - 这意味着：
+      - queue 的高频失败判定
+      - starter helper feedback 的窗口失败判定
+      - 已经开始共用同一份底层语义
+- 当前闭环效果：
+  - queue：
+    - 继续消费 capability / helper 两层窗口失败压力
+  - starter helper feedback：
+    - 继续向 insights / health / starter asset 供给侧输出同口径数据
+  - 共享层：
+    - 现在已经成为这套窗口失败压力的第一来源
+    - 后面再扩到 helper health 或其他服务时，不需要再复制第三套实现
+- 测试补强：
+  - 新增 `tests/unit/intent-verification-failure-pressure.spec.ts`
+    - 覆盖 capability 压力聚合
+    - 覆盖 helper 压力聚合
+    - 覆盖高频失败阈值 / 来源 / 说明文案
+  - 原有回归继续通过：
+    - `tests/unit/intent-starter-helper-verification-feedback.spec.ts`
+    - `tests/unit/capability-verification-service.spec.ts`
+    - `tests/unit/capability-verification-recommendation-queue.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-verification-failure-pressure.spec.ts tests/unit/intent-starter-helper-verification-feedback.spec.ts tests/unit/capability-verification-service.spec.ts tests/unit/capability-verification-recommendation-queue.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 4 个测试文件通过
+    - 18 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（窗口失败压力已经开始从散装逻辑收敛为共享输出层）
+- 风险 / 未完成：
+  - 当前 helper health 还是通过 starter helper feedback 间接复用共享层：
+    - 还没有直接改到完全统一的数据结构
+  - insights / queue / health 三处虽然已经明显收敛：
+    - 但还没有把所有 failure-pressure 字段定义彻底抽成单一公共 response schema
+  - UI 侧虽然已经有高频失败入口：
+    - 还没有补“只看高频失败”的快捷筛选 / 自动聚焦视图
+- 下一步：
+  - 继续 `R5`：
+    - 评估是否补高频失败专用筛选 / 自动聚焦视图
+    - 再决定是否把 helper health 的 failure-pressure 响应结构也进一步统一到共享层 schema
+
+## 2026-03-25 第八十九次更新（R5 预备第六十五刀：高频失败专用筛选 / 自动聚焦视图）
+
+- 本轮目标：
+  - 不改 queue 服务端接口。
+  - 只在 workbench 里把高频失败视图切换、自动聚焦和列表说明补完整，避免 UI 还停留在“虽然有高频入口，但仍要人工在长列表里找”的状态。
+- 已完成：
+  - `components/ProjectIntentWorkbench.tsx`
+    - 推荐队列新增三档视图切换：
+      - `自动`
+      - `全部`
+      - `高频失败`
+    - `auto` 现在会优先根据当前返回队列里是否存在高频失败对象决定默认视图：
+      - 有则自动聚焦 `high_failure`
+      - 没有则自动回退 `all`
+    - 推荐队列主列表已切到 `focusedCapabilityVerificationQueueItems`
+      - 不再固定渲染整份 `capabilityVerificationQueueItems`
+    - `选中推荐` 也改成跟随当前队列视图：
+      - 只会选中当前 focus 下实际展示的推荐对象
+    - 队列顶部补了视图说明：
+      - 当前是在自动聚焦还是手工只看某一类
+      - 当前 focus 下实际展示多少条
+      - 隐藏了多少条普通建议
+      - 返回窗口与完整候选之间的差异
+    - 当完整候选里存在高频失败、但当前返回窗口没有命中时：
+      - 自动视图会回退到 `全部`
+      - 避免默认进入“高频失败空列表”的假死体验
+- 当前闭环效果：
+  - 高频失败对象现在不只是“可批量操作”：
+    - 也已经具备默认优先展示能力
+  - 对日常治理的实际影响是：
+    - 有高频失败时，workbench 打开推荐队列就会先聚焦止血对象
+    - 没有高频失败时，不会因为保守策略把正常推荐队列藏起来
+  - 这一步仍然完全复用原有 queue 数据和 `highFailurePressure` 字段：
+    - 没有额外新增筛选接口
+    - 没有新造第二套推荐 API
+- 验证：
+  - `npx vitest run tests/unit/capability-verification-service.spec.ts tests/unit/capability-verification-recommendation-queue.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 2 个测试文件通过
+    - 14 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（高频失败已具备共享压力输出层 + workbench 自动聚焦视图）
+- 风险 / 未完成：
+  - 当前高频失败 focus 仍然是前端基于返回队列做视图切换：
+    - 不是服务端专门返回一份“高频失败子集”
+  - helper health / queue / insights 虽然开始共享同一套 failure-pressure 语义：
+    - 但 helper health 的响应结构还没有完全抽成公共 schema
+  - 高频失败目前已经有：
+    - 排序
+    - 批量入口
+    - 自动聚焦视图
+    - 但还没有“连续高频失败自动升级治理动作”的自动策略
+- 下一步：
+  - 继续 `R5`：
+    - 把 helper health 的 failure-pressure 响应结构进一步统一到共享 schema
+    - 评估是否需要把 queue / health / insights 的高频失败摘要字段收成同一套前端消费模型
+
+## 2026-03-25 第九十次更新（R5 预备第六十六刀：helper health failure-pressure 响应结构对齐共享 schema）
+
+- 本轮目标：
+  - 不改 helper health 路由协议主干。
+  - 在不破坏现有平铺计数字段兼容性的前提下，把 helper health item / summary 的 failure-pressure 结构正式对齐到共享层。
+- 已完成：
+  - `lib/intent-starter-helper-health.ts`
+    - helper health item 新增共享字段：
+      - `failurePressure`
+    - helper health summary 也新增共享字段：
+      - `failurePressure`
+    - 该字段直接复用共享层语义：
+      - `recentFailedReviewCapabilityCount`
+      - `recentFailedVerifyCapabilityCount`
+      - `recentFailedReviewExecutionCount`
+      - `recentFailedVerifyExecutionCount`
+      - `recentFailureWindowDays`
+    - 旧字段仍保留：
+      - `recentFailedReviewCapabilityCount`
+      - `recentFailedVerifyCapabilityCount`
+    - 这样现有消费方不需要立刻改完，但后续新逻辑可以直接只看共享结构。
+  - `lib/intent-starter-helper-health-snapshot.ts`
+    - 快照归一化已支持读写新的 `failurePressure`
+    - 兼容旧快照：
+      - 如果历史记录里还没有 `failurePressure`
+      - 会根据旧的平铺计数字段自动回填共享结构
+    - 这意味着历史 audit 不需要回刷，也不会因为 schema 扩展导致读取失败。
+  - `components/ProjectIntentWorkbench.tsx`
+    - Starter Helper 健康视图已开始优先消费 `summary.failurePressure` / `item.failurePressure`
+    - 卡片里新增执行窗口信息：
+      - `近 N 天执行失败：复核 X 次 / 验证 Y 次`
+    - 这一步让 health 视图不再只暴露“能力条数级别”的失败数，也能看到共享层已经聚合好的执行窗口压力。
+- 当前闭环效果：
+  - helper health 现在和 starter helper feedback / queue 一样：
+    - 都能对外暴露同一套 failure-pressure 结构
+  - 对现有页面和历史快照没有破坏性影响：
+    - 老字段还在
+    - 老快照能自动补出新字段
+  - 这为后续做 queue / health / insights 的统一前端消费模型提供了稳定基线：
+    - 不需要再让每个页面各自猜字段含义
+- 测试补强：
+  - `tests/unit/intent-starter-helper-health.spec.ts`
+    - 覆盖 helper health item / summary 的共享 `failurePressure`
+  - `tests/unit/intent-starter-helper-health-snapshot.spec.ts`
+    - 覆盖新字段持久化
+    - 覆盖 legacy 平铺计数字段自动回填共享结构
+  - `tests/unit/intent-starter-helper-health-service.spec.ts`
+    - 覆盖 service 返回的 summary 共享结构
+  - `tests/unit/api-project-capability-helper-health-route.spec.ts`
+    - 回归通过，确认 route 转发未受影响
+- 验证：
+  - `npx vitest run tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-snapshot.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts tests/unit/api-project-capability-helper-health-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 4 个测试文件通过
+    - 9 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（queue / helper health 已开始共用 failure-pressure 结构）
+- 风险 / 未完成：
+  - 当前 queue / helper health 已共享 failure-pressure 字段名：
+    - 但前端层面还没有统一成一套可复用 selector / presenter
+  - insights 侧虽然是共享层的来源之一：
+    - 但还没有把“高频失败摘要”整理成和 queue / health 同风格的消费对象
+  - helper health 现在能展示执行窗口失败次数：
+    - 但还没有进一步提供“高频 helper 自动治理优先级”摘要
+- 下一步：
+  - 继续 `R5`：
+    - 评估并收敛 queue / health / insights 的高频失败摘要字段
+    - 尽量形成同一套前端消费模型，减少页面各自拼字段
+
+## 2026-03-25 第九十一次更新（R5 预备第六十七刀：queue / health / insights 失败摘要前端 selector 收敛）
+
+- 本轮目标：
+  - 不再让各个页面自己手写 reduce / 拼字段。
+  - 先把 queue / helper health / insights 这三路信号收敛成同一套前端失败摘要 selector，再让两个 workbench 都切过去消费。
+- 已完成：
+  - 新增 `lib/intent-verification-failure-pressure-view.ts`
+    - 提供统一前端消费模型：
+      - `normalizeIntentVerificationFailurePressureViewSummary(...)`
+      - `summarizeIntentVerificationFailurePressureViewSummaryFromItems(...)`
+      - `hasIntentVerificationFailurePressureViewHighFailure(...)`
+    - 这层会同时兼容：
+      - queue summary 的 `highFailure*` 字段
+      - helper health item / summary 的 `failurePressure`
+      - insights starter helper 仍保留的平铺失败字段
+    - 结果统一归并为同一套 view summary：
+      - `recentFailedReviewCapabilityCount`
+      - `recentFailedVerifyCapabilityCount`
+      - `recentFailedReviewExecutionCount`
+      - `recentFailedVerifyExecutionCount`
+      - `recentFailureWindowDays`
+      - `highFailureCandidateCount`
+      - `highFailureRepairCount`
+      - `highFailureGovernanceCount`
+  - `components/ProjectIntentWorkbench.tsx`
+    - 推荐队列 summary 已改成先走共享 selector，再展示：
+      - `高频失败`
+      - `高频修复`
+      - `高频治理`
+    - Starter Helper 健康视图也改成先走共享 selector：
+      - summary 区新增 `高频失败`
+      - 原有 `复核失败 / 验证失败` 不再依赖本地拼字段
+    - helper 卡片增加高频失败标记：
+      - 当共享 selector 判定 helper 处于高频失败压力时，直接展示 `高频失败`
+  - `components/IntentE2EWorkbench.tsx`
+    - 洞察页不再自己 reduce `starterHelpers`
+    - 已切到共享 selector 生成 starter helper 失败摘要
+    - summary 区新增 `高频失败`
+    - starter helper 卡片增加：
+      - `高频失败` 标记
+      - `近 N 天执行失败：复核 X 次 / 验证 Y 次`
+- 当前闭环效果：
+  - queue / helper health / insights 这三路信号虽然底层来源仍不同：
+    - 但前端展示已经开始走同一套失败摘要模型
+  - 这意味着后续如果继续调整 failure-pressure 判定或字段补齐：
+    - 不需要再分别改多个页面的 reduce / badge 逻辑
+  - 对 R5 的实际价值是：
+    - 高频失败不再只在 capability workbench 可见
+    - 洞察页也能直接看到哪些 starter helper 已进入高压失败区
+- 测试补强：
+  - 新增 `tests/unit/intent-verification-failure-pressure-view.spec.ts`
+    - 覆盖 queue summary 归一化
+    - 覆盖 helper item 聚合
+    - 覆盖 queue item repair / governance 划分
+  - 原有相关回归继续通过：
+    - `tests/unit/intent-starter-helper-health.spec.ts`
+    - `tests/unit/capability-verification-service.spec.ts`
+    - `tests/unit/intent-e2e-insights.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-verification-failure-pressure-view.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/capability-verification-service.spec.ts tests/unit/intent-e2e-insights.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 4 个测试文件通过
+    - 43 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（queue / health / insights 已开始共用同一套前端失败摘要 selector）
+- 风险 / 未完成：
+  - 当前 selector 只统一了前端消费层：
+    - 还没有把 queue / health / insights 的服务端 response schema 完全收成同一名字
+  - queue summary 里的高频失败仍是 capability 维度：
+    - helper health / insights 里的高频失败是 helper 维度
+    - 目前统一的是展示模型，不是统计实体口径
+  - suppressed starter helper 区块还没有补入共享失败摘要：
+    - 现在聚焦的是 starter helper 正常供给侧和 capability queue
+- 下一步：
+  - 继续 `R5`：
+    - 评估是否需要把 queue / health / insights 的服务端高频失败摘要字段也统一命名
+    - 评估 suppressed starter helper 是否也要接入同一套高压失败展示模型
+
+## 2026-03-25 第九十二次更新（R5 预备第六十八刀：suppressed starter helper 接入共享失败压力展示）
+
+- 本轮目标：
+  - 不让 `suppressedStarterHelpers` 成为失败压力盲区。
+  - 先把 suppressed helper 也挂上与 starter helper 相同的 verification feedback，再把洞察页展示补齐。
+- 已完成：
+  - `lib/intent-starter-helper-verification-feedback.ts`
+    - 新增：
+      - `attachIntentSuppressedStarterHelperVerificationFeedback(...)`
+    - suppressed helper 现在也会拿到同一套共享反馈字段：
+      - `recentFailedReviewCapabilityCount`
+      - `recentFailedVerifyCapabilityCount`
+      - `recentFailedReviewExecutionCount`
+      - `recentFailedVerifyExecutionCount`
+      - `recentFailureWindowDays`
+    - 同时会把失败压力补到 `suppressionReason` 后缀里：
+      - 如果最近窗口里已经出现明显 verify / review 失败
+      - suppression reason 会直接带出“继续保持过滤”的依据
+  - `lib/ai/intent-e2e-insights.ts`
+    - `getIntentE2EInsights(...)` 现在会同时给：
+      - `starterHelpers`
+      - `suppressedStarterHelpers`
+      附加 verification feedback
+    - `IntentE2EInsightSuppressedStarterHelper` 结构已补齐最近失败字段
+  - `components/IntentE2EWorkbench.tsx`
+    - `已过滤的 Starter Helper` 区块现在也接入共享 selector
+    - summary 区新增：
+      - `高频失败`
+      - `复核失败`
+      - `验证失败`
+    - suppressed helper 卡片新增：
+      - `高频失败` 标记
+      - 最近能力反馈
+      - `近 N 天执行失败：复核 X 次 / 验证 Y 次`
+- 当前闭环效果：
+  - 现在 starter helper 的三类视图都已经能暴露失败压力：
+    - 洞察页里的 starter helper
+    - 洞察页里的 suppressed starter helper
+    - capability workbench 里的 helper health
+  - 这意味着：
+    - “为什么它被过滤”
+    - “最近是不是还在持续失败”
+    - “是不是已经进入高频失败区”
+    这些问题不需要再切到其他视图人工拼接判断。
+- 测试补强：
+  - `tests/unit/intent-starter-helper-verification-feedback.spec.ts`
+    - 覆盖 suppressed helper 反馈挂载
+    - 覆盖 suppression reason 后缀
+  - 原有相关回归继续通过：
+    - `tests/unit/intent-starter-helper-health.spec.ts`
+    - `tests/unit/intent-e2e-insights.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-starter-helper-verification-feedback.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-e2e-insights.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 30 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（suppressed helper 也已接入共享失败压力展示）
+- 风险 / 未完成：
+  - 当前 suppressed helper 虽然已能展示失败压力：
+    - 但还没有被纳入 capability queue 的专门高频治理摘要
+  - queue / health / insights 前端已共用 selector：
+    - 服务端 response schema 仍未完全统一命名
+  - 当前 suppressed helper 的失败压力仍主要用于解释和展示：
+    - 还没有反向驱动额外的 repair / review 自动入口
+- 下一步：
+  - 继续 `R5`：
+    - 评估是否把 queue / health / insights 的服务端失败摘要字段进一步统一命名
+    - 再决定 suppressed helper 是否需要独立的高频治理入口
+
+## 2026-03-25 第九十三次更新（R5 预备第六十九刀：服务端 `failurePressureSummary` 兼容字段统一落地）
+
+- 本轮目标：
+  - 不只统一前端 selector。
+  - 把 queue / health / insights 三条返回链路的服务端失败摘要字段也开始收敛到同一命名：`failurePressureSummary`。
+- 已完成：
+  - 新增 `lib/intent-verification-failure-pressure-summary.ts`
+    - 把之前偏前端命名的 view helper 收敛成更中性的 summary helper
+    - 统一导出：
+      - `normalizeIntentVerificationFailurePressureSummary(...)`
+      - `summarizeIntentVerificationFailurePressureSummaryFromItems(...)`
+      - `hasIntentVerificationFailurePressureSummaryHighFailure(...)`
+      - `IntentVerificationFailurePressureSummary`
+    - 同时兼容三种输入：
+      - 新的 `failurePressureSummary`
+      - 旧的 `failurePressure`
+      - 更旧的平铺失败字段
+  - `lib/intent-verification-failure-pressure-view.ts`
+    - 改成兼容 re-export
+    - 现有前端 import 不需要立刻改名
+  - `lib/capability-verification-service.ts`
+    - `queue.summary` 现新增：
+      - `failurePressureSummary`
+    - 旧字段继续保留：
+      - `highFailureCandidateCount`
+      - `highFailureRepairCount`
+      - `highFailureGovernanceCount`
+    - 这意味着 queue 的服务端 summary 已不再只有散装 `highFailure*` 字段
+  - `lib/intent-starter-helper-health.ts`
+    - `health.summary` 现新增：
+      - `failurePressureSummary`
+    - 原来的 `failurePressure` 和旧平铺字段仍保留，快照兼容不受影响
+  - `lib/intent-starter-helper-health-snapshot.ts`
+    - 快照读写已支持 `failurePressureSummary`
+    - 老快照若只有：
+      - `failurePressure`
+      - 或平铺失败字段
+      也会自动补出新的统一 summary 字段
+  - `lib/ai/intent-e2e-insights.ts`
+    - `getIntentE2EInsights(...)` 现新增：
+      - `failurePressureSummary`
+      - `starterHelperFailurePressureSummary`
+      - `suppressedStarterHelperFailurePressureSummary`
+    - 这样洞察接口已经开始把 starter / suppressed helper 的失败摘要直接服务端算好，不再必须让前端自己 reduce
+  - `components/IntentE2EWorkbench.tsx`
+    - 已改成优先读取：
+      - `starterHelperFailurePressureSummary`
+      - `suppressedStarterHelperFailurePressureSummary`
+    - 没拿到时再回退到本地聚合
+  - `components/ProjectIntentWorkbench.tsx`
+    - helper health summary 也已优先读取服务端 `failurePressureSummary`
+    - queue summary 原本就走统一 normalize；现在会优先命中新字段
+- 当前闭环效果：
+  - 失败摘要现在已经形成两层统一：
+    - 服务端 response 字段开始统一
+    - 前端 selector 已兼容新旧字段
+  - 这意味着后续可以渐进式替换旧字段：
+    - 不需要强制所有页面、快照、route、测试一次性切完
+  - 对 R5 的价值是：
+    - queue / health / insights 现在都已有明确的统一摘要入口
+    - 后续再补高频治理动作或统一 presenter，会明显更顺手
+- 测试补强：
+  - `tests/unit/intent-verification-failure-pressure-view.spec.ts`
+    - 补充覆盖 `failurePressureSummary` 嵌套兼容
+  - `tests/unit/capability-verification-service.spec.ts`
+    - 覆盖 queue summary 的 `failurePressureSummary`
+  - `tests/unit/intent-starter-helper-health.spec.ts`
+    - 覆盖 helper health summary 的 `failurePressureSummary`
+  - `tests/unit/intent-starter-helper-health-service.spec.ts`
+  - `tests/unit/intent-starter-helper-health-snapshot.spec.ts`
+  - `tests/unit/api-project-capability-helper-health-route.spec.ts`
+    - 回归 fixture，确保新字段不会打断现有 route / snapshot 流
+- 验证：
+  - `npx vitest run tests/unit/intent-verification-failure-pressure-view.spec.ts tests/unit/capability-verification-service.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts tests/unit/intent-starter-helper-health-snapshot.spec.ts tests/unit/intent-starter-helper-verification-feedback.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/api-project-capability-helper-health-route.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 9 个测试文件通过
+    - 53 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（服务端与前端都已开始围绕 `failurePressureSummary` 收敛）
+- 风险 / 未完成：
+  - 当前统一命名仍是兼容层：
+    - 旧字段还没有下线
+  - `insights` 目前是：
+    - `failurePressureSummary`
+    - `starterHelperFailurePressureSummary`
+    - `suppressedStarterHelperFailurePressureSummary`
+    三层并存
+    - 还没有完全抽成更强约束的 group schema
+  - suppressed helper 虽然已能展示失败压力：
+    - 但还没有独立治理入口
+- 下一步：
+  - 继续 `R5`：
+    - 评估并补 suppressed helper 的独立高频治理入口
+    - 再决定是否把 `insights` 的 helper group summary 进一步抽成统一 group schema
+
+## 2026-03-25 第九十四次更新（R5 预备第七十刀：suppressed helper 独立高频治理入口）
+
+- 本轮目标：
+  - 不再只把 suppressed helper 的高频失败混在推荐队列里。
+  - 在 Starter Helper 健康视图直接提供独立治理入口，但不新增第三种 execution mode。
+- 已完成：
+  - `lib/intent-starter-helper-health-governance.ts`
+    - 新增 `collectIntentStarterHelperHealthGovernanceCapabilityItems(...)`
+    - 把多个高频 suppressed helper 命中的 capability 按 `capabilityUid` 去重
+    - 这样独立治理入口复用现有批量验证器时，不会对同一 capability 重复发起 review
+  - `components/ProjectIntentWorkbench.tsx`
+    - 现在会基于 helper health snapshot 计算：
+      - 高频失败且已过滤的 helper 集合
+      - 这些 helper 对应的 review capability 集合
+    - 复核对象解析后会先去重，再复用既有：
+      - `launchCapabilityVerificationBatch(items, 'verify', { verificationIntent: 'review' })`
+    - 在 `Starter Helper 健康视图` 头部新增：
+      - `已过滤高频 helper`
+      - `独立复核能力`
+      - `启动已过滤 Helper 复核`
+    - 新入口的批次标题为：
+      - `Helper 健康：已过滤高频复核`
+    - 这意味着 suppressed helper 现在不必只靠推荐队列绕路，也能从 helper 健康面板直接止血治理
+  - `tests/unit/intent-starter-helper-health-governance.spec.ts`
+    - 新增覆盖：
+      - 同一 capability 被多个 suppressed helper 同时命中时的去重行为
+- 当前闭环效果：
+  - helper health 视图已经从“展示 suppressed helper 风险”升级成“可直接发起 suppressed helper 高频复核”
+  - 体系边界保持不变：
+    - execution mode 仍然只有 `verify | repair`
+    - `review` 仍只是 `verify` 内部的保守意图
+  - 推荐队列与 helper health 的职责开始更清晰：
+    - 推荐队列负责全局合流排序
+    - helper health 独立入口负责对 suppressed helper 的高频失败进行定点复核
+- 测试补强：
+  - `tests/unit/intent-starter-helper-health-governance.spec.ts`
+    - 覆盖 capability 去重
+  - `tests/unit/intent-starter-helper-health.spec.ts`
+  - `tests/unit/capability-verification-service.spec.ts`
+    - 作为高频失败 / helper health 相关回归保护继续通过
+- 验证：
+  - `npx vitest run tests/unit/intent-starter-helper-health-governance.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/capability-verification-service.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 19 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（suppressed helper 已具备独立高频治理入口）
+- 风险 / 未完成：
+  - 当前独立入口还是：
+    - 基于 capability 批量启动
+    - 还没有做 helper 级分批确认或节流
+  - helper health 的独立治理回执还主要停留在批次监控列表：
+    - 尚未沉淀成更明确的 helper-group timeline / insight 卡片
+- 下一步：
+  - 继续 `R5`：
+    - 评估是否把 suppressed helper 独立治理结果沉淀进 insights / helper group summary
+    - 再决定是否把 helper 级治理对象和回执进一步收敛成统一 group schema
+
+## 2026-03-25 第九十五次更新（R5 预备第七十一刀：suppressed helper 治理摘要进入 insights）
+
+- 本轮目标：
+  - 不让 suppressed helper 独立治理入口只停留在 capability workbench。
+  - 把治理对象和最近 review 回执沉淀进 insights，同时修掉上一刀仍依赖 queue slice 的口径风险。
+- 已完成：
+  - `lib/intent-starter-helper-health-governance.ts`
+    - 新增 `resolveIntentSuppressedStarterHelperGovernanceTargets(...)`
+      - 直接按：
+        - 高频 suppressed helper
+        - active capability
+        - `starterHelper` 绑定
+        - 最近一次不是 failed
+      解析治理目标
+      - 不再依赖 helper health 里那一小段 `queueItems`
+    - 新增 `summarizeIntentStarterHelperGovernanceReviewTargets(...)`
+      - 按 review activity 聚合：
+        - helper 数
+        - capability 数
+        - 最近 review 执行数
+        - 通过 / 失败数
+        - 最近执行时间
+      - 同时避免同一条 execution 因 chain 内多个 capability 被重复计数
+  - `components/ProjectIntentWorkbench.tsx`
+    - 独立治理入口现在改为走共享治理 helper
+    - 这意味着：
+      - 不再被 `queueLimit=8` 的截断影响
+      - 同一个高频 suppressed helper 会基于全量 active linked capability 解析 review 目标
+  - `lib/ai/intent-e2e-insights.ts`
+    - 新增 `buildIntentSuppressedStarterHelperGovernanceInsights(...)`
+    - `getIntentE2EInsights(...)` 现在会额外输出：
+      - `suppressedStarterHelperGovernanceSummary`
+    - 每个 suppressed helper 还会附带：
+      - `governanceTargetCapabilityCount`
+      - `recentGovernanceReviewExecutionCount`
+      - `recentPassedGovernanceReviewExecutionCount`
+      - `recentFailedGovernanceReviewExecutionCount`
+      - `latestGovernanceReviewExecutionAt`
+    - 这些字段统一基于 activity log 中的 capability verification review 回执聚合
+  - `components/IntentE2EWorkbench.tsx`
+    - 已过滤 helper 洞察卡片现在开始展示：
+      - 治理 helper 数
+      - 待复核 capability 数
+      - 最近治理 review 数
+    - 单个 helper 卡片也会展示：
+      - 独立治理目标数
+      - 最近 review 回执
+      - 最近治理时间
+- 当前闭环效果：
+  - suppressed helper 的治理链路现在形成两端闭环：
+    - workbench 可直接发起
+    - insights 可回看治理对象与 review 回执
+  - 上一刀的一个隐藏问题也一起解决了：
+    - 独立治理入口不再依赖被截断的推荐队列切片
+    - helper-group 口径开始切向“全量 active linked capability + review activity”
+  - 对 R5 的意义是：
+    - helper-group summary 不再只剩失败压力
+    - 已开始承载“治理对象 + 最近治理结果”
+- 测试补强：
+  - `tests/unit/intent-starter-helper-health-governance.spec.ts`
+    - 覆盖全量治理目标解析
+    - 覆盖 review 回执聚合与去重
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 覆盖 suppressed helper governance summary
+  - `tests/unit/api-intent-e2e-insights-route.spec.ts`
+    - 路由回归继续通过
+- 验证：
+  - `npx vitest run tests/unit/intent-starter-helper-health-governance.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/capability-verification-service.spec.ts`
+  - `npx vitest run tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 5 个测试文件通过
+    - 49 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（suppressed helper 已具备“治理目标 + review 回执”的双端观察）
+- 风险 / 未完成：
+  - 当前 insights 里的治理回执仍然是 helper-group 级摘要：
+    - 还没有下钻到 capability 级 timeline
+  - 目前只聚合 `review` 回执：
+    - repair / verify 对这些 helper-group 的长期恢复效果还没单独拉出趋势
+- 下一步：
+  - 继续 `R5`：
+    - 评估是否把 suppressed helper 的 repair / verify 恢复轨迹也纳入 helper-group summary
+    - 再决定是否需要 capability 级别的治理 timeline 或 helper-group schema 统一层
+
+## 2026-03-25 第九十六次更新（R5 预备第七十二刀：suppressed helper 的 verify / repair 恢复轨迹进入 helper-group summary）
+
+- 本轮目标：
+  - 不让 suppressed helper 的治理摘要只停留在 review 回执。
+  - 继续把标准验证与 AI repair 重跑的恢复轨迹也挂到同一 helper-group summary 上。
+- 已完成：
+  - `lib/intent-starter-helper-health-governance.ts`
+    - `summarizeIntentStarterHelperGovernanceReviewTargets(...)` 已扩成三条 lane 统计：
+      - `review`
+      - `verify`
+      - `repair`
+    - 其中 `repair` lane 的识别方式为：
+      - execution activity 命中 capability verification 上下文
+      - 且该 execution 所属 `planUid` 来自 `plan_repaired`
+    - 这意味着 helper-group 现在既能看到：
+      - 治理入口发起的 review
+      - 后续标准验证
+      - 失败后 AI repair 重跑
+    - 同时仍保持：
+      - chain capability 不重复计 execution
+  - `lib/ai/intent-e2e-insights.ts`
+    - `normalizeCapabilityVerificationActivity(...)` 现在保留 `planUid`
+    - 新增 capability verification repair plan 收集逻辑：
+      - 从 `plan_repaired` activity 提取 capability verification repair plan 集合
+    - `buildIntentSuppressedStarterHelperGovernanceInsights(...)` 现在会额外补：
+      - `recentGovernanceVerifyExecutionCount`
+      - `recentPassedGovernanceVerifyExecutionCount`
+      - `recentFailedGovernanceVerifyExecutionCount`
+      - `latestGovernanceVerifyExecutionAt`
+      - `recentGovernanceRepairExecutionCount`
+      - `recentPassedGovernanceRepairExecutionCount`
+      - `recentFailedGovernanceRepairExecutionCount`
+      - `latestGovernanceRepairExecutionAt`
+    - `suppressedStarterHelperGovernanceSummary` 也同步新增 verify / repair 聚合字段
+  - `components/IntentE2EWorkbench.tsx`
+    - 已过滤 helper 洞察头部现在开始展示：
+      - `标准验证`
+      - `repair 重跑`
+    - 单个 helper 卡片现在会补两条恢复轨迹：
+      - `标准验证轨迹`
+      - `AI repair 轨迹`
+- 当前闭环效果：
+  - suppressed helper 的 helper-group summary 现在已经不只是“失败压力 + review 回执”：
+    - 还开始承载 verify / repair 的恢复轨迹
+  - 对治理判断的价值更直接：
+    - 某个 helper 是否只是在持续复核失败
+    - 是否已经出现标准验证回升
+    - 是否主要依赖 repair 重跑才勉强恢复
+  - 这对后续是否解除 suppression、继续保守观察、还是维持止血隔离，都会更有依据
+- 测试补强：
+  - `tests/unit/intent-starter-helper-health-governance.spec.ts`
+    - 覆盖 review / verify / repair 三条 lane 的聚合与去重
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 覆盖 suppressed helper governance summary 的 verify / repair 字段
+  - `tests/unit/api-intent-e2e-insights-route.spec.ts`
+    - 路由回归继续通过
+- 验证：
+  - `npx vitest run tests/unit/intent-starter-helper-health-governance.spec.ts tests/unit/intent-e2e-insights.spec.ts`
+  - `npx vitest run tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 34 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（suppressed helper 已具备 review / verify / repair 三段治理观察）
+- 风险 / 未完成：
+  - 当前 helper-group 仍然是摘要视图：
+    - 还没有 capability 级 timeline
+  - `repair` lane 现在识别的是：
+    - 来自 `plan_repaired` 的 execution
+    - 还没有继续细分“自动修复触发”与“人工点 repair 触发”
+- 下一步：
+  - 继续 `R5`：
+    - 评估是否把 helper-group 的恢复轨迹继续下钻到 capability 级 timeline
+    - 再决定是否让 suppressed helper 的解除/降级策略开始真正消费这些 verify / repair 恢复信号
+
+## 2026-03-25 第九十七次更新（R5 预备第七十三刀：suppressed helper 的 capability timeline 下钻进入 helper-group summary）
+
+- 本轮目标：
+  - 不让 suppressed helper 的治理恢复轨迹只停留在 helper-group 摘要。
+  - 为高频失败 helper 补 capability 级时间线下钻，直接解释“哪条能力在恢复、失败还是只靠 repair 顶住”。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - 正式补齐 `IntentE2EInsightSuppressedStarterHelperGovernanceCapability`
+    - 新增 `buildSuppressedStarterHelperGovernanceCapabilityTimeline(...)`
+    - `buildIntentSuppressedStarterHelperGovernanceInsights(...)` 现在会为高频失败 suppressed helper 追加：
+      - `governanceCapabilities`
+    - capability timeline 的聚合口径为：
+      - 仅针对高频失败 suppressed helper 的治理目标 capability
+      - 复用现有 capability verification activity
+      - 通过 `plan_repaired` 推导 `latestExecutionSource=repair`
+      - 每个 helper 最多保留 5 条能力轨迹
+      - 排序优先看最近执行时间，再看失败优先级与 repair / verify / review 频次
+  - `components/IntentE2EWorkbench.tsx`
+    - 已过滤 helper 卡片底部新增 `治理能力时间线`
+    - 每条能力现在直接展示：
+      - capability 名称
+      - slug
+      - 最近执行状态
+      - 最近执行意图
+      - 最近执行来源（直接执行 / AI repair）
+      - 最近执行时间
+      - review / verify / repair 次数
+    - 这样 helper-group 摘要不再只有汇总数字，已经能直接下钻看到能力级恢复轨迹
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 补充 `governanceCapabilities` 明细断言
+    - 覆盖：
+      - capability timeline 输出存在
+      - 时间线顺序正确
+      - `latestExecutionSource` 在 repair 场景下正确标记为 `repair`
+- 当前闭环效果：
+  - suppressed helper 的治理信息已经形成三层视角：
+    - 失败压力
+    - helper-group 级 review / verify / repair 摘要
+    - capability 级治理时间线下钻
+  - 这让判断依据更具体：
+    - 是哪条 capability 还在持续失败
+    - 哪条 capability 已经转成标准验证恢复
+    - 哪条 capability 只是依赖 AI repair 重跑
+- 测试补强：
+  - `tests/unit/intent-starter-helper-health-governance.spec.ts`
+    - 回归 review / verify / repair 三条 lane 聚合
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 覆盖 capability timeline 下钻
+  - `tests/unit/api-intent-e2e-insights-route.spec.ts`
+    - 路由回归继续通过
+- 验证：
+  - `npx vitest run tests/unit/intent-starter-helper-health-governance.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 34 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（suppressed helper 已具备 helper-group 摘要 + capability timeline 下钻）
+- 风险 / 未完成：
+  - 当前 capability timeline 仍是观察视图：
+    - 还没有真正进入 suppressed helper 的解除 / 降级决策
+  - `repair` 轨迹已可见：
+    - 但还没有继续区分“自动修复触发”和“人工点 repair 触发”
+- 下一步：
+  - 继续 `R5`：
+    - 让 suppressed helper 的解除 / 降级策略开始消费 review / verify / repair 与 capability timeline 信号
+    - 再决定是否把 capability 级恢复信号沉到更明确的治理建议或自动解封条件
+
+## 2026-03-25 第九十八次更新（R5 预备第七十四刀：suppressed helper 开始按治理恢复信号降级为恢复观察）
+
+- 本轮目标：
+  - 不让 suppressed helper 的治理轨迹只停留在“可看见”。
+  - 让恢复信号真正进入 starter helper 供给决策，使 AI 首轮生成开始消费这批恢复中的 helper。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - 抽出 starter helper 共享基线：
+      - `buildStarterHelperBaseRecommendation(...)`
+      - `compareStarterHelperItems(...)`
+      - `compareSuppressedStarterHelperItems(...)`
+    - `buildIntentSuppressedStarterHelperGovernanceInsights(...)` 现在分成两层口径：
+      - helper-group summary 仍只统计高频失败 suppressed helper
+      - 但单个 suppressed helper 的治理能力时间线 / 目标能力挂载，已扩到全部 suppressed helper
+    - 新增 `reconcileIntentStarterHelpersWithSuppressedGovernance(...)`
+      - 用治理恢复信号决定是否解除强隔离
+      - 当前只做保守释放，不做激进转正
+    - 新增恢复判定规则：
+      - helper 必须存在治理目标 capability
+      - 最近 helper / governance 轨迹不能再出现失败
+      - 必须已有近期 `verify` 轨迹
+      - 至少 1 条 capability 完成直接 `verify` 通过
+      - 至少达到最多 `2` 条能力的最新通过覆盖
+    - 满足条件后：
+      - helper 不再留在 `suppressedStarterHelpers`
+      - 会被降级回 `starterHelpers`
+      - 且只标记为 `knowledgeChangeTier=watching`
+      - `knowledgeChangeWatchingKind=recovering`
+      - recommendation 明确写成“恢复观察层保守使用”
+    - `getIntentE2EInsights(...)` 现在会在治理挂载后执行这一步恢复判定
+    - `getIntentE2EStarterHelpers(...)` 改为直接复用 `getIntentE2EInsights(...).starterHelpers`
+      - 这意味着 AI 生成链路与 insights 页面现在共享同一套“解除 / 降级”结果
+- 当前闭环效果：
+  - suppressed helper 的治理链路从“止血观察”推进到“保守释放”：
+    - 长期负向 helper 不再是永久隔离
+    - 只要治理能力已经出现干净恢复，AI 首轮也能重新拿到它
+  - 但释放仍然很保守：
+    - 不会直接恢复成长期正向
+    - 只会降级为 `watching/recovering`
+    - 这样既开始吃到恢复收益，也不至于把刚恢复的 helper 顶到最前排
+- 测试补强：
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 新增恢复判定场景：
+      - 存在直接 `verify` 通过时，会从 suppressed 降级回 recovering watching
+      - 只有 repair 通过、没有直接 `verify` 时，继续保持 suppressed
+    - 同步更新 governance capability timeline 的挂载口径断言
+  - `tests/unit/intent-e2e-service.spec.ts`
+    - 主链路回归继续通过
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-starter-helper-health-governance.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 4 个测试文件通过
+    - 44 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（suppressed helper 已形成“过滤 -> 治理 -> 恢复观察释放”的闭环）
+- 风险 / 未完成：
+  - 当前恢复只做到“降级回 recovering watching”：
+    - 还没有继续提级到长期正向 starter helper
+  - `repair` 仍只是恢复证据之一：
+    - 现在必须看到直接 `verify` 通过才会释放
+    - 但还没有进一步区分“自动 repair”与“人工 repair”
+  - workbench 虽能看到时间线：
+    - 还没有显式标出“这是刚从 suppression 释放回观察层的 helper”
+- 下一步：
+  - 继续 `R5`：
+    - 把 capability 级恢复信号沉成更明确的治理建议或自动解封条件
+    - 视需要补“恢复观察 helper”显式标识，避免 UI 与 prompt 侧感知不一致
+
+## 2026-03-25 第九十九次更新（R5 预备第七十五刀：恢复观察 helper 的治理释放标识进入 UI / prompt / starter preset）
+
+- 本轮目标：
+  - 不让“已从 suppressed 治理恢复释放”的 helper 只在服务端内部可见。
+  - 让 workbench、生成 prompt、starter capability preset 都能明确感知这是一条“保守释放”的恢复观察 helper。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - `IntentE2EInsightStarterHelper` 新增治理释放字段：
+      - `governanceReleaseStatus`
+      - `governanceReleaseReason`
+      - `governanceReleaseCapabilityCount`
+      - `governanceReleaseDirectVerifyPassedCapabilityCount`
+      - `governanceReleaseLatestVerifyExecutionAt`
+    - 当 suppressed helper 满足恢复判定、被降级回 `watching/recovering` 时：
+      - 不再只是改 tier
+      - 还会显式标记“这是从 suppressed 治理恢复释放回来的 helper”
+  - `components/IntentE2EWorkbench.tsx`
+    - starter helper 卡片新增 `治理恢复释放` badge
+    - 明细区新增 `治理释放` 说明：
+      - 原因
+      - 治理目标能力数
+      - 直接验证通过数
+      - 最近验证时间
+    - 这样洞察页不再把“普通恢复观察”和“由 suppression 保守释放回来的恢复观察”混为一谈
+  - `lib/test-generator.ts`
+    - `Starter Helper 建议` 段落现在会显式写出：
+      - `治理状态=已从 suppressed 保守释放`
+    - 同时补充使用要求：
+      - 这类 helper 只能按恢复观察层保守使用
+      - 不能替代长期正向 helper 的优先级
+    - `formatPlanningStarterHelperMessage(...)` 也会提示：
+      - 当前 starter helper 建议里是否包含治理恢复释放对象
+  - `lib/intent-starter-capability-preset.ts`
+    - starter capability preset 的描述 / steps / assertions 现在会附带治理恢复提示
+    - preset meta 也同步保留治理释放字段
+  - `lib/intent-capability-origin.ts`
+    - capability origin 现在能解析 starter asset 上的治理释放字段
+    - 搜索文本也会带上：
+      - `治理恢复释放`
+      - `从 suppressed 恢复`
+      - 直接验证通过数
+  - `components/ProjectIntentWorkbench.tsx`
+    - capability 卡片的 starter origin 区块现在也会展示 `治理释放` 说明
+    - 这样 capability 工作台与 intent insights / prompt 的感知口径保持一致
+- 当前闭环效果：
+  - “恢复观察 helper”不再是一个模糊状态：
+    - 现在可以明确区分：
+      - 原生恢复观察
+      - 从 suppressed 治理后保守释放的恢复观察
+  - 这对 AI 首轮生成的价值更直接：
+    - helper 已重新允许下发
+    - 但 prompt 会明确要求保守使用
+    - 不会把它误当成长期正向 starter helper
+- 测试补强：
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 覆盖治理释放字段挂载
+  - `tests/unit/test-generator.spec.ts`
+    - 覆盖 prompt 中的治理释放提示
+  - `tests/unit/intent-starter-capability-preset.spec.ts`
+    - 覆盖 starter preset 的治理恢复描述与 meta
+  - `tests/unit/intent-capability-origin.spec.ts`
+    - 覆盖 capability origin 对治理释放字段的解析与搜索文本
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-starter-capability-preset.spec.ts tests/unit/intent-capability-origin.spec.ts tests/unit/intent-starter-helper-health-governance.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 7 个测试文件通过
+    - 98 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（suppressed helper 已形成“过滤 -> 治理 -> 恢复观察释放 -> UI/prompt/preset 显式消费”的闭环）
+- 风险 / 未完成：
+  - 当前治理释放仍是保守释放：
+    - 还没有进一步定义“什么时候可以从 recovering 再提级到长期正向”
+  - 当前自动解封条件只覆盖 starter helper 供给侧：
+    - 还没有形成更明确的服务端治理建议对象
+    - 也没有把“可解封 / 继续观察 / 继续 suppressed”沉成独立状态机
+- 下一步：
+  - 继续 `R5`：
+    - 把 capability 级恢复信号收敛成更明确的治理建议与自动解封条件
+    - 再决定是否把 recovering -> preferred 的提级条件也正式服务化
+
+## 2026-03-25 第一百次更新（R5 预备第七十六刀：suppressed helper 治理建议与自动解封条件服务化）
+
+- 本轮目标：
+  - 不让 suppressed helper 的治理恢复判断只停留在“能不能被释放”这一条隐式逻辑。
+  - 把“为什么还不能释放”“还差什么条件才会自动解封”沉成服务端一等状态，并进入 helper health / snapshot / workbench。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - `IntentE2EInsightSuppressedStarterHelper` 新增治理恢复建议字段：
+      - `governanceRecommendationStatus`
+      - `governanceRecommendationReason`
+      - `governanceAutoUnlockCondition`
+      - `governanceRequiredPassedCapabilityCount`
+      - `governancePassedCapabilityCount`
+      - `governanceDirectVerifyPassedCapabilityCount`
+    - 新增 suppressed helper 治理恢复评估逻辑，并与现有释放门槛复用同一套条件：
+      - 无治理目标 -> `await_governance_targets`
+      - 近窗失败未清零 -> `blocked_by_recent_failures`
+      - 缺少直接标准验证 -> `await_direct_verify`
+      - 直接验证已出现但恢复覆盖不足 -> `await_more_capability_recovery`
+    - 这样最终仍留在 suppressed 列表里的 helper，不再只是“被过滤”，而是有明确的服务端治理建议和自动解封条件。
+    - 释放判定仍保持保守：
+      - 仍只允许 `suppressed -> watching/recovering`
+      - 不新增第三执行模式
+      - 不引入新表或新 schema
+  - `lib/intent-starter-helper-health.ts`
+    - helper health item 现在会透传 suppressed helper 的治理建议状态、恢复进度、自动解封条件。
+  - `lib/intent-starter-helper-health-snapshot.ts`
+    - 快照规范化逻辑已保留上述治理字段，老快照仍兼容，新快照可直接回放治理建议。
+  - `components/ProjectIntentWorkbench.tsx`
+    - Starter Helper 健康卡片新增治理建议 badge：
+      - `待补治理目标`
+      - `失败窗口未清零`
+      - `等待直接验证`
+      - `等待更多恢复`
+    - 卡片明细区新增：
+      - `治理建议`
+      - `自动解封条件`
+      - `当前恢复进度`
+  - `components/IntentE2EWorkbench.tsx`
+    - suppressed helper 卡片也同步展示治理建议状态、自动解封条件和恢复进度，洞察页与 helper health 视图口径保持一致。
+- 当前闭环效果：
+  - suppressed helper 的治理链路现在已经形成五段式状态：
+    - 过滤
+    - 能力级治理回执
+    - 恢复观察释放
+    - 未释放原因显式化
+    - 自动解封条件显式化
+  - 这让 AI 首轮生成之外的“治理判断”也变成可消费对象：
+    - helper 为什么还不能回到 starter 供给
+    - 是缺治理目标、缺直接 verify、还是恢复覆盖不足
+    - 下一步该补什么验证动作
+- 测试补强：
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 覆盖四类治理建议状态：
+      - `await_governance_targets`
+      - `blocked_by_recent_failures`
+      - `await_direct_verify`
+      - `await_more_capability_recovery`
+    - 同时回归“满足条件后释放回 recovering watching”的既有逻辑
+  - `tests/unit/intent-starter-helper-health.spec.ts`
+    - 覆盖 helper health item 透传治理建议字段
+  - `tests/unit/intent-starter-helper-health-snapshot.spec.ts`
+    - 覆盖快照规范化保留治理建议与自动解封条件
+  - `tests/unit/intent-starter-helper-health-service.spec.ts`
+    - 覆盖 fresh snapshot 中治理建议字段落盘
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-snapshot.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts`
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-starter-capability-preset.spec.ts tests/unit/intent-capability-origin.spec.ts tests/unit/intent-starter-helper-health-governance.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-snapshot.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/api-project-capability-helper-health-route.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 11 个测试文件通过
+    - 110 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（suppressed helper 已形成“过滤 -> 治理 -> 恢复观察释放 -> 服务端治理建议 / 自动解封条件 -> helper health 快照”闭环）
+- 风险 / 未完成：
+  - 当前治理建议只覆盖 suppressed helper：
+    - 还没有把 `recovering -> preferred` 的提级条件正式服务化
+  - 当前治理轨迹已区分 `direct` / `repair`：
+    - 但还没有继续拆分“自动 repair”与“人工 repair”
+  - 当前自动解封条件已经显式化：
+    - 但仍只服务于观察 / 解释
+    - 还没有进一步下推成更主动的治理调度策略
+- 下一步：
+  - 继续 `R5`：
+    - 把 `recovering -> preferred` 的提级条件正式服务化
+    - 再判断是否要把自动 / 人工 repair 差异沉入治理证据与提级门槛
+
+## 2026-03-25 第一百零一次更新（R5 预备第七十七刀：recovering helper 的 preferred 提级条件服务化）
+
+- 本轮目标：
+  - 不改现有 preferred 提级行为，只把“恢复观察 helper 何时能自动提级为长期优先层”从隐式规则提炼成服务端一等状态。
+  - 让 workbench / helper health / snapshot 能明确回答：
+    - 这条 recovering helper 为什么还不是 preferred
+    - 还差多少长期正向证据
+    - 自动提级条件是什么
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - `IntentE2EInsightStarterHelper` 新增 preferred 提级字段：
+      - `preferredPromotionStatus`
+      - `preferredPromotionReason`
+      - `preferredAutoPromotionCondition`
+      - `preferredPromotionRequiredPositiveRuleCount`
+      - `preferredPromotionPositiveRuleCount`
+      - `preferredPromotionNegativeRuleCount`
+    - 新增 recovering helper 提级建议状态：
+      - `await_more_positive_rules`
+      - `blocked_by_mixed_evidence`
+      - `await_long_term_recovery`
+    - preferred 的门槛继续沿用现有隐式逻辑，不改行为：
+      - 至少 2 条已判定 supporting rules 转为长期正向
+      - 负向 / 混合 signal 清零
+    - 当前三类典型场景会得到不同服务端状态：
+      - 普通 recovering helper：还差多少正向规则才能提级
+      - mixed helper：因为长期证据仍冲突，当前被阻塞
+      - 从 suppressed 治理恢复释放的 helper：即使已回到 recovering，也不会因为治理恢复直接提级为 preferred
+  - `lib/intent-starter-helper-health.ts`
+    - helper health item 现在会透传 starter helper 的 preferred 提级状态、原因、门槛和进度。
+  - `lib/intent-starter-helper-health-snapshot.ts`
+    - 快照规范化逻辑已保留 preferred 提级字段，老快照兼容，新快照可直接回放提级建议。
+  - `components/IntentE2EWorkbench.tsx`
+    - starter helper 卡片新增 preferred 提级 badge：
+      - `待补正向规则`
+      - `混合证据未清零`
+      - `等待长期转正`
+    - 明细区新增：
+      - `提级建议`
+      - `自动提级条件`
+      - `提级进度`
+  - `components/ProjectIntentWorkbench.tsx`
+    - helper health 卡片同步展示 preferred 提级状态与进度，能力工作台与洞察页口径一致。
+- 当前闭环效果：
+  - R5 现在不仅知道：
+    - suppressed helper 何时可从隔离中释放
+  - 也知道：
+    - recovering helper 何时还不能提级为 preferred
+    - 它缺的是长期正向规则覆盖，还是仍有混合证据，还是只是治理恢复但长期证据还没转正
+  - 这意味着 starter helper 生命周期已经从“单纯看 tier”推进到：
+    - suppressed 解封条件
+    - recovering 提级条件
+    - preferred 仍保持保守门槛
+- 测试补强：
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 覆盖：
+      - recovering helper 的 `await_more_positive_rules`
+      - mixed helper 的 `blocked_by_mixed_evidence`
+      - 治理恢复 helper 的 `await_long_term_recovery`
+  - `tests/unit/intent-starter-helper-health.spec.ts`
+    - 覆盖 helper health item 透传 preferred 提级字段
+  - `tests/unit/intent-starter-helper-health-snapshot.spec.ts`
+    - 覆盖快照规范化保留 preferred 提级建议
+  - `tests/unit/intent-starter-helper-health-service.spec.ts`
+    - 回归继续通过
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-snapshot.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts`
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-starter-capability-preset.spec.ts tests/unit/intent-capability-origin.spec.ts tests/unit/intent-starter-helper-health-governance.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-snapshot.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/api-project-capability-helper-health-route.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 11 个测试文件通过
+    - 111 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（starter helper 已具备“suppressed 解封条件 + recovering 提级条件”的双向服务端状态）
+- 风险 / 未完成：
+  - 当前 preferred 提级状态只进入 insights / helper health / workbench：
+    - 还没有继续沉到 prompt / preset / capability origin
+  - 当前治理与提级判断都把 `repair` 视为一类恢复证据：
+    - 还没有继续拆分“自动 repair”和“人工 repair”
+  - preferred 的行为门槛仍保持现状：
+    - 本轮没有调整算法，只是把隐式条件服务化
+- 下一步：
+  - 继续 `R5`：
+    - 把自动 / 人工 repair 差异沉入治理证据与提级门槛
+    - 再决定是否把 preferred 提级状态继续下推到 prompt / preset / capability origin
+
+## 2026-03-25 第一百零二次更新（R5 预备第七十八刀：自动 / 人工 repair 差异沉入治理证据与解封门槛）
+
+- 本轮目标：
+  - 不改 DB schema，只复用现有 activity log meta，把 repair 来源从“只有 repair”升级为“显式区分 auto / manual”。
+  - 让 suppressed helper 的治理证据不再把所有 repair 都当成同一强度恢复信号。
+  - 保持 `verify | repair` 双模式不变，但把“自动 repair 只是弱恢复信号”正式下推到服务端解封判断。
+- 已完成：
+  - `lib/services/test-plan-service.ts`
+    - `repairExecution` / `executePlan` / `runExecutionInBackground` 新增 `repairTriggerKind` 贯通参数：
+      - `auto`
+      - `manual`
+    - repair 生成的新计划活动日志 `plan_repaired.meta` 现在显式写入 `repairTriggerKind`。
+    - repair rerun 的 `execution_started` / `execution_passed` / `execution_failed` 活动日志也会同步写入 `repairTriggerKind`。
+    - 自动自愈分支现在明确把来源标成 `auto`，避免继续依赖 `actorLabel` 猜测。
+  - `app/api/test-executions/[executionUid]/repair/route.ts`
+    - 手动发起 AI repair 时显式传入 `repairTriggerKind: 'manual'`。
+  - `app/api/projects/[projectUid]/capabilities/[capabilityUid]/verify/route.ts`
+    - 能力工作台里的“repair 最近失败验证”同样显式标记为 `manual`。
+  - `lib/intent-starter-helper-health-governance.ts`
+    - 治理聚合保留总 repair 轨迹，同时新增 auto/manual repair 子轨统计：
+      - 次数
+      - 通过数
+      - 失败数
+      - 最近时间
+    - 旧调用方如果只传 `repairPlanUids`，仍按兼容口径回退成 manual repair。
+  - `lib/ai/intent-e2e-insights.ts`
+    - capability verification activity 现在会读取 execution activity meta 中的 `repairTriggerKind`。
+    - 对历史 repair plan，新增 best-effort fallback：
+      - 优先读 `meta.repairTriggerKind`
+      - 缺失时回退 repair plan activity
+      - 再缺失时按保守口径归入 manual
+    - suppressed helper 治理能力时间线现在可区分：
+      - `latestExecutionSource = direct | repair`
+      - `latestRepairTriggerKind = auto | manual | ''`
+      - `recentAutoRepairExecutionCount`
+      - `recentManualRepairExecutionCount`
+    - helper 级治理统计新增 auto/manual repair 分项计数。
+    - 解封门槛正式变成：
+      - 至少 1 条直接标准验证通过
+      - 且满足最少通过覆盖时，只把“direct pass + manual repair pass”计入强恢复覆盖
+      - auto repair pass 仅作为观察信号，不单独支撑自动解封
+    - 对外 recommendation / auto unlock condition / reason 会明确说明：
+      - 当前可计入解封的通过覆盖
+      - 是否还有仅靠 auto repair 恢复的能力
+- 当前闭环效果：
+  - 新数据已经能稳定回答：
+    - 这次恢复是自动 repair 还是人工 repair
+    - helper 最近 repair 轨迹里，哪部分是弱恢复，哪部分能计入自动解封
+  - suppressed helper 的 release 判定比上一刀更保守：
+    - “1 条 direct verify + 1 条 auto repair” 不会再被当作足够恢复覆盖
+    - “1 条 direct verify + 1 条 manual repair” 仍可作为更强治理证据参与解封
+  - 这让治理链路从之前的：
+    - direct vs repair
+  - 进一步升级为：
+    - direct vs manual repair vs auto repair
+- 测试补强：
+  - `tests/unit/test-plan-service.spec.ts`
+    - 覆盖 auto repair / manual repair 两条路径都会把 `repairTriggerKind` 写进 `plan_repaired` 与 rerun execution activity meta。
+  - `tests/unit/api-project-capability-verify-route.spec.ts`
+    - 覆盖能力工作台手动 repair 会显式透传 `repairTriggerKind: 'manual'`。
+  - `tests/unit/intent-starter-helper-health-governance.spec.ts`
+    - 覆盖治理 summary / target 会拆分 auto repair 与 manual repair 子轨。
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 覆盖治理时间线的 auto/manual repair 字段。
+    - 覆盖“auto repair 只算弱恢复证据，不能单独支撑 suppressed 解封”的门槛。
+- 验证：
+  - `npx vitest run tests/unit/test-plan-service.spec.ts tests/unit/api-project-capability-verify-route.spec.ts tests/unit/intent-starter-helper-health-governance.spec.ts tests/unit/intent-e2e-insights.spec.ts`
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-starter-capability-preset.spec.ts tests/unit/intent-capability-origin.spec.ts tests/unit/intent-starter-helper-health-governance.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-snapshot.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/api-project-capability-helper-health-route.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 11 个测试文件通过
+    - 113 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备中（starter helper 已具备“suppressed 解封条件 + recovering 提级条件 + auto/manual repair 证据分层”的服务端治理口径）
+- 风险 / 未完成：
+  - 历史 repair 数据并不总带 `repairTriggerKind`：
+    - 旧数据目前只能走 best-effort fallback，无法百分百还原历史来源
+  - 当前 auto/manual repair 差异已进入 insights / governance：
+    - 但还没有继续下推到 prompt / preset / capability origin
+  - workbench 目前主要消费新的 recommendation 和汇总计数：
+    - 还没有把 auto/manual repair 子轨单独做成前端显式 badge
+- 下一步：
+  - 继续 `R5`：
+    - 再决定是否把 preferred 提级状态与治理证据继续下推到 prompt / preset / capability origin
+    - 如果继续保持服务端优先，就优先做“上游生成策略如何感知 suppressed / recovering / weak repair evidence”
+
+## 2026-03-25 第一百零三次更新（R5 预备第七十九刀：preferred 提级状态与治理弱证据下推到 prompt / preset / capability origin）
+
+- 本轮目标：
+  - 把 recovering helper 的 preferred 提级状态、自动提级条件和治理弱证据，从 insights / helper health / workbench 继续下推到上游生成消费链。
+  - 让 prompt、starter capability preset、capability origin 都能区分“已从 suppressed 保守释放但仍是弱恢复”与“已具备长期正向 evidence”。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - recovered starter helper 现在会补齐治理恢复分项证据：
+      - `governanceReleaseManualRepairPassedCapabilityCount`
+      - `governanceReleaseAutoRepairPassedCapabilityCount`
+  - `lib/intent-starter-capability-preset.ts`
+    - starter capability preset 文案与 meta 现在显式包含：
+      - preferred 提级状态 / 原因 / 自动提级条件 / 正负向计数
+      - governance release 的 direct / manual repair / auto repair 分项
+    - auto repair 在 preset 中会被明确标成“弱恢复信号”，避免被误读成长期正向 evidence。
+  - `lib/intent-capability-origin.ts`
+    - `IntentCapabilityOriginInfo` 新增 preferred promotion 与 governance release 分项字段。
+    - capability meta 搜索文本现在会补充：
+      - `待补正向规则`
+      - `混合证据未清零`
+      - `等待长期转正`
+      - `人工 repair 通过 X`
+      - `自动 repair 弱恢复`
+  - `lib/test-generator.ts`
+    - Starter Helper prompt 区块现在显式输出：
+      - preferred 提级状态
+      - 自动提级条件
+      - governance 恢复证据里的 direct / manual repair / auto repair 分层
+      - “自动 repair 只算弱恢复，不等于长期正向证据”
+    - 生成 / repair 前的 planning thinking 摘要也会统计：
+      - released helper 数
+      - pending promotion 数
+      - weak recovery 数
+    - 同时修正了 `starterHelpers` 可选数组的 TS 索引类型，消除 `build` 阻塞。
+  - `tests/unit/test-generator.spec.ts`
+    - 锁定 recovering helper prompt 会展示 preferred 提级状态、自动提级条件和 auto repair 弱恢复文案。
+  - `tests/unit/intent-capability-origin.spec.ts`
+    - 锁定 capability origin / search text 会透出 preferred 提级状态和 auto / manual repair 弱恢复信号。
+  - `tests/unit/intent-starter-capability-preset.spec.ts`
+    - 回归确认 preset 继续保留 recovering / mixed watching 的治理与提级信息。
+- 当前闭环效果：
+  - 生成侧不再只知道“这个 helper 能不能用”，还知道：
+    - 它是不是刚从 suppressed 保守释放
+    - 它的恢复证据里有多少是 manual repair，多少只是 auto repair 弱恢复
+    - 它距离 preferred 自动提级还差什么
+  - starter capability 草稿和 capability origin 也不再丢失这层治理语义：
+    - 后续无论在 prompt、preset 还是 capability 搜索里，都能看出“恢复观察”与“长期正向”不是同一强度。
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/intent-capability-origin.spec.ts tests/unit/intent-starter-capability-preset.spec.ts`
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-starter-capability-preset.spec.ts tests/unit/intent-capability-origin.spec.ts tests/unit/intent-starter-helper-health-governance.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-snapshot.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts tests/unit/api-project-capability-helper-health-route.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 54 个测试通过
+    - 11 个测试文件通过
+    - 113 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备阶段基本收口（starter helper 的 suppressed 解封、recovering 提级、auto/manual weak recovery 已贯通到 prompt / preset / capability origin）
+- 风险 / 未完成：
+  - 这轮仍是在消费既有治理证据，并没有把 R5 的 `scenario grader / verifier grader / root-cause grader` 正式抽象成独立组件。
+  - success / failure trace promotion 虽已具备候选、provenance、ranking、governance，但还没有收敛成统一的 promotion grader 输入 / 输出。
+  - 当前“自动提级 / 解封”仍以规则聚合驱动，不是完整的 grader-driven probation -> promote / rollback 闭环。
+- 下一步：
+  - 继续 `R5`：
+    - 从“starter helper 治理预备链”切回 R5 主线，开始定义统一 promotion grader 的输入 / 输出。
+    - 优先把 success trace、failure pressure、starter governance、capability origin 收敛成可复用的 promotion evidence schema。
+
+## 2026-03-25 第一百零四次更新（R5 预备第八十刀：promotion evidence schema 收口 starter promotion 输入 / 输出）
+
+- 本轮目标：
+  - 不再让 starter promotion / watching / suppressed review 继续各自拼字段和文案。
+  - 先把 capability origin、trace supporting audit、starter governance、failure pressure 收敛成共享 `promotion evidence` 输出，再让推荐队列直接消费这份结构。
+- 已完成：
+  - `lib/intent-promotion-evidence.ts`
+    - 新增共享 promotion evidence 模块，统一输出：
+      - `readiness`
+        - `promote_ready`
+        - `watching`
+        - `suppressed`
+        - `blocked_by_failure_pressure`
+        - `not_ready`
+      - `origin`
+      - `traceEvidence`
+      - `longTermEvidence`
+      - `preferredPromotion`
+      - `governance`
+      - `failurePressure`
+    - 第一版 schema 已把下列证据收口到同一个对象：
+      - capability origin
+      - supporting rules / supporting audit ids
+      - preferred 提级状态与门槛
+      - suppressed / released governance 恢复计数
+      - capability / helper 两侧 failure pressure
+  - `lib/capability-verification-service.ts`
+    - starter recommendation queue 现在不再直接靠散装字段判定 promote/watch/suppressed。
+    - 改为先构造 `promotionEvidence`，再按 `readiness` 决定：
+      - `starter_promotion`
+      - `watching_starter_verification`
+      - `suppressed_helper_review`
+    - queue item 现在会透传 `promotionEvidence`，作为后续 promotion grader 的统一输入 / 输出底座。
+    - suppressed helper 的 reason 也开始消费 schema 中的治理恢复进度：
+      - `治理恢复覆盖 X/Y`
+      - `直接验证`
+      - `人工 repair`
+      - `自动 repair（弱恢复）`
+    - watching / blocked promotion reason 也开始消费 schema 中的 preferred / weak recovery 语义：
+      - `等待长期转正`
+      - `自动 repair 只算弱恢复，不等于长期正向证据`
+  - `tests/unit/intent-promotion-evidence.spec.ts`
+    - 覆盖 clean positive -> `promote_ready`
+    - 覆盖 recovering weak recovery -> `watching`
+    - 覆盖 suppressed governance progress -> `suppressed`
+    - 覆盖高 failure pressure -> `blocked_by_failure_pressure`
+  - `tests/unit/capability-verification-service.spec.ts`
+    - 锁定 queue item 会透传 `promotionEvidence`
+    - 锁定 suppressed / recovering / blocked promotion 三类文案已改为消费共享 schema
+- 当前闭环效果：
+  - starter promotion 推荐链现在已经不只是“看几个字段然后拼一句 reason”，而是先生成结构化 promotion evidence，再由 queue 消费。
+  - 这意味着后续如果继续补 `scenario grader / verifier grader / root-cause grader`，至少 promotion 侧已经有了稳定输入面，不需要再在 queue、workbench、helper health 里重复发明一套字段。
+- 验证：
+  - `npx vitest run tests/unit/intent-promotion-evidence.spec.ts tests/unit/capability-verification-service.spec.ts`
+  - `npx vitest run tests/unit/intent-promotion-evidence.spec.ts tests/unit/capability-verification-service.spec.ts tests/unit/capability-verification-recommendation-queue.spec.ts tests/unit/intent-capability-origin.spec.ts tests/unit/intent-starter-capability-preset.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-insights.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 2 个测试文件通过
+    - 16 个测试通过
+    - 7 个测试文件通过
+    - 102 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备阶段继续收口（promotion 侧已具备共享 evidence schema，starter promotion queue 不再直接消费散装字段）
+- 风险 / 未完成：
+  - 当前 `promotionEvidence` 还主要在 recommendation queue 层消费：
+    - 还没有正式进入 helper health snapshot / capability workbench / draft ranking 的统一类型链
+  - success trace 目前进入 schema 的仍是聚合后的 supporting audit / supporting rules：
+    - 还没有把 raw trace / verifier result / root-cause diagnosis 抽成统一 grader 输入
+  - readiness 仍然是保守启发式：
+    - 还不是正式的独立 promotion grader
+- 下一步：
+  - 继续 `R5`：
+    - 让 `promotionEvidence` 开始进入 helper health / workbench / route 输出的共享类型面，避免再次回到散装字段。
+    - 在此基础上定义第一版 promotion grader 输入：
+      - success trace summary
+      - verifier result
+      - failure pressure
+      - governance evidence
+
+## 2026-03-25 第一百零五次更新（R5 预备第八十一刀：promotion evidence 下推到 helper health / workbench / route 输出）
+
+- 本轮目标：
+  - 不让 `promotionEvidence` 只停留在 starter promotion queue。
+  - 把它继续下推到 helper health snapshot / route / workbench，让服务端和前端都直接消费同一份 readiness / weak recovery 结构。
+- 已完成：
+  - `lib/intent-promotion-evidence.ts`
+    - 新增 `normalizeIntentPromotionEvidenceReadiness(...)`
+    - 新增 `normalizeIntentPromotionEvidence(...)`
+    - 现在 `promotionEvidence` 不只可构建，也可作为 route / snapshot / 前端共享结构被规范化消费。
+  - `lib/intent-starter-helper-health.ts`
+    - `IntentStarterHelperHealthItem` 现在开始透传 `promotionEvidence`。
+    - helper health view 在组装每个 helper 时，会基于：
+      - starter helper 长期 evidence
+      - preferred 提级状态
+      - suppressed governance 状态
+      - helper failure pressure
+      统一生成 helper 级 `promotionEvidence`。
+  - `lib/intent-starter-helper-health-snapshot.ts`
+    - snapshot normalize 现在会保留 `promotionEvidence`。
+    - 对旧快照若字段缺失，会基于旧的 preferred / governance / failurePressure 字段自动回填一份兼容 `promotionEvidence`，避免历史快照直接失真。
+  - `components/ProjectIntentWorkbench.tsx`
+    - Starter Helper 健康卡片开始直接展示共享证据信号：
+      - `证据可提级 / 证据观察中 / 证据已过滤 / 高频阻断`
+      - `弱恢复`
+    - capability verification queue 卡片也开始直接消费 `promotionEvidence`：
+      - 显示 readiness badge
+      - 显示 pending preferred 提级状态
+      - 显示 release direct/manual/auto repair 恢复证据
+    - 这意味着 workbench 不再只靠散装 preferred/governance 字段拼推断。
+- 当前闭环效果：
+  - helper health route 返回的新快照已经带共享 `promotionEvidence`。
+  - workbench 能直接看到：
+    - 这个 helper / capability 当前是 `promote_ready`、`watching`、`suppressed` 还是 `blocked_by_failure_pressure`
+    - 当前是否仍带 `weakRecovery`
+  - 老快照即使没有新字段，也能在 normalize 阶段被自动回填，不需要先清历史审计。
+- 验证：
+  - `npx vitest run tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-snapshot.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts tests/unit/api-project-capability-helper-health-route.spec.ts`
+  - `npx vitest run tests/unit/intent-promotion-evidence.spec.ts tests/unit/capability-verification-service.spec.ts tests/unit/capability-verification-recommendation-queue.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-snapshot.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts tests/unit/api-project-capability-helper-health-route.spec.ts tests/unit/intent-capability-origin.spec.ts tests/unit/intent-starter-capability-preset.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-insights.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 4 个测试文件通过
+    - 11 个测试通过
+    - 11 个测试文件通过
+    - 113 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备阶段继续收口（promotion evidence 已从 queue 延伸到 helper health snapshot / route / workbench）
+- 风险 / 未完成：
+  - 这轮主要统一的是“消费面”：
+    - 还没有把 `promotionEvidence` 反过来作为 helper health summary / queue focus / batch governance 的主排序输入
+  - helper health 的 queue 子项目前仍是简化形态：
+    - 还没有把 queue item 自己的 `promotionEvidence` 继续细化透传到子项级别
+  - promotion grader 仍未独立成组件：
+    - 当前 readiness 依旧是共享启发式，不是正式 grader 结果
+- 下一步：
+  - 继续 `R5`：
+    - 让 `promotionEvidence` 进入 helper health summary / queue focus / batch governance 的主排序与筛选输入。
+    - 在此基础上开始定义第一版 promotion grader 输入对象，而不是继续在 queue / health 层叠加启发式。
+
+## 2026-03-25 第一百零六次更新（R5 预备第八十二刀：promotion evidence 进入 helper health summary / queue focus / batch governance）
+
+- 本轮目标：
+  - 不让 `promotionEvidence` 只停留在 helper / queue 卡片展示层。
+  - 把它继续推进成：
+    - helper health summary 的聚合输入
+    - verification queue focus 的筛选输入
+    - batch governance 的 review vs verify 分流输入
+- 已完成：
+  - `lib/intent-starter-helper-health.ts`
+    - helper health summary 新增：
+      - `promoteReadyCount`
+      - `blockedByFailurePressureCount`
+      - `weakRecoveryCount`
+    - helper 排序现在不再只看 `healthStatus` / `recommendedCapabilityCount`：
+      - 也会显式按 `promotionEvidence.readiness`
+      - 以及 `weakRecovery`
+      做前排治理优先级排序
+  - `lib/intent-starter-helper-health-snapshot.ts`
+    - snapshot normalize 现在会从规范化后的 helper items 反推：
+      - `promoteReadyCount`
+      - `blockedByFailurePressureCount`
+      - `weakRecoveryCount`
+    - 这意味着老快照即使没有这三个 summary 字段，也能在读取时自动回填，而不需要重刷历史审计。
+  - `lib/capability-verification-recommendation-queue.ts`
+    - 新增 promotion focus 侧的共享 selector：
+      - `isCapabilityVerificationPromotionFocusItem(...)`
+      - `isCapabilityVerificationPromotionCriticalItem(...)`
+      - `summarizeCapabilityVerificationPromotionFocus(...)`
+    - `resolveCapabilityVerificationRecommendationTargets(...)` 不再只靠：
+      - `recommendationKind`
+      - `starterKnowledgeChangeWatchingKind`
+      这两项散装字段做 review 分流。
+    - 现在以下对象会被保守下沉到 `review`：
+      - `suppressed`
+      - `blocked_by_failure_pressure`
+      - 含 `weakRecovery`
+      - legacy mixed watching
+  - `components/ProjectIntentWorkbench.tsx`
+    - Starter Helper 健康摘要 badge 现在直接展示：
+      - `证据可提级`
+      - `高压阻断`
+      - `弱恢复`
+    - verification queue 新增 `提级治理` focus：
+      - 自动 focus 现在会优先命中 promotion critical 对象
+      - 若没有 promotion critical，再回退到 `high_failure` / `all`
+    - verification queue 顶部新增 promotion 侧批量治理入口：
+      - `启动提级验证`
+      - `启动提级复核`
+    - 原有推荐复核 / 高频复核文案也已同步切到新语义：
+      - 不再只强调 mixed observing
+      - 现在会明确包含 `高压阻断 / 弱恢复`
+- 当前闭环效果：
+  - helper health 已能直接回答：
+    - 当前有多少 helper 已 `promote_ready`
+    - 有多少 helper 被 `blocked_by_failure_pressure`
+    - 有多少 helper 仍带 `weakRecovery`
+  - verification queue 的自动聚焦不再只围着高频失败转：
+    - promotion critical 对象现在会被单独前置
+  - batch governance 不再把：
+    - `blocked_by_failure_pressure`
+    - `weakRecovery`
+    误当成普通验证对象直接放行
+- 验证：
+  - `npx vitest run tests/unit/capability-verification-recommendation-queue.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-snapshot.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts tests/unit/api-project-capability-helper-health-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 5 个测试文件通过
+    - 16 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备阶段继续收口（promotion evidence 已开始主导 helper health summary / queue focus / batch governance）
+- 风险 / 未完成：
+  - 这轮的 promotion focus 仍基于“当前返回窗口”做前端切片：
+    - 还没有把完整候选级的 promotion summary 进一步服务化
+  - helper health 的 queue 子项仍是简化结构：
+    - 还没有把 queue item 自身的 `promotionEvidence` 继续透传到 helper 子项级
+  - promotion grader 仍未独立：
+    - 当前 readiness / review 分流依旧是共享启发式，不是正式 grader 输出
+- 下一步：
+  - 继续 `R5`：
+    - 开始定义第一版 promotion grader 输入对象
+    - 优先把：
+      - `promotionEvidence`
+      - `failurePressure`
+      - 最新 capability verification 结果
+      - suppressed governance 恢复轨迹
+      收成统一 grader input，而不是继续在 workbench / queue 上叠加前端启发式
+
+## 2026-03-25 第一百零七次更新（R5 预备第八十三刀：第一版 promotion grader input 收口）
+
+- 本轮目标：
+  - 不直接继续堆 queue / workbench 启发式。
+  - 先把 promotion grader 未来真正要吃的输入对象收口出来，并接进现有 service 输出链。
+- 已完成：
+  - `lib/intent-promotion-grader-input.ts`
+    - 新增共享 `IntentPromotionGraderInput` schema，当前版本为 `version: 1`。
+    - 新增 `buildIntentPromotionGraderInput(...)`：
+      - 输入 capability 基础信息
+      - 输入当前 `promotionEvidence`
+      - 输入当前 verification status / latest attempt
+      - 输出统一 grader input
+    - 新增 `normalizeIntentPromotionGraderInput(...)`：
+      - route / 前端 / 后续审计消费时可直接规范化
+      - 若 top-level `origin / failurePressure / governanceTrajectory` 缺失，会优先从 `promotionEvidence` 自动回填
+  - 第一版 grader input 当前统一包含：
+    - `subject`
+      - `capabilityUid / slug / name / capabilityType`
+    - `origin`
+      - 直接对齐 promotion 侧可用的 starter origin 结构
+    - `verification`
+      - `currentStatus / currentLabel`
+      - `latestAttemptStatus / latestAttemptIntent / latestAttemptExecutionUid / latestAttemptCheckedAt`
+    - `promotionEvidence`
+    - `failurePressure`
+    - `governanceTrajectory`
+  - `lib/capability-verification-service.ts`
+    - recommendation queue item 现在会直接透传 `promotionGraderInput`
+    - 也就是说 capability queue 已不再只有：
+      - recommendation kind
+      - reason
+      - promotionEvidence
+      这三层输出
+    - 后续如果真正引入 promotion grader，不需要再回到 service / workbench 里重抓散装字段
+  - `components/ProjectIntentWorkbench.tsx`
+    - capability verification queue 的前端类型已经预留 `promotionGraderInput`
+    - 当前先不额外展示，避免 UI 继续叠字段；先把 schema 稳住
+- 当前闭环效果：
+  - promotion 侧现在已经形成两层明确结构：
+    - `promotionEvidence`
+      - 表示当前 readiness / failure pressure / governance / trace evidence
+    - `promotionGraderInput`
+      - 表示未来独立 grader 的统一输入面
+  - queue service 现在既能继续按旧逻辑给出推荐，也已经把后续 grader 需要的输入对象原样透出
+  - 这一步完成后，再做正式 grader 时，不需要重新发明：
+    - verification snapshot 字段名
+    - governance recovery 字段名
+    - pressure / origin 的顶层组织方式
+- 验证：
+  - `npx vitest run tests/unit/intent-promotion-grader-input.spec.ts tests/unit/capability-verification-service.spec.ts`
+  - `npx vitest run tests/unit/intent-promotion-grader-input.spec.ts tests/unit/capability-verification-service.spec.ts tests/unit/capability-verification-recommendation-queue.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-snapshot.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts tests/unit/api-project-capability-helper-health-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 2 个测试文件通过
+    - 14 个测试通过
+    - 7 个测试文件通过
+    - 30 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备阶段继续收口（promotion grader 已具备第一版统一输入对象）
+- 风险 / 未完成：
+  - 这轮只定义了 input，没有正式定义 grader output：
+    - 还没有 `promote / hold / review / suppress / recover` 这类正式判定对象
+  - `promotionGraderInput` 当前先挂在 queue item：
+    - 还没有进一步下推到 helper health item / snapshot / audit
+  - 当前 recommendation 逻辑仍然直接消费 readiness 启发式：
+    - 还没有改成“grader input -> grader output -> recommendation”
+- 下一步：
+  - 继续 `R5`：
+    - 定义第一版 promotion grader output / decision schema
+    - 让 queue recommendation 开始从：
+      - `promotionGraderInput`
+      - 生成独立的 grader decision
+      - 再由 decision 决定 `starter_promotion / watching / review / suppress` 的推荐与批量治理动作
+
+## 2026-03-25 第一百零八次更新（R5 预备第八十四刀：promotion grader decision 接管 queue recommendation 分支）
+
+- 本轮目标：
+  - 不让 `promotionGraderInput` 只是“先挂出来以后再说”。
+  - 直接补第一版 `promotion grader decision`，并让 capability verification queue 开始消费这份 decision，而不是继续在 service 里手写 readiness 分支。
+- 已完成：
+  - `lib/intent-promotion-grader-decision.ts`
+    - 新增共享 `IntentPromotionGraderDecision` schema，当前版本为 `version: 1`。
+    - 新增 `buildIntentPromotionGraderDecision(...)`，当前会输出：
+      - `kind`
+        - `suppressed_review`
+        - `blocked_review`
+        - `weak_recovery_review`
+        - `watch_review`
+        - `watch_verify`
+        - `promote_verify`
+        - `not_applicable`
+      - `reasonCode`
+      - `recommendationKind`
+      - `recommendedMode`
+      - `verificationIntent`
+      - `action`
+      - `focusEligible / critical / reviewRequired`
+    - 新增 `normalizeIntentPromotionGraderDecision(...)` 以及决策侧 selector：
+      - `isIntentPromotionGraderDecisionFocusEligible(...)`
+      - `isIntentPromotionGraderDecisionCritical(...)`
+      - `isIntentPromotionGraderDecisionReviewRequired(...)`
+  - 决策口径当前明确收敛为：
+    - `suppressed` -> `suppressed_review`
+    - `blocked_by_failure_pressure` -> `blocked_review`
+    - `weakRecovery` -> `weak_recovery_review`
+    - `watching + mixed` -> `watch_review`
+    - `watching + recovering/普通观察` -> `watch_verify`
+    - `promote_ready` -> `promote_verify`
+    - 非 starter asset / 已 execution verified / `not_ready` -> `not_applicable`
+  - `lib/capability-verification-service.ts`
+    - capability recommendation candidate 现在先构造：
+      - `promotionGraderInput`
+      - 再构造 `promotionGraderDecision`
+    - `suppressed / starter_promotion / watching` 这几条推荐分支，不再直接判断 `promotionEvidence.readiness`
+    - 改成由 `promotionGraderDecision.kind` 决定：
+      - recommendation kind
+      - verify vs review 动作
+      - queue bucket
+      - reason builder
+    - queue item 现在额外透传 `promotionGraderDecision`
+  - `lib/capability-verification-recommendation-queue.ts`
+    - queue helper 现在优先消费 `promotionGraderDecision`
+    - verify / review 分流不再只靠：
+      - `recommendationKind`
+      - `starterKnowledgeChangeWatchingKind`
+      - `promotionEvidence`
+    - 如果 service 已给出明确 decision，会优先按：
+      - `reviewRequired`
+      - `critical`
+      - `focusEligible`
+      这三个决策字段执行
+  - `components/ProjectIntentWorkbench.tsx`
+    - queue item 前端类型已预留 `promotionGraderDecision`
+    - 这一步仍不额外堆 UI，先把 service / selector 层的 decision 口径稳定住
+- 当前闭环效果：
+  - promotion 侧现在已经形成三层结构：
+    - `promotionEvidence`
+    - `promotionGraderInput`
+    - `promotionGraderDecision`
+  - queue recommendation 这条链现在已经不是：
+    - `readiness -> if/else -> recommendation`
+  - 而是：
+    - `promotionEvidence -> graderInput -> graderDecision -> recommendation`
+  - 这意味着后续无论继续做：
+    - queue 排序
+    - helper health focus
+    - grader 审计落盘
+    都可以围绕同一份 decision 继续扩展，而不是再把启发式散落回各层
+- 验证：
+  - `npx vitest run tests/unit/intent-promotion-grader-decision.spec.ts tests/unit/intent-promotion-grader-input.spec.ts tests/unit/capability-verification-recommendation-queue.spec.ts tests/unit/capability-verification-service.spec.ts`
+  - `npx vitest run tests/unit/intent-promotion-grader-decision.spec.ts tests/unit/intent-promotion-grader-input.spec.ts tests/unit/capability-verification-service.spec.ts tests/unit/capability-verification-recommendation-queue.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-snapshot.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts tests/unit/api-project-capability-helper-health-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 4 个测试文件通过
+    - 22 个测试通过
+    - 8 个测试文件通过
+    - 34 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备阶段继续收口（promotion grader 已具备 input + decision，两层共享结构）
+- 风险 / 未完成：
+  - 这轮仍然只做到 decision 层：
+    - 还没有单独定义 promotion grader 的审计输出 / 落盘 record
+  - 当前 `helper health` 还没有直接透传 `promotionGraderDecision`
+    - 仍主要消费 `promotionEvidence`
+  - queue 排序虽然已由 decision 接管分支：
+    - 还没有进一步把 decision summary 服务化到 route summary / audit summary
+- 下一步：
+  - 继续 `R5`：
+    - 给 promotion grader 增加第一版审计 / summary 输出
+    - 开始评估是否把 `promotionGraderDecision` 进一步下推到：
+      - helper health snapshot
+      - queue summary
+      - 后续 promotion governance audit
+
+## 2026-03-25 第一百零九次更新（R5 预备第八十五刀：promotion grader output 进入 queue summary / helper health summary）
+
+- 本轮目标：
+  - 不让 `promotionGraderDecision` 继续只停留在 queue item 上。
+  - 先补第一版共享 `promotion grader output`，把：
+    - 单条 audit 输出
+    - 聚合 summary 输出
+    接到 queue summary 和 helper health summary，先形成统一服务端出口。
+- 已完成：
+  - `lib/intent-promotion-grader-output.ts`
+    - 新增共享 `IntentPromotionGraderAuditOutput` schema，当前版本为 `version: 1`。
+    - 当前 audit 输出已稳定透出：
+      - `subject`
+      - `originKind / originLabel / starterHelper / starterHelperSource / starterAssetScope`
+      - `verificationStatus / latestAttempt*`
+      - `longTermSignal / longTermTier / watchingKind / preferredPromotionStatus`
+      - `readiness / decisionKind / reasonCode / action / recommendationKind / verificationIntent`
+      - `focusEligible / critical / reviewRequired / pendingPreferredPromotion / weakRecovery / highFailurePressure`
+      - `supportingRuleNames / supportingAuditIds`
+    - 新增共享 `IntentPromotionGraderSummary` schema，当前会聚合：
+      - `decisionCount / focusEligibleCount / reviewRequiredCount`
+      - `verifyActionCount / ignoreActionCount`
+      - `criticalCount / highFailureCount / pendingPreferredPromotionCount`
+      - `suppressedReviewCount / blockedReviewCount / weakRecoveryReviewCount`
+      - `watchReviewCount / watchVerifyCount / promoteVerifyCount / notApplicableCount`
+    - 新增：
+      - `buildIntentPromotionGraderAuditOutput(...)`
+      - `normalizeIntentPromotionGraderAuditOutput(...)`
+      - `normalizeIntentPromotionGraderSummary(...)`
+      - `summarizeIntentPromotionGraderOutputs(...)`
+  - `lib/capability-verification-service.ts`
+    - capability recommendation candidate 现在在：
+      - `promotionGraderInput`
+      - `promotionGraderDecision`
+      之后，会继续构造 `promotionGraderAudit`
+    - queue item 现在额外透传：
+      - `promotionGraderAudit`
+    - queue summary 现在额外透传：
+      - `promotionGraderSummary`
+    - 这意味着 route / service 层已经不再只能看散装 decision 字段，而是有了正式 summary 出口
+  - `lib/intent-starter-helper-health.ts`
+    - helper health summary 现在开始复用 verification queue 的 grader 输出：
+      - 从 queue items 聚合共享 `promotionGraderSummary`
+    - 当前仍不把 decision 直接灌进 helper item：
+      - 先让 summary 口径稳定，再决定是否下钻到单 item
+  - `lib/intent-starter-helper-health-snapshot.ts`
+    - helper health snapshot 的 summary 归一化已兼容：
+      - `promotionGraderSummary`
+    - 老快照即使没有新字段，也会自动补零，不需要重刷历史 audit
+  - `components/ProjectIntentWorkbench.tsx`
+    - 前端响应类型已预留：
+      - queue item 的 `promotionGraderAudit`
+      - queue summary / helper health summary 的 `promotionGraderSummary`
+    - 本轮仍不额外堆 UI，只先把服务端 schema 和快照读写收口
+  - 测试：
+    - 新增 `tests/unit/intent-promotion-grader-output.spec.ts`
+    - 已补 service / helper health / snapshot 侧断言，覆盖 audit + summary 输出与 legacy fallback
+- 当前闭环效果：
+  - promotion 侧现在已经形成四层结构：
+    - `promotionEvidence`
+    - `promotionGraderInput`
+    - `promotionGraderDecision`
+    - `promotionGraderAudit / promotionGraderSummary`
+  - queue summary 与 helper health summary 现在已经开始消费同一份 grader summary，而不是各自再写一套 decision 统计。
+  - 这意味着后续如果继续做：
+    - promotion governance audit record
+    - queue drill-down
+    - helper health 下钻
+    都可以围绕同一份 output schema 扩展。
+- 验证：
+  - `npx vitest run tests/unit/intent-promotion-grader-output.spec.ts tests/unit/capability-verification-service.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-snapshot.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts tests/unit/capability-verification-recommendation-queue.spec.ts tests/unit/api-project-capability-helper-health-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 7 个测试文件通过
+    - 31 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备阶段继续收口（promotion grader 已具备 input + decision + output 三层共享出口）
+- 风险 / 未完成：
+  - 这轮补的是共享 output，不是正式 audit record：
+    - 还没有把 `promotionGraderAudit` 单独落盘到治理审计文件
+  - helper health 当前只在 summary 层消费 grader 输出：
+    - 还没有把 decision / audit 直接下推到 helper item drill-down
+  - 前端类型虽然已经预留：
+    - 还没有实际渲染 `promotionGraderAudit / promotionGraderSummary`
+- 下一步：
+  - 继续 `R5`：
+    - 评估把 `promotionGraderAudit` 下推到 queue / helper health 的 drill-down 数据面
+    - 定义第一版 promotion governance audit record，开始复用 `promotionGraderAudit`
+    - 再决定是否让 batch governance / focus 排序直接消费 `promotionGraderSummary`
+
+## 2026-03-25 第一百一十次更新（R5 预备第八十六刀：promotion grader audit 下推到 helper health drill-down）
+
+- 本轮目标：
+  - 不只让 queue item 自己带 `promotionGraderAudit`。
+  - 把这份 audit / decision 上下文继续下推到 helper health 的 drill-down 数据面，避免进入 helper item 后又退化成只剩推荐类型。
+- 已完成：
+  - `lib/intent-starter-helper-health.ts`
+    - `IntentStarterHelperHealthQueueItem` 现在新增：
+      - `promotionGraderDecision`
+      - `promotionGraderAudit`
+    - helper health 在收敛 verification queue items 时，不再只保留：
+      - `capabilityUid`
+      - `recommendationKind`
+      - `recommendedMode`
+      - `lastVerificationIntent`
+    - 现在会同步保留标准化后的：
+      - `promotionGraderDecision`
+      - `promotionGraderAudit`
+    - 这意味着 helper item 内部的 `queueItems` drill-down，已经能看到：
+      - 当前 decision kind
+      - review / verify 动作
+      - supporting rules / audit ids
+      - 是否 suppressed / high failure / weak recovery
+      等 promotion grader 上下文
+  - `lib/intent-starter-helper-health-snapshot.ts`
+    - helper health snapshot 的 `queueItems` 归一化已兼容：
+      - `promotionGraderDecision`
+      - `promotionGraderAudit`
+    - 快照写回再读出时，不会再把这些 drill-down 字段丢掉
+  - `components/ProjectIntentWorkbench.tsx`
+    - helper health item 的前端类型已预留 `queueItems[*].promotionGraderDecision / promotionGraderAudit`
+    - 本轮仍不额外堆 UI，先把数据面打通
+  - 测试：
+    - `tests/unit/intent-starter-helper-health.spec.ts`
+      - 覆盖 helper item queue drill-down 保留 decision / audit
+    - `tests/unit/intent-starter-helper-health-snapshot.spec.ts`
+      - 覆盖 snapshot 写回 / 读取后 queue drill-down 字段仍存在
+    - `tests/unit/intent-starter-helper-health-service.spec.ts`
+      - 覆盖 service fresh snapshot 场景下，queue item drill-down 透传 grader audit
+- 当前闭环效果：
+  - queue item 已经不是唯一能看到 promotion grader audit 的地方。
+  - helper health 现在也能直接承接 queue drill-down 的 audit / decision 上下文，后续做：
+    - helper health drill-down UI
+    - governance target 复盘
+    - helper 级 promotion 复核
+    时，不需要再回头重新拼 queue item 原始对象。
+- 验证：
+  - `npx vitest run tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-snapshot.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts tests/unit/capability-verification-service.spec.ts tests/unit/intent-promotion-grader-output.spec.ts tests/unit/capability-verification-recommendation-queue.spec.ts tests/unit/api-project-capability-helper-health-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 7 个测试文件通过
+    - 31 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备阶段继续收口（promotion grader 已具备 queue summary + helper health drill-down 两侧数据出口）
+- 风险 / 未完成：
+  - 这轮仍然没有正式落治理审计文件：
+    - `promotionGraderAudit` 目前还是运行时输出，不是 governance audit record
+  - helper health 虽然已经拿到 drill-down 数据：
+    - 前端还没有实际渲染这部分字段
+  - 还没有把 grader audit 与 batch governance / manual review 入口正式串起来
+- 下一步：
+  - 继续 `R5`：
+    - 定义第一版 promotion governance audit record
+    - 让治理动作开始复用 `promotionGraderAudit`
+    - 再决定是否补 route / workbench 的 audit drill-down 展示
+
+## 2026-03-25 第一百一十一次更新（R5 预备第八十七刀：promotion governance audit record 落地并接入治理动作）
+
+- 本轮目标：
+  - 不再只停留在 `promotionGraderAudit` 运行时对象。
+  - 直接补第一版 `promotion governance audit record`，并让现有治理动作在启动批次后把共享 audit 落盘，形成可回放的治理记录。
+- 已完成：
+  - `lib/intent-promotion-governance-audit.ts`
+    - 新增共享 `IntentPromotionGovernanceAuditEntry` schema，当前版本为 `version: 1`。
+    - 当前 entry 已稳定透出：
+      - `actionKind`
+        - `promotion_verify_batch`
+        - `promotion_review_batch`
+        - `high_failure_review_batch`
+        - `suppressed_helper_review_batch`
+        - `recommended_review_batch`
+      - `sourceView`
+        - `verification_queue`
+        - `helper_health`
+      - `batchUid / moduleUid / moduleName`
+      - `summary`
+        - `itemCount / helperCount`
+        - `verifyExecutionCount / reviewExecutionCount`
+        - `promotionGraderSummary`
+      - `items[*]`
+        - `capabilityUid / capabilityName`
+        - `sourceHelper`
+        - `recommendationKind / recommendedMode / verificationIntent`
+        - `configUid / planUid / executionUid / runPath`
+        - `promotionGraderAudit`
+    - 新增：
+      - `createIntentPromotionGovernanceAuditEntry(...)`
+      - `normalizeIntentPromotionGovernanceAuditEntry(...)`
+      - `writeIntentPromotionGovernanceAuditEntry(...)`
+      - `listIntentPromotionGovernanceAuditEntries(...)`
+      - `getIntentPromotionGovernanceAuditPath()`
+    - 默认审计文件路径：
+      - `reports/intent-promotion-governance.audit.jsonl`
+  - `app/api/projects/[projectUid]/capabilities/promotion-governance-audits/route.ts`
+    - 新增项目级 `GET/POST` route：
+      - `GET`
+        - viewer 可读项目内 promotion governance 审计
+      - `POST`
+        - owner / editor 可写 promotion governance 审计
+    - 这意味着审计不再只是前端本地 state，而是进入受权限保护的服务端记录面
+  - `components/ProjectIntentWorkbench.tsx`
+    - `launchCapabilityVerificationBatch(...)` 现在支持可选 `governanceAudit` 上下文
+    - 批次启动成功后，会把真实启动结果：
+      - `configUid`
+      - `planUid`
+      - `executionUid`
+      - `runPath`
+      与来源侧已有的：
+      - `promotionGraderAudit`
+      一起写入新审计 route
+    - 已接入的治理动作包括：
+      - 推荐队列：保守复核
+      - 高频失败：保守复核
+      - 提级治理：能力验证
+      - 提级治理：保守复核
+      - Helper 健康：已过滤高频复核
+    - 这轮特意保持：
+      - 审计写入失败不会阻断批量验证启动
+      - 只会把错误追加到 notice，避免治理动作被审计链路反向拖死
+- 当前闭环效果：
+  - promotion 侧现在不只是：
+    - `promotionEvidence -> graderInput -> graderDecision -> graderAudit`
+  - 还新增了正式治理审计层：
+    - `promotionGovernanceAuditRecord`
+  - 且这份记录已经能绑定到真实的：
+    - `configUid / planUid / executionUid`
+  - 这样后续做：
+    - audit drill-down
+    - 批次治理复盘
+    - activity / execution 关联追踪
+    时，已经不需要再从临时 notice 或批次 state 倒推上下文。
+- 验证：
+  - `npx vitest run tests/unit/intent-promotion-governance-audit.spec.ts tests/unit/api-project-capability-promotion-governance-audits-route.spec.ts tests/unit/intent-promotion-grader-output.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-snapshot.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts tests/unit/capability-verification-service.spec.ts tests/unit/api-project-capability-helper-health-route.spec.ts tests/unit/capability-verification-recommendation-queue.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 9 个测试文件通过
+    - 34 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备阶段继续收口（promotion governance 已具备审计落盘与治理动作接线）
+- 风险 / 未完成：
+  - 当前 promotion governance audit 还没有前端展示入口：
+    - route / JSONL 已有，但 workbench 还没有 audit drill-down 区块
+  - 这轮审计主要记录“治理动作发起时刻”的上下文：
+    - 还没有继续把后续 execution outcome 自动回写到同一 audit 记录
+  - 还没有把 `governanceAuditId` 进一步挂进 activity log / artifact meta：
+    - 目前仍主要靠 `executionUid / planUid / configUid` 做关联
+- 下一步：
+  - 继续 `R5`：
+    - 评估是否给 workbench / route 增加 promotion governance audit drill-down 展示
+    - 再决定是否把 `governanceAuditId` 下推到 activity log / execution artifact meta
+    - 让后续治理复盘可以从 execution 直接追溯到 promotion governance audit
+
+## 2026-03-25 第一百一十二次更新（R5 收口决议：冻结 scope，只保留 md 中必需交付）
+
+- 本轮目标：
+  - 停止 `R5` 继续因为“评估 / 再决定 / 可选展示”而无限延长。
+  - 只按当前 roadmap 已经落地的必需能力定义收口，不再把可选增强混进 `R5` 完成条件。
+- 已完成：
+  - 当前 `R5` 必需交付，到第一百一十一次更新为止已经具备：
+    - `promotionEvidence -> promotionGraderInput -> promotionGraderDecision -> promotionGraderAudit`
+      的共享结构链
+    - `promotion governance audit record` 的正式落盘
+    - 治理动作启动后写入 audit 的接线能力
+    - 对应单测与 `build` 通过
+  - 因此从 roadmap 管理口径上：
+    - `R5 预备阶段` 到此收口完成
+    - 不再继续把下面这些内容算作本阶段必须项
+  - 明确后移，不纳入当前 `R5` 收口：
+    - workbench 上新增 promotion governance audit drill-down 展示
+    - 把 execution outcome 自动回写到同一条 governance audit record
+    - 把 `governanceAuditId` 下推到 activity log / execution artifact meta
+    - 其他任何“先评估是否要补”的展示型或追踪型增强
+  - 原因：
+    - 上述事项都属于“治理回放增强”或“追踪便利性增强”。
+    - 它们不会改变当前 learning / governance 主链是否成立，只会继续扩大 `R5` 边界。
+    - 如果继续把这些项目留在 `R5`，会让阶段目标持续漂移，造成“长期做不完”的感受。
+- 验证：
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R5：预备阶段已完成，后续增强项不再并入本阶段
+- 风险 / 未完成：
+  - 真正完整的 `R5` 主命题如果继续展开，仍然会涉及：
+    - `scenario grader`
+    - `verifier grader`
+    - `failure root-cause grader`
+  - 但这已经不再属于当前这条 roadmap 收尾链的必要范围，应单独立项，不再挂在本次 `R5` 收口后面。
+- 之后的执行原则：
+  - 只在 roadmap 里写“必须做完才算阶段成立”的事项。
+  - `评估是否 / 再决定 / 可以考虑` 这类条目，默认进入后续 backlog，不再自动演进成当前阶段任务。
+- 下一步：
+  - 从 roadmap 角度，`R5` 这段收口到这里结束。
+  - 后续如果继续开发，应新开阶段或新编号，单独定义目标，不再沿用当前 `R5` 收尾链追加。
+
+## 2026-03-25 第一百一十三次更新（R4 第一刀：deterministic recipe registry schema + seeded matcher）
+
+- 本轮目标：
+  - 正式启动 `R4`，但先只做最小可用底座。
+  - 不直接改主执行路由，先补运行期 `recipe registry` 的共享 schema、首批 seed recipes 和 matcher，并把命中结果注入生成 prompt。
+- 已完成：
+  - `lib/intent-recipe-registry.ts`
+    - 新增共享 `IntentRecipe` schema，当前版本为 `version: 1`。
+    - 第一版 schema 已覆盖 `R4` 文档里要求的核心字段：
+      - `slug`
+      - `matchers`
+      - `requiredContext`
+      - `executorPlan`
+      - `verifierPlan`
+      - `knownPitfalls`
+      - `successRate`
+      - `lastVerifiedAt`
+    - 新增：
+      - `listBuiltinIntentRecipes(...)`
+      - `selectIntentRecipeRegistry(...)`
+      - `renderIntentRecipeRegistry(...)`
+  - 首批 seeded runtime recipes 已落地：
+    - `auth.unified-login`
+    - `ui.antd-modal-drawer-save`
+    - `assert.antd-table-primary-key-search`
+    - `business.create`
+    - `business.list-ownership-switch`
+  - 第一版 matcher 当前开始消费：
+    - `AuthConfig.loginUrl`
+    - `IntentActionDSL`
+      - `summary`
+      - `allowedActions`
+      - `preferredHelpers`
+      - `sharedVariables`
+    - `snapshot.url / title`
+    - 上游偏好的 capability slugs
+    - 这样 recipe 命中不再只靠 URL 或文案，而是已经开始读结构化 planning 信号。
+  - `lib/test-generator.ts`
+    - `ResolvedPromptPlanningContext` 现在新增 `recipes`
+    - planning 阶段会在：
+      - project knowledge
+      - starter helper
+      之后，额外计算命中的 deterministic recipes
+    - 生成 prompt 现在会新增：
+      - `## Deterministic Recipe Registry（命中时优先复用）`
+    - 当前会把命中 recipe 的：
+      - `requiredContext`
+      - `executorPlan`
+      - `verifierPlan`
+      - `knownPitfalls`
+      直接注入 prompt，要求模型优先沿用这套稳定模板，而不是再次自由发挥
+  - 测试：
+    - 新增 `tests/unit/intent-recipe-registry.spec.ts`
+      - 覆盖 business list ownership / primary-key search / modal-save 三类 recipe 命中
+      - 覆盖 registry 渲染输出
+    - `tests/unit/test-generator.spec.ts`
+      - 已补 prompt 注入断言，覆盖命中 recipe 后的 prompt section
+- 验证：
+  - `npx vitest run tests/unit/intent-recipe-registry.spec.ts tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 2 个测试文件通过
+    - 49 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：进行中（R4 第一刀：deterministic recipe registry schema + seeded matcher 已落地）
+  - R5：预备阶段已完成，后续增强项不再并入本阶段
+- 风险 / 未完成：
+  - 当前 recipe registry 还只是：
+    - shared schema
+    - seeded matcher
+    - prompt 注入层
+  - 还没有正式进入：
+    - 主执行路由的 deterministic router
+    - `ExecutionPlan / VerificationPlan` 的默认 recipe 化编排
+    - 项目级 recipe 持久化与 successRate / lastVerifiedAt 回填
+  - 因此这一步的价值主要是：
+    - 先把 recipe 从“概念”变成运行期一等对象
+    - 还不是完整的 R4 router
+- 下一步：
+  - 继续 `R4`：
+    - 让命中的 deterministic recipe 开始进入 `ExecutionPlan / VerificationPlan` 的默认编排输入
+    - 再逐步推进“优先命中稳定 recipe，其次才回退通用 planner”的真正 runtime router
+
+## 2026-03-25 第一百一十四次更新（R4 第二刀：matched recipe 下推到 ExecutionPlan / VerificationPlan 默认编排输入）
+
+- 本轮目标：
+  - 不让 deterministic recipe 继续只停留在 prompt 说明区。
+  - 让命中的 recipe 正式进入 `ExecutionPlan / VerificationPlan` 的结构化默认编排输入，形成可追踪、可回放的 planning 证据。
+- 已完成：
+  - `lib/intent-execution-plan.ts`
+    - `BuildIntentExecutionPlanInput` 现在支持可选 `recipes`
+    - `ExecutionPlan` / `VerificationPlan` 现在开始稳定透出：
+      - `matchedRecipeSlugs`
+    - `buildIntentExecutionPlan(...)`
+      - 不再只原样透传 DSL
+      - 现在会把命中 recipe 的：
+        - `executorPlan`
+        - `knownPitfalls`
+        收敛进 `globalRules`
+      - 这意味着 recipe 已经进入结构化执行计划，而不是继续只存在于 prompt 自由文案
+    - `buildIntentVerificationPlan(...)`
+      - 现在会把命中 recipe 的：
+        - `verifierPlan`
+        - `knownPitfalls`
+        收敛进 `policyNotes`
+      - review 意图原有保守复核约束仍保留，但已开始与 recipe 固定验收链并列存在
+    - `renderIntentExecutionPlan(...)` / `renderIntentVerificationPlan(...)`
+      - 现在会显式渲染：
+        - `matchedRecipes`
+      - 这样后续看 run / prompt / plan 时，不需要再猜这轮 planning 到底吃了哪些 deterministic recipes
+  - `lib/test-generator.ts`
+    - planning 阶段算出的 `recipes`，现在不再只给 prompt section 使用
+    - 已继续下传给：
+      - `buildIntentExecutionPlan(...)`
+      - `buildIntentVerificationPlan(...)`
+    - 这样 matched recipe 已正式进入 plan builder，而不是只停留在 prompt 展示层
+  - `lib/intent-execution-compiler.ts`
+    - `VerificationPlan.policyNotes` 在编译阶段不再统一写成“复核约束”
+    - 当前会按意图区分：
+      - `review` -> `复核约束`
+      - `verify` -> `验收约束`
+    - 这样 recipe verifier notes 进入 verify 链时，文案不会失真
+  - `lib/ai/intent-e2e-run-registry.ts`
+    - run state clone 已兼容：
+      - `executionPlan.matchedRecipeSlugs`
+      - `verificationPlan.matchedRecipeSlugs`
+      - `verificationPlan.policyNotes`
+    - recipe 影响过的 plan 在 run snapshot / workspace 读写链中不会被克隆时丢失
+  - 测试：
+    - `tests/unit/intent-execution-plan.spec.ts`
+      - 新增断言，覆盖 matched recipe 下推到：
+        - `ExecutionPlan.matchedRecipeSlugs`
+        - `ExecutionPlan.globalRules`
+        - `VerificationPlan.matchedRecipeSlugs`
+        - `VerificationPlan.policyNotes`
+      - 并覆盖 render 输出里的 `matchedRecipes`
+- 验证：
+  - `npx vitest run tests/unit/intent-recipe-registry.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 57 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：进行中（R4 第二刀：matched recipe 已进入 ExecutionPlan / VerificationPlan 默认编排输入）
+  - R5：预备阶段已完成，后续增强项不再并入本阶段
+- 风险 / 未完成：
+  - 当前 recipe 已经进入 plan builder，但还没有做到：
+    - 命中 recipe 后优先由 runtime router 直接走 deterministic recipe 分支
+    - recipe 级 `successRate / lastVerifiedAt` 的真实回写
+    - 项目级 recipe 的持久化注册与升级/降级治理
+  - 也就是说，这一步已经解决“recipe 是不是 planning 一等输入”的问题，但还没解决“recipe 是否已经成为主执行路由入口”的问题
+- 下一步：
+  - 继续 `R4`：
+    - 开始推进真正的 runtime router：
+      - 优先命中稳定 recipe
+      - 未命中时才回退通用 planner
+    - 再补 recipe 级真实验证回写，让 `successRate / lastVerifiedAt` 不再只是 seeded 占位字段
+
+## 2026-03-25 第一百一十五次更新（R4 第三刀：runtime recipe router 优先命中 deterministic template）
+
+- 本轮目标：
+  - 把现有 deterministic template 分流点从硬编码 heuristics 收口为 recipe-first runtime router。
+  - 让 `generateTest(...) / repairTest(...)` 优先按 matched recipe 命中稳定模板，未命中时才继续走 compiled template / 通用 prompt 路径。
+- 已完成：
+  - `lib/intent-recipe-registry.ts`
+    - seeded runtime recipes 已补齐当前已有 deterministic template 家族：
+      - `business.batch-add-contacts`
+      - `commission.service-ratio-config`
+      - `business.create-to-order`
+    - recipe matcher 的 haystack 已收紧：
+      - 不再读取 DSL 自动生成的 `globalRules / requiredAssertions / forbiddenPatterns`
+      - 只保留任务语义更干净的目标 URL、summary、step title/target/goal
+    - 这样避免了通用 helper 示例里的“生成订单”等文案反向污染 recipe 命中。
+  - `lib/test-generator.ts`
+    - 新增 recipe-first existing-example 路由：
+      - `listExistingExampleCandidates(...)`
+      - `RECIPE_FIRST_EXISTING_EXAMPLE_CANDIDATES`
+    - 现在 `loadExistingExample(...)` 会先按 matched recipe 选择 seed example，再回退旧 heuristics。
+    - 新增 recipe-first deterministic template resolver：
+      - `resolveDeterministicRecipeTemplate(...)`
+      - `RECIPE_FIRST_TEMPLATE_RESOLVERS`
+    - `resolveDeterministicTemplate(...)` 现在执行顺序变为：
+      - 先按 `planning.recipes` 命中 runtime recipe template
+      - 未命中时再回退旧 heuristics
+    - `generateTest(...) / repairTest(...)`
+      - 现在会先拿到 `resolvedPlanning`
+      - 再按 matched recipe 做 deterministic template 分流
+      - 命中时直接短路返回稳定脚本，不再继续进入 LLM 生成或 slot patch 路径
+  - 测试：
+    - `tests/unit/intent-recipe-registry.spec.ts`
+      - 已补 create-order / batch-add-contacts runtime recipe 命中断言
+    - `tests/unit/test-generator.spec.ts`
+      - 已补“legacy heuristics 不命中，但 matched recipe 可命中 deterministic template”断言
+    - `tests/unit/test-generator-structured.spec.ts`
+      - 已补 `generateTest(...)` 命中 recipe 后直接短路，不再调用 `callLLMStructured / callLLMStream` 的断言
+- 验证：
+  - `npx vitest run tests/unit/intent-recipe-registry.spec.ts tests/unit/test-generator.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/intent-execution-plan.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 4 个测试文件通过
+    - 62 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：进行中（R4 第三刀：runtime recipe router 已优先命中 deterministic template）
+  - R5：预备阶段已完成，后续增强项不再并入本阶段
+- 风险 / 未完成：
+  - 当前 runtime router 只覆盖“已落地 deterministic 模板族”，还不是所有 recipe 都能直接短路到稳定脚本。
+  - recipe 级 `successRate / lastVerifiedAt` 仍然是 seeded 占位字段，还没有真实 run 回写。
+  - 项目级 recipe 持久化注册、升级 / 降级治理也还没开始。
+- 下一步：
+  - 继续 `R4`：
+    - 补 recipe 级真实验证回写
+      - `successRate`
+      - `lastVerifiedAt`
+    - 让 runtime recipe 不再只是 seeded 静态资产，而能开始接真实 run 证据
+
+## 2026-03-26 第一百一十六次更新（R4 第四刀：recipe performance 真实回写并注入 planning）
+
+- 本轮目标：
+  - 不改 DB schema，直接从 terminal run snapshot 里回收 matched recipe 证据。
+  - 把 recipe 的 `successRate / lastVerifiedAt` 从 seeded 占位字段改成真实 run 聚合结果，并在 planning / prompt 命中链路里生效。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - `normalizeTerminalRun(...)` 现在会从：
+      - `result.executionPlan.matchedRecipeSlugs`
+      - `result.verificationPlan.matchedRecipeSlugs`
+      合并提取当前 run 命中的 recipe slug。
+    - 新增 `buildIntentE2ERecipePerformanceMapFromData(...)`
+      - 基于 terminal runs 聚合：
+        - `runCount`
+        - `passedRuns`
+        - `failedRuns`
+        - `canceledRuns`
+        - `successRate`
+        - `lastVerifiedAt`
+    - 新增 `getIntentE2ERecipePerformanceMap(...)`
+      - 按项目读取最近 terminal run snapshot，并返回 recipe performance map
+      - 这样 recipe 指标来源正式切到真实 run 证据，而不是继续停留在静态 seed
+  - `lib/intent-recipe-registry.ts`
+    - 新增 `IntentRecipePerformanceFeedback`
+    - `SelectIntentRecipeRegistryInput` 现在支持：
+      - `performanceBySlug`
+    - `listBuiltinIntentRecipes(...)`
+      - 会把真实 recipe performance overlay 回 builtin recipes
+    - recipe 排序现在在 score 相同情况下，会继续参考：
+      - `successRate`
+      - `lastVerifiedAt`
+    - `formatRecipePercent(...)` 也已调整：
+      - 非整数真实百分比保留 1 位小数，避免 `83.3%` 被压成 `83%`
+  - `lib/test-generator.ts`
+    - `ResolveIntentPromptPlanningOptions` 现在支持：
+      - `recipePerformanceBySlug`
+    - `resolveIntentPromptPlanningContext(...)`
+      - 在 `selectIntentRecipeRegistry(...)` 时，已把 recipe performance 一并注入
+    - 这样 matched recipe 在 prompt / plan 渲染时，已经能显示真实：
+      - `成功率`
+      - `最近验证`
+  - `lib/ai/intent-e2e-service.ts`
+    - 生成前已新增 `loadIntentE2ERecipePerformanceFeedback(...)`
+    - 当前主链会和：
+      - `rulePerformanceById`
+      - `starterHelpers`
+      一起并行加载项目级 recipe feedback
+    - 并在 `resolveIntentPromptPlanningContext(...)` 时注入 `recipePerformanceBySlug`
+    - 这意味着 runtime recipe 已开始吃到真实项目 run 反馈，而不是继续只靠 seeded 静态定义
+  - 测试：
+    - `tests/unit/intent-e2e-insights.spec.ts`
+      - 已补 terminal run -> recipe performance map 聚合断言
+    - `tests/unit/test-generator.spec.ts`
+      - 已补 recipe performance overlay 到 matched recipe / prompt 的断言
+    - `tests/unit/intent-e2e-service.spec.ts`
+      - 已补 service 把 `recipePerformanceBySlug` 注入 planning 的断言
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-recipe-registry.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 4 个测试文件通过
+    - 92 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：进行中（R4 第四刀：recipe performance 已从真实 run 回写并注入 planning）
+  - R5：预备阶段已完成，后续增强项不再并入本阶段
+- 风险 / 未完成：
+  - 当前 recipe performance 仍是“按最近 terminal run 聚合”的轻量反馈，不是项目级持久化 recipe 资产。
+  - 还没有做：
+    - 项目级 recipe 注册表持久化
+    - recipe 自动升级 / 降级治理
+    - recipe trace -> grader -> promotion 的学习闭环
+  - 也就是说，这一步已经解决“recipe 是否开始吃真实 run 证据”的问题，但还没进入 recipe 生命周期治理。
+- 下一步：
+  - 继续 `R4`：
+    - 开始补项目级 recipe 注册 / 持久化入口
+    - 为后续 recipe 升级、降级和治理闭环准备稳定的项目级载体
+
+## 2026-03-26 第一百一十七次更新（R4 第五刀：项目级 recipe 注册表持久化入口）
+
+- 本轮目标：
+  - 不改 DB schema、也不扩 UI / workbench，只补项目级 recipe 资产的最小 JSON 持久化载体。
+  - 让 runtime recipe 选择链路不再只读 builtin seeded recipes，而是可以自动合并项目级 registry。
+- 已完成：
+  - `lib/intent-project-recipe-registry.ts`
+    - 新增项目级 recipe profile：
+      - `IntentProjectRecipeProfile`
+    - 默认持久化路径已定为：
+      - `intent-e2e.project-recipes.json`
+    - 支持环境变量覆盖：
+      - `INTENT_E2E_PROJECT_RECIPE_REGISTRY_PATH`
+    - 已补最小读写能力：
+      - `getIntentProjectRecipeProfile()`
+      - `listIntentProjectRecipes()`
+      - `writeIntentProjectRecipeProfile()`
+      - `registerIntentProjectRecipes()`
+      - `resetIntentProjectRecipeCache()`
+    - 同时补了 normalize / clone / cache，保证项目级 recipe 在读盘、写盘、运行期加载时结构稳定。
+  - `lib/intent-recipe-registry.ts`
+    - 新增 `listIntentRecipes(...)`
+      - 统一合并：
+        - builtin runtime recipes
+        - project persisted recipes
+    - `selectIntentRecipeRegistry(...)`
+      - 现在不再只看 builtin registry，而是直接使用合并后的 runtime recipes。
+    - 若项目级 recipe 与 builtin recipe `slug` 相同：
+      - 当前按项目级 recipe 覆盖 builtin 定义
+      - 这样后续 recipe 升级 / 降级时已有稳定的项目级替换入口
+    - recipe performance feedback 仍会同时 overlay 到：
+      - builtin recipe
+      - project recipe
+  - 测试：
+    - 新增 `tests/unit/intent-project-recipe-registry.spec.ts`
+      - 验证项目级 recipe 可注册并写入持久化 profile
+      - 验证项目级同 slug recipe 可覆盖 builtin recipe
+      - 验证 planning 会自动读到项目级持久化 recipe
+    - `tests/unit/intent-recipe-registry.spec.ts`
+      - 现有 recipe matcher 回归通过
+    - `tests/unit/test-generator.spec.ts`
+      - 现有 planning / prompt 链路回归通过
+    - `tests/unit/intent-e2e-service.spec.ts`
+      - 主生成链路回归通过，确认这一步没有破坏 service 注入路径
+- 验证：
+  - `npx vitest run tests/unit/intent-project-recipe-registry.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/test-generator.spec.ts`
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 4 个测试文件通过
+    - 64 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：进行中（R4 第五刀：项目级 recipe 注册表持久化入口已落地）
+  - R5：预备阶段已完成，后续增强项不再并入本阶段
+- 风险 / 未完成：
+  - 当前只补了项目级 recipe JSON 载体与运行期自动加载，还没有做：
+    - recipe backup / audit / restore
+    - recipe 自动 promotion / degradation
+    - recipe 的 API / workbench 管理入口
+  - 也就是说，这一步解决的是“project-level recipe 有没有稳定资产载体”，还没进入 recipe 生命周期治理。
+- 下一步：
+  - 继续 `R4`：
+    - 补项目级 recipe 的最小 merge / update 策略
+    - 为后续 recipe 升级、降级和治理闭环准备可控写入口
+
+## 2026-03-26 第一百一十八次更新（R4 第六刀：项目级 recipe 最小 merge / update 策略）
+
+- 本轮目标：
+  - 在已落地的项目级 recipe JSON 载体上，补最小可控写入口。
+  - 区分：
+    - 全量注册 / 替换
+    - 增量 merge
+    - 单条 update
+  - 先解决后续 recipe 升级 / 降级时“怎么稳定落盘”的问题，不做治理决策本身。
+- 已完成：
+  - `lib/intent-project-recipe-registry.ts`
+    - 新增：
+      - `IntentProjectRecipeMergeInput`
+      - `MergeIntentProjectRecipesResult`
+    - 新增 `mergeIntentProjectRecipes(...)`
+      - 对已存在 recipe：
+        - 标题 / 描述默认保留旧值
+        - `matchers` 里的数组字段走去重合并
+        - `requiredContext / executorPlan / verifierPlan / knownPitfalls` 走去重合并
+        - `successRate / lastVerifiedAt` 若显式提供则更新
+      - 对不存在 recipe：
+        - 若具备最小必要字段，则新增
+        - 若缺少 `title / description`，则跳过
+      - 结果会返回：
+        - `beforeRecipeCount`
+        - `afterRecipeCount`
+        - `addedRecipeSlugs`
+        - `updatedRecipeSlugs`
+        - `skippedRecipeSlugs`
+    - 新增 `updateIntentProjectRecipe(...)`
+      - 作为单条 recipe 的受控 update 入口
+      - 若目标 `slug` 不存在，会直接报错
+    - 当前写入口分层已经明确：
+      - `registerIntentProjectRecipes(...)`
+        - 用于全量 recipe 注册 / 覆盖
+      - `mergeIntentProjectRecipes(...)`
+        - 用于增量合并升级
+      - `updateIntentProjectRecipe(...)`
+        - 用于单条定向更新
+  - 测试：
+    - `tests/unit/intent-project-recipe-registry.spec.ts`
+      - 已补“部分 merge 不丢旧字段”断言
+      - 已补“单条 update 生效”断言
+      - 已补“更新不存在 slug 直接失败”断言
+    - `tests/unit/intent-recipe-registry.spec.ts`
+      - recipe matcher 回归通过
+    - `tests/unit/test-generator.spec.ts`
+      - planning / prompt 回归通过
+- 验证：
+  - `npx vitest run tests/unit/intent-project-recipe-registry.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 58 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：进行中（R4 第六刀：项目级 recipe 最小 merge / update 策略已落地）
+  - R5：预备阶段已完成，后续增强项不再并入本阶段
+- 风险 / 未完成：
+  - 当前 recipe 写入口已经可控，但还没有做：
+    - recipe backup / audit / restore
+    - recipe 的自动 promotion / degradation 决策
+    - recipe 的 API / workbench 管理入口
+  - 也就是说，这一步解决的是“项目级 recipe 后续如何稳定改写”，还没解决“何时改写、谁来批准改写”。
+- 下一步：
+  - 继续 `R4`：
+    - 补项目级 recipe 的最小 backup / audit 入口
+    - 为后续 recipe 生命周期治理提供可回滚、可审计基础
+
+## 2026-03-26 第一百一十九次更新（R4 第七刀：项目级 recipe 最小 backup / audit 入口）
+
+- 本轮目标：
+  - 在已有项目级 recipe 持久化和 merge / update 写入口之上，补最小 backup / audit 基础。
+  - 先让 recipe 改写结果具备：
+    - `backupPath`
+    - backup 列表能力
+    - 审计日志写入 / 查询能力
+  - 不做 restore、不做 API / workbench，只补后续治理所需的底层基建。
+- 已完成：
+  - `lib/intent-project-recipe-registry.ts`
+    - 新增默认路径：
+      - `reports/intent-e2e.project-recipes.backups`
+      - `reports/intent-e2e.project-recipes.audit.jsonl`
+    - 支持环境变量覆盖：
+      - `INTENT_E2E_PROJECT_RECIPE_BACKUP_DIR`
+      - `INTENT_E2E_PROJECT_RECIPE_AUDIT_PATH`
+    - `registerIntentProjectRecipes(...)`
+      - 在发生实际写入时，现在会先为当前 recipe profile 生成备份
+      - 返回值已新增：
+        - `backupPath`
+    - `mergeIntentProjectRecipes(...)`
+      - 在发生实际写入时，同样会先备份当前 profile
+      - 返回值已新增：
+        - `backupPath`
+    - 新增：
+      - `getIntentProjectRecipeBackupDir()`
+      - `getIntentProjectRecipeAuditPath()`
+      - `listIntentProjectRecipeBackups(...)`
+      - `createIntentProjectRecipeAuditEntry(...)`
+      - `writeIntentProjectRecipeAuditEntry(...)`
+      - `listIntentProjectRecipeAuditEntries(...)`
+    - 当前最小审计结构已覆盖：
+      - `operation`
+      - `projectUid`
+      - `actorLabel`
+      - `writtenTo`
+      - `backupPath`
+      - `beforeRecipeCount / afterRecipeCount`
+      - `addedRecipeSlugs / updatedRecipeSlugs / skippedRecipeSlugs`
+    - 这样后续 recipe 资产变更已经不再只是“改完文件就结束”，而是开始具备：
+      - 可回看备份
+      - 可写入审计
+      - 可按项目过滤历史变更
+  - 测试：
+    - `tests/unit/intent-project-recipe-registry.spec.ts`
+      - 已补“首次注册不产生备份”断言
+      - 已补“merge 更新后生成 backupPath 并可列出备份”断言
+      - 已补 recipe audit 写入、倒序读取、按项目过滤断言
+    - `tests/unit/intent-recipe-registry.spec.ts`
+      - recipe matcher 回归通过
+    - `tests/unit/test-generator.spec.ts`
+      - planning / prompt 回归通过
+- 验证：
+  - `npx vitest run tests/unit/intent-project-recipe-registry.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 60 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：进行中（R4 第七刀：项目级 recipe 最小 backup / audit 入口已落地）
+  - R5：预备阶段已完成，后续增强项不再并入本阶段
+- 风险 / 未完成：
+  - 当前 recipe 已具备 backup / audit 基础，但还没有做：
+    - recipe backup restore
+    - 审计与写入口的 API / workbench 对接
+    - recipe 的 promotion / degradation 决策接线
+  - 也就是说，这一步解决的是“项目级 recipe 改写后能否留痕和备份”，还没解决“如何回滚或自动治理”。
+- 下一步：
+  - 继续 `R4`：
+    - 补项目级 recipe 的最小 restore 入口
+    - 为后续 recipe 生命周期治理补齐可回滚闭环
+
+## 2026-03-26 第一百二十次更新（R4 第八刀：项目级 recipe 最小 restore 入口）
+
+- 本轮目标：
+  - 在已有项目级 recipe `backup / audit` 基础上，补最小 restore 能力。
+  - 先解决“已有备份后，能不能把当前 project recipe profile 恢复回去”的问题。
+  - 不补 API / workbench，只补底层恢复函数和最小校验。
+- 已完成：
+  - `lib/intent-project-recipe-registry.ts`
+    - 新增：
+      - `IntentProjectRecipeProfileComparison`
+      - `RestoreIntentProjectRecipeBackupResult`
+    - 新增 `buildIntentProjectRecipeProfileComparison(...)`
+      - 当前 restore comparison 已覆盖：
+        - `beforeRecipeCount`
+        - `afterRecipeCount`
+        - `addedRecipeSlugs`
+        - `removedRecipeSlugs`
+        - `updatedRecipeSlugs`
+    - 新增 `restoreIntentProjectRecipeBackup(...)`
+      - 支持：
+        - 显式传入 `backupPath`
+        - 不传时默认恢复最近一条 backup
+      - 恢复前会先为当前 live profile 再创建一份 `backupCreated`
+      - 恢复后会返回：
+        - `restoredFrom`
+        - `writtenTo`
+        - `backupCreated`
+        - `comparison`
+        - `profile`
+      - 已补路径安全限制：
+        - 只允许从配置的 recipe backup 目录内恢复
+      - 当前行为已经与项目知识 restore 的最小口径对齐：
+        - 没有备份时报错
+        - 目录外路径直接阻断
+        - 恢复后 live profile 会被实际写回
+  - 测试：
+    - `tests/unit/intent-project-recipe-registry.spec.ts`
+      - 已补“按 backupPath 成功恢复 recipe profile”断言
+      - 已补“没有可用备份时直接失败”断言
+      - 已补“目录外路径禁止恢复”断言
+- 验证：
+  - `npx vitest run tests/unit/intent-project-recipe-registry.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 1 个测试文件通过
+    - 11 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：进行中（R4 第八刀：项目级 recipe 最小 restore 入口已落地）
+  - R5：预备阶段已完成，后续增强项不再并入本阶段
+- 风险 / 未完成：
+  - 当前 recipe 底层已经具备：
+    - 持久化
+    - merge / update
+    - backup / audit
+    - restore
+  - 但还没有做：
+    - 对外 API / route 入口
+    - workbench 管理入口
+    - recipe promotion / degradation 决策接线
+  - 也就是说，这一步已经补齐“底层可回滚闭环”，但外部还不能稳定调用这套能力。
+- 下一步：
+  - 继续 `R4`：
+    - 补项目级 recipe 的最小 API / route 入口
+    - 为后续 workbench 接线和治理闭环提供稳定外部调用面
+
+## 2026-03-26 第一百二十一次更新（R4 第九刀：项目级 recipe 最小 API / route 入口）
+
+- 本轮目标：
+  - 在项目级 recipe 底层能力已经具备：
+    - 持久化
+    - merge / update
+    - backup / audit
+    - restore
+    之后，补最小 project-scoped API / route 外部调用面。
+  - 先让 workbench / 后续治理不必直接依赖 lib 调用，而是有稳定 route 入口可接。
+- 已完成：
+  - `lib/intent-project-recipe-registry.ts`
+    - recipe audit operation 已补充支持：
+      - `restore`
+    - recipe audit comparison 已补充支持：
+      - `removedRecipeSlugs`
+    - 这样 restore route 不需要再伪造 comparison 字段，能直接保留真实回滚差异。
+  - 新增项目级 route：
+    - `app/api/projects/[projectUid]/intent-recipes/route.ts`
+      - `GET`
+        - 按项目权限读取当前 recipe profile
+      - `POST`
+        - 支持：
+          - `mode=register`
+          - `mode=merge`
+          - `mode=update`
+        - 变更后会写 recipe audit
+    - `app/api/projects/[projectUid]/intent-recipes/backups/route.ts`
+      - `GET`
+        - 按项目权限读取 recipe backup 列表
+    - `app/api/projects/[projectUid]/intent-recipes/backups/restore/route.ts`
+      - `POST`
+        - 按项目权限恢复 recipe backup
+        - 恢复后会写 recipe audit
+    - `app/api/projects/[projectUid]/intent-recipes/audits/route.ts`
+      - `GET`
+        - 按项目权限读取 recipe audit 列表
+  - 当前 route 口径已经统一到项目级权限模型：
+    - 只读：
+      - `owner / editor / viewer`
+    - 写入 / 恢复：
+      - `owner / editor`
+    - 返回响应都会沿用 `applyActorCookie(...)`
+    - 异常统一走 `toErrorResponse(...)`
+  - 测试：
+    - 新增 `tests/unit/api-project-intent-recipes-route.spec.ts`
+      - 验证 profile 读取、register 写入、update 分发
+    - 新增 `tests/unit/api-project-intent-recipes-backups-route.spec.ts`
+      - 验证 recipe backups route
+    - 新增 `tests/unit/api-project-intent-recipes-backup-restore-route.spec.ts`
+      - 验证 recipe restore route 与 audit 写入
+    - 新增 `tests/unit/api-project-intent-recipes-audits-route.spec.ts`
+      - 验证 recipe audits route
+    - `tests/unit/intent-project-recipe-registry.spec.ts`
+      - 现有 lib restore / audit / backup 回归继续通过
+- 验证：
+  - `npx vitest run tests/unit/api-project-intent-recipes-route.spec.ts tests/unit/api-project-intent-recipes-backups-route.spec.ts tests/unit/api-project-intent-recipes-backup-restore-route.spec.ts tests/unit/api-project-intent-recipes-audits-route.spec.ts tests/unit/intent-project-recipe-registry.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 5 个测试文件通过
+    - 17 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：进行中（R4 第九刀：项目级 recipe 最小 API / route 入口已落地）
+  - R5：预备阶段已完成，后续增强项不再并入本阶段
+- 风险 / 未完成：
+  - 当前 recipe 已具备最小 route 入口，但还没有做：
+    - workbench UI 接线
+    - route 与项目活动日志 /治理面板联动
+    - recipe promotion / degradation 决策接线
+  - 也就是说，这一步已经解决“外部能否稳定调用 recipe 资产能力”，还没解决“工作台是否已经可视化消费这套能力”。
+- 下一步：
+  - 继续 `R4`：
+    - 补 recipe workbench 的最小只读接线
+    - 先把当前 profile / backups / audits 能在项目侧被稳定查看
+
+## 2026-03-26 第一百二十二次更新（R4 第十刀：recipe workbench 最小只读接线）
+
+- 本轮目标：
+  - 在项目级 recipe 已经具备：
+    - 持久化
+    - merge / update
+    - backup / audit
+    - restore
+    - API / route
+    之后，把这套资产最小只读接到 `recipe workbench`。
+  - 本轮只解决“项目侧是否能稳定看到 recipe 资产”，不补写入口、不补 restore 按钮、不扩治理交互。
+- 已完成：
+  - `components/ProjectIntentWorkbench.tsx`
+    - 新增项目级 recipe 资产只读状态：
+      - `projectRecipeProfile`
+      - `projectRecipeBackups`
+      - `projectRecipeAudits`
+      - `projectRecipeAssetsLoading`
+      - `projectRecipeAssetsError`
+      - `projectRecipeAssetsLoadedProjectUid`
+    - 新增只读拉取逻辑：
+      - `GET /api/projects/[projectUid]/intent-recipes`
+      - `GET /api/projects/[projectUid]/intent-recipes/backups?limit=6`
+      - `GET /api/projects/[projectUid]/intent-recipes/audits?limit=6`
+    - 新增 lazy-load 接线：
+      - 仅在 workbench 打开且 `view === 'recipe'` 时加载
+      - 按 `projectUid` 做最小缓存
+      - 切项目时自动清空已加载资产态
+    - `recipe` 视图已新增“项目级 recipe 资产”只读卡片：
+      - 顶部汇总：
+        - profile 数
+        - backups 数
+        - audits 数
+      - 当前 profile：
+        - 展示前 4 条 recipe
+        - 展示 `slug / title / description / successRate / lastVerifiedAt`
+      - 最近 backups：
+        - 展示前 4 条备份
+        - 展示 `fileName / path / createdAt / sizeBytes`
+      - 最近 audits：
+        - 展示前 4 条审计
+        - 展示 `operation / title / detail / actor / occurredAt`
+      - 已补独立“刷新资产”按钮与错误提示
+      - 刷新失败但已有旧数据时，会继续展示最近一次成功结果
+  - 当前 recipe workbench 已经不再只是“输入需求 -> 生成 recipe”，而是能先看到项目级 recipe 资产现状。
+- 验证：
+  - `npm run build`
+  - 当前结果：
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：进行中（R4 第十刀：recipe workbench 最小只读接线已落地）
+  - R5：预备阶段已完成，后续增强项不再并入本阶段
+- 风险 / 未完成：
+  - 当前 workbench 还只是“只读消费 recipe 资产”，还没有：
+    - register / merge / update 的 workbench 写入口
+    - restore 的 workbench 操作入口
+    - recipe promotion / degradation 的治理接线
+  - 也就是说，这一步解决的是“能不能看”，还没解决“能不能从项目侧直接维护 recipe 资产”。
+- 下一步：
+  - 继续 `R4`：
+    - 补 recipe workbench 的最小写入口
+    - 先支持项目侧对 recipe 资产做最小 register / update 接线
+
+## 2026-03-26 第一百二十三次更新（R4 第十一刀：recipe workbench 最小写入口）
+
+- 本轮目标：
+  - 在 recipe workbench 已具备项目级 recipe 资产只读视图之后，补最小写入口。
+  - 本轮只解决：
+    - 从当前生成结果沉淀项目 recipe
+    - 已存在 slug 时走最小 update 接线
+  - 不补 restore 按钮、不补大而全管理台、不扩 promotion / degradation 治理。
+- 已完成：
+  - 新增 `lib/intent-project-recipe-workbench.ts`
+    - 抽出 workbench 纯函数：
+      - `buildIntentProjectRecipeWorkbenchFormDefaults(...)`
+      - `buildIntentProjectRecipeFromWorkbench(...)`
+      - `buildIntentProjectRecipePatchFromWorkbench(...)`
+      - `normalizeIntentProjectRecipeWorkbenchSlug(...)`
+    - 当前 workbench 不再在组件里散写 recipe payload 派生逻辑，而是统一通过纯函数生成：
+      - 默认 `slug / title / description`
+      - 派生 `matchers`
+      - 派生 `requiredContext / executorPlan / verifierPlan / knownPitfalls`
+      - 已把当前命中 capability 的 starter helper、提交态、列表回查、详情校验等高频信号收敛进 recipe 默认 helper / pitfall
+  - `components/ProjectIntentWorkbench.tsx`
+    - 新增 recipe 写入口状态：
+      - `recipeWorkbenchForm`
+      - `projectRecipeSaving`
+    - 当前生成 recipe 后，会自动预填最小表单：
+      - `slug`
+      - `title`
+      - `description`
+    - 在“编排结果”右侧新增“沉淀为项目 Recipe”卡片：
+      - 展示当前将要沉淀的：
+        - capability 数
+        - helper 数
+        - target URL 数
+      - 支持编辑 `slug / title / description`
+      - 支持“重置草稿”
+    - 已接项目级写入口：
+      - slug 不存在：
+        - `POST /api/projects/[projectUid]/intent-recipes`
+        - `mode=register`
+      - slug 已存在：
+        - `POST /api/projects/[projectUid]/intent-recipes`
+        - `mode=update`
+    - 对已存在 slug 的场景，workbench 现在会明确提示：
+      - 当前走的是 `update` merge
+      - 不会假装成整条覆盖
+      - 会展示现有 recipe 的最近验证时间与成功率
+    - 写入成功后，会自动刷新：
+      - profile
+      - backups
+      - audits
+      保证项目侧能立即看到新增或更新结果。
+    - 已补一条必要的串态修正：
+      - 切项目时会清空旧 `recipeResponse / recipeWorkbenchForm / selectedRecipeCapabilitySlugs`
+      - 避免跨项目沿用旧 recipe 结果去写入新项目资产
+  - 测试：
+    - 新增 `tests/unit/intent-project-recipe-workbench.spec.ts`
+      - 验证默认 form 预填
+      - 验证 register payload 派生
+      - 验证 update patch 派生
+      - 验证 slug normalize
+- 验证：
+  - `npx vitest run tests/unit/intent-project-recipe-workbench.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 1 个测试文件通过
+    - 4 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：进行中（R4 第十一刀：recipe workbench 最小写入口已落地）
+  - R5：预备阶段已完成，后续增强项不再并入本阶段
+- 风险 / 未完成：
+  - 当前 workbench 已能最小写入 recipe，但还没有：
+    - 直接从 backup 列表触发 restore
+    - recipe 级审计 drill-down
+    - recipe promotion / degradation 决策接线
+  - 也就是说，这一步解决的是“能不能从项目侧沉淀 recipe”，还没解决“能不能在 workbench 里完成回滚闭环”。
+- 下一步：
+  - 继续 `R4`：
+    - 补 recipe workbench 的最小 restore 入口
+    - 先让项目侧可以从最近 backup 直接回滚 recipe profile
+
+## 2026-03-26 第一百二十四次更新（R4 第十二刀：recipe workbench 最小 restore 入口）
+
+- 本轮目标：
+  - 在 recipe workbench 已具备：
+    - 项目级 recipe 资产只读视图
+    - 最小 register / update 写入口
+    之后，补最小 restore 入口。
+  - 本轮只解决“项目侧能不能直接从最近 backup 回滚 recipe profile”，不扩 recipe 审计 drill-down，不扩 promotion / degradation 治理。
+- 已完成：
+  - `components/ProjectIntentWorkbench.tsx`
+    - 新增 recipe restore 状态：
+      - `projectRecipeRestoringPath`
+    - 新增 restore 调用逻辑：
+      - `POST /api/projects/[projectUid]/intent-recipes/backups/restore`
+      - body 透传 `backupPath`
+    - 当前 restore 流程已统一到现有 workbench 交互口径：
+      - 仅 `owner / editor` 可操作
+      - 操作前二次确认
+      - 操作中按钮锁定并显示“恢复中...”
+      - 成功后自动刷新：
+        - profile
+        - backups
+        - audits
+      - 失败统一走现有错误提示
+    - “最近 Backups”卡片现在已新增“恢复此备份”按钮：
+      - 可直接按备份项触发回滚
+      - 不再需要绕过 workbench 手工调用 restore route
+  - 当前 recipe workbench 已具备最小回滚闭环：
+    - 看得到 recipe 资产
+    - 能沉淀 recipe
+    - 能从 backup 直接恢复
+- 验证：
+  - `npx vitest run tests/unit/api-project-intent-recipes-backup-restore-route.spec.ts`
+  - `npm run build`
+  - 当前结果：
+    - 1 个测试文件通过
+    - 1 个测试通过
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：进行中（R4 第十二刀：recipe workbench 最小 restore 入口已落地）
+  - R5：预备阶段已完成，后续增强项不再并入本阶段
+- 风险 / 未完成：
+  - 当前 recipe workbench 已具备最小资产闭环，但还没有：
+    - recipe 级审计 drill-down
+    - recipe promotion / degradation 决策接线
+  - 也就是说，这一步解决的是“能不能在 workbench 内完成回滚”，还没解决“变更细节能否充分复盘”和“recipe 生命周期治理是否真正接线”。
+- 下一步：
+  - 继续 `R4`：
+    - 补 recipe 级审计 drill-down
+    - 先让 workbench 里的 audit 项可以直接展开看到 comparison / backupPath / writtenTo 等变更细节
+
+## 2026-03-26 第一百二十五次更新（R4 第十三刀：recipe 级审计 drill-down）
+
+- 本轮目标：
+  - 在 recipe workbench 已具备：
+    - 只读资产视图
+    - 最小写入口
+    - 最小 restore 入口
+    之后，补 recipe 级审计 drill-down。
+  - 本轮只解决“最近 audit 能不能展开看变更细节”，不扩新 route、不做 recipe promotion / degradation 决策。
+- 已完成：
+  - `components/ProjectIntentWorkbench.tsx`
+    - 新增审计展开状态：
+      - `expandedProjectRecipeAuditIds`
+    - 新增最小 drill-down 控制：
+      - `展开细节`
+      - `收起细节`
+    - “最近 Audits”卡片现在已支持按条展开查看：
+      - `writtenTo`
+      - `backupPath`
+      - `beforeRecipeCount -> afterRecipeCount`
+      - `addedRecipeSlugs`
+      - `removedRecipeSlugs`
+      - `updatedRecipeSlugs`
+      - `skippedRecipeSlugs`
+      - `auditId`
+    - 切项目时会自动清空已展开 audit 状态，避免跨项目串态。
+  - 当前 recipe workbench 已经不再只停留在“看到有 audit”，而是能直接复盘这次变更到底改了什么。
+- 验证：
+  - `npm run build`
+  - 当前结果：
+    - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：进行中（R4 第十三刀：recipe 级审计 drill-down 已落地）
+  - R5：预备阶段已完成，后续增强项不再并入本阶段
+- 风险 / 未完成：
+  - 当前 R4 还没有完成，剩余缺口只剩：
+    - recipe promotion / degradation 决策接线
+  - 也就是说，recipe 资产现在已经具备：
+    - runtime registry
+    - 项目级持久化
+    - merge / update
+    - backup / audit
+    - restore
+    - route
+    - workbench 只读 / 写入 / 回滚 / 审计复盘
+    但还没有把“何时自动升级、何时降级、谁来触发治理决策”真正接到主链路。
+- 下一步：
+  - 继续 `R4`：
+    - 补 recipe promotion / degradation 决策接线
+    - 先把 recipe 生命周期治理从“资产已齐”推进到“决策已接线”
+
+## 2026-03-26 第一百二十六次更新（R4 第十四刀：recipe promotion / degradation 决策接线）
+
+- 本轮目标：
+  - 在 recipe workbench 已具备：
+    - 只读资产视图
+    - 最小写入口
+    - 最小 restore 入口
+    - 审计 drill-down
+    之后，补最后一块 recipe promotion / degradation 决策接线。
+  - 本轮只解决：
+    - 基于真实 terminal run 生成最小治理建议
+    - 项目侧查看治理建议
+    - 直接应用建议回写 `successRate / lastVerifiedAt`
+  - 不扩 grader 系统、不新增 schema、不把 R5 内容提前并入本轮。
+- 已完成：
+  - `lib/intent-project-recipe-governance.ts`
+    - 已把项目 recipe profile 与真实 terminal run 的 recipe performance 接成最小治理判定服务。
+    - 当前治理状态只保留四类：
+      - `promote`
+      - `degrade`
+      - `observe`
+      - `synced`
+    - 当前判定口径保持保守：
+      - 样本不足 3 次一律继续观察
+      - 高成功率且通过样本足够时给出 promote
+      - 低成功率且失败样本足够时给出 degrade
+      - 当前 profile 已与 runtime 指标一致时标记为 synced
+  - 新增 `app/api/projects/[projectUid]/intent-recipes/governance/route.ts`
+    - 已补项目级只读 route：
+      - `GET /api/projects/[projectUid]/intent-recipes/governance`
+    - 已统一走项目权限校验，只允许 `owner / editor / viewer` 查看
+    - 已支持最小查询参数：
+      - `runLimit`
+      - `limit`
+  - `components/ProjectIntentWorkbench.tsx`
+    - 项目 recipe 资产加载现已同时包含：
+      - profile
+      - governance
+      - backups
+      - audits
+    - “项目级 recipe 资产”卡片已新增“治理建议”面板：
+      - 展示提级 / 降级 / 观察 / 已同步摘要
+      - 展示每条建议的：
+        - 当前 successRate / lastVerifiedAt
+        - runtime successRate / lastVerifiedAt
+        - runCount / passed / failed / canceled
+        - reason
+    - 对可直接执行的建议，已补最小“应用建议”按钮：
+      - 继续复用既有 `POST /api/projects/[projectUid]/intent-recipes`
+      - 继续走 `mode=update`
+      - 只回写 `successRate / lastVerifiedAt`
+    - 应用建议成功后，会自动刷新：
+      - profile
+      - governance
+      - backups
+      - audits
+    - 已补最小互斥锁，避免 save / restore / governance apply 并发改同一份 recipe 资产。
+  - 测试：
+    - 新增 `tests/unit/intent-project-recipe-governance.spec.ts`
+      - 验证 promote / degrade / observe / synced 四类判定
+      - 验证小样本不会被过早 promote
+    - 新增 `tests/unit/api-project-intent-recipes-governance-route.spec.ts`
+      - 验证项目权限
+      - 验证 `runLimit / limit` 参数透传
+- 验证：
+  - `npx vitest run tests/unit/intent-project-recipe-governance.spec.ts tests/unit/api-project-intent-recipes-governance-route.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+  - 当前结果：
+    - 2 个测试文件通过
+    - 3 个测试通过
+    - `build` 通过
+    - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成（R4 第十四刀：recipe promotion / degradation 决策接线已落地）
+  - R5：预备阶段已完成，下一步进入正式主线
+- 风险 / 未完成：
+  - R4 已全部完成，本阶段不再追加新项。
+  - 当前还没有进入 `R5` 的正式主线：
+    - trace -> grader -> asset promotion 的真实消费链仍未作为本轮交付
+    - 这部分后续单独按 `R5` 继续推进
+- 下一步：
+  - 进入 `R5`
+  - 先把已有 trace / evidence / governance 资产从“预备阶段齐备”推进到“grader 正式消费 + asset promotion 主链接线”
+
+## 2026-03-26 第一百二十七次更新（R5 第一刀：starter asset promotion grader 正式接主链）
+
+- 本轮目标：
+  - 按文档正式进入 `R5`。
+  - 先不扩 failure trace promotion，也不扩新的 grader 体系分层；只补最小成功 trace promotion 主链。
+  - 本轮只解决：
+    - Starter 资产沉淀不再只看 `scope`
+    - 默认选择不再“命中了就全选”
+    - asset promotion 开始正式消费已有 trace / evidence / governance 信号
+- 已完成：
+  - 新增 `lib/intent-starter-asset-promotion.ts`
+    - 已补 starter asset promotion grader 纯函数：
+      - `buildIntentStarterAssetPromotionDecision(...)`
+      - `summarizeIntentStarterAssetPromotionDecisions(...)`
+    - 当前 promotion 决策只保留三类：
+      - `promote_project_capability`
+      - `review_project_capability`
+      - `runtime_only`
+    - 当前判定口径保持保守：
+      - `global_runtime` 资产一律保持 runtime，不进入项目能力沉淀主链
+      - `project_capability` 且长期正向 clean evidence 才默认自动勾选
+      - `recovering / mixed / governance released / recent failure pressure` 一律保留人工复核
+  - `components/IntentE2EWorkbench.tsx`
+    - Starter 资产沉淀主链现在已正式消费 promotion grader：
+      - 每条 asset 都会生成 promotion decision
+      - 卡片会展示当前 promotion 判定标签与原因
+      - 顶部摘要会展示：
+        - 可沉淀数
+        - 默认勾选数
+        - 待复核数
+    - 默认选择逻辑已从“命中的 starter asset 全选”切成：
+      - 仅自动勾选 `promote_project_capability`
+      - 不再把 `global_runtime` 或观察态资产自动带进保存动作
+    - 已补一条必要的保护：
+      - `selectedStarterCapabilityLaunches` 现在只保留真正可沉淀的项目级资产
+      - 批量保存时也会再次过滤，避免 runtime heuristic 被误写入项目能力库
+  - `lib/intent-starter-capability-preset.ts`
+    - Starter capability preset 现在已把 promotion decision 一并写入：
+      - 描述
+      - 步骤
+      - 断言
+      - meta
+    - 当前保存下去的项目能力草稿不再只是“来自 starter asset”，还会保留：
+      - `starterPromotionDecisionStatus`
+      - `starterPromotionDecisionReasonCode`
+      - `starterPromotionDecisionReason`
+      - `starterPromotionDecisionAutoSelected`
+    - 这让 asset promotion 开始具备 trace / grader 级 explainability，而不是只靠 UI 当场展示。
+  - 测试：
+    - 新增 `tests/unit/intent-starter-asset-promotion.spec.ts`
+      - 验证正向项目级资产会进入 `promote_project_capability`
+      - 验证治理恢复 / 观察态不会自动沉淀
+      - 验证 `global_runtime` 资产保持 runtime-only
+      - 验证 summary 聚合
+    - 已更新：
+      - `tests/unit/intent-starter-capability-preset.spec.ts`
+      - `tests/unit/intent-capability-preset.spec.ts`
+      验证 promotion decision 元数据与描述会随 preset 序列化保留
+- 验证：
+  - `npx vitest run tests/unit/intent-starter-asset-promotion.spec.ts tests/unit/intent-starter-capability-preset.spec.ts tests/unit/intent-capability-preset.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+  - 当前结果：
+    - 3 个测试文件通过
+    - 11 个测试通过
+    - `build` 通过
+    - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：进行中（R5 第一刀：starter asset promotion grader 正式接主链）
+- 风险 / 未完成：
+  - 当前只打通了成功 trace promotion 里“Starter 资产 -> 项目能力沉淀”的第一条 grader 消费链。
+  - 还没有完成：
+    - 成功 trace promotion 的审计 / 回执闭环
+    - recipe / knowledge / helper 三类 asset promotion 的统一 grader 出口
+    - 失败 trace promotion 与 anti-pattern 提炼
+  - 也就是说，R5 现在已经从“预备阶段齐备”进入“正式主线开工”，但还远未完成。
+- 下一步：
+  - 继续 `R5`
+  - 补成功 trace promotion 的审计 / 回执接线，让 Starter 资产沉淀不只发生在 UI，而是具备可回放的 grader 证据与落盘记录
+
+## 2026-03-26 第一百二十八次更新（R5 第二刀：starter asset promotion 审计 / 回执接线）
+
+- 本轮目标：
+  - 不新增独立保存入口，也不扩新的 UI 面板。
+  - 只把上一刀已经形成的 starter asset promotion 决策，正式补到“服务端回执 + 项目级审计日志”。
+  - 让 Starter 资产沉淀从“UI 里保存成功”升级成“有 receipt、有落盘记录、可被后续消费”。
+- 已完成：
+  - 新增 `lib/intent-starter-asset-promotion-receipt.ts`
+    - 补齐 starter asset promotion receipt 共享结构：
+      - `normalizeIntentStarterAssetPromotionReceiptRequest(...)`
+      - `createIntentStarterAssetPromotionReceipt(...)`
+    - 当前 receipt 只保留本轮必要字段：
+      - 来源 run / module / scenario / targetUrl
+      - asset -> capability 的实际沉淀映射
+      - promotion decision / supporting rules / governance evidence 摘要
+      - requestedCount / savedCount / helperCount / autoSelectedCount / manualReviewCount / directPromotionCount
+    - route 不再需要自己拼散装 summary，后续回放可以直接复用统一 receipt schema。
+  - `app/api/projects/[projectUid]/capabilities/route.ts`
+    - 继续复用现有 `POST /api/projects/[projectUid]/capabilities` 保存主链，不新增第二套接口。
+    - route 现在会消费 `starterAssetPromotionReceipt` 请求体：
+      - 先标准化 receipt request
+      - 再基于实际保存成功的 capability 列表生成结构化 receipt
+      - 若 receipt 有有效项，则追加一条项目级 activity log：
+        - `actionType: starter_asset_promotion_recorded`
+        - `entityType: project`
+    - 当前响应已补出：
+      - `starterAssetPromotionReceipt`
+      - `starterAssetPromotionReceiptWarning`
+    - 这样 Starter 资产沉淀开始具备服务端确认语义，而不是只靠前端本地 toast。
+  - `components/IntentE2EWorkbench.tsx`
+    - Starter capability 保存动作现在会把已选 starter launch 的 promotion 证据一起提交：
+      - source run / module / scenario / targetUrl
+      - 每条 asset 的 decision / supporting rules / evidence snapshot
+    - 保存成功提示已开始消费 route 返回的结构化 receipt：
+      - 展示“直接沉淀 X 条，人工复核 Y 条”
+      - 若 route 给出 warning，也会带出审计提醒
+    - feed success message 会追加 `promotion receipt {receiptId}`，给后续 run / audit 回放留钩子。
+  - 测试：
+    - 新增 `tests/unit/intent-starter-asset-promotion-receipt.spec.ts`
+      - 验证 receipt request 归一化
+      - 验证 receipt 只会映射到实际保存成功的 capability
+    - 新增 `tests/unit/api-project-capabilities-route.spec.ts`
+      - 验证 capabilities route 会落 `starter_asset_promotion_recorded` 审计日志
+      - 验证响应会返回结构化 receipt / warning
+- 验证：
+  - `npx vitest run tests/unit/intent-starter-asset-promotion-receipt.spec.ts tests/unit/api-project-capabilities-route.spec.ts tests/unit/intent-starter-asset-promotion.spec.ts tests/unit/intent-starter-capability-preset.spec.ts tests/unit/intent-capability-preset.spec.ts`
+  - `npm run build`
+- 当前结果：
+  - 5 个测试文件通过
+  - 15 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：进行中（R5 第二刀：starter asset promotion 审计 / 回执接线）
+- 风险 / 未完成：
+  - 当前 receipt 已经落到服务端与 activity log，但还只是“记录已发生的 starter capability 沉淀”。
+  - 还没有完成：
+    - receipt / audit 在工作台的结构化回放与复用
+    - success trace promotion 向更统一的 promotion audit 消费口径收口
+    - 失败 trace promotion 与 anti-pattern 主链
+- 下一步：
+  - 继续 `R5`
+  - 把 starter asset promotion 的 receipt / audit 从“已落盘”推进到“工作台可回放、后续 promotion 流程可消费”的最小闭环
+
+## 2026-03-26 第一百二十九次更新（R5 第三刀：starter asset promotion 回执进入项目活动回放）
+
+- 本轮目标：
+  - 不加新 route，不加新 workbench 面板。
+  - 只复用现有“项目最近活动”入口，把上一刀已落盘的 `starter_asset_promotion_recorded` 做成结构化回放。
+  - 让 Starter 资产沉淀不再是“保存当下看一眼 toast 就结束”，而是后续还能在项目侧追溯。
+- 已完成：
+  - `lib/intent-starter-asset-promotion-receipt.ts`
+    - receipt 库已从“只负责服务端生成”扩成“生成 + 归一化 + activity meta 提取”：
+      - `normalizeIntentStarterAssetPromotionReceipt(...)`
+      - `extractIntentStarterAssetPromotionReceiptFromActivityMeta(...)`
+    - 同时把 receipt id 生成改成运行时通用实现，避免这份共享库继续卡在 server-only 依赖上。
+  - `components/ProjectWorkspace.tsx`
+    - 现有“最近活动”弹窗在命中 `starter_asset_promotion_recorded` 时，已开始结构化展示：
+      - 已沉淀 / 已请求数量
+      - 直接沉淀数
+      - 人工复核数
+      - helper 数
+      - 来源 run / receiptId
+      - 前 3 条 asset -> capability 映射
+    - 这样项目侧已经能直接回看某次 Starter 资产沉淀到底落了哪些能力，而不是只剩一条泛化活动文案。
+  - 测试：
+    - `tests/unit/intent-starter-asset-promotion-receipt.spec.ts`
+      - 已补 activity meta -> receipt replay 提取断言
+      - 已补 persisted receipt 直接归一化断言
+- 验证：
+  - `npx vitest run tests/unit/intent-starter-asset-promotion-receipt.spec.ts tests/unit/api-project-capabilities-route.spec.ts`
+  - `npm run build`
+- 当前结果：
+  - 2 个测试文件通过
+  - 6 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：进行中（R5 第三刀：starter asset promotion 回执进入项目活动回放）
+- 风险 / 未完成：
+  - 当前只解决了“项目活动里能不能回看这次沉淀”。
+  - 还没有把这些 receipt history 继续变成 insights / helper 侧能直接消费的结构化信号。
+- 下一步：
+  - 继续 `R5`
+  - 把 starter asset promotion receipt history 接进 insights / helper 面板，让这批落盘证据不只可回放，也开始可消费
+
+## 2026-03-26 第一百三十次更新（R5 第四刀：starter promotion receipt history 进入 insights / helper 面板）
+
+- 本轮目标：
+  - 不新增接口，直接复用 `intent-e2e insights` 已经在加载的 `activityLogs`。
+  - 只补 starter helper 维度的最小沉淀历史，不扩新的 grader 体系。
+  - 让 `starter_asset_promotion_recorded` 开始变成后续 promotion 流程能直接读到的历史信号。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - 已新增 starter helper promotion history 聚合：
+      - `recordedPromotionReceiptCount`
+      - `recordedPromotionCapabilityCount`
+      - `lastPromotionRecordedAt`
+    - 聚合口径直接来自项目 activity log 里的 `starter_asset_promotion_recorded` receipt：
+      - 同一 helper 在同一 receipt 里只记 1 次回执
+      - capability 数按实际 receipt item 计数
+      - 最近时间取最近一次 recordedAt / activity createdAt
+    - 这组信号会同时进入：
+      - `buildIntentE2EInsightsFromData(...)`
+      - `getIntentE2EInsights(...)`
+    - 也就是说，Starter 资产沉淀记录现在不再只是 activity replay，而是开始进入 insights 结果结构。
+  - `components/IntentE2EWorkbench.tsx`
+    - Starter helper 卡片现在会显式展示：
+      - 沉淀回执次数
+      - 已落能力数
+      - 最近一次沉淀时间
+    - 这样当前 helper 是否“已经真实沉淀过项目能力”，在 workbench 上已经可直接看见，不需要再翻项目活动弹窗。
+  - 测试：
+    - `tests/unit/intent-e2e-insights.spec.ts`
+      - 已补 starter helper 会消费 promotion receipt history 的断言
+    - `tests/unit/intent-starter-asset-promotion-receipt.spec.ts`
+      - 现有 receipt 解析回归继续通过
+    - `tests/unit/api-project-capabilities-route.spec.ts`
+      - capabilities route 现有 receipt / audit 接线回归继续通过
+- 验证：
+  - `npx vitest run tests/unit/intent-starter-asset-promotion-receipt.spec.ts tests/unit/api-project-capabilities-route.spec.ts tests/unit/intent-e2e-insights.spec.ts`
+  - `npm run build`
+- 当前结果：
+  - 3 个测试文件通过
+  - 37 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：进行中（R5 第四刀：starter promotion receipt history 进入 insights / helper 面板）
+- 风险 / 未完成：
+  - 当前 success trace promotion 主链仍然只覆盖 Starter 资产。
+  - 还没有继续扩到：
+    - recipe 候选 promotion
+    - knowledge 候选 promotion
+    - failure trace promotion / anti-pattern
+- 下一步：
+  - 继续 `R5`
+  - 把 success trace promotion 从 starter-only 推进到下一类可复用资产的最小统一出口，优先补 recipe / knowledge 候选之一，不扩新治理面板
+
+## 2026-03-26 第一百三十一次更新（R5 第五刀：successful_run knowledge promotion receipt 接主链）
+
+- 本轮目标：
+  - 不做 recipe 抽取器，不扩新的成功候选生成器。
+  - 直接复用现有 `successful_run -> knowledge draft -> merge -> audit` 链，把这类成功 trace promotion 收口成正式 receipt。
+  - 让知识类成功沉淀不再只剩散装 `mergedCandidateIds / mergedRunIds`，而是具备统一回执、activity 回放和 workbench 消费。
+- 已完成：
+  - 新增 `lib/intent-successful-run-knowledge-promotion-receipt.ts`
+    - 已补 successful run knowledge promotion receipt 共享结构：
+      - `createIntentSuccessfulRunKnowledgePromotionReceipt(...)`
+      - `normalizeIntentSuccessfulRunKnowledgePromotionReceipt(...)`
+      - `extractIntentSuccessfulRunKnowledgePromotionReceiptFromActivityMeta(...)`
+    - 当前 receipt 只覆盖本轮最小必要信息：
+      - candidateId / ruleId / ruleTitle
+      - `merged / covered / missing / skipped_rule / not_applied`
+      - feedbackStatus / lifecyclePolicy
+      - runIds / successfulStrategies / sampleUrls
+      - requestedCandidateCount / mergedRuleCount / helperCount / runCount
+  - `app/api/intent-e2e/project-knowledge/merge/route.ts`
+    - 在现有 knowledge merge 主链上，已开始对 `successful_run` 选中候选生成结构化 receipt。
+    - receipt 现在会同时进入：
+      - route 响应体 `successfulRunKnowledgePromotionReceipt`
+      - audit meta `successfulRunKnowledgePromotionReceipt`
+      - 项目 activity meta `successfulRunKnowledgePromotionReceipt`
+    - 这意味着 knowledge 成功沉淀现在也开始具备和 starter asset 类似的“回执先行”主链，而不是只看 merge audit 的散装字段。
+  - `lib/intent-project-knowledge.ts`
+    - 项目知识 audit meta 归一化已接入 `successfulRunKnowledgePromotionReceipt`。
+    - 审计 detail 也会补一句 successful run 回执摘要，避免列表态只能看到笼统 merge 文案。
+  - `components/IntentE2EWorkbench.tsx`
+    - knowledge merge 成功 feed 现在会追加 successful run receipt 摘要：
+      - 新增规则数
+      - 已覆盖数
+      - 重复规则数
+      - 关联通过运行数
+    - “最近审计记录”卡片已开始结构化展示这份 receipt：
+      - requested / merged / runs / helpers
+      - 前 3 条 candidate -> rule 沉淀映射
+  - `components/ProjectWorkspace.tsx`
+    - 现有“最近活动”弹窗在命中 `intent_project_knowledge_merged / noop` 且 meta 带 receipt 时，已开始结构化回放：
+      - 新增规则数
+      - 已覆盖数
+      - 关联通过运行数
+      - 前 3 条 successful run 候选沉淀映射
+    - 这样项目侧现在能直接回看“哪次 successful run 知识沉淀到底落了什么”。
+  - 测试：
+    - 新增 `tests/unit/intent-successful-run-knowledge-promotion-receipt.spec.ts`
+      - 验证 receipt 生成只统计 `successful_run`
+      - 验证 `merged / covered` 等状态归类
+      - 验证 activity meta -> receipt 提取与直接归一化
+    - 已更新 `tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+      - 验证 receipt 会进入 audit / activity meta
+      - 验证 route 响应会返回结构化 successful run knowledge receipt
+- 验证：
+  - `npx vitest run tests/unit/intent-successful-run-knowledge-promotion-receipt.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+  - `npm run build`
+- 当前结果：
+  - 2 个测试文件通过
+  - 11 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：进行中（R5 第五刀：successful_run knowledge promotion receipt 接主链）
+- 风险 / 未完成：
+  - 当前成功 trace promotion 已从 starter asset 扩到 knowledge 候选，但还没有统一到 recipe。
+  - 失败 trace promotion / anti-pattern 主线仍未开始。
+  - 也就是说，`success trace -> receipt -> activity / audit / workbench replay` 现在已覆盖两类资产，但还没有形成完整多资产统一 promotion 出口。
+- 下一步：
+  - 继续 `R5`
+  - 在不扩新面板的前提下，优先判断 recipe 是否能复用现有 project recipe 资产入口接成最小 successful run promotion receipt；若复用成本偏高，则继续把 knowledge receipt history 接入 insights 长期聚合
+
+## 2026-03-26 第一百三十二次更新（R5 第六刀：successful_run knowledge receipt history 进入 insights 长期聚合）
+
+- 本轮目标：
+  - 不新增接口，不扩新面板。
+  - 直接复用上一刀已经落到 knowledge audit 里的 `successfulRunKnowledgePromotionReceipt`。
+  - 把这批 receipt history 从“可回放”推进到“可聚合”，先进入现有 `knowledgeChangeRuleSummaries`。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - 已新增按规则聚合的 successful run knowledge promotion history：
+      - `successfulRunPromotionReceiptCount`
+      - `successfulRunPromotionRunCount`
+      - `lastSuccessfulRunPromotionRecordedAt`
+    - 当前聚合口径保持保守：
+      - 只统计 receipt item `status=merged`
+      - 同一 rule 在同一 receipt 里只计 1 次回执
+      - runCount 对 rule 维度做唯一去重
+    - 这组字段已经正式进入 `knowledgeChangeRuleSummaries`，因此 knowledge 成功沉淀历史开始具备长期规则级视角，而不是只停留在单次 merge 回执。
+  - `components/IntentE2EWorkbench.tsx`
+    - “规则效果汇总”卡片现在会直接展示：
+      - Successful Run 沉淀回执次数
+      - 关联通过运行数
+      - 最近一次沉淀时间
+    - 这让当前规则是否已经被真实 successful run 多次沉淀，可以和 knowledge change grader 证据放在同一视图里看。
+  - 测试：
+    - `tests/unit/intent-e2e-insights.spec.ts`
+      - 已补 successful run knowledge promotion receipt history -> rule summary 聚合断言
+    - `tests/unit/intent-successful-run-knowledge-promotion-receipt.spec.ts`
+      - receipt 解析 / 提取回归继续通过
+    - `tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+      - knowledge merge route 的 receipt 接线回归继续通过
+- 验证：
+  - `npx vitest run tests/unit/intent-successful-run-knowledge-promotion-receipt.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/intent-e2e-insights.spec.ts`
+  - `npm run build`
+- 当前结果：
+  - 3 个测试文件通过
+  - 42 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：进行中（R5 第六刀：successful_run knowledge receipt history 进入 insights 长期聚合）
+- 风险 / 未完成：
+  - 当前 success trace promotion 的统一出口仍只覆盖：
+    - starter asset
+    - successful_run knowledge candidate
+  - recipe 资产还没有真正进入 success trace promotion 主链。
+  - failure trace promotion / anti-pattern 主线仍未开始。
+- 下一步：
+  - 继续 `R5`
+  - 若不扩新 schema 且可复用现有 recipe 资产入口，则优先补 recipe 的最小 successful run promotion receipt；否则继续沿 knowledge / starter 已有 receipt 历史做更统一的 promotion 消费口径
+
+## 2026-03-26 第一百三十三次更新（R5 第七刀：starter / knowledge receipt 统一 promotion coverage 口径）
+
+- 本轮目标：
+  - 严格按上一刀的兜底分支推进，不扩新接口、不补 recipe 新候选链。
+  - 先完成 recipe 可复用性判断；若当前 run 结果无法复用现有 project recipe 保存入口，就只统一现有 starter / knowledge receipt 的消费口径。
+  - 把“receipt history 只能分散在 helper 卡片 / rule 卡片里看”收口成同一视角，先进入现有 insights 概览。
+- 已完成：
+  - recipe 复用性判断：
+    - 当前成功 run 结果里仍只有 `matchedRecipeSlugs`，没有可直接复用到 `project recipe` 资产入口的 successful-run recipe draft / candidate。
+    - 现有 `project recipe` 主链已经有 registry / audit / governance，但没有“success trace -> recipe candidate -> receipt”这段最小闭环。
+    - 因此本轮明确不把 recipe 强行并入 `R5` 当前刀口，避免为了接 recipe 临时引入新的提取逻辑、交互入口或资产 schema。
+  - `lib/intent-e2e-promotion-coverage.ts`
+    - 已新增纯前端安全的统一汇总 helper：
+      - `coveredAssetCount`
+      - `starterHelperCount`
+      - `starterCapabilityCount`
+      - `successfulRunRuleCount`
+      - `lastRecordedAt`
+    - 统计口径保持保守：
+      - starter 侧按 helper 去重，只汇总已落 receipt history 的 helper / capability 覆盖数
+      - knowledge 侧按 rule 去重，只汇总已落 successful run receipt history 的规则覆盖数
+      - 不输出跨资产全局 receipt 总数，避免把同一回执在 helper / rule 维度重复计数
+  - `components/IntentE2EWorkbench.tsx`
+    - 现有 insights 概览区已新增 `promotion coverage` 卡片。
+    - 当项目里已经存在 starter / successful_run knowledge 的真实沉淀历史时，现在可以在同一位置直接看到：
+      - 已覆盖资产数
+      - Starter helper 数
+      - Starter capability 数
+      - Successful Run 规则数
+      - 最近一次沉淀时间
+    - 这样当前 `R5` 已接通的两类资产，不再只能分别下钻到 helper 卡片 / rule 卡片里查看。
+  - 测试：
+    - `tests/unit/intent-e2e-insights.spec.ts`
+      - 已补 unified promotion coverage summary 的断言
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts`
+  - `npm run build`
+- 当前结果：
+  - 1 个测试文件通过
+  - 32 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：进行中（R5 第七刀：starter / knowledge receipt 统一 promotion coverage 口径）
+- 风险 / 未完成：
+  - recipe 资产仍未进入当前 success trace promotion 主链。
+  - 当前统一口径只覆盖已落地的两类 receipt history：
+    - starter asset promotion
+    - successful_run knowledge promotion
+  - failure trace promotion / anti-pattern 主线仍未开始。
+- 下一步：
+  - 继续 `R5`
+  - 继续沿 knowledge / starter 已有 receipt 历史做更统一的 promotion 消费口径；在没有现成 successful-run recipe candidate 入口之前，不把 recipe 强行并入本轮
+
+## 2026-03-26 第一百三十四次更新（R5 第八刀：receipt 最新来源上下文进入 helper / rule 卡片）
+
+- 本轮目标：
+  - 继续沿现有 receipt history 主链推进，不补 recipe 新链。
+  - 在不新增面板的前提下，让 starter / successful_run knowledge 的沉淀记录不只剩计数和时间，还能直接看到“最近一次来自哪个模块 / 哪次运行”。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - starter helper promotion history 已新增最新来源上下文：
+      - `lastPromotionSourceRunId`
+      - `lastPromotionModuleName`
+      - `lastPromotionScenarioTitle`
+    - successful run knowledge promotion history 已新增最新来源上下文：
+      - `lastSuccessfulRunPromotionRequestedModuleUid`
+      - `lastSuccessfulRunPromotionRunIds`
+    - 这些字段都沿现有 receipt 聚合口径产生，没有新建持久化结构，也没有改原有 receipt schema。
+  - `components/IntentE2EWorkbench.tsx`
+    - Starter helper 卡片现在在已有“沉淀记录”下面，会直接展示最近一次沉淀来源：
+      - 模块名 / 场景名
+      - source run id
+    - “规则效果汇总”卡片里的 Successful Run 沉淀说明，现在会继续展示最近来源：
+      - requested module uid
+      - 最近一次关联 run id 列表
+    - 这样当前两类 receipt history 都已经具备“计数 + 时间 + 来源上下文”的同构消费口径。
+  - 测试：
+    - `tests/unit/intent-e2e-insights.spec.ts`
+      - 已补 starter helper / knowledge rule summary 的最新来源上下文字段断言
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts`
+  - `npm run build`
+- 当前结果：
+  - 1 个测试文件通过
+  - 32 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：进行中（R5 第八刀：receipt 最新来源上下文进入 helper / rule 卡片）
+- 风险 / 未完成：
+  - recipe 资产仍未进入当前 success trace promotion 主链。
+  - 当前统一口径仍然只覆盖 starter asset promotion 与 successful_run knowledge promotion。
+  - failure trace promotion / anti-pattern 主线仍未开始。
+- 下一步：
+  - 继续 `R5`
+  - 继续沿现有 receipt history 做统一消费收口；在没有现成 successful-run recipe candidate 入口之前，不把 recipe 强行并入本轮
+
+## 2026-03-26 第一百三十五次更新（R5 第九刀：promotion coverage 卡片展示最新沉淀对象）
+
+- 本轮目标：
+  - 继续沿现有 starter / successful_run knowledge receipt history 收口，不新开 recipe 入口。
+  - 把 overview 层的 `promotion coverage` 从“只有计数”推进到“能快速看到最近沉淀的是谁”。
+- 已完成：
+  - `lib/intent-e2e-promotion-coverage.ts`
+    - 已把 coverage summary 补成带“最近对象”的统一摘要：
+      - `latestStarterHelper`
+      - `latestStarterModuleName`
+      - `latestStarterScenarioTitle`
+      - `latestSuccessfulRunRuleId`
+      - `latestSuccessfulRunRuleTitle`
+      - `latestSuccessfulRunRequestedModuleUid`
+    - 口径仍然保持保守：
+      - starter 侧按最近 receipt 时间选出最新 helper
+      - successful_run knowledge 侧按最近 receipt 时间选出最新 rule
+      - 不新增服务端聚合接口，仍由现有 insights 数据在 client 安全 helper 中收口
+  - `components/IntentE2EWorkbench.tsx`
+    - `promotion coverage` 卡片现在在计数行下方，会继续展示：
+      - 最新 Starter：helper + 模块 / 场景
+      - 最新 Successful Run：rule + module uid
+    - 这样 overview 视角已经能直接回答“最近真实沉淀到了哪个 starter helper / 哪条 successful run 规则”，不用再先下钻到各自卡片。
+  - 测试：
+    - `tests/unit/intent-e2e-insights.spec.ts`
+      - 已补 unified promotion coverage summary 的最新对象断言
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts`
+  - `npm run build`
+- 当前结果：
+  - 1 个测试文件通过
+  - 32 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：进行中（R5 第九刀：promotion coverage 卡片展示最新沉淀对象）
+- 风险 / 未完成：
+  - recipe 资产仍未进入当前 success trace promotion 主链。
+  - 当前 overview 层虽然已能看到最近沉淀对象，但仍只覆盖 starter asset promotion 与 successful_run knowledge promotion 两类资产。
+  - failure trace promotion / anti-pattern 主线仍未开始。
+- 下一步：
+  - 继续 `R5`
+  - 继续沿现有 receipt history 做统一消费收口；在没有现成 successful-run recipe candidate 入口之前，不把 recipe 强行并入本轮
+
+## 2026-03-26 第一百三十六次更新（R5 第十刀：suppressed starter helper 补齐同口径 receipt 展示）
+
+- 本轮目标：
+  - 不扩新链路，只把上面已经用于 starter helper 的 receipt 展示口径补到 suppressed helper。
+  - 避免 overview / starter helper / suppressed helper 三处对同一类沉淀历史的消费继续不一致。
+- 已完成：
+  - `components/IntentE2EWorkbench.tsx`
+    - `suppressedStarterHelpers` 卡片现在已补齐和 starter helper 一样的 receipt 展示：
+      - badge：`沉淀回执 N`
+      - 详情：已写回执次数 / 能力条数 / 最近时间
+      - 最近来源：模块名 / 场景名 / source run id
+    - 这样 starter 侧的两个主要 helper 视图现在都已统一到：
+      - 计数
+      - 时间
+      - 最近来源上下文
+  - 验证：
+    - `npx vitest run tests/unit/intent-e2e-insights.spec.ts`
+    - `npm run build`
+- 当前结果：
+  - 1 个测试文件通过
+  - 32 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：进行中（R5 第十刀：suppressed starter helper 补齐同口径 receipt 展示）
+- 风险 / 未完成：
+  - recipe 资产仍未进入当前 success trace promotion 主链。
+  - 当前统一消费仍然只覆盖 starter asset promotion 与 successful_run knowledge promotion。
+  - failure trace promotion / anti-pattern 主线仍未开始。
+- 下一步：
+  - 继续 `R5`
+  - 继续沿现有 receipt history 做统一消费收口；在没有现成 successful-run recipe candidate 入口之前，不把 recipe 强行并入本轮
+
+## 2026-03-26 第一百三十七次更新（R5 第十一刀：项目活动回放补齐 successful_run receipt 上下文）
+
+- 本轮目标：
+  - 继续沿现有 receipt history 做统一消费，不扩 schema。
+  - 把项目活动回放里 `successful_run knowledge promotion receipt` 的展示口径补齐到更接近 starter receipt，避免活动流里只有一侧能快速看到 run / module 上下文。
+- 已完成：
+  - `components/ProjectWorkspace.tsx`
+    - 已为 `successfulRunKnowledgePromotionReceipt` 补齐活动回放上下文展示：
+      - `helper N` badge
+      - `requestedModuleUid` badge
+      - 前 3 条关联 run id badge
+      - 超出部分折叠计数
+    - 这样项目活动回放现在对两类已接通 receipt 都能直接看到：
+      - 计数
+      - receipt id
+      - module / run 上下文
+    - 仍然没有引入新接口，也没有改动 receipt schema，只是消费现有字段。
+  - 验证：
+    - `npx vitest run tests/unit/intent-successful-run-knowledge-promotion-receipt.spec.ts`
+    - `npm run build`
+- 当前结果：
+  - 1 个测试文件通过
+  - 2 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：进行中（R5 第十一刀：项目活动回放补齐 successful_run receipt 上下文）
+- 风险 / 未完成：
+  - recipe 资产仍未进入当前 success trace promotion 主链。
+  - 当前统一消费仍然只覆盖 starter asset promotion 与 successful_run knowledge promotion。
+  - failure trace promotion / anti-pattern 主线仍未开始。
+- 下一步：
+  - 继续 `R5`
+  - 继续沿现有 receipt history 做统一消费收口；在没有现成 successful-run recipe candidate 入口之前，不把 recipe 强行并入本轮
+
+## 2026-03-26 第一百三十八次更新（R5 第十二刀：知识审计卡片补齐 successful_run receipt 上下文）
+
+- 本轮目标：
+  - 继续沿现有 receipt history 做统一消费，不扩 schema、不补新面板。
+  - 把工作台“最近审计记录”里的 successful_run receipt 卡片补齐最基础的 module / run / receipt 上下文，和项目活动回放保持一致。
+- 已完成：
+  - `components/IntentE2EWorkbench.tsx`
+    - knowledge audit 区块里的 `successfulRunKnowledgePromotionReceipt` 现已额外展示：
+      - `receiptId`
+      - `requestedModuleUid`
+      - 关联 run id 列表
+    - 这样 successful_run knowledge receipt 现在在两处既有视图里都具备：
+      - 计数摘要
+      - receipt 标识
+      - module / run 上下文
+    - 没有新增接口，也没有改 receipt schema，只消费既有字段。
+  - 验证：
+    - `npx vitest run tests/unit/intent-successful-run-knowledge-promotion-receipt.spec.ts`
+    - `npm run build`
+- 当前结果：
+  - 1 个测试文件通过
+  - 2 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：进行中（R5 第十二刀：知识审计卡片补齐 successful_run receipt 上下文）
+- 风险 / 未完成：
+  - recipe 资产仍未进入当前 success trace promotion 主链。
+  - 当前统一消费仍然只覆盖 starter asset promotion 与 successful_run knowledge promotion。
+  - failure trace promotion / anti-pattern 主线仍未开始。
+- 下一步：
+  - 继续 `R5`
+  - 继续沿现有 receipt history 做统一消费收口；在没有现成 successful-run recipe candidate 入口之前，不把 recipe 强行并入本轮
+
+## 2026-03-26 第一百三十九次更新（R5 第十三刀：项目活动回放补齐 successful_run 明细项 helper / run 信息）
+
+- 本轮目标：
+  - 继续沿现有 receipt history 做统一消费，不扩 schema、不补新面板。
+  - 把项目活动回放里 successful_run receipt 的单条规则明细补到和工作台审计卡片接近的最小信息量。
+- 已完成：
+  - `components/ProjectWorkspace.tsx`
+    - `successfulRunKnowledgePromotionReceipt.items` 在项目活动回放中现在会额外显示：
+      - 通过运行数量
+      - helper 摘要（前 3 个）
+    - 这样 successful_run receipt 在项目活动流里已经同时具备：
+      - 顶部 summary / module / run 上下文
+      - 单条 rule 明细的 helper / run 信息
+    - 仍然没有引入新接口或新 schema，只消费既有 receipt item 字段。
+  - 验证：
+    - `npx vitest run tests/unit/intent-successful-run-knowledge-promotion-receipt.spec.ts`
+    - `npm run build`
+- 当前结果：
+  - 1 个测试文件通过
+  - 2 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：进行中（R5 第十三刀：项目活动回放补齐 successful_run 明细项 helper / run 信息）
+- 风险 / 未完成：
+  - recipe 资产仍未进入当前 success trace promotion 主链。
+  - 当前统一消费仍然只覆盖 starter asset promotion 与 successful_run knowledge promotion。
+  - failure trace promotion / anti-pattern 主线仍未开始。
+- 下一步：
+  - 继续 `R5`
+  - 继续沿现有 receipt history 做统一消费收口；在没有现成 successful-run recipe candidate 入口之前，不把 recipe 强行并入本轮
+
+## 2026-03-26 第一百四十次更新（R5 第十四刀：merge feed 补齐 successful_run receipt 模块 / helper 摘要）
+
+- 本轮目标：
+  - 继续沿现有 receipt history 做统一消费，不扩 schema、不补新面板。
+  - 把 knowledge merge 成功后的 feed 摘要补齐到和现有 receipt 卡片更接近的最小信息量，避免流式回执里只剩“新增规则 N 条”。
+- 已完成：
+  - `components/IntentE2EWorkbench.tsx`
+    - `summarizeSuccessfulRunKnowledgePromotionReceipt(...)` 现在会在原有“新增规则 / 已覆盖 / 重复规则 / 失效候选 / 关联通过运行”之外，继续补出：
+      - `requestedModuleUid`
+      - `helperCount`
+    - 这样 successful_run knowledge receipt 现在在 merge feed 里也具备：
+      - 规则数量摘要
+      - 模块上下文
+      - helper 规模摘要
+    - 没有新增接口，也没有改 receipt schema，只消费既有字段。
+  - 验证：
+    - `npm run build`
+    - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：进行中（R5 第十四刀：merge feed 补齐 successful_run receipt 模块 / helper 摘要）
+- 风险 / 未完成：
+  - recipe 资产仍未进入当前 success trace promotion 主链。
+  - 当前统一消费仍然只覆盖 starter asset promotion 与 successful_run knowledge promotion。
+  - failure trace promotion / anti-pattern 主线仍未开始。
+- 下一步：
+  - 继续 `R5`
+  - 继续沿现有 receipt history 做统一消费收口；在没有现成 successful-run recipe candidate 入口之前，不把 recipe 强行并入本轮
+
+## 2026-03-26 第一百四十一次更新（R5 第十五刀：knowledge audit detail 补齐 successful_run run / helper 摘要）
+
+- 本轮目标：
+  - 继续沿现有 receipt history 做统一消费，不扩 schema、不补新面板。
+  - 把 knowledge audit / activity 共享的基础 `detail` 摘要从“只提示新增规则 N 条”补到和现有 receipt 口径一致的最小信息量。
+- 已完成：
+  - `lib/intent-project-knowledge.ts`
+    - `buildIntentProjectKnowledgeAuditDetail(...)` 里的 successful_run 回执摘要现在会在“新增规则 N 条”之外，继续补出：
+      - `runCount`
+      - `helperCount`
+    - 这样 knowledge audit 的基础 detail 文案现在也具备：
+      - successful_run 规则沉淀数量
+      - 关联通过运行数量
+      - helper 规模摘要
+    - 没有新增接口，也没有改 receipt schema，只消费既有 receipt summary 字段。
+  - `tests/unit/intent-project-knowledge.spec.ts`
+    - 已补断言，确保 audit detail 会稳定输出 successful_run 的 run / helper 摘要，不会回退成只剩规则数量。
+  - 验证：
+    - `npx vitest run tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-successful-run-knowledge-promotion-receipt.spec.ts`
+    - `npm run build`
+    - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 2 个测试文件通过
+  - 11 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：进行中（R5 第十五刀：knowledge audit detail 补齐 successful_run run / helper 摘要）
+- 风险 / 未完成：
+  - recipe 资产仍未进入当前 success trace promotion 主链。
+  - 当前统一消费仍然只覆盖 starter asset promotion 与 successful_run knowledge promotion。
+  - failure trace promotion / anti-pattern 主线仍未开始。
+- 下一步：
+  - 继续 `R5`
+  - 继续沿现有 receipt history 做统一消费收口；在没有现成 successful-run recipe candidate 入口之前，不把 recipe 强行并入本轮
+
+## 2026-03-26 第一百四十二次更新（R5 第十六刀：知识审计卡片补齐 successful_run 明细项 feedback / lifecycle 标签）
+
+- 本轮目标：
+  - 继续沿现有 receipt history 做统一消费，不扩 schema、不补新面板。
+  - 把工作台知识审计卡片里 successful_run receipt 的单条明细，从“状态 + rule + run/helper”补到可直接看见治理语义的最小信息量。
+- 已完成：
+  - `components/IntentE2EWorkbench.tsx`
+    - `successfulRunKnowledgePromotionReceipt.items` 在“最近审计记录”卡片里现在会额外显示：
+      - `feedbackStatus`
+      - `lifecyclePolicy`
+    - 展示口径继续复用现有标签体系：
+      - feedback 使用已有 `knowledgeDraftFeedbackLabel / Tone`
+      - lifecycle 使用已有 `riskLifecyclePolicyLabel / Tone`
+    - 这样 successful_run 明细项在知识审计卡片中现在已具备：
+      - 落盘状态
+      - feedback 状态
+      - lifecycle 策略
+      - run / helper 摘要
+    - 没有新增接口，也没有改 receipt schema，只消费既有 item 字段。
+  - 验证：
+    - `npx vitest run tests/unit/intent-successful-run-knowledge-promotion-receipt.spec.ts`
+    - `npm run build`
+    - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 1 个测试文件通过
+  - 2 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：进行中（R5 第十六刀：知识审计卡片补齐 successful_run 明细项 feedback / lifecycle 标签）
+- 风险 / 未完成：
+  - recipe 资产仍未进入当前 success trace promotion 主链。
+  - 当前统一消费仍然只覆盖 starter asset promotion 与 successful_run knowledge promotion。
+  - failure trace promotion / anti-pattern 主线仍未开始。
+- 下一步：
+  - 继续 `R5`
+  - 继续沿现有 receipt history 做统一消费收口；在没有现成 successful-run recipe candidate 入口之前，不把 recipe 强行并入本轮
+
+## 2026-03-26 第一百四十三次更新（R5 第十七刀：项目活动回放补齐 successful_run 明细项 feedback / lifecycle 标签）
+
+- 本轮目标：
+  - 继续沿现有 receipt history 做统一消费，不扩 schema、不补新面板。
+  - 把项目活动回放里 successful_run receipt 的单条明细，也补齐和知识审计卡片一致的治理语义标签。
+- 已完成：
+  - `components/ProjectWorkspace.tsx`
+    - `successfulRunKnowledgePromotionReceipt.items` 在项目活动回放中现在会额外显示：
+      - `feedbackStatus`
+      - `lifecyclePolicy`
+    - 展示口径继续保持保守：
+      - 只复用本地 label / tone helper
+      - 不改 receipt schema，不新建聚合字段
+    - 这样 successful_run 明细项在项目活动流里现在也具备：
+      - 落盘状态
+      - feedback 状态
+      - lifecycle 策略
+      - run / helper 摘要
+  - 验证：
+    - `npx vitest run tests/unit/intent-successful-run-knowledge-promotion-receipt.spec.ts`
+    - `npm run build`
+    - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 1 个测试文件通过
+  - 2 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：进行中（R5 第十七刀：项目活动回放补齐 successful_run 明细项 feedback / lifecycle 标签）
+- 风险 / 未完成：
+  - recipe 资产仍未进入当前 success trace promotion 主链。
+  - 当前统一消费仍然只覆盖 starter asset promotion 与 successful_run knowledge promotion。
+  - failure trace promotion / anti-pattern 主线仍未开始。
+- 下一步：
+  - 继续 `R5`
+  - 对现有 starter / successful_run receipt consumption 做最后一轮对齐检查，确认没有遗留的散装口径后，再补 R5 收口更新
+
+## 2026-03-26 第一百四十四次更新（R5 收口完成：现有 success-trace receipt consumption 对齐结束）
+
+- 本轮目标：
+  - 不再新增代码链路，只对当前 md 已推进的 starter / successful_run receipt consumption 做最后一轮收口检查。
+  - 确认现有 receipt 消费点已经覆盖：
+    - feed
+    - audit detail
+    - workbench 审计卡片
+    - project activity replay
+    - insights / helper / rule / coverage 既有视图
+  - 在不再扩 recipe / failure-trace 主线的前提下，结束当前 R5。
+- 已完成：
+  - 已检查现有 `starterAssetPromotionReceipt / successfulRunKnowledgePromotionReceipt` 的消费点：
+    - `components/IntentE2EWorkbench.tsx`
+    - `components/ProjectWorkspace.tsx`
+    - `lib/intent-project-knowledge.ts`
+    - `lib/ai/intent-e2e-insights.ts`
+  - 现有成功沉淀 receipt 主链已形成闭环：
+    - starter asset promotion：
+      - grader decision
+      - route receipt / audit / activity
+      - insights / helper / suppressed helper / coverage 消费
+    - successful_run knowledge promotion：
+      - merge receipt / audit / activity
+      - feed / audit detail / workbench 审计卡片 / project activity replay
+      - rule summary / coverage 消费
+  - 当前这条 md 下已经没有继续补“散装 receipt 口径”的必要项。
+  - 按当前收口原则，以下内容明确不继续并入本轮 `R5`：
+    - recipe 成功沉淀主链
+    - failure trace promotion / anti-pattern
+    - 新 grader 分支或新 schema
+  - 如果后续继续开发这些内容，应单独开新阶段，不再沿当前 `R5` 追加。
+- 验证：
+  - `rg -n "successfulRunKnowledgePromotionReceipt|starterAssetPromotionReceipt" components lib -g'*.tsx' -g'*.ts'`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - receipt 消费点检查完成
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+- 风险 / 未完成：
+  - recipe 资产仍未进入 success trace promotion 主链，但已明确后移，不再属于当前 R5。
+  - failure trace promotion / anti-pattern 主线仍未开始，但已明确后移，不再属于当前 R5。
+- 下一步：
+  - 当前 `R5` 到此结束。
+  - 如继续开发，请单独进入下一阶段，不再沿当前 `R5` 追加。
+
+## 2026-03-26 第一百四十五次更新（R6 第一刀：repair 输入统一收口为结构化 repair context）
+
+- 本轮目标：
+  - 只推进 `R6` 的第一刀，把 repair 输入从散装文本补充到结构化 repair context。
+  - 先收口：
+    - `failed plan node`
+    - `latest trace`
+    - `verifier result`
+    - `grader diagnosis`
+  - 本轮不推进 repair 输出 schema，也不推进受控工具式观察。
+- 已完成：
+  - `lib/test-generator.ts`
+    - 为 `RepairTestContext` 补齐结构化字段：
+      - `latestTrace`
+      - `failedPlanNodes`
+      - `verifierResult`
+      - `graderDiagnosis`
+    - 新增 repair 结构化上下文构造逻辑，把 compiled template / verification plan 中的失败节点、关联检查项和最近执行轨迹收口到 repair prompt。
+    - `buildRepairPrompt(...)` 现在会显式输出：
+      - `## Repair Context（结构化输入）`
+      - `## Grader Diagnosis`
+      - `## Latest Trace（最近执行轨迹）`
+    - 修复 `verifierResult` 关联检查项只看 `relatedCheckUids` 的缺口；现在会继续通过 `slot.planStepUid -> verificationPlan.checks[].relatedPlanStepUids` 反推关联成功标准，避免 repair prompt 漏掉对应 check。
+  - `lib/ai/intent-e2e-service.ts`
+    - repair 调用链现在会显式传入：
+      - `latestTrace`
+      - `graderDiagnosis`
+    - 让 repair 入口和 prompt 消费同一份结构化失败上下文。
+  - 单测已补到：
+    - `tests/unit/test-generator.spec.ts`
+    - `tests/unit/test-generator-structured.spec.ts`
+    - `tests/unit/intent-e2e-service.spec.ts`
+    - 覆盖 repair prompt 注入结构化上下文、关联成功标准推断和 service 侧 repair 入参透传。
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 3 个测试文件通过
+  - 61 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第一刀：repair 输入统一收口为结构化 repair context）
+- 风险 / 未完成：
+  - repair 输出仍未按 `patched plan / patched verifier / patched recipe selection` 结构化收口。
+  - repair 阶段的受控工具式观察仍未开始，本轮还只是把输入上下文先收口。
+  - 当前仍依赖既有 slot patch 机制消费 repair 结果，没有新增 R6 输出协议。
+- 下一步：
+  - 继续 `R6`
+  - 在不扩范围的前提下，进入 repair 输出侧收口，而不是回退到整段脚本重写。
+
+## 2026-03-26 第一百四十六次更新（R6 第二刀：repair 输出切为结构化 patched plan / verifier / recipe selection）
+
+- 本轮目标：
+  - 只推进 `R6` 的 repair 输出侧收口。
+  - 让 repair 路径不再只返回裸 `slot patch`，而是显式返回：
+    - `patched plan`
+    - `patched verifier`
+    - `patched recipe selection`
+  - 本轮不推进受控工具式观察，不改首轮 generate 输出协议。
+- 已完成：
+  - `lib/intent-execution-slot-patch.ts`
+    - 新增 repair 专用结构化 schema / normalize：
+      - `buildIntentExecutionRepairPatchSchema(...)`
+      - `normalizeIntentExecutionRepairPatch(...)`
+    - repair LLM 输出现在必须显式给出：
+      - `patchedPlan.planStepUids`
+      - `patchedVerifier.checkUids`
+      - `patchedRecipeSelection.recipeSlugs`
+      - `slots`
+  - `lib/intent-execution-artifacts.ts`
+    - 新增 `IntentExecutionStructuredRepairOutput`
+    - 明确把 repair 输出落成独立工件，而不是继续和普通 `structuredPatch` 混成一类语义
+  - `lib/test-generator.ts`
+    - `buildSlotPatchPrompt(...)` 在 repair 模式下新增 `Repair Output Contract`
+    - repair 路径现在改走 `intent_execution_repair_patch` schema
+    - repair 输出会被结构化归一为：
+      - `patchedPlan`
+      - `patchedVerifier`
+      - `patchedRecipeSelection`
+      - `patch`
+    - 同时继续派生兼容的 `structuredPatch`，保证现有 patch 应用链不被打断
+  - `lib/ai/intent-e2e-service.ts`
+    - attempt 结果现在会额外提取并保存 `repairOutput`
+  - `lib/ai/intent-e2e-run-registry.ts`
+    - run snapshot clone 链已补齐 `repairOutput` 深拷贝，避免新工件在持久化 / 读取时丢失
+  - 单测已补到：
+    - `tests/unit/intent-execution-slot-patch.spec.ts`
+    - `tests/unit/test-generator-structured.spec.ts`
+    - `tests/unit/intent-e2e-service.spec.ts`
+    - 覆盖 repair schema、repair prompt 输出协议、repairOutput 提取与透传
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-slot-patch.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-execution-slot-patch.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 4 个测试文件通过
+  - 64 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第二刀：repair 输出已切为结构化 patched plan / verifier / recipe selection）
+- 风险 / 未完成：
+  - repair 阶段的受控工具式观察仍未开始。
+  - 当前只有 repair 路径切到了新输出协议；首轮 generate 仍保持既有 `slot patch` 协议。
+  - `patchedRecipeSelection` 当前只允许在既有 matched recipe 集合内收口，还没有新的 repair recipe 选择策略。
+- 下一步：
+  - 继续 `R6`
+  - 进入 repair 阶段的受控工具式观察，不再只依赖上一轮旧 trace / 旧 snapshot。
+
+## 2026-03-26 第一百四十七次更新（R6 第三刀：repair 前引入受控观察快照刷新）
+
+- 本轮目标：
+  - 只推进 `R6` 里“repair 阶段允许受控观察”的第一刀。
+  - 在不做完整 agent tool loop 的前提下，让 repair 不再永远只依赖第一次生成前的旧 snapshot。
+- 已完成：
+  - `lib/ai/intent-e2e-service.ts`
+    - repair 尝试前现在会额外执行一次有上限的 `analyzePage(...)`
+    - 这次观察具备明确边界：
+      - 只在 repair 阶段触发
+      - 复用 precheck 已拿到的 `storageState`
+      - 带独立超时
+      - 观察失败时只记录 warning，不中断 repair 主链
+    - 观察成功后会把最新页面快照作为 `repairObservationSnapshot` 透传给 repair prompt 上下文
+  - `lib/test-generator.ts`
+    - `GenerateTestContext` 已新增 `repairObservationSnapshot`
+    - prompt 现在会在 repair 场景下显式输出：
+      - `## Repair 观察快照（最新受控观察）`
+    - 让 repair LLM 在最新页面结构基础上修补 locator / helper / 断言，而不是只看最初旧快照
+  - 单测已补到：
+    - `tests/unit/test-generator.spec.ts`
+    - `tests/unit/intent-e2e-service.spec.ts`
+    - 覆盖 repair prompt 注入最新观察快照、service 侧二次 `analyzePage(...)` 调用与失败后继续 repair 的透传行为
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 3 个测试文件通过
+  - 62 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第三刀：repair 前已具备受控观察快照刷新）
+- 风险 / 未完成：
+  - 当前受控观察还只是“repair 前单次快照刷新”，还不是完整的 agent tool loop。
+  - 观察目标目前仍是当前任务入口页，没有扩展到失败时的动态落点页面。
+  - 观察结果目前主要以页面快照形式进入 prompt，尚未形成更细粒度的 repair tool protocol。
+- 下一步：
+  - 继续 `R6`
+  - 在不扩范围的前提下，把受控观察从“单次快照刷新”继续推进到更细粒度的 repair tool protocol。
+
+## 2026-03-26 第一百四十八次更新（R6 第四刀：repair 观察结果收口为结构化 observation protocol）
+
+- 本轮目标：
+  - 继续只推进 `R6` 的受控观察主线。
+  - 不新增浏览器动作类型，只把已有 repair 快照刷新结果收口成更细粒度的结构化 observation protocol。
+- 已完成：
+  - `lib/test-generator.ts`
+    - `GenerateTestContext` 已新增 `repairObservationReport`
+    - prompt 现在会额外输出：
+      - `## Repair Observation Protocol（受控观察结果）`
+    - observation protocol 当前拆成 4 类 probe：
+      - `page_surface`
+      - `anchor_presence`
+      - `candidate_anchor_presence`
+      - `frame_probe`
+    - 并明确 repair 边界：
+      - 只能基于已观察结果修补
+      - `anchor_presence / candidate_anchor_presence` 都未命中时，不要虚构成功路径
+      - `frame_probe` 命中时优先考虑 frame 进入
+  - `lib/ai/intent-e2e-service.ts`
+    - repair 前刷新出的最新快照，现在会继续被整理成结构化 `repairObservationReport`
+    - observation protocol 会复用上一轮失败诊断中的：
+      - `targetAnchor`
+      - `candidateAnchors`
+      - `frameHints`
+    - 结合最新页面快照，输出每个 probe 的：
+      - `status`
+      - `summary`
+      - `evidence`
+    - repair 阶段日志现在也会记录 observation protocol 的 probe 状态摘要，便于后续追踪
+  - 单测已补到：
+    - `tests/unit/test-generator.spec.ts`
+    - `tests/unit/intent-e2e-service.spec.ts`
+    - 覆盖 repair prompt 注入 observation protocol、service 侧 repairObservationReport 透传
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 3 个测试文件通过
+  - 63 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第四刀：repair 观察结果已收口为结构化 observation protocol）
+- 风险 / 未完成：
+  - 当前 observation protocol 仍然基于预定义 probe，不是可交互式 agent tool loop。
+  - probe 目前仍依赖 target page 的受控快照刷新，没有覆盖失败后动态落点页的再次观察。
+  - observation protocol 已进入 prompt，但还没有单独落成长期可学习工件。
+- 下一步：
+  - 继续 `R6`
+  - 在不扩范围的前提下，继续把 observation protocol 从“固定 probe”推进到可复用的 repair learning artifact。
+
+## 2026-03-26 第一百四十九次更新（R6 第五刀：observation protocol 进入 attempt / run snapshot 工件链）
+
+- 本轮目标：
+  - 继续只推进 `R6` 的 repair learning artifact。
+  - 把上一刀的 observation protocol 从 prompt 上下文提升为可持久化工件，先进入 attempt / run snapshot 链，不扩到 UI。
+- 已完成：
+  - `lib/ai/intent-e2e-service.ts`
+    - `IntentE2EAttempt` 已新增 `repairObservationReport`
+    - repair 尝试完成后，最新 observation protocol 现在会和：
+      - `structuredPatch`
+      - `repairOutput`
+      一起挂到 attempt 结果上
+  - `lib/ai/intent-e2e-run-registry.ts`
+    - run snapshot clone / restore 链已补齐 `repairObservationReport`
+    - observation protocol 现在不会在 run registry 持久化或恢复时丢失
+  - 单测已补到：
+    - `tests/unit/intent-e2e-service.spec.ts`
+    - `tests/unit/intent-e2e-run-registry.spec.ts`
+    - 覆盖 attempt 结果挂载 observation protocol、run registry 深拷贝与恢复透传
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 2 个测试文件通过
+  - 17 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第五刀：observation protocol 已进入 attempt / run snapshot 工件链）
+- 风险 / 未完成：
+  - observation protocol 目前仍只保存到 run artifact，还没有进入 repair memory / rule learning 主链。
+  - 当前还没有单独的 observation artifact 消费视图。
+  - repair 阶段仍未进入可交互式 agent tool loop。
+- 下一步：
+  - 继续 `R6`
+  - 在不扩范围的前提下，把 observation artifact 接到 repair memory / learning 主链，而不是只停留在 run snapshot。
+
+## 2026-03-26 第一百五十次更新（R6 第六刀：observationTags 接入 repair memory 主链）
+
+- 本轮目标：
+  - 继续只推进 `R6` 的 repair learning artifact。
+  - 不改 repair-memory 存储结构，只把 observation protocol 先收口成可复用的 `observationTags` 并接到 repair memory 主链。
+- 已完成：
+  - `lib/ai/intent-e2e-service.ts`
+    - 已从 `repairObservationReport` 派生稳定的 `observationTags`，当前包含：
+      - `obs-page-surface`
+      - `obs-anchor-present / obs-anchor-missing / obs-anchor-na`
+      - `obs-candidate-present / obs-candidate-missing / obs-candidate-na`
+      - `obs-frame-present / obs-frame-missing / obs-frame-na`
+    - repair 阶段在召回历史相似修复记忆时，现在会把这些 tags 一并传给 `listRelevantIntentRepairHints(...)`
+    - 这样 repair hint 召回已经开始利用 observation artifact，而不再只靠 URL / error / recentEvents
+  - `lib/ai/intent-repair-memory.ts`
+    - `IntentRepairObservationInput` 已新增 `observationTags`
+    - repair memory 聚类标签现在会合并 observationTags，进入现有 cluster tag 主链
+  - 单测已补到：
+    - `tests/unit/intent-e2e-service.spec.ts`
+    - `tests/unit/intent-repair-memory.spec.ts`
+    - 覆盖 repair hint 召回透传 observationTags、repair memory 存储 observationTags
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/intent-repair-memory.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 2 个测试文件通过
+  - 11 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第六刀：observationTags 已接入 repair memory 主链）
+- 风险 / 未完成：
+  - 当前 observationTags 只进入了 repair hint 召回与 failure cluster tag，还没有进入 recipe / verifier / project knowledge 的正式学习链。
+  - 首轮 generate 失败仍不会天然拥有 repair observation 上下文；当前 observationTags 只在 repair 阶段成立。
+  - 当前还没有 observationTags 的治理与降级规则。
+- 下一步：
+  - 继续 `R6`
+  - 在不扩范围的前提下，把 observation artifact 继续接入 recipe / verifier / knowledge 的学习入口。
+
+## 2026-03-26 第一百五十一次更新（R6 第七刀：observation artifact 接入 recipe / verifier / successful_run knowledge 学习入口）
+
+- 本轮目标：
+  - 继续只推进 `R6` 的 repair learning artifact。
+  - 不新增 recipe / verifier 的独立存储通道，只把 observation artifact 先接到现有 `repairOutput` 与 `successful_run knowledgeCandidates` 学习入口。
+- 已完成：
+  - `lib/intent-execution-artifacts.ts`
+    - `IntentExecutionStructuredRepairOutput` 已新增可选 `observationTags / observationSummary`
+    - clone helper 已补齐透传，避免 repairOutput 深拷贝时丢失 observation metadata
+  - `lib/ai/intent-e2e-service.ts`
+    - repair 成功尝试现在会把本轮 `repairObservationReport` 收口成 observation artifact，并挂到 `repairOutput`
+    - 最终成功且来自 repair 的 run，现在会把同一份 observation artifact 挂到 `knowledgeCandidates`
+    - 这样现有 `repairOutput` 就成为 verifier / recipe 学习入口的 observation 承载体，而 `successful_run` knowledge 候选也开始携带同源 observation 上下文
+  - `lib/intent-project-knowledge-draft.ts`
+    - 已支持从 successful run 候选中读取 `observationTags / observationSummary`
+    - successful_run draft 规则在构建 `promptNotes` 时，会补入：
+      - `repair 受控观察：...`
+      - `repair 观察标签：...`
+    - 这样 observation artifact 现在不会在 successful_run -> draft -> merged rule 这条 knowledge 正式学习链里丢失
+  - `lib/ai/intent-e2e-run-registry.ts`
+    - run result 深拷贝已补齐 `knowledgeCandidates.observationTags / observationSummary`
+    - 避免 run snapshot restore 后丢失 successful_run learning metadata
+  - 单测已补到：
+    - `tests/unit/intent-e2e-service.spec.ts`
+    - `tests/unit/intent-project-knowledge-draft.spec.ts`
+    - `tests/unit/intent-e2e-run-registry.spec.ts`
+    - 覆盖 repairOutput observation metadata、successful_run knowledge candidate observation metadata、draft promptNotes 保留 observation artifact
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/intent-e2e-run-registry.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 3 个测试文件通过
+  - 32 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第七刀：observation artifact 已接入 recipe / verifier / successful_run knowledge 学习入口）
+- 风险 / 未完成：
+  - 当前 observation artifact 仍只是附着在 `repairOutput` 与 successful_run knowledge candidate 上，还没有形成独立的 recipe / verifier promotion / merge 工作流。
+  - 首轮 generate 失败仍不会天然拥有 repair observation 上下文；当前 observation artifact 仍主要成立于 repair 阶段。
+  - 当前还没有 observationTags 的治理与降级规则。
+- 下一步：
+  - 继续 `R6`
+  - 在不扩范围的前提下，把 observation artifact 继续补进 successful_run knowledge promotion receipt / merge provenance，先保证后续学习回执也不丢观察上下文。
+
+## 2026-03-26 第一百五十二次更新（R6 第八刀：observation artifact 进入 successful_run receipt / merge provenance）
+
+- 本轮目标：
+  - 继续只推进 `R6` 的 successful_run knowledge 学习链。
+  - 不改 UI，不新增 audit 结构层级，只把上一刀的 observation artifact 继续透传到 successful_run knowledge promotion receipt 与 merge provenance。
+- 已完成：
+  - `lib/intent-project-knowledge-draft.ts`
+    - successful_run draft candidate 顶层现在会额外保留：
+      - `observationTags`
+      - `observationSummary`
+    - 这样 receipt / merge route 不再只能从 `rule.promptNotes` 间接取信息，而是能直接拿到结构化 observation metadata
+  - `app/api/intent-e2e/project-knowledge/merge/route.ts`
+    - merge route 写入 `mergedCandidates` 时，已把 candidate 上的 `observationTags / observationSummary` 一并透传进 audit meta / project activity meta
+  - `lib/intent-successful-run-knowledge-promotion-receipt.ts`
+    - successful_run receipt item 已支持持久化与恢复：
+      - `observationTags`
+      - `observationSummary`
+    - 这样 successful_run promotion receipt 现在不会在 create / normalize / activity replay 过程中丢失 observation artifact
+  - `lib/intent-project-knowledge.ts`
+    - `IntentProjectKnowledgeMergedCandidateMeta` 已支持 observation metadata
+    - audit meta normalize / read-back 现在能稳定恢复 mergedCandidates 上的 observation artifact
+  - 单测已补到：
+    - `tests/unit/intent-project-knowledge-draft.spec.ts`
+    - `tests/unit/intent-successful-run-knowledge-promotion-receipt.spec.ts`
+    - `tests/unit/intent-project-knowledge.spec.ts`
+    - `tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+    - 覆盖 draft candidate、merge route meta、successful_run receipt、audit read-back 的 observation artifact 透传
+- 验证：
+  - `npx vitest run tests/unit/intent-project-knowledge-draft.spec.ts tests/unit/intent-successful-run-knowledge-promotion-receipt.spec.ts tests/unit/intent-project-knowledge.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 4 个测试文件通过
+  - 34 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第八刀：observation artifact 已进入 successful_run receipt / merge provenance）
+- 风险 / 未完成：
+  - 当前 observation artifact 已进入 successful_run knowledge receipt / provenance，但还没有补到统一 detail / insights 消费摘要里。
+  - recipe / verifier 侧目前仍只有 `repairOutput` 这一层 observation 承载体，还没有独立的 promotion / receipt 工作流。
+  - 首轮 generate 失败仍不会天然拥有 repair observation 上下文；当前 observation artifact 仍主要成立于 repair 阶段。
+- 下一步：
+  - 继续 `R6`
+  - 在不扩范围的前提下，把 successful_run knowledge receipt / audit detail 的最小 observation 摘要补进统一消费口径，先保证活动回放能直接看到观察上下文。
+
+## 2026-03-26 第一百五十三次更新（R6 第九刀：successful_run receipt / audit detail 补 observation 摘要）
+
+- 本轮目标：
+  - 继续只推进 `R6` 的 successful_run knowledge 回执消费口径。
+  - 不改 insights 结构，不新增 UI 卡片，只把上一刀已经持久化的 observation artifact 补进 receipt / audit detail 摘要，先保证活动回放可直接看到观察上下文。
+- 已完成：
+  - `lib/intent-successful-run-knowledge-promotion-receipt.ts`
+    - 已新增统一 observation 摘要 helper：
+      - 优先输出 `observationSummary`
+      - 若没有 summary，再回退到少量 `observationTags`
+    - successful_run receipt `detail` 现在会追加最小 observation 摘要，例如：
+      - `观察上下文：page_surface=observed；anchor_presence=not_found`
+  - `lib/intent-project-knowledge.ts`
+    - knowledge audit `detail` 中的 `Successful Run 回执：...` 摘要现在会复用同一 observation 摘要 helper
+    - 这样 project activity / audit replay 现有消费口径就能直接看到 observation context，而不是只看到规则 / run / helper 数量
+  - 单测已补到：
+    - `tests/unit/intent-successful-run-knowledge-promotion-receipt.spec.ts`
+    - `tests/unit/intent-project-knowledge.spec.ts`
+    - `tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+    - 覆盖 receipt detail、audit detail、merge route 结构稳定性
+- 验证：
+  - `npx vitest run tests/unit/intent-successful-run-knowledge-promotion-receipt.spec.ts tests/unit/intent-project-knowledge.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 3 个测试文件通过
+  - 20 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第九刀：successful_run receipt / audit detail 已补 observation 摘要）
+- 风险 / 未完成：
+  - 当前 observation 摘要只进入了 successful_run receipt / audit detail，还没有进入 insights 顶层 summary 或 coverage 聚合字段。
+  - recipe / verifier 侧目前仍只有 `repairOutput` 这一层 observation 承载体，还没有独立的 promotion / receipt 工作流。
+  - 首轮 generate 失败仍不会天然拥有 repair observation 上下文；当前 observation artifact 仍主要成立于 repair 阶段。
+- 下一步：
+  - 继续 `R6`
+  - 在不扩范围的前提下，把 successful_run observation 摘要继续补进 insights 的统一 promotion coverage / rule summary 消费口径，保证 overview 层也能看到最近观察上下文。
+
+## 2026-03-26 第一百五十四次更新（R6 第十刀：successful_run observation 摘要进入 insights rule summary / promotion coverage）
+
+- 本轮目标：
+  - 继续只推进 `R6` 的 successful_run observation 消费口径。
+  - 不改 overview UI 结构，只把 latest successful_run observation 摘要补进 insights 的 rule summary 与 promotion coverage 数据层。
+- 已完成：
+  - `lib/intent-successful-run-knowledge-promotion-receipt.ts`
+    - 已把 receipt 侧 observation 摘要 helper 进一步收口为可复用导出
+    - 现在 insights 层不再自造第二套 summary 规则，而是直接复用 receipt 侧的 observation summary / tag fallback 口径
+  - `lib/ai/intent-e2e-insights.ts`
+    - successful_run promotion history by rule 现已额外保留：
+      - `lastSuccessfulRunPromotionObservationSummary`
+    - knowledge change rule summary 现已同步透出该字段
+    - 这样 rule summary 现在除了最近 successful_run receipt 时间 / module / runIds，也能看到最近 observation context
+  - `lib/intent-e2e-promotion-coverage.ts`
+    - promotion coverage summary 现已额外透出：
+      - `latestSuccessfulRunObservationSummary`
+    - overview 层现有 coverage 消费方现在可直接拿到最近 successful_run observation 摘要，而不需要再回查 receipt items
+  - 单测已补到：
+    - `tests/unit/intent-e2e-insights.spec.ts`
+    - `tests/unit/intent-successful-run-knowledge-promotion-receipt.spec.ts`
+    - 覆盖 knowledge rule summary、promotion coverage summary、receipt helper 统一 observation 口径
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-successful-run-knowledge-promotion-receipt.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 2 个测试文件通过
+  - 34 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第十刀：successful_run observation 摘要已进入 insights rule summary / promotion coverage）
+- 风险 / 未完成：
+  - 当前 observation 摘要虽然已进入 successful_run overview 数据层，但仍只覆盖 successful_run knowledge 学习链。
+  - recipe / verifier 侧目前仍只有 `repairOutput` 这一层 observation 承载体，还没有进入统一 overview / governance 口径。
+  - 首轮 generate 失败仍不会天然拥有 repair observation 上下文；当前 observation artifact 仍主要成立于 repair 阶段。
+- 下一步：
+  - 继续 `R6`
+  - 在不扩范围的前提下，把 recipe / verifier 侧已有 `repairOutput` observation metadata 接到最小 review / overview 消费口径，避免 observation 学习链只偏向 successful_run knowledge。
+
+## 2026-03-26 第一百五十五次更新（R6 第十一刀：repairOutput observation 接入 recipe governance / recent trace overview）
+
+- 本轮目标：
+  - 继续只推进 `R6` 的 repair observation 消费口径。
+  - 不新增 recipe / verifier 的独立存储或治理流程，只把现有 `repairOutput` observation metadata 接到最小 review / overview 消费面。
+- 已完成：
+  - `lib/intent-execution-artifacts.ts`
+    - 已新增 repair observation 摘要 helper：
+      - 优先输出 `观察上下文：...`
+      - 无 summary 时回退到少量 `观察标签：...`
+    - 这样 recipe governance 与 recent trace overview 不再各自拼第三套 observation 文案
+  - `lib/intent-recipe-registry.ts`
+    - `IntentRecipePerformanceFeedback` 现已支持透出：
+      - `latestRepairObservationAt`
+      - `latestRepairObservationSummary`
+    - 保持字段仍挂在现有 runtime feedback 上，不单开 recipe observation schema
+  - `lib/ai/intent-e2e-insights.ts`
+    - recipe performance map 现在会从 repair attempt 的 `repairOutput.patchedRecipeSelection.recipeSlugs` 回收最近 observation 摘要
+    - recent trace attempt 现在会额外保留：
+      - `patchedRecipeSlugs`
+      - `patchedVerifierCheckUids`
+      - `repairObservationSummary`
+    - 这样 overview 层已有 trace 摘要对象现在能直接看到“这次 repair 观察对应哪条 recipe / verifier，以及观察到了什么”
+  - `lib/intent-project-recipe-governance.ts`
+    - recipe governance decision item 现在会保留：
+      - `latestRepairObservationAt`
+      - `latestRepairObservationSummary`
+    - governance `reason` 也会把最近 repair observation 摘要前置进去
+    - 这样 project recipe 的 review 面不再只看成功率 / 失败数，也能直接带出最近 repair 观察上下文
+  - `components/IntentE2EWorkbench.tsx`
+    - 现有 recent trace attempt 卡片已补最小 observation / scope 文案：
+      - observation 摘要
+      - `recipe ... / verifier ...` scope
+    - 不新增 overview 卡片，只在现有 trace attempt 明细里补齐 repair observation 消费
+  - 单测已补到：
+    - `tests/unit/intent-e2e-insights.spec.ts`
+    - `tests/unit/intent-project-recipe-governance.spec.ts`
+    - 覆盖 recipe runtime feedback observation 摘要、recent trace attempt observation scope、recipe governance review 输出
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-project-recipe-governance.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 2 个测试文件通过
+  - 35 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第十一刀：repairOutput observation 已进入 recipe governance / recent trace overview）
+- 风险 / 未完成：
+  - repair observation 现在虽然已经进入 recipe review 与 trace overview，但仍主要停留在 item / attempt 粒度，还没有更上层 summary 聚合。
+  - verifier 侧目前仍只有 recent trace attempt 这一层长期消费口径，还没有独立的 governance / receipt 工作流。
+  - 首轮 generate 失败仍不会天然拥有 repair observation 上下文；当前 observation artifact 仍主要成立于 repair 阶段。
+- 下一步：
+  - 继续 `R6`
+  - 在不扩范围的前提下，把 repair observation 摘要再往 recipe governance summary / recent trace 顶层摘要推一层，避免 review / overview 仍必须下钻到 item / attempt 明细。
+
+## 2026-03-26 第一百五十六次更新（R6 第十二刀：repair observation 进入 recipe governance summary / recent trace 顶层摘要）
+
+- 本轮目标：
+  - 继续只推进 `R6` 的 repair observation 消费口径。
+  - 不新增 verifier / recipe 独立治理流程，只把上一刀已经进入 item / attempt 粒度的 observation 摘要再提升到现有 summary / trace 顶层。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - recent trace 顶层现已额外保留：
+      - `latestRepairObservationSummary`
+      - `latestRepairObservationRecipeSlugs`
+      - `latestRepairObservationVerifierCheckUids`
+    - 会优先从最近一条带 observation 摘要的 repair attempt 汇总；若只有 patched scope，也会保守回填 scope
+    - 这样 overview 层现在不必下钻到 attempt 明细，直接看 trace 顶层就能知道最近 repair 观察和受影响的 recipe / verifier
+  - `lib/intent-project-recipe-governance.ts`
+    - governance summary 现已额外透出：
+      - `latestRepairObservationAt`
+      - `latestRepairObservationRecipeSlug`
+      - `latestRepairObservationRecipeTitle`
+      - `latestRepairObservationSummary`
+    - 会从现有 governance items 中挑最近 observation 样本，不新增第二套 recipe observation 存储
+  - `components/IntentE2EWorkbench.tsx`
+    - recent trace 现有 `result` 卡片已补顶层 repair observation 摘要与 scope
+    - 不再必须展开 attempt 卡片，overview 视角即可看到最近 repair 观察
+  - `components/ProjectIntentWorkbench.tsx`
+    - recipe governance 现有 summary 区域已补一行“最近 repair 观察”
+    - 直接展示最近 recipe + observation 摘要 + 时间，不新增治理面板
+  - 单测已补到：
+    - `tests/unit/intent-e2e-insights.spec.ts`
+    - `tests/unit/intent-project-recipe-governance.spec.ts`
+    - 覆盖 recent trace 顶层 observation 摘要、recipe governance summary observation 摘要
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-project-recipe-governance.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 2 个测试文件通过
+  - 35 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第十二刀：repair observation 已进入 recipe governance summary / recent trace 顶层摘要）
+- 风险 / 未完成：
+  - repair observation 现在虽然已经进入 recipe governance summary 与 recent trace 顶层，但 verifier 侧仍主要停留在 trace 观察口径，还没有更稳定的长期 summary。
+  - recipe governance 当前仍主要把 observation 作为 review 辅助摘要，不会单独影响 promote / degrade 判定规则。
+  - 首轮 generate 失败仍不会天然拥有 repair observation 上下文；当前 observation artifact 仍主要成立于 repair 阶段。
+- 下一步：
+  - 继续 `R6`
+  - 在不扩范围的前提下，把 verifier 侧 repair observation 摘要再接到现有 verification / failure overview 的最小长期汇总口径，避免 verifier observation 仍只停留在 recent trace。
+
+## 2026-03-26 第一百五十七次更新（R6 第十三刀：verifier observation 进入 verification intent / failure overview）
+
+- 本轮目标：
+  - 继续只推进 `R6` 的 verifier-side repair observation 消费口径。
+  - 不新增 verifier 工作流或新面板，只把现有 `verification overview / failure overview` 两处长期汇总补上 observation 摘要。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - `verificationIntents` 现已额外透出：
+      - `latestRepairObservationAt`
+      - `latestRepairObservationSummary`
+      - `latestRepairObservationVerifierCheckUids`
+    - `failureClasses` 现也同步透出同一组字段
+    - 聚合时只消费带 `patchedVerifier.checkUids` 的 repair attempt，避免把 recipe-only observation 混进 verifier overview
+    - 这样 verifier observation 不再只停留在 `recentTrace`，而是进入长期分桶统计对象
+  - `components/IntentE2EWorkbench.tsx`
+    - “验证意图分桶” 现已在现有卡片里补最近 verifier repair observation 摘要
+    - “常见失败类别” 现也在现有列表里补最近 verifier repair observation 摘要
+    - 两处都只复用现有 overview 卡片，不新增新区域
+  - 单测已补到：
+    - `tests/unit/intent-e2e-insights.spec.ts`
+    - 覆盖 verification intent bucket 与 failure class overview 对 verifier observation 摘要的长期回填
+    - `tests/unit/intent-project-recipe-governance.spec.ts`
+    - 回归保证上一刀 recipe governance summary 口径未被破坏
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-project-recipe-governance.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 2 个测试文件通过
+  - 35 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第十三刀：verifier observation 已进入 verification intent / failure overview）
+- 风险 / 未完成：
+  - verifier observation 现在虽然已进入 verification / failure overview，但仍主要停留在 intent-run insights 口径，还没有进入 capability verification execution 趋势汇总。
+  - failure pressure summary 目前仍只看失败窗口数量，不消费 observation 摘要。
+  - 首轮 generate 失败仍不会天然拥有 repair observation 上下文；当前 observation artifact 仍主要成立于 repair 阶段。
+- 下一步：
+  - 继续 `R6`
+  - 在不扩范围的前提下，把 verifier-side repair observation 摘要再接到 capability verification execution trend / failure pressure 的最小长期汇总口径，避免 verifier observation 只停留在 intent-run overview。
+
+## 2026-03-26 第一百五十八次更新（R6 第十四刀：verifier observation 进入 capability verification trend / failure pressure summary）
+
+- 本轮目标：
+  - 继续只推进 `R6` 的 verifier-side repair observation 消费口径。
+  - 不新增 verifier 工作流或新面板，只把现有 `capability verification execution trend / failure pressure summary` 补上 observation 摘要。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - `capabilityVerificationIntents` 现已额外透出：
+      - `latestRepairObservationAt`
+      - `latestRepairObservationSummary`
+      - `latestRepairObservationVerifierCheckUids`
+    - 该摘要直接复用同一批 `verificationIntents` 的 verifier observation 聚合，不新造 capability 侧第二套 observation 口径
+    - 顶层 `failurePressureSummary` 现也会回填最近 verifier repair observation 摘要与 check scope，形成最小长期 summary 契约
+  - `lib/intent-verification-failure-pressure-summary.ts`
+    - 共享 `IntentVerificationFailurePressureSummary` 已支持可选 observation 字段：
+      - `latestRepairObservationAt`
+      - `latestRepairObservationSummary`
+      - `latestRepairObservationVerifierCheckUids`
+    - 共享 normalize / summarize helper 会保守透传最近 observation，旧调用方不必强制补 fixture
+  - `components/IntentE2EWorkbench.tsx`
+    - “能力验证执行趋势” 现已在现有 intent 卡片里补最近 verifier repair observation 摘要
+    - Starter Helper 现有 failure-pressure 说明区也会补最近 verifier repair observation 摘要
+    - 两处都只复用现有 summary/card，不新增区域
+  - 单测已补到：
+    - `tests/unit/intent-e2e-insights.spec.ts`
+      - 覆盖 capability verification trend 对 verifier observation 的长期回填
+    - `tests/unit/intent-verification-failure-pressure-view.spec.ts`
+      - 覆盖共享 failure-pressure summary 对 verifier observation 的 normalize / summarize
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-verification-failure-pressure-view.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 2 个测试文件通过
+  - 35 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第十四刀：verifier observation 已进入 capability verification trend / failure pressure summary）
+- 风险 / 未完成：
+  - capability verification 区当前只在 intent bucket 维度复用 verifier observation，最近 execution 列表本身仍不带 observation 摘要。
+  - failure pressure summary 现已带 observation，但该摘要目前仍主要由 insights 侧回填，queue / health 还没有统一复用同一来源。
+  - 首轮 generate 失败仍不会天然拥有 repair observation 上下文；当前 observation artifact 仍主要成立于 repair 阶段。
+- 下一步：
+  - 继续 `R6`
+  - 在不扩范围的前提下，把 verifier-side repair observation 的最小提取 / 回填逻辑继续收口到 queue / health / insights 可共享的公共口径，避免后续同类 summary 再各自拼装。
+
+## 2026-03-26 第一百五十九次更新（R6 第十五刀：verifier observation 提取 / 回填 helper 收口到 queue / health / insights）
+
+- 本轮目标：
+  - 继续只推进 `R6` 的 verifier-side repair observation 消费口径。
+  - 不新增 verifier 工作流或新面板，只把 observation 的最小提取 / 回填 helper 收口成 queue / health / insights 共用的 summary merge 逻辑。
+- 已完成：
+  - `lib/intent-verification-failure-pressure-summary.ts`
+    - 已新增共享 observation helper：
+      - `normalizeIntentVerificationFailurePressureObservation(...)`
+      - `pickLatestIntentVerificationFailurePressureObservation(...)`
+      - `mergeIntentVerificationFailurePressureSummaryObservation(...)`
+    - `summarizeIntentVerificationFailurePressureSummaryFromItems(...)` 现已复用同一套 merge helper，不再各处单独维护“最近 observation”挑选逻辑
+  - `lib/ai/intent-e2e-insights.ts`
+    - 顶层 `failurePressureSummary` 现已直接复用共享 merge helper，从 `verificationIntents` 回填最近 verifier repair observation
+    - 删除了 insights 内部那份仅服务当前文件的 observation 选择逻辑，避免后续再次分叉
+  - `lib/capability-verification-service.ts`
+    - capability verification recommendation queue 现支持接收共享 observation source
+    - `listCapabilityVerificationRecommendationQueue(...)` 现会把 `insights.verificationIntents / failurePressureSummary` 作为 observation source 传入 queue summary，形成与 insights 同源的 failure-pressure 摘要
+  - `lib/intent-starter-helper-health.ts`
+    - starter helper health summary 现也支持接收共享 observation source
+  - `lib/intent-starter-helper-health-service.ts`
+    - health snapshot 构建时现会把 `insights.verificationIntents / failurePressureSummary` 传入 health view summary，形成与 queue / insights 同一套 observation 回填口径
+  - 单测已补到：
+    - `tests/unit/intent-verification-failure-pressure-view.spec.ts`
+      - 覆盖共享 summary merge helper 对最近 verifier observation 的统一挑选
+    - `tests/unit/capability-verification-service.spec.ts`
+      - 覆盖 queue summary 对共享 observation source 的回填
+    - `tests/unit/intent-starter-helper-health-service.spec.ts`
+      - 覆盖 health snapshot summary 对共享 observation source 的回填
+    - `tests/unit/intent-e2e-insights.spec.ts`
+      - 回归保证 insights 侧共享 merge 后 observation 口径未破坏
+      - 同时把一个“最近 7 天 merge provenance”用例固定了 `nowMs`，避免测试继续受真实时间漂移影响
+- 验证：
+  - `npx vitest run tests/unit/intent-verification-failure-pressure-view.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/capability-verification-service.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 5 个测试文件通过
+  - 55 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第十五刀：verifier observation 提取 / 回填 helper 已收口到 queue / health / insights）
+- 风险 / 未完成：
+  - queue / health / insights 三处 summary 现在已经共享同一 observation 回填 helper，但 capability workbench 现有 summary UI 还没有直接展示这份 observation。
+  - capability verification 最近 execution 列表仍未显示 observation 摘要；当前 observation 主要停留在 intent bucket / summary 层。
+  - 首轮 generate 失败仍不会天然拥有 repair observation 上下文；当前 observation artifact 仍主要成立于 repair 阶段。
+- 下一步：
+  - 继续 `R6`
+  - 在不扩范围的前提下，把 queue / health 已共享的 verifier-side repair observation 摘要接到现有 capability / helper summary 文案，避免 observation 只停留在服务端 summary payload / snapshot。
+
+## 2026-03-26 第一百六十次更新（R6 第十六刀：queue / helper summary 文案显示 verifier observation）
+
+- 本轮目标：
+  - 继续只推进 `R6` 的 verifier-side repair observation 消费口径。
+  - 不新增 capability / helper 面板，只把上一刀已进入 queue / health shared summary 的 observation 摘要接到现有 summary 文案。
+- 已完成：
+  - `components/ProjectIntentWorkbench.tsx`
+    - Starter Helper 健康视图头部现已在现有说明文案下补最近 verifier repair observation：
+      - observation 摘要
+      - verifier check scope
+      - observation 时间
+    - “建议验证队列” 头部现也同步补上同一组 observation 文案
+    - 两处都只复用现有 header summary 文案，不新增卡片或新交互
+    - 同时把本地 response type / fallback summary 默认值补齐了：
+      - `latestRepairObservationAt`
+      - `latestRepairObservationSummary`
+      - `latestRepairObservationVerifierCheckUids`
+- 验证：
+  - `npx vitest run tests/unit/intent-verification-failure-pressure-view.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/capability-verification-service.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 5 个测试文件通过
+  - 55 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第十六刀：queue / helper summary 文案已显示 verifier observation）
+- 风险 / 未完成：
+  - queue / helper 顶部 summary 文案现在已显示 verifier observation，但列表细项本身还没有下钻到各自 observation 上下文。
+  - capability verification 最近 execution 列表仍未显示 observation 摘要；当前 observation 主要停留在 summary / overview 层。
+  - 首轮 generate 失败仍不会天然拥有 repair observation 上下文；当前 observation artifact 仍主要成立于 repair 阶段。
+- 下一步：
+  - 继续 `R6`
+  - 在不扩范围的前提下，把 verifier-side repair observation 的最小下钻信息接到现有 helper / capability 细项说明里，避免 observation 仍只停留在顶部 summary 文案。
+
+## 2026-03-27 第一百六十一次更新（R6 第十七刀：helper / capability 细项说明显示 verifier observation）
+
+- 本轮目标：
+  - 继续只推进 `R6` 的 verifier-side repair observation 消费口径。
+  - 不新增 capability / helper 面板，只把 observation 的最小下钻信息接到现有 helper / capability 细项说明，并补齐 snapshot 兼容层，避免这批字段在 audit / build 上掉线。
+- 已完成：
+  - `lib/capability-verification-service.ts`
+    - capability verification recommendation item 现已补齐 item-level observation 字段：
+      - `latestRepairObservationAt`
+      - `latestRepairObservationSummary`
+      - `latestRepairObservationVerifierCheckUids`
+    - observation 复用现有 shared source，按最近失败 intent 或 promotion grader 的 verification intent 取最小匹配，不额外引入第二套 capability observation 口径。
+  - `lib/intent-starter-helper-health.ts`
+    - helper health queue item 现已透传同一组 item-level observation 字段。
+    - helper item 本身会从现有 queue items 中挑选最近 observation，形成 helper 细项可直接消费的最小下钻信息。
+  - `components/ProjectIntentWorkbench.tsx`
+    - Starter Helper 健康列表细项现已在现有说明文案里补最近 verifier observation：
+      - observation 摘要
+      - verifier check scope
+      - observation 时间
+    - “建议验证队列” 列表细项现也在现有说明文案里补同一组最近 verifier observation。
+    - 两处都只复用现有细项文案，不新增卡片、抽屉或新交互。
+  - `lib/intent-starter-helper-health-snapshot.ts`
+    - starter helper health snapshot normalize 现已补齐 queue item / helper item 的 observation 字段兼容：
+      - 旧 snapshot 没有这些字段时默认回填空字符串与空数组
+      - 新 snapshot 写入后可稳定保留 observation 字段，不会因为 audit normalize 丢失
+  - 单测已补到：
+    - `tests/unit/capability-verification-service.spec.ts`
+      - 覆盖 capability recommendation item 对 verifier observation 的 item-level 回填
+    - `tests/unit/intent-starter-helper-health.spec.ts`
+      - 覆盖 helper health queue item / helper item 对最近 verifier observation 的聚合
+    - `tests/unit/intent-starter-helper-health-snapshot.spec.ts`
+      - 覆盖 snapshot normalize 对 observation 字段的保留与向后兼容
+- 验证：
+  - `npx vitest run tests/unit/intent-verification-failure-pressure-view.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/capability-verification-service.spec.ts tests/unit/intent-starter-helper-health.spec.ts tests/unit/intent-starter-helper-health-service.spec.ts tests/unit/intent-starter-helper-health-snapshot.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 6 个测试文件通过
+  - 59 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第十七刀：helper / capability 细项说明已显示 verifier observation）
+- 风险 / 未完成：
+  - helper / capability 细项现在已显示 verifier observation，但 capability verification 最近 execution 列表本身仍未显示 observation 摘要。
+  - 当前 observation 仍主要成立于 repair 阶段；首轮 generate 失败时还不会天然拥有这类 observation 上下文。
+  - snapshot 兼容层已补齐 observation 字段，但老快照如果本身没有记录 observation，仍只会保守显示为空。
+- 下一步：
+  - 继续 `R6`
+  - 在不扩范围的前提下，把 verifier-side repair observation 的最小信息继续接到 capability verification 现有 recent execution / detail 文案，避免 observation 只停留在 summary 与 recommendation item。
+
+## 2026-03-27 第一百六十二次更新（R6 第十八刀：capability verification recent execution 细项显示 verifier observation）
+
+- 本轮目标：
+  - 继续只推进 `R6` 的 verifier-side repair observation 消费口径。
+  - 不新增 capability verification 面板、不加新接口查询，只把现有 recent execution batch item 的细项文案接上最近关联 verifier observation。
+- 已完成：
+  - `components/ProjectIntentWorkbench.tsx`
+    - capability verification batch item 现已补齐 observation 字段：
+      - `latestRepairObservationAt`
+      - `latestRepairObservationSummary`
+      - `latestRepairObservationVerifierCheckUids`
+    - workbench 现会复用已经加载到前台的两类现有 observation source：
+      - capability verification recommendation queue item
+      - starter helper health queue item
+    - recent execution 卡片会按 `capabilityUid + verificationIntent` 优先匹配最近 observation；没有精确 intent 命中时，再保守回退到同 capability 的最近 observation。
+    - repair batch item 现会保留最近失败验证意图，用来命中更准确的 verifier observation。
+    - recent execution 现有说明文案里已补：
+      - 最近关联 verifier observation 摘要
+      - verifier check scope
+      - observation 时间
+    - 整条链路只复用 workbench 已有 queue / helper 数据，不新增 API，不给轮询中的 execution detail 刷新链路增加额外查询负担。
+- 验证：
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第十八刀：capability verification recent execution 细项已显示 verifier observation）
+- 风险 / 未完成：
+  - 当前补的是 capability verification workbench 内 recent execution batch item 文案，独立运行详情页还没有显示这份 observation。
+  - observation 仍来自 verifier shared summary / queue source，本身不是该次 capability verification execution 新生成的工件。
+  - 首轮 generate 失败时仍不会天然拥有 repair observation；当前 observation 上下文仍主要成立于 repair 阶段。
+- 下一步：
+  - 继续 `R6`
+  - 在不扩范围的前提下，把同一份 verifier-side repair observation 最小文案接到独立 capability verification 运行详情页现有说明里，避免离开 workbench 后 observation 再次丢失。
+
+## 2026-03-27 第一百六十三次更新（R6 第十九刀：独立 capability verification 运行详情页显示 verifier observation）
+
+- 本轮目标：
+  - 继续只推进 `R6` 的 verifier-side repair observation 消费口径。
+  - 不改 execution detail API 负载、不增加轮询查询，只把 workbench 已有 observation 透传到独立 capability verification 运行详情页的现有说明文案。
+- 已完成：
+  - `lib/capability-verification-observation-cache.ts`
+    - 新增一个前端本地 observation cache helper：
+      - `stashCapabilityVerificationExecutionObservation(...)`
+      - `readCapabilityVerificationExecutionObservation(...)`
+    - 只缓存最小字段：
+      - `capabilityUid`
+      - `verificationIntent`
+      - `latestRepairObservationAt`
+      - `latestRepairObservationSummary`
+      - `latestRepairObservationVerifierCheckUids`
+    - 该 cache 只用于 UI 上下文透传，不引入新的服务端 observation 查询口径。
+  - `components/ProjectIntentWorkbench.tsx`
+    - 从 capability verification batch item 打开运行页时，现会先把最近关联 verifier observation 写入本地 cache，再打开 `/runs/:executionUid`。
+    - 单条能力验证启动后自动打开运行页时，也会写入同一份 cache，避免离开 workbench 立即丢 observation。
+  - `components/ExecutionConsole.tsx`
+    - `/runs/:executionUid` 现会在现有“任务上下文”说明区读取本地 cache。
+    - 若命中 capability verification observation，则补：
+      - 能力验证上下文（目标 / 策略）
+      - 最近关联 verifier observation 摘要
+      - verifier check scope
+      - observation 时间
+    - 不新增独立面板，只复用现有上下文说明区。
+  - `components/ExecutionWorkbench.tsx`
+    - `/executions/:executionUid` 同样会读取同一份本地 cache，并在现有顶部说明文案里补最近关联 verifier observation。
+    - 旧入口若没有透传 observation，则页面保持保守不展示，不伪造执行级 observation。
+- 验证：
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第十九刀：独立 capability verification 运行详情页已显示 verifier observation）
+- 风险 / 未完成：
+  - 独立运行页当前依赖 workbench 打开前写入的本地 cache；如果用户从其他入口直接打开历史执行，可能没有这份 observation 上下文。
+  - observation 仍来自 verifier shared summary / queue source，本身不是该次 capability verification execution 新生成的工件。
+  - 首轮 generate 失败时仍不会天然拥有 repair observation；当前 observation 上下文仍主要成立于 repair 阶段。
+- 下一步：
+  - 继续 `R6`
+  - 在不扩范围的前提下，继续收口 capability verification observation 的最小长期保留方式，避免 observation 只存在于当前浏览器会话内存 / cache。
+
+## 2026-03-27 第一百六十四次更新（R6 第二十刀：capability verification observation 持久化到 execution event）
+
+- 本轮目标：
+  - 继续只推进 `R6` 的 verifier-side repair observation 消费口径。
+  - 把 capability verification observation 从“当前浏览器会话 cache”再向前推进一层，持久化到 execution event，避免详情页只依赖前端本地上下文。
+- 已完成：
+  - `lib/capability-verification-observation-cache.ts`
+    - 现已同时承担 shared normalize / pick helper，而不只是 session cache：
+      - `normalizeCapabilityVerificationExecutionObservation(...)`
+      - `hasCapabilityVerificationExecutionObservation(...)`
+      - `pickLatestCapabilityVerificationExecutionObservationFromEvents(...)`
+      - `CAPABILITY_VERIFICATION_OBSERVATION_EVENT_TYPE`
+    - 这样 route 写入、详情页读取、本地 cache fallback 都复用同一 observation 结构，不再各自手写解析。
+  - `components/ProjectIntentWorkbench.tsx`
+    - 发起 capability verification / repair 请求时，现会把最近 observation 一并带到 `/api/projects/:projectUid/capabilities/:capabilityUid/verify`。
+    - workbench 本地 cache 仍保留，但从这一刀开始只作为 fallback，不再是唯一来源。
+  - `app/api/projects/[projectUid]/capabilities/[capabilityUid]/verify/route.ts`
+    - verify / repair 两条路径在启动新 execution 后，都会把 observation 以 execution event 形式持久化：
+      - `eventType = capability_verification_observation`
+    - repair 路径若请求体未显式带 intent，会保守回退到该能力最近失败验证意图。
+    - 整条链路不新增新接口，只复用现有 capability verify route。
+  - `lib/db/repository.ts`
+    - `insertExecutionEvent(...)` 的事件类型已补齐 `capability_verification_observation`。
+  - `components/ExecutionConsole.tsx`
+    - 运行详情页现会优先从 execution events 读取 observation；只有 events 不存在时，才回退到本地 cache。
+  - `components/ExecutionWorkbench.tsx`
+    - 同样优先使用 execution events 中的 observation，再回退到本地 cache。
+  - 单测已补到：
+    - `tests/unit/api-project-capability-verify-route.spec.ts`
+      - 覆盖 verify 路径把 observation 写入 execution event
+      - 覆盖 repair 路径把 observation 写入 execution event
+- 验证：
+  - `npx vitest run tests/unit/api-project-capability-verify-route.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 1 个测试文件通过
+  - 2 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第二十刀：capability verification observation 已持久化到 execution event）
+- 风险 / 未完成：
+  - 当前持久化覆盖的是从 capability workbench 发起的 verify / repair；如果从其他入口直接发起后续修复，observation 继承仍可能缺失。
+  - 历史老执行如果没有这类 event，详情页仍只会保守回退到本地 cache 或不显示 observation。
+  - observation 仍来自 verifier shared summary / queue source，本身不是 capability verification execution 新生成的事实工件。
+- 下一步：
+  - 继续 `R6`
+  - 在不扩范围的前提下，把 capability verification 失败详情页里“AI纠错并重跑”这条后续 repair 启动链路也补上 observation 继承，避免二次 repair 再把上下文丢掉。
+
+## 2026-03-27 第一百六十五次更新（R6 第二十一刀：失败详情页 AI repair 继承 verifier observation）
+
+- 本轮目标：
+  - 继续只推进 `R6` 的 verifier-side repair observation 消费口径。
+  - 把 capability verification 失败详情页里“AI纠错并重跑”这条后续 repair 启动链路也补上 observation 继承，避免二次 repair 再把上下文丢掉。
+- 已完成：
+  - `app/api/test-executions/[executionUid]/repair/route.ts`
+    - repair route 现会先读取当前失败 execution 的 events，尝试继承最近一条 `capability_verification_observation`。
+    - 如果前端显式传入了新的 observation，则优先使用请求体；没有时再保守回退到继承值。
+    - 发起 `repairExecution(...)` 后，会把最终 observation 再写回新的 repaired execution event，形成 repair -> repair 的最小继承闭环。
+  - `components/ExecutionConsole.tsx`
+    - 失败详情页里点击“AI纠错并重跑”时，现会把当前页面已解析到的 capability verification observation 一并带到 repair route。
+    - 这样即便当前 observation 只存在于详情页解析结果，也不会在二次 repair 时丢失。
+  - 单测已补到：
+    - `tests/unit/api-execution-repair-route.spec.ts`
+      - 覆盖 repair route 从旧 execution events 继承 observation
+      - 覆盖请求体显式 observation 覆盖继承 observation
+    - `tests/unit/api-project-capability-verify-route.spec.ts`
+      - 回归保证 verify / repair capability route 的 observation event 持久化不被这一步破坏
+- 验证：
+  - `npx vitest run tests/unit/api-project-capability-verify-route.spec.ts tests/unit/api-execution-repair-route.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 2 个测试文件通过
+  - 4 个测试通过
+  - `build` 通过
+  - roadmap progress check 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第二十一刀：失败详情页 AI repair 已继承 verifier observation）
+- 风险 / 未完成：
+  - 历史老 execution 如果从未写入过 `capability_verification_observation`，后续 repair 仍可能没有可继承上下文。
+  - 当前 observation 仍来自 verifier shared summary / queue source，本身不是 capability verification execution 新生成的事实工件。
+  - 其他非 capability verification 触发的通用 repair 链路，仍未引入这套 observation 继承。
+- 下一步：
+  - 继续 `R6`
+  - 在不扩范围的前提下，评估是否还需要把同一 observation 继承口径补到其它 capability verification 非 workbench 触发入口；若没有现成入口，则结束本轮 R6 收口。
+
+## 2026-03-27 第一百六十六次更新（R6 第二十二刀：capability verification observation 现有入口收口）
+
+- 本轮目标：
+  - 继续只推进 `R6` 的 verifier-side repair observation 消费口径。
+  - 评估当前代码里是否还存在其它 capability verification 非 workbench 触发入口遗漏了 observation 继承；若没有，则结束本轮 observation 入口收口。
+- 已完成：
+  - 对现有 capability verification / repair 启动口做了最小核对：
+    - `components/ProjectIntentWorkbench.tsx`
+      - 当前仍是 capability verification verify / repair 的主工作台入口，统一走 `/api/projects/:projectUid/capabilities/:capabilityUid/verify`。
+      - 该入口发起请求时已显式携带最近 verifier observation。
+    - `components/ExecutionConsole.tsx`
+      - 当前仍是失败详情页里手动“AI纠错并重跑”的唯一显式前端触发入口，统一走 `/api/test-executions/:executionUid/repair`。
+      - 该入口发起 repair 时已显式携带当前详情页解析到的 capability verification observation。
+    - `components/ExecutionWorkbench.tsx`
+      - 当前只消费 / 展示持久化后的 observation，没有新增 verify / repair 启动逻辑，因此不存在未补 observation 继承的隐藏触发口。
+    - `app/api/projects/[projectUid]/capabilities/[capabilityUid]/verify/route.ts`
+      - 仍是 capability verification verify / repair 的服务端统一入口，observation event 持久化已覆盖。
+    - `app/api/test-executions/[executionUid]/repair/route.ts`
+      - 仍是失败详情页 repair 的服务端统一入口，旧 execution observation 继承与新 execution observation 回写已覆盖。
+    - `lib/services/test-plan-service.ts`
+      - 额外命中的 `repairExecution(...)` 调用仅属于服务端自动 repair / route 内部复用，不是新的 capability verification 前端触发入口；本轮不扩范围到通用 repair 链路。
+  - 结论：
+    - 当前代码里已存在的 capability verification verify / repair 入口，均已完成 verifier observation 的保留闭环：
+      - workbench 发起 verify / repair -> capability verify route 持久化 observation
+      - 失败详情页发起 AI repair -> repair route 继承并再次持久化 observation
+    - 本轮只收口现有入口，不新增新的 observation 来源，也不把通用 repair 链路扩大为 capability-specific 口径。
+- 验证：
+  - `rg` 定位 capability verification verify / repair 触发口与 `repairExecution(...)` 调用点
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 未发现其它已存在的 capability verification 前端触发入口遗漏 observation 继承。
+  - roadmap progress check 通过。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.1 schema + planning integration、R2.2 受控脚手架、R2.3 slot patch 生成 / repair、R2.4 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成（当前 roadmap 下的 success-trace receipt consumption 收口结束）
+  - R6：进行中（第二十二刀：capability verification observation 现有入口已收口）
+- 风险 / 未完成：
+  - 历史老 execution 如果从未写入过 `capability_verification_observation`，详情页 / 后续 repair 仍可能没有可继承上下文。
+  - 当前 observation 仍来自 verifier shared summary / queue source，本身不是 capability verification execution 新生成的事实工件。
+  - `R6` 总目标里的“局部 patched plan / patched verifier / 受控观察式 repair”仍未完成；这一刀只结束了 observation 入口收口，不代表 `R6` 已完成。
+- 下一步：
+  - 继续 `R6`
+  - 回到 roadmap 中“受控 repair 与 agent toolization”的下一个未完成最小交付；本轮先不再扩 observation 入口。
+
+## 2026-03-27 第一百六十七次更新（R6 收口决议：阶段完成，返回主链路）
+
+- 本轮目标：
+  - 不再继续扩 `R6` 的 observation 展示 / 入口分支。
+  - 按 `R6` 原始交付物与完成标准复核当前实现，判断是否可以在当前 roadmap scope 内正式收口。
+- 已完成：
+  - 对 `R6` 原始交付物做了收口复核：
+    - repair 输入已按 `failed plan node / latest trace / verifier result / grader diagnosis` 结构化收口。
+    - repair 输出已按 `patchedPlan / patchedVerifier / patchedRecipeSelection` 结构化收口，并继续通过 slot patch 应用到既有代码，repair 主链已不再以整段脚本重写为核心路径。
+    - repair 阶段已具备受控观察快照刷新、结构化 observation protocol 与 observation artifact 工件链。
+    - successful repair 的 observation / patch 信息已进入 repair memory、recipe / verifier observation 汇总与 success knowledge 候选链，形成当前 roadmap scope 下的最小学习回流闭环。
+  - 结论：
+    - 按当前 roadmap scope，`R6` 的原始交付物与完成标准已满足，可以正式收口。
+    - 历史老 execution 兼容、通用 repair 链路统一、额外 observation 来源扩展，不再作为 `R6` 收口前置条件。
+  - 文档顶部 `阶段状态` 已同步到当前真实状态，避免继续显示 `R4 / R5 / R6 待开始` 的过期信息。
+- 验证：
+  - `sed` / `rg` 复核 repair 主链、observation 工件链与 learning 回流点
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - `R6` 在当前 roadmap scope 内已完成。
+  - roadmap progress check 通过。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（R2.4 compiled template / structured patch 工件透出已落地）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 历史老 execution 如果没有 observation event，相关详情页仍只能保守降级显示。
+  - 通用 auto-repair 链路仍未统一为 capability-specific observation 口径，但这不阻塞当前 `R6` 收口。
+  - 当前 roadmap 中真正仍未完成的高成功率主线，已经回到 `R2 / R3`，而不是继续扩 `R6`。
+- 下一步：
+  - 回到 `R2`
+  - 只推进 `ExecutionPlan / IR` 主链路剩余缺口，优先减少首轮 `generateTest()` 对自由代码生成的依赖。
+
+## 2026-03-27 第一百六十八次更新（R2 第五刀：executeTest 切到 JS-first，`tsToJs` 降级为兼容兜底）
+
+- 本轮目标：
+  - 按上一轮收口决议回到 `R2` 主链路。
+  - 只处理当前执行面的一个真实缺口：让主链路优先直接执行纯 JavaScript，不再默认依赖 `tsToJs` 做 regex 级剥离。
+- 已完成：
+  - `lib/test-executor.ts`
+    - 新增 `prepareTestCodeForExecution(...)`，先探测是否存在 TypeScript-only 语法，再决定是否进入兼容剥离。
+    - 当前纯 JavaScript 代码会直接进入 worker，不再默认经过 `tsToJs`。
+    - `tsToJs` 保留为 legacy TypeScript-like 代码兼容兜底，而不是当前主链路默认前置步骤。
+    - 顺手修正了非空断言剥离正则，避免在兼容剥离场景下误伤 `!= / !==` 这类原生 JavaScript 运算符。
+    - 兼容剥离路径补齐了函数返回类型注解去除，减少旧脚本落到 fallback 时的执行噪音。
+  - `tests/unit/test-executor.spec.ts`
+    - 新增“纯 JavaScript 保持不变”校验，确保 JS-first 路径不会被兼容剥离篡改。
+    - 新增“TypeScript 语法只在兼容 fallback 时才被剥离”校验，覆盖 `import type / 类型注解 / as 断言 / 返回类型`。
+- 验证：
+  - `npx vitest run tests/unit/test-executor.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 1 个测试文件通过
+  - 20 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：进行中（第五刀：executeTest 已切到 JS-first，`tsToJs` 降级为兼容兜底）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前执行器消费的仍然是“编译模板 + slot patch 合成后的最终 JS”，还不是原生 plan node executor。
+  - `tsToJs` 仍然存在，只是已经退化为 legacy 兼容兜底；还没有从代码库中彻底移除。
+  - `generateTest() / repairTest()` 里仍保留 `streamCodeGeneration(...)` 兜底分支；当前虽不是主路径，但还没有把 fallback 原因显式收口。
+- 下一步：
+  - 继续 `R2`
+  - 在不扩范围的前提下，收口 `generateTest() / repairTest()` 的自由代码 fallback 口径，至少让 fallback 原因显式可见，不再作为静默主备路径。
+
+## 2026-03-27 第一百六十九次更新（R2 第六刀：自由代码 fallback 原因显式收口）
+
+- 本轮目标：
+  - 继续只推进 `R2`。
+  - 不删除现有 `streamCodeGeneration(...)` legacy fallback，只把它从“静默主备路径”收口成“显式说明原因的兼容兜底”。
+- 已完成：
+  - `lib/test-generator.ts`
+    - 新增 `buildLegacyCodeFallbackReason(...)`，统一输出自由代码 fallback 的显式原因文案。
+    - `generateTest()` 在无法进入 `ExecutionPlan -> compiled template -> structured slot patch` 主链时，现会先明确说明：
+      - 为什么没进入结构化主链
+      - 当前只是 `legacy fallback，非主链`
+    - `repairTest()` 同样会在回退到自由代码修复前先显式说明原因，而不是直接静默进入旧 prompt 路径。
+    - 两条路径随后会分别输出：
+      - `正在构造自由代码 Prompt 并调用 LLM...`
+      - `正在构造自由代码修复 Prompt 并调用 LLM...`
+      这样从事件流上可以直接看出当前是否仍停留在 legacy fallback。
+  - `tests/unit/test-generator-structured.spec.ts`
+    - 新增首轮 generate fallback 用例：
+      - 当 `planning` 不提供 `executionPlan` 时，验证会显式暴露 fallback 原因，并走 `callLLMStream(...)` 而不是结构化 patch。
+    - 新增 repair fallback 用例：
+      - 当 `planning` 不提供 `executionPlan` 时，验证 repair 也会显式暴露 fallback 原因，并走自由代码修复路径。
+    - 同时回归保证：
+      - 正常存在 `executionPlan` 时仍继续走结构化 slot patch 主链，不受这一步影响。
+- 验证：
+  - `npx vitest run tests/unit/test-generator-structured.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 1 个测试文件通过
+  - 5 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（R3.2 第三批第十一刀：`detailEntry.trigger=row_click` 已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前执行器仍消费“结构化模板 + patch 合成后的最终 JS”，还不是原生 plan node executor；但这已超出 `R2` 当前完成标准。
+  - `tsToJs` 与 `streamCodeGeneration(...)` 仍然存在，不过都已退化为显式 legacy 兼容兜底，不再属于默认主链。
+  - 当前真正阻碍首次高成功率的剩余主线已经回到 `R3` 的业务 verifier 稳定性，而不是 `R2` 的执行骨架。
+- 下一步：
+  - 回到 `R3`
+  - 只推进业务 verifier 与主键优先验收剩余缺口，不再继续扩 `R2` / `R6` 的兼容层。
+
+## 2026-03-27 第一百七十次更新（R3 第十二刀：`modal_state` verifier skeleton 落地）
+
+- 本轮目标：
+  - 回到 `R3` 的真实剩余缺口。
+  - 只补 `buildVerificationSkeletonLines()` 里还留着 `TODO` 的 `modal_state` 分支，覆盖 roadmap 首批优先场景里的“弹层 / 抽屉编辑并保存”。
+- 已完成：
+  - `lib/intent-execution-compiler.ts`
+    - 新增 `modal_state` 相关 skeleton 生成逻辑，不再只返回 `TODO`：
+      - 能区分“已关闭”与“已打开”两类期望
+      - 若标题已知，优先复用 `titleIncludes`
+      - 关闭态会生成显式的可见 Drawer / Modal 缺失断言
+      - 打开态会优先生成 `__e2e.waitForVisibleAntdModal(...)` 骨架
+    - `modal_state` 的 verifier hint 也同步从泛泛说明收口到更具体的执行建议：
+      - 提交后关闭链路优先配合 `__e2e.observeSubmitState(...)`
+      - 打开态优先走 `waitForVisibleAntdModal(...)`
+  - `tests/unit/intent-execution-plan.spec.ts`
+    - 新增用例，验证“新增客户抽屉关闭”这类成功标准会被 planner 推断成 `modal_state` check，而不是继续落回模糊 `ui_state`。
+  - `tests/unit/intent-execution-compiler.spec.ts`
+    - 新增关闭态用例：
+      - 验证 compiler 会生成带 `titleIncludes` 的 Drawer / Modal 消失断言
+    - 新增打开态用例：
+      - 验证 compiler 会生成 `__e2e.waitForVisibleAntdModal(...)` 可见性骨架
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 2 个测试文件通过
+  - 17 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第十二刀：`modal_state` verifier skeleton 已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - `R3` 的结构化 verifier 交付物已经基本补齐，但 roadmap 里的量化完成标准仍需要回到 `R1` 评测面验证，当前还不能仅凭代码改动宣称“失败类已显著退出”。
+  - `modal_state` 当前覆盖的是 drawer / modal open/close 骨架，还没有继续扩到更细的非 Ant Design overlay 体系。
+  - 还需要再核一次：roadmap 首批四类场景是否都已经拥有至少一条稳定 verifier 模板。
+- 下一步：
+  - 继续 `R3`
+  - 在不扩范围的前提下，核对四类优先 scenario family 的 verifier 模板覆盖是否齐全；若已齐，再准备 `R3` 收口并把量化验证回交 `R1`。
+
+## 2026-03-27 第一百七十一次更新（R3 第十三刀：四类优先 scenario family verifier 模板覆盖核对完成）
+
+- 本轮目标：
+  - 严格沿上一轮 `R3` 下一步执行，不扩范围。
+  - 核对 roadmap 首批四类优先场景是否都已经拥有至少一条稳定 verifier 模板；若缺，只补最小证明。
+- 已完成：
+  - `lib/intent-execution-plan.ts`
+    - 收口 `inferVerificationKind(...)` 的显式语义优先级：
+      - 显式 `API / POST /... / response` 文本优先判定为 `response`
+      - 显式 `modal / drawer / 抽屉` 文本优先判定为 `modal_state`
+      - 通用 `table_row` helper / action 只在没有更强语义时再兜底
+    - 这样“商机转订单 / 生成订单”不再被误判成纯 `table_row`，会正确落到 `response + modal_state + variable` 组合验收。
+  - `tests/unit/intent-execution-plan.spec.ts`
+    - 新增并跑通“创建商机后生成订单”用例，验证 planner 现在会为该场景产出：
+      - `POST /crmapi/business/createOrder 成功` -> `response`
+      - `确定订单信息抽屉关闭` -> `modal_state`
+      - `orderId` 提取 -> `variable`
+  - `tests/unit/intent-execution-compiler.spec.ts`
+    - 新增“创建商机后生成订单”编译器侧证明用例，验证 deterministic template 会同时生成：
+      - 基于执行工件的响应校验骨架
+      - 基于 `titleIncludes=确定订单信息` 的抽屉关闭断言骨架
+      - 基于响应 JSON 的 `orderId` 提取 / 对账骨架
+  - 四类优先 scenario family 当前已具备结构化 verifier 模板证明：
+    - 新建商机后回列表验收
+    - 商机转订单 / 生成订单
+    - 列表搜索并进入详情
+    - 弹层 / 抽屉编辑并保存
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-plan.spec.ts tests/unit/intent-execution-compiler.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 2 个测试文件通过
+  - 19 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第十三刀：四类优先 scenario family verifier 模板覆盖已核对）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - `R3` 的结构化 verifier 模板覆盖现在已经对齐到 roadmap 首批四类场景，但量化完成标准仍未满足。
+  - 仍不能仅凭模板覆盖和单元测试，宣称“接口成功但最终仍失败”或“错行命中 / 回列表找不到记录”已经显著退出主失败类。
+  - 下一步必须把 `R3` 的收口判断回交 `R1` 的 eval / trace 口径，而不是继续在 verifier 侧无限扩模板。
+- 下一步：
+  - 回到 `R1`
+  - 只做 `R3` 当前交付物的量化验证与收口判断，确认四类优先 scenario family 的真实 first-pass / terminal-pass 变化，再决定是否正式关闭 `R3`。
+
+## 2026-03-27 第一百七十二次更新（R1 第二刀：四类优先 scenario family 量化口径落地）
+
+- 本轮目标：
+  - 严格按上一轮 md 的下一步执行，不回到执行链路，也不加 UI。
+  - 只为 `R3` 的收口判断补一层量化口径：让 `insights` 可以直接统计 roadmap 四类优先场景的 first-pass / repair-pass / terminal-pass。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - 新增 roadmap 优先场景分类与聚合口径：
+      - `business_create_list_verify`
+      - `business_to_order`
+      - `list_search_detail`
+      - `modal_or_drawer_save`
+    - 当前会基于 `requestInput / targetUrl / scenarioCard.title / featureDescription / steps` 做保守归类。
+    - `IntentE2EInsightsResult` 已新增 `priorityScenarioFamilies`，统一输出每类的：
+      - `totalRuns`
+      - `passedRuns / failedRuns / canceledRuns`
+      - `firstPassPassedRuns / firstPassPassRate`
+      - `repairedPassRuns / repairedPassRate`
+      - `terminalPassRate`
+    - 未命中这四类的 run 会归到内部 `untracked`，但不会污染 roadmap 口径输出。
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 新增四类优先场景聚合测试，覆盖：
+      - 新建商机后回列表验收
+      - 商机转订单 / 生成订单
+      - 列表搜索并进入详情
+      - 弹层 / 抽屉编辑并保存
+    - 同时验证：
+      - first-pass、repair-pass、terminal-pass 统计正确
+      - 非 roadmap 场景不会进入 `priorityScenarioFamilies`
+  - `tests/unit/api-intent-e2e-insights-route.spec.ts`
+    - 回归通过，确认新增字段不会破坏现有洞察路由输出。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 2 个测试文件通过
+  - 35 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第二刀：四类优先 scenario family 量化口径已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第十三刀：四类优先 scenario family verifier 模板覆盖已核对）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前四类优先场景仍是基于现有 request / scenario 文本做保守归类，还不是执行时显式持久化的强类型字段。
+  - 若历史 run 的标题、步骤或目标描述过于稀薄，仍可能落到 `untracked`，导致真实样本数偏少。
+  - 这一步只是把量化口径补齐；是否能正式关闭 `R3`，还需要回到真实项目数据看这四类场景的实际 first-pass / terminal-pass 表现。
+- 下一步：
+  - 继续 `R1`
+  - 直接读取当前项目 `insights` 的 `priorityScenarioFamilies`，核对四类优先场景的真实指标，再决定是否正式收口 `R3`。
+
+## 2026-03-27 第一百七十三次更新（R1 第三刀：当前项目四类优先场景真实指标读取，`R3` 暂不收口）
+
+- 本轮目标：
+  - 不再补代码模板，只读取当前项目的真实 `priorityScenarioFamilies` 数据。
+  - 基于真实 first-pass / terminal-pass 判断 `R3` 是否已经具备收口条件。
+- 已完成：
+  - 直接读取本地服务：
+    - `GET http://localhost:3666/api/intent-e2e/insights?projectUid=proj_default&runLimit=200&auditLimit=20`
+  - 当前项目真实指标（65 条 terminal runs）：
+    - 全局：
+      - `firstPassPassRate = 10.8%`
+      - `repairedPassRate = 6.2%`
+      - `terminalPassRate = 16.9%`
+    - roadmap 四类优先场景里，当前只观察到 2 类进入 `priorityScenarioFamilies`：
+      - `business_create_list_verify`
+        - `totalRuns = 16`
+        - `firstPassPassRate = 12.5%`
+        - `terminalPassRate = 18.8%`
+      - `list_search_detail`
+        - `totalRuns = 5`
+        - `firstPassPassRate = 0%`
+        - `terminalPassRate = 0%`
+      - `business_to_order`
+        - 当前 65 条 terminal runs 中未出现在 `priorityScenarioFamilies`
+      - `modal_or_drawer_save`
+        - 当前 65 条 terminal runs 中未出现在 `priorityScenarioFamilies`
+  - 结合 `evaluationBaseline` 的高频候选簇，当前最主要阻塞仍然是“新建商机后回列表验收”这条主链：
+    - 代表簇 `新建商机后在“我创建的”列表中可见且状态为新入库`
+    - `runCount = 22`
+    - `failedRuns = 19`
+    - `firstPassPassRate = 13.6%`
+    - `terminalPassRate = 13.6%`
+    - `selectionReason` 仍明确指出：存在“接口成功后仍失败”的业务验收样本
+  - 收口结论：
+    - `R3` 现在不能关闭。
+    - 原因不是 verifier 模板还没写，而是当前真实项目数据里：
+      - 已观测到的优先场景指标仍明显过低
+      - 另有两类优先场景在当前历史样本中尚未形成可用于收口的真实观测
+- 验证：
+  - `curl -sS 'http://localhost:3666/api/intent-e2e/insights?projectUid=proj_default&runLimit=200&auditLimit=20'`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 已完成当前项目真实指标读取
+  - `R3` 暂不收口
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第三刀：当前项目四类优先场景真实指标已读取）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第十三刀已完成；真实指标显示暂不收口）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - `business_create_list_verify` 仍是当前真实高频失败主链，单靠已有 verifier 模板还没有把指标拉起来。
+  - `list_search_detail` 当前真实样本虽少，但 first-pass / terminal-pass 仍为 0，不能忽略。
+  - `business_to_order` 与 `modal_or_drawer_save` 暂未在当前历史 terminal runs 中形成可量化样本；需要后续真实 run 覆盖，或进一步确认历史描述是否被保守归入 `untracked`。
+- 下一步：
+  - 回到 `R3`
+  - 只盯当前真实数据里去污染后仍真实观测到的高失败 family：
+    - `business_create_list_verify`
+    - `modal_or_drawer_save`
+  - 先优先复盘 `business_create_list_verify` 的 post-submit / 变量提取 / 列表回查链，再决定最小修补点。
+
+## 2026-03-27 第一百七十四次更新（R1 第四刀：priority scenario family 归类去污染，真实观测 family 重排）
+
+- 本轮目标：
+  - 不直接改执行器，先把上一轮 `priorityScenarioFamilies` 里的脏样本清掉。
+  - 让 `R3` 后续只基于真实 family 观测做修补，而不是被误分类 run 带偏。
+- 已完成：
+  - `lib/ai/intent-e2e-insights.ts`
+    - 收紧 `classifyIntentE2EPriorityScenarioFamily(...)`：
+      - 不再把自由 `description` 混进优先场景分类，避免被 “Create a Playwright test ...” 这类生成描述污染。
+      - `business_create_list_verify` 改为要求更明确的“商机创建 + 列表回查 / 我创建的 / 新入库”语义。
+      - `modal_or_drawer_save` 前移并收口为“弹层/抽屉 + 保存/提交 + 关闭或成功态”。
+      - `list_search_detail` 改为只识别“搜索/检索 + 明确详情进入”，并排除带保存动作和创建主链的情况。
+    - 这一步不改运行逻辑，只修正 roadmap 量化口径。
+  - `tests/unit/intent-e2e-insights.spec.ts`
+    - 新增去污染测试，明确验证：
+      - “商机公海按商机ID搜索并返回结果”不会再落到 `business_create_list_verify`
+      - “服务分佣配置页搜索后进入分佣配置弹框保存”会落到 `modal_or_drawer_save`
+      - 真正的“创建商机后回列表验收”仍会落到 `business_create_list_verify`
+  - 直接复盘了 4 个代表 run 的原始 `state_json`，确认上一轮观测确实被误分类污染：
+    - `intent-run-8b37f74d-7d62-4a60-8982-195ec3333ef5`
+      - 实际是“商机公海搜索结果” page task
+      - 失败点是 `waitForResponse` 超时，不属于“创建商机后回列表验收”
+    - `intent-run-b5ab70de-41eb-462b-a9f3-a294ab579f57`
+      - 实际是“服务分佣配置弹框保存”
+      - 失败点是“关键词当前未返回任何服务数据”，不属于 `list_search_detail`
+    - `intent-run-6742c018-f900-4dc4-bb13-cd5aba6042ad`
+      - 才是当前真正的 create-list 主链失败样本
+      - 暴露了 3 类真实缺口：
+        - 提交后 URL 断言过严，假定必须立即跳回列表
+        - 稳定标识提取为空，后续回查链失稳
+        - 切到“我创建的”后列表目标行仍容易误失配
+  - 去污染后重新读取当前项目 `insights`：
+    - 全局仍是：
+      - `firstPassPassRate = 10.8%`
+      - `repairedPassRate = 6.2%`
+      - `terminalPassRate = 16.9%`
+    - 真实观测到的优先 family 重排为：
+      - `business_create_list_verify`
+        - `totalRuns = 37`
+        - `firstPassPassRate = 5.4%`
+        - `repairedPassRate = 8.1%`
+        - `terminalPassRate = 13.5%`
+      - `modal_or_drawer_save`
+        - `totalRuns = 12`
+        - `firstPassPassRate = 16.7%`
+        - `repairedPassRate = 0%`
+        - `terminalPassRate = 16.7%`
+      - `list_search_detail`
+        - 当前 65 条 terminal runs 中已不再形成真实观测样本
+      - `business_to_order`
+        - 当前 65 条 terminal runs 中仍未形成真实观测样本
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - `npm run build`
+  - `curl -sS 'http://localhost:3666/api/intent-e2e/insights?projectUid=proj_default&runLimit=200&auditLimit=20'`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 2 个测试文件通过
+  - 36 个测试通过
+  - `build` 通过
+  - 去污染后的真实观测 family 已重排
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第十三刀已完成；真实观测 family 已重排，暂不收口）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前最主要高频失败主链已经收敛到 `business_create_list_verify`，且 first-pass / terminal-pass 都明显偏低。
+  - `modal_or_drawer_save` 虽然已进入真实观测，但当前样本里仍混有“关键词无结果”这类数据前提失败，不能直接等同于 verifier 失效。
+  - `list_search_detail` / `business_to_order` 目前没有足够真实样本，暂时不能作为 `R3` 收口依据。
+- 下一步：
+  - 回到 `R3`
+  - 先只修 `business_create_list_verify` 的最小主链缺口：
+    - 提交后不强依赖 URL 跳转
+    - 共享稳定标识提取为空时的兜底链
+    - “我创建的”列表回查的收敛策略
+
+## 2026-03-27 第一百七十五次更新（R3 第十四刀：`business_create_list_verify` 最小主链修补）
+
+- 本轮目标：
+  - 严格按上一轮 roadmap 下一步执行，只修 `business_create_list_verify` 当前真实失败主链里的 3 个最小缺口：
+    - 提交后不强依赖 URL 跳转
+    - 共享稳定标识提取为空时的兜底链
+    - “我创建的”列表回查的收敛策略
+- 已完成：
+  - `lib/test-worker.mjs`
+    - 收紧 `waitForBusinessListSurface(...)`，把归属 chip / 顶部归属 trigger 也纳入 ready 候选，不再只靠搜索框和表格。
+    - 新增 `settleBusinessListAfterOwnershipSwitch(...)`，在归属切换成功后统一等待列表 surface 和 loading 收敛。
+    - `switchBusinessListOwnershipView(...)` 改为支持晚渲染 chip 的轮询重试，不再只在首轮快照里扫一次 tab/radio/segmented。
+    - 顶部 dropdown / 筛选区 dropdown 切换成功后都补激活校验与收敛等待，避免“切到了但列表还没稳”直接进入下一步搜索。
+  - `lib/intent-execution-compiler.ts`
+    - `observeSubmitState` 相关步骤指令显式改成：`urlIncludes` 只作为辅助观察，helper 结束后仍要检查 `page.url()`，必要时显式回列表。
+    - 对 `businessId / orderId / customerCode` 这类共享稳定标识，新增“为空时不要直接 `expect(shared.xxx).toBeTruthy()` 判死”的固定提示，要求继续走列表/详情 fallback 验收。
+    - `variable` verifier skeleton 改成条件式：只有响应里确实提取到稳定标识时才做强一致性断言；否则显式留下 fallback TODO，不再用一条裸 `toBeTruthy()` 把健康主链提前打死。
+  - `lib/intent-action-library.ts`
+    - `assert.watch-submit-state` 示例改成“先 `observeSubmitState`，再检查是否真的回到列表；若没回列表先显式回列表，再切 `我创建的`”。
+    - `assert.watch-submit-state` / `assert.resolve-primary-record` / `extract.capture-shared-variable` 统一补齐“空主键不硬失败，改走 fallback 文本验收”的动作说明。
+  - `lib/test-generator.ts`
+    - 通用生成 prompt、商机创建专项规则和 repair diagnosis hints 全部同步到新策略：
+      - `urlIncludes` 只当辅助观察
+      - `businessId` 为空时不直接 `toBeTruthy()`
+      - 回到列表并切对“我创建的”视角后，再用 `leadMobile + leadContactName + 新入库` 这类稳定文本做 fallback 验收
+  - 测试补齐：
+    - `tests/unit/test-executor.spec.ts`
+      - 新增“归属 chip 晚渲染时 helper 仍会等待并切换成功”回归用例。
+    - `tests/unit/intent-execution-compiler.spec.ts`
+      - 同步更新 `variable` skeleton 断言，确保空稳定标识走条件式 fallback。
+    - `tests/unit/intent-action-library.spec.ts`
+      - 校验 submit-state / extract capability 已改成非 URL 硬依赖与空主键兜底示例。
+    - `tests/unit/test-generator.spec.ts`
+      - 校验自由生成 prompt 已包含“空主键不立刻判死”和“回列表后再切归属视角”的指导。
+    - `tests/unit/test-generator-structured.spec.ts`
+      - 校验 structured prompt 已把新 guidance 真正传给 LLM，而不是只停留在库内说明。
+- 验证：
+  - `npx vitest run tests/unit/test-executor.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts tests/unit/test-generator-structured.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前结果：
+  - 5 个测试文件通过
+  - 100 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第十四刀：`business_create_list_verify` 最小主链修补已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 这一步只完成了模板层和 helper 收敛层修补，还没有重新回到真实项目 run / insights 口径验证 `business_create_list_verify` 指标是否真的抬升。
+  - 归属视图 helper 现在已经覆盖“晚渲染 + 切换后收敛”，但真实项目里若存在全新 DOM 形态，后续仍可能需要基于真实 run 再补 selector。
+  - `modal_or_drawer_save` 仍是当前真实观测 family，但本轮没有扩到它。
+- 下一步：
+  - 回到 `R3`
+  - 先用真实 `business_create_list_verify` rerun / insights 口径核对这三类失败特征是否退出：
+    - 提交后 URL 断言过严
+    - 空稳定标识直接判死
+    - “我创建的”列表切换后未收敛
+  - 若真实主链明显收敛，再决定是否切到 `modal_or_drawer_save`
+
+## 2026-03-27 第一百七十六次更新（R3 第十五刀：多步表单最终提交按钮首轮生成收窄）
+
+- 本轮目标：
+  - 严格沿上一轮“先回真实 rerun / insights 口径验证”的下一步执行，不扩范围。
+  - 只修 `business_create_list_verify` 在真实 rerun 里暴露出的下一个最小首轮缺口：
+    - 多步表单最后一页“保存 / 提交”仍可能被首轮脚本生成成整页 `page.getByRole(...).first()`
+    - 该写法在真实页里会被标题 / section-head / sticky header 拦截 pointer events，导致首轮直接失败
+- 已完成：
+  - 基于真实 run `intent-run-55587530-1de1-4e4b-8545-354b3a02e5f2` 复盘首轮失败点，确认首轮失败已不再是“列表回查链”，而是 `Step 5` 最终提交按钮点击：
+    - 错误特征为 `subtree intercepts pointer events`
+    - 首轮生成写法仍是整页级 `getByRole('button', { name: /保\\s*存|提\\s*交/i }).first()`
+  - `lib/intent-action-library.ts`
+    - `assert.watch-submit-state` 的说明与示例显式改成：
+      - 多步表单 / Ant Tabs 最后一页的最终提交，必须先收窄到当前可见步骤容器
+      - 先 `scrollIntoViewIfNeeded()`
+      - 只有对已收窄的 scoped submit button，且真实报出 pointer interception 时，才允许 `click({ force: true })`
+    - 示例补成 `activePane -> finalSaveBtn -> waitForApiResponse -> observeSubmitState` 的完整链
+  - `lib/intent-execution-compiler.ts`
+    - `observeSubmitState` 步骤指令新增固定 guidance：
+      - 多步表单最终提交禁止再用 page 全局 `getByRole(...).first()`
+      - 若点击日志是 `subtree intercepts pointer events`，只允许对当前 visible pane 内的 scoped submit button 做 `click({ force: true })`
+  - `lib/test-generator.ts`
+    - 通用 prompt 规则和 submit-state 提示补齐同一条约束：
+      - 最终提交必须先 scope 到 `.ant-tabs-tabpane-active` / 当前步骤容器
+      - 先 `scrollIntoViewIfNeeded()`
+      - 只有 scoped button 才允许 `click({ force: true })`
+  - 测试补齐：
+    - `tests/unit/intent-action-library.spec.ts`
+      - 校验 submit-state capability 的 example / notes 已带 `activePane`、`scrollIntoViewIfNeeded()`、`click({ force: true })`
+    - `tests/unit/intent-execution-compiler.spec.ts`
+      - 校验编译后的步骤提示已包含“多步表单最终提交必须先 scope，再按需 force click”
+    - `tests/unit/test-generator.spec.ts`
+      - 校验自由生成 prompt 已包含“禁止整页 `page.getByRole(...).first()`”和 `subtree intercepts pointer events` 的修复 guidance
+- 验证：
+  - `npx vitest run tests/unit/intent-action-library.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - 真实 rerun：
+    - `intent-run-321af6b9-88c0-46a6-accf-da73a2e3a798`
+      - 带 auth 的真实样本
+      - 首轮 `generate` 直接成功，无 repair
+      - 首轮生成代码里已落出 `activePane + scoped submitBtn + scrollIntoViewIfNeeded() + click({ force: true }) + observeSubmitState(...)`
+    - `intent-run-707a1999-499e-4e52-b677-bb1939176002`
+      - 未带 auth，前置检查直接拦截，不计入本轮产品信号
+    - `intent-run-bdbd4be9-0610-4bb0-ab20-f9f00691e38b`
+      - 带 auth，但运行中遭遇“服务端已重启或当前运行实例已失效”
+      - 归类为环境阻塞 / 网络异常，不计入本轮首轮生成质量判断
+- 当前结果：
+  - 3 个定向测试文件通过
+  - 83 个测试通过
+  - `build` 通过
+  - 至少 1 个带 auth 的真实 `business_create_list_verify` rerun 已确认首轮直过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第十五刀：多步表单最终提交按钮首轮生成收窄已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前只证明这条真实失败特征已经被命中，并拿到 1 个带 auth 的首轮直过样本；还不足以单凭这一轮就关闭 `R3`。
+  - 最近 `runLimit=12` 的 `priorityScenarioFamilies.business_create_list_verify` 口径仍是：
+    - first-pass `25%`
+    - terminal-pass `37.5%`
+    - 历史坏样本仍然很多，`R1` 汇总口径暂时不会自然变好
+  - 第二个带 auth rerun 因服务端实例失效中断，没能给出新的干净产品失败信号
+- 下一步：
+  - 继续 `R3`
+  - 只做一件事：再发起干净的带 auth 真实 rerun，抓下一条“首轮真实失败且可复现”的最小缺口
+  - 如果下一条干净失败已经不再是最终提交按钮问题，就只修那个新的最小首轮缺口；修完后再回 `R1` 看最近窗口 first-pass / terminal-pass 是否开始抬升
+
+## 2026-03-27 第一百七十七次更新（R3 第十六刀：precheck 入口导航重试）
+
+- 本轮目标：
+  - 严格沿上一轮“继续发起干净带 auth rerun，抓下一条首轮真实失败”的下一步执行，不扩范围。
+  - 结果发现当前家里网络下无法稳定访问公司 UAT，新的真实失败已经收敛到 precheck 入口导航本身：
+    - `page.goto(...#/business/createbusiness)` 在前置检查阶段间歇性 `Timeout 30000ms exceeded`
+    - 失败发生在 attempts 之前，不属于首轮生成代码质量问题
+- 已完成：
+  - 复盘多条真实 run：
+    - `intent-run-22209891-a80f-4952-b039-3470dbde6413`
+      - 前置检查阶段 `domcontentloaded` 导航超时
+    - `intent-run-62dca020-8107-4239-879c-85df45c613bc`
+      - 前置检查回退到 `waitUntil: 'commit'` 后仍超时
+    - `intent-run-bdbd4be9-0610-4bb0-ab20-f9f00691e38b`
+      - 环境阻塞：服务端实例失效 / 网络异常
+  - `lib/page-analyzer.ts`
+    - 新增 `isRetryablePageAccessNavigationError(...)`
+      - 识别 `net::ERR_ABORTED` / `Timeout ... exceeded` 这类入口导航可重试错误
+    - 新增 `navigateForPageAccess(...)`
+      - 首先按 `domcontentloaded` 导航
+      - 若命中可重试错误，则回退到 `waitUntil: 'commit'`
+      - 回退后再补 `waitForLoadState('domcontentloaded')` 的短等待，而不是直接整条前置检查失败
+    - `ensurePageAccess(...)` / `ensureLoginSurface(...)` 全部收口到这条统一导航 helper，不再散落手写 `page.goto(...domcontentloaded...)`
+  - 测试补齐：
+    - `tests/unit/page-analyzer.spec.ts`
+      - 新增“Timeout / ERR_ABORTED 被识别为可重试入口导航错误”
+      - 新增“首轮 goto 失败后会用 commit fallback 重试”
+      - 新增“非可重试错误不重复导航”
+- 验证：
+  - `npx vitest run tests/unit/page-analyzer.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+- 当前结果：
+  - 2 个测试文件通过
+  - 17 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第十六刀：precheck 入口导航重试已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前家里网络无法稳定访问公司 UAT，真实 rerun 已不再具备可比较性。
+  - 这一步只能证明 precheck 导航逻辑更保守，无法在当前网络条件下继续给出可靠的真实产品信号。
+  - `ScenarioCard.targetUrl / entryUrl` 当前仍会落到 `createbusiness`，而真实首步业务入口描述其实是“商机列表页”；是否要把 precheck 入口与生成入口分离，后续还需要在可访问 UAT 的环境下再判断。
+- 下一步：
+  - 暂停所有 `https://uat-service.yikaiye.com` 真实运行
+  - 后续只做本地代码开发、单测和 md 回写
+  - 等网络条件恢复后，再继续 `R3` 的真实 rerun 验证，确认 precheck 是否真的退出主失败链
+
+## 2026-03-27 第一百七十八次更新（R3 第十七刀：scenario entry / precheck URL 分离）
+
+- 本轮目标：
+  - 严格沿上一轮“暂停 UAT，只做本地代码开发、单测和 md 回写”的下一步执行，不扩范围。
+  - 只修当前本地已可确认的设计缺口：
+    - `ScenarioCard.targetUrl` 之前被同时当成业务目标页、scenario 入口页和 precheck 页
+    - 对“先到列表页，再点新建进入创建页”的场景，这会让 precheck / analyze 在还没进入真实首步前就先打到创建页
+- 已完成：
+  - `lib/ai/scenario-card.ts`
+    - 新增 scenario 入口 URL 解析逻辑：
+      - `scenario` 模式优先使用 `flowDefinition.entryUrl`
+      - 若 `entryUrl` 缺失，则回退到首个可导航的非 API step URL
+    - `buildGenerateInputFromScenarioCard(...)` 保留业务 `targetUrl` 语义不变，但 `context.scenarioEntryUrl` 现在改成真实入口页
+  - `lib/ai/intent-e2e-service.ts`
+    - `runIntentE2EPrecheck(...)` 新增 `precheckUrl`
+    - precheck 和首轮 `analyzePage(...)` 统一改走 `scenarioEntryUrl`
+    - `IntentE2ERunResult.targetUrl` 继续保留业务目标页，避免把知识匹配、成功验收候选和现有目标页语义一起切偏
+  - `tests/unit/scenario-card.spec.ts`
+    - 新增“入口 URL 与业务目标 URL 分离”的回归用例
+    - 新增“`entryUrl` 缺失时回退到首个可导航 step URL”的回归用例
+  - `tests/unit/intent-e2e-service.spec.ts`
+    - 新增“precheck / analyze 使用 `scenarioEntryUrl`，但最终 result 仍保留业务 `targetUrl`”的回归用例
+- 验证：
+  - `npx vitest run tests/unit/scenario-card.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+- 当前结果：
+  - 2 个测试文件通过
+  - 17 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第十七刀：scenario entry / precheck URL 分离已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前只完成了本地链路语义修正，还没有真实 UAT rerun 证明“precheck 误打创建页”已经退出主失败链。
+  - 当前 run trace / stream 里还没有显式记录 `scenarioEntryUrl` 与 `targetUrl` 的差异；网络恢复后如果继续排查 precheck 问题，观测仍不够直观。
+- 下一步：
+  - 继续停留在本地代码开发，不做 UAT 真机验证
+  - 先把 `scenarioEntryUrl / targetUrl` 的差异补进 run trace / stream 事件，保证后续恢复真实 rerun 后能直接看出 precheck / analyze 实际使用的是哪个 URL
+
+## 2026-03-27 第一百七十九次更新（R3 第十八刀：run trace / stream 显式记录 entry / precheck / analyze URL）
+
+- 本轮目标：
+  - 严格沿上一轮“继续本地代码开发，不做 UAT 真机验证”的下一步执行，不扩范围。
+  - 只做一件事：把 `scenarioEntryUrl / targetUrl` 的差异补进 run trace / stream 事件，保证后续恢复真实 rerun 后，能直接看出 precheck / analyze 实际使用的是哪个 URL。
+- 已完成：
+  - `lib/ai/intent-e2e-service.ts`
+    - 扩展现有 `description` stream 事件：
+      - 继续保留业务 `targetUrl`
+      - 新增 `scenarioEntryUrl`
+      - 新增 `precheckUrl`
+      - 新增 `analyzeUrl`
+    - 事件发出时显式带出“业务目标页”和“precheck / analyze 实际入口页”的差异，不再只能从代码推断
+  - `components/IntentE2EWorkbench.tsx`
+    - 同步扩展前端 stream event 类型
+    - 当 `scenarioEntryUrl !== targetUrl` 时，feed 改为显式展示：
+      - 目标页
+      - 入口页
+      - precheck URL
+      - analyze URL
+    - 这样即使只看运行中的 trace feed，也能直接看出执行入口是否被切到了列表页
+  - `tests/unit/intent-e2e-service.spec.ts`
+    - 新增断言：当业务目标页与 scenario 入口页不同，`description` 事件会完整带出 `scenarioEntryUrl / precheckUrl / analyzeUrl`
+  - `tests/unit/intent-e2e-run-registry.spec.ts`
+    - 新增断言：扩展后的 `description` 事件在 run backlog 和持久化后的内存状态里不会丢字段
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts`
+  - `npm run build`
+- 当前结果：
+  - 2 个测试文件通过
+  - 20 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第十八刀：run trace / stream 显式记录 entry / precheck / analyze URL 已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 这一步只补齐了观测面，尚未恢复真实 UAT rerun，因此还不能证明 precheck 误打创建页在真实环境里已经完全退出主失败链。
+  - 当前 `IntentE2ERunResult` 顶层摘要仍只保留 `targetUrl`，离线只看最终结果对象时，还看不到 `scenarioEntryUrl / precheckUrl / analyzeUrl` 差异。
+- 下一步：
+  - 把 `scenarioEntryUrl / precheckUrl / analyzeUrl` 收进 run result / snapshot 的顶层摘要，避免后续只看结果对象或 runs 列表时还要回放事件才能判断入口链路
+
+## 2026-03-27 第一百八十次更新（R3 第十九刀：run result 顶层摘要补齐 resolved URLs）
+
+- 本轮目标：
+  - 严格沿上一轮“继续本地代码开发”的下一步执行，不扩范围。
+  - 只做一件事：把 `scenarioEntryUrl / precheckUrl / analyzeUrl` 收进 `run result` 顶层摘要，避免后续只看结果对象时还要回放事件才能判断入口链路。
+- 已完成：
+  - `lib/ai/intent-e2e-service.ts`
+    - 新增 `IntentE2EResolvedUrls`
+    - `IntentE2ERunResult` 顶层新增 `resolvedUrls`
+    - generate / precheck blocked / precheck error / final success-failure 输出都统一回填：
+      - `targetUrl`
+      - `scenarioEntryUrl`
+      - `precheckUrl`
+      - `analyzeUrl`
+  - `lib/ai/intent-e2e-run-registry.ts`
+    - `cloneRunState(...)` 补齐 `resolvedUrls` 深拷贝
+    - 持久化恢复后读取 run result，不会丢失入口 URL 摘要
+  - `components/IntentE2EWorkbench.tsx`
+    - `IntentRunResult` / `StreamState` 同步接入 `resolvedUrls`
+    - 当入口页与业务目标页不同，ScenarioCard 详情区显式展示：
+      - `Scenario Entry`
+      - `Precheck URL`
+      - `Analyze URL`
+    - 现在只看最终结果摘要卡片，也能直接判断 precheck / analyze 是否走错了入口
+  - 测试补齐：
+    - `tests/unit/intent-e2e-service.spec.ts`
+      - 校验 `resolvedUrls` 会进入正常 run 和 precheck 失败的最终结果对象
+    - `tests/unit/intent-e2e-run-registry.spec.ts`
+      - 校验 `resolvedUrls` 在 backlog、内存态和持久化恢复后都不会丢
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts`
+  - `npm run build`
+- 当前结果：
+  - 2 个测试文件通过
+  - 20 个测试通过
+  - `build` 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第十九刀：run result 顶层摘要补齐 resolved URLs 已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 到这一步为止，本地链路已经能完整说明“目标页”和“真实入口页”的差异，但还没有恢复真实 UAT rerun 来验证修复是否真的抬高 first-pass。
+  - 当前 runs 列表摘要仍主要显示 `request.targetUrl`，是否还需要把 `resolvedUrls` 上提到列表摘要，先等真实 rerun 信号再决定，不提前扩 UI。
+- 下一步：
+  - 立即恢复 `https://uat-service.yikaiye.com/#/` 真实验证
+  - 先针对 `business_create_list_verify` 发起干净 rerun，确认：
+    - precheck / analyze 是否已经走到列表入口页
+    - run result / trace 是否能直接看见 `resolvedUrls`
+    - 首轮是否还会在“错误入口页”这条链上失败
+
+## 2026-03-27 第一百八十一次更新（R3 第二十刀：`business_create_list_verify` 入口 URL 纠偏）
+
+- 本轮目标：
+  - 严格沿上一轮“恢复真实 UAT 验证”的下一步执行，不扩范围。
+  - 只收口一件事：把 `business_create_list_verify` 这条 family 里“先到商机列表，再点新建”的真实入口纠偏到列表页，避免 `scenario_card / precheck / analyze` 继续误打 `createbusiness`。
+- 已完成：
+  - `lib/ai/scenario-card.ts`
+    - 对“商机列表 -> 点击新建商机 -> 创建商机 -> 回列表验收”这类场景，强制把 `flowDefinition.entryUrl` 纠偏到 `#/business/businesslist`
+    - 同步把列表入口 / 列表回查步骤的目标 URL 纠偏到 `businesslist`
+    - 收窄 `cardExplicitlyRequiresBusinessName(...)`
+      - 只看 `title + featureDescription`
+      - 不再因为 `successCriteria / expectedOutcome` 里提到“商机名称”就错误保留幻觉变量 `createdBusinessName`
+  - 测试补齐：
+    - `tests/unit/scenario-card.spec.ts`
+      - 覆盖商机列表入口 URL 纠偏
+      - 覆盖“成功标准里提到商机名称”时不再误保留 `createdBusinessName`
+- 验证：
+  - `npx vitest run tests/unit/scenario-card.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - 真实 UAT run：
+    - `intent-run-f2c777ee-4731-4ade-9da1-a73df1f7cede`
+      - 证明观测面已经能看见 `scenarioEntryUrl / precheckUrl / analyzeUrl`
+      - 但当时入口仍错误落在 `#/business/createbusiness`
+    - `intent-run-0ad7ef41-d395-44c9-ab10-a1f867cab8b8`
+      - 首次入口纠偏后仍有回退，且幻觉变量 `createdBusinessName` 重新出现
+    - `intent-run-d550035d-16c6-44a9-b4b1-dd36c648f702`
+      - `scenario_card.flowDefinition.entryUrl = https://uat-service.yikaiye.com/#/business/businesslist`
+      - `description.scenarioEntryUrl / precheckUrl / analyzeUrl` 全部落到 `businesslist`
+      - `sharedVariables` 收敛为 `["businessId"]`
+      - 不再出现 `createdBusinessName`
+- 当前结果：
+  - 本地单测通过
+  - `build` 通过
+  - 真实 rerun 已证明“错误入口页”这条旧主失败链退出
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第二十刀：`business_create_list_verify` 入口 URL 纠偏已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 入口页问题虽然退出主链，但还没证明 first-pass 会自然抬升。
+  - 下一条真实失败未必还在 planner / entry 侧，需要继续发干净 rerun 抓新的最小缺口。
+- 下一步：
+  - 继续 `business_create_list_verify` 干净 rerun
+  - 只修下一条“首轮真实失败且可复现”的最小缺口
+
+## 2026-03-27 第一百八十二次更新（R3 第二十一刀：create-flow 入口页空列表不再阻塞 precheck）
+
+- 本轮目标：
+  - 严格沿上一轮“继续发起干净 rerun 抓下一条最小缺口”的下一步执行，不扩范围。
+  - 真实 rerun `intent-run-8bafd4df-6a5d-4d69-b021-b0896922d938` 暴露的新问题不是脚本执行，而是：
+    - 入口页已经纠偏到 `#/business/businesslist`
+    - 但 precheck 因页面出现“暂无数据”直接判成 `data_missing`
+    - 对“从列表进入创建页”的场景，这属于误杀，因为空列表并不阻塞点击“新建商机”
+- 已完成：
+  - `lib/page-analyzer.ts`
+    - 新增 `PageAccessPrecheckOptions`
+    - 新增 `shouldIgnorePageAccessPrecheckFailure(...)`
+    - `precheckPageAccess(...)` 支持按需忽略指定阻断类，先返回 `ready + storageState`，不再一刀切卡死
+  - `lib/ai/intent-e2e-service.ts`
+    - 新增 create-flow 入口页绕行判定
+      - 仅当 `scenario entry != business target`
+      - 且 `entryUrl` 明确就是 precheck 页
+      - 且流程前段存在“新建 / 创建”，后续存在“保存 / 提交”信号
+      - 才对 precheck 传入 `ignoreFailureClasses: ['data_missing']`
+    - 保持权限 / 认证 / 环境异常仍然照常阻断，不放大绕行范围
+  - 测试补齐：
+    - `tests/unit/page-analyzer.spec.ts`
+      - 覆盖指定 failure class 的忽略逻辑
+    - `tests/unit/intent-e2e-service.spec.ts`
+      - 覆盖“列表入口 -> 创建页”场景会带 `ignoreFailureClasses: ['data_missing']` 调用 precheck
+- 验证：
+  - `npx vitest run tests/unit/page-analyzer.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - 真实 UAT run：
+    - `intent-run-8bafd4df-6a5d-4d69-b021-b0896922d938`
+      - 失败于 `prechecking`
+      - `failureClass = data_missing`
+      - `matchedSignals = ["暂无数据"]`
+    - `intent-run-5005c381-c4c2-4f8a-a7e5-1b0f2240d860`
+      - 同场景 rerun 已从 `prechecking` 进入 `analyzing`，随后进入 `executing`
+      - 证明“入口页空列表误判阻断”已经退出主链
+- 当前结果：
+  - 2 个测试文件通过
+  - 19 个测试通过
+  - `build` 通过
+  - 真实 rerun 已证明 precheck 不再被“暂无数据”误拦截
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第二十一刀：create-flow 入口页空列表不再阻塞 precheck 已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 这一步只把运行从 precheck 放到了 generate / execute，不代表 first-pass 已经稳定。
+  - 同一条 rerun 在首轮 generate 后又暴露出新的执行面问题：语法错误。
+- 下一步：
+  - 只修 `generate -> execute` 之间的新最小缺口
+  - 不回到 precheck / entry / UI 扩范围
+
+## 2026-03-27 第一百八十三次更新（R3 第二十二刀：`tsToJs` 不再误删三元表达式冒号）
+
+- 本轮目标：
+  - 严格沿上一轮“只修 generate -> execute 之间的新最小缺口”的下一步执行，不扩范围。
+  - 真实 rerun `intent-run-5005c381-c4c2-4f8a-a7e5-1b0f2240d860` 暴露：
+    - LLM 返回的 slot patch 本身是合法 JavaScript 三元表达式
+    - 但 `prepareTestCodeForExecution(...)` 的 `tsToJs` 返回类型剥离 regex 把 `?:` 里的 `:` 误当成 TypeScript 返回类型删除
+    - 结果首轮 generate 直接在 worker 文件里触发 `SyntaxError: Unexpected token '{'`
+- 已完成：
+  - `lib/test-executor.ts`
+    - 收窄 `tsToJs(...)` 的“函数返回类型”剥离规则：
+      - 只匹配真实函数声明
+      - 只匹配真实箭头函数签名
+      - 不再匹配普通表达式里的 `)` + `:` 组合
+    - 同步收窄 `containsTypeScriptOnlySyntax(...)` 的检测规则
+      - 不再把纯 JavaScript 三元表达式误判成 TS 代码
+  - 测试补齐：
+    - `tests/unit/test-executor.spec.ts`
+      - 新增回归：带对象字面量参数的三元表达式保持原样，不触发错误的 TS 剥离
+- 验证：
+  - `npx vitest run tests/unit/test-executor.spec.ts tests/unit/page-analyzer.spec.ts tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - 真实 UAT run：
+    - `intent-run-5005c381-c4c2-4f8a-a7e5-1b0f2240d860`
+      - 首轮 generate 失败点为 `SyntaxError: Unexpected token '{'`
+    - `intent-run-bb87c53c-7c68-4042-b54a-b4a7a002149b`
+      - 已顺利通过 `prechecking -> analyzing -> generating -> executing`
+      - 说明首轮脚本已不再死于同类语法错误
+      - 新的首轮真实失败已经变成业务验收侧：
+        - `未找到可见弹框: titleIncludes=详情`
+- 当前结果：
+  - 3 个测试文件通过
+  - 43 个测试通过
+  - `build` 通过
+  - 真实 rerun 已证明 `tsToJs` 误删三元表达式冒号已退出主失败链
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第二十二刀：`tsToJs` 不再误删三元表达式冒号 已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前首轮 generate 已经能真正进入执行，但 `business_create_list_verify` 还没有 first-pass 通过。
+  - 新的主失败点已经收敛到 verifier / detail fallback：
+    - 当列表行里缺少状态字段时，首轮代码错误地强依赖 `titleIncludes=详情` 的可见弹框
+    - 真实页面未必用 modal / drawer 承接详情，因此这条等待仍可能误判
+- 下一步：
+  - 继续 `R3`
+  - 只修当前这条真实 first-pass 缺口：`未找到可见弹框: titleIncludes=详情`
+  - 修法只允许落在 `business_create_list_verify` 的详情 fallback / verifier 模板，不回到无关链路扩范围
+
+## 2026-03-27 第一百八十四次更新（R3 第二十三刀：detail fallback 优先直达 `detailUrl`，不再强猜详情弹框）
+
+- 本轮目标：
+  - 严格沿上一轮“只修当前这条真实 first-pass 缺口”的下一步执行，不扩范围。
+  - 真实 rerun `intent-run-bb87c53c-7c68-4042-b54a-b4a7a002149b` 暴露：
+    - 列表回查与 verifier 已经真正进入执行
+    - 但当列表行缺少状态字段、且当前 plan 没有显式 `detailEntry` 时，隐式 fallback 仍默认走“点查看 + 等待 `titleIncludes=详情` 弹框”
+    - 当前场景其实已经有稳定 `detailUrl`，因此这条隐式 modal 猜测属于错误默认，首轮执行会被误杀
+- 已完成：
+  - `lib/intent-execution-compiler.ts`
+    - 收窄隐式 detail fallback 默认行为：
+      - 若 `recordLookup.detailUrl` 已存在，优先直接走详情页路由
+      - 仅当没有稳定 `detailUrl` / `detailReadyLocator` 证据，且确实需要详情入口时，才保留行操作 + modal/drawer 的隐式 fallback
+    - 同步保证这类 case 不再自动注入 `clickAntdRowAction(..., '查看')` + `waitForVisibleAntdModal(titleIncludes=详情)` 这条错误默认链
+  - `lib/test-generator.ts`
+    - 对齐生成 / repair 提示：
+      - 如果当前链路已有稳定 `detailUrl` / `detailReadyLocator`，优先 `goto(detailUrl)` 或等待 ready 锚点后再读详情字段
+      - 只有没有稳定详情路由，且 `recordLookup.detailEntry` 明确指向 `drawer_or_modal` 时，才允许生成“行操作 -> 弹层”链路
+  - `lib/intent-action-library.ts`
+    - 对齐 `resolvePrimaryRecord` 能力说明：
+      - 列表行已命中、列表响应又拿不到状态时，优先走 `detailUrl / detailReadyLocator`
+      - 只有没有稳定详情路由、且 `detailEntry` 明确存在时，才点击目标行的“查看”并等待详情弹层
+  - 测试补齐：
+    - `tests/unit/intent-execution-compiler.spec.ts`
+      - 新增回归：存在稳定 `detailUrl` 且未显式给 `detailEntry` 时，编译结果优先直达详情页，不再隐式强猜 modal
+    - `tests/unit/test-generator.spec.ts`
+      - 新增回归：prompt 明确要求“有稳定 `detailUrl / detailReadyLocator` 时先走详情页；没有时才允许 modal fallback”
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts tests/unit/test-executor.spec.ts`
+  - `npm run build`
+  - 真实 UAT run：
+    - `intent-run-bb87c53c-7c68-4042-b54a-b4a7a002149b`
+      - 首轮真实失败点为 `未找到可见弹框: titleIncludes=详情`
+    - `intent-run-b4383f87-97b1-495b-b27d-3f86888c4c15`
+      - `status = passed`
+      - `attempt1Success = true`
+      - 证明这条“隐式强猜详情弹框”的首轮主失败链已经退出
+- 当前结果：
+  - 3 个测试文件通过
+  - 93 个测试通过
+  - `build` 通过
+  - 真实 rerun 已证明 `business_create_list_verify` 当前主链可以 first-pass 通过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第二十三刀：detail fallback 优先直达 `detailUrl`，不再强猜详情弹框 已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 这一步只退出了当前首轮 detail fallback 误判，不代表整个 `business_create_list_verify` family 已整体稳定。
+  - 还需要看最新 insights，确认 first-pass / terminal 指标是否真正抬升，并抓下一条最小真实缺口。
+- 下一步：
+  - 拉取最新 `insights`
+  - 只看 `priorityScenarioFamilies.business_create_list_verify`
+  - 如果还有新的首轮真实失败，只修下一条最小可复现缺口
+
+## 2026-03-27 第一百八十五次更新（R3 第二十四刀：`recordCheck.mode=not_found` 且无详情回退路径时，不再伪造 `detailScope` 裸读状态）
+
+- 本轮目标：
+  - 严格沿上一轮“只修下一条最小真实缺口”的范围继续推进，不扩到无关 verifier 设计。
+  - 真实 rerun `intent-run-b53d8c3f-5681-4fd0-bf1e-80d9fe8ee753` 暴露：
+    - 当 `__e2e.resolvePrimaryRecord(...)` 最终返回 `mode === 'not_found'`
+    - 且当前链路没有稳定 `detailUrl` / `detailEntry`
+    - repair 仍会凭空写 `const detailScope = page.locator('.ant-drawer-content:visible, .ant-modal-content:visible').last()`，然后在裸列表页上 `readDetailField(...)`
+    - 这会把“列表未命中”误修成“假详情面读状态”，继续污染首轮失败链
+- 已完成：
+  - `lib/intent-execution-compiler.ts`
+    - 新增 `buildNotFoundRecordFallbackLines(...)`
+    - `table_row` 骨架现在显式拆成三条分支：
+      - `mode === 'table_row'`
+      - `mode === 'detail_url'`
+      - `else` (`not_found`)：只允许复用列表 JSON 证据；若仍无状态 / 记录，则直接抛出“未命中目标记录”
+    - 移除了旧的 `not_found -> expect(body).toContainText(...) -> readDetailField(page, { label: '状态' })` 裸读链
+  - `lib/test-generator.ts`
+    - 对齐 prompt / repair guidance：
+      - 如果 `recordCheck.mode === 'not_found'`，且没有 `detailUrl / detailEntry`
+      - 明确禁止编造 `detailScope = page.locator('.ant-drawer-content:visible, .ant-modal-content:visible').last()`
+  - `lib/intent-action-library.ts`
+    - 对齐 `resolvePrimaryRecord` 能力说明，明确 `not_found` 且无详情回退路径时只能继续复用 `recordCheck.response -> pickJsonRecord -> pickJsonValue`
+  - 测试补齐：
+    - `tests/unit/intent-execution-compiler.spec.ts`
+    - `tests/unit/test-generator.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-action-library.spec.ts`
+  - `npm run build`
+  - 真实 UAT run：
+    - `intent-run-b53d8c3f-5681-4fd0-bf1e-80d9fe8ee753`
+      - 首轮真实失败点：`状态证据缺失：详情面未读取到状态字段`
+      - 暴露旧的 `not_found -> 假 detailScope -> 裸读状态` 链
+    - `intent-run-463dcd46-5432-4b56-882a-abad738b06d0`
+      - 首轮真实失败点前移为：`状态证据缺失：列表行已命中，但无 businessId 且列表响应未返回状态`
+      - 终态为 `repair_stagnated`
+      - repair 重复失败签名：`Expected substring: "新入库" / Received string: "抖音"`
+      - 说明旧的“伪造 detailScope 裸读状态”链已经退出主失败链，问题已收敛到下一条更窄的状态证据缺口
+- 当前结果：
+  - 3 个测试文件通过
+  - 83 个测试通过
+  - `build` 通过
+  - 真实 rerun 已证明 `recordCheck.mode=not_found` 时不再走“凭空猜详情容器”的错误默认
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第二十四刀：`recordCheck.mode=not_found` 且无详情回退路径时，不再伪造 `detailScope` 裸读状态 已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前 family 的首轮主链已不再卡在 fake detail scope，但无 `businessId` 时，repair 仍可能把详情中的其他字段值错读为“状态”。
+  - 这一步还没有把 `business_create_list_verify` 拉到 first-pass 通过，只是把失败面继续收窄。
+- 下一步：
+  - 继续 `R3`
+  - 只修当前这条新的真实缺口：详情读取里“状态”字段误读到了别的值（真实观测为 `抖音`）
+  - 修法只允许落在同一条状态证据链的 helper / verifier 收窄，不扩到其他 family
+
+## 2026-03-27 第一百八十六次更新（R3 第二十五刀：详情字段读取收窄到同一字段容器，主记录回查增加 `primaryValue-only` 保守降级）
+
+- 本轮目标：
+  - 严格沿上一轮暴露出的同一条失败链继续推进，不扩到无关 family。
+  - 先解决 repair 里“状态字段被误读成别的字段值（真实观测为 `抖音`）”的问题；
+  - 再解决同 family 下新暴露出的 `resolvePrimaryRecord` 过度依赖 `[leadMobile, leadContactName]`，导致联系人列未渲染时直接 `not_found` 的问题。
+- 已完成：
+  - `lib/test-worker.mjs`
+    - 收窄 `readDetailField(...)`：
+      - 值节点搜索优先限制在“与当前 label 同一行 / 同一字段容器”的局部范围
+      - 只有局部范围确实拿不到值时，才回退到更宽的 candidate 容器
+      - 退出了“详情里前一个字段值串到状态字段”的误判链
+    - 收窄 `resolvePrimaryRecord(...)`：
+      - 在无 `detailUrl`、且多文本 `rowHasTexts` 严格匹配失败时
+      - 新增一次保守的 `primaryValue-only` 降级查找
+      - 避免联系人名 / 次要字段未渲染就直接把目标记录判成 `not_found`
+  - 测试补齐：
+    - `tests/unit/test-executor.spec.ts`
+      - 新增“状态字段不会误读到前一个来源字段 `抖音`”回归
+      - 新增“多文本命不中时可保守降级到 `primaryValue-only` 查找”回归
+- 验证：
+  - `npx vitest run tests/unit/test-executor.spec.ts`
+  - `npm run build`
+  - 真实 UAT run：
+    - `intent-run-f9570c70-cdcb-4d7f-b84e-2e1cb5dc5a9a`
+      - 在只落第一半修复后，首轮失败已从“状态读成 `抖音`”前移为 `未命中目标记录：列表未命中，且没有可用的详情回退路径`
+      - 证明 `readDetailField` 误读链已退出
+    - `intent-run-3d3ec255-61f6-4b5c-b53f-5f5c8b7e06bf`
+      - 无效证据：服务端重启，run 在 `planning` 阶段被中断
+    - `intent-run-61d16f20-6f31-4fd7-8a40-8d90e1cfb90a`
+      - `status = passed`
+      - `attempt1` 失败点已变成 `selector_drift`
+      - `attempt2 / attempt3` 继续进入更靠后的状态证据修复
+      - `attempt4` 成功
+      - 说明上一轮的 `抖音` 误读和 `not_found` 终态卡死都已退出当前主失败链
+- 当前结果：
+  - `tests/unit/test-executor.spec.ts` 26 个测试通过
+  - `build` 通过
+  - 真实 rerun 已拿到新的 terminal pass 证据
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第二十五刀：详情字段读取收窄到同一字段容器，主记录回查增加 `primaryValue-only` 保守降级 已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前已恢复 terminal pass，但 `business_create_list_verify` 仍未恢复 first-pass 通过。
+  - 最新真实首轮缺口已经收敛到 `selector_drift`：
+    - `switchBusinessListOwnershipView(...)` 之后，脚本仍在用 `.ant-tabs-tab-active, .ant-radio-button-wrapper-checked, .ant-select-selection-selected-value` + `我创建的` 这类脆弱 active-locator 做可见性断言
+    - 这条断言不属于业务成功标准本身，仍会误杀首轮
+- 下一步：
+  - 继续 `R3`
+  - 只修当前这条新的真实首轮缺口：`switchBusinessListOwnershipView(...)` 之后的 active-locator 断言漂移
+  - 修法只允许落在 ownership helper 使用约束 / 生成默认骨架，不扩到其他 family
+
+## 2026-03-28 第一百八十七次更新（R3 第二十六刀：ownership helper 后禁止追加 active-locator 断言）
+
+- 本轮目标：
+  - 严格沿上一轮的真实首轮缺口继续推进，不扩到无关 family / architecture。
+  - 只修 `__e2e.switchBusinessListOwnershipView(...)` 之后仍追加 `.ant-tabs-tab-active / .ant-radio-button-wrapper-checked / .ant-select-selection-selected-value / getByText('我创建的')` 这类脆弱 active-locator 断言的问题。
+- 已完成：
+  - `lib/test-generator.ts`
+    - 补充通用 prompt 与精简约束：
+      - `switchBusinessListOwnershipView(...)` 返回后，明确禁止继续补 active-locator 断言
+      - 明确 helper 成功本身就代表归属切换已收敛
+      - 若需要辅助证据，只允许看列表 URL / 可见搜索框 / 列表 ready，再继续搜索与回查
+    - 新增 repair 定向提示：
+      - 当历史脚本在 helper 后仍写 active-locator 断言时，明确要求删除这类断言，直接进入后续 `resolvePrimaryRecord(...)` 回查
+  - `lib/intent-execution-compiler.ts`
+    - 对齐 deterministic compiler 指令：
+      - 明确禁止 helper 后继续断言 `.ant-tabs-tab-active / .ant-radio-button-wrapper-checked / .ant-select-selection-selected-value / getByText('我创建的')`
+      - 明确辅助收敛只能看 URL / 搜索框 / 列表 ready
+  - `lib/intent-action-library.ts`
+    - 对齐动作库能力说明：
+      - ownership helper 的实现说明新增“helper 成功本身就足够，不要再断言选中态 class / 文本锚点”
+  - 测试补齐：
+    - `tests/unit/test-generator.spec.ts`
+      - 新增 repair prompt 回归：helper 后 active-locator 漂移
+      - 补充通用 prompt 断言，覆盖“helper 成功即收敛”与 URL / 搜索框 / 列表 ready 辅助证据
+    - `tests/unit/intent-execution-compiler.spec.ts`
+      - 补充 compiler 指令断言，覆盖禁止 active-locator 断言
+    - `tests/unit/intent-action-library.spec.ts`
+      - 补充动作库说明断言，覆盖禁止 active-locator 断言
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/intent-action-library.spec.ts`
+  - `npm run build`
+  - 真实 UAT run：
+    - `intent-run-dbde2a38-280f-487b-b346-9237ae222be8`
+      - `attempt1` 首轮生成的 `plan_step_4` 已收敛为：
+        - `await __e2e.switchBusinessListOwnershipView(...)`
+        - `await expect(page.locator('input#businessList_keywords:visible').first()).toBeVisible(...)`
+      - 首轮生成代码中已不再包含：
+        - `.ant-tabs-tab-active`
+        - `.ant-radio-button-wrapper-checked`
+        - `.ant-select-selection-selected-value`
+        - `getByText('我创建的')`
+      - `attempt1` 新的真实失败点前移为：
+        - `状态证据缺失：列表行已命中，但无法从列表响应或详情读取状态`
+      - `attempt2` / `attempt3` 终态失败由 repair 次链路引入：
+        - `attempt2`：verification patch 生成语法错误（`const verifyResp = artifacts.plan_step_3 ? await artifacts.plan_step_3;`）
+        - `attempt3`：结构化 repair patch JSON 非法
+      - 这说明本轮目标中的 ownership active-locator 漂移已退出首轮主失败链，但 terminal run 仍未恢复通过
+- 当前结果：
+  - 3 个测试文件通过
+  - 84 个测试通过
+  - `build` 通过
+  - 真实 rerun 已证明 ownership helper 后的 active-locator 断言不再出现在首轮生成代码里
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第二十六刀：ownership helper 后禁止追加 active-locator 断言 已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前 family 仍未恢复 first-pass 通过。
+  - ownership 漂移已退出首轮主链后，新的真实首轮缺口已收敛到：
+    - 列表行已命中，但列表响应与详情链仍拿不到状态证据
+  - 同一次真实 run 的 repair 次链路还暴露了 verification patch 语法拼接缺口，但这不是本轮首轮主链目标。
+- 下一步：
+  - 继续 `R3`
+  - 只修当前这条新的真实首轮缺口：`状态证据缺失：列表行已命中，但无法从列表响应或详情读取状态`
+  - 修法只允许落在同一条状态证据链的 verifier / repair skeleton 收窄，不扩到其他 family
+
+## 2026-03-28 第一百八十八次更新（R3 第二十七刀：`businessId` 为空时，列表行命中后先走 `detailEntry` 回退，不允许直接 `else throw`）
+
+- 本轮目标：
+  - 严格沿上一轮新的真实首轮缺口继续推进，不扩到无关 family / helper 设计。
+  - 只修 `businessId` 为空时，脚本在 `recordCheck.row` 已命中后仍保留 `else if (shared.businessId) { goto detail } else { throw ... }` 的坏分支。
+- 已完成：
+  - `lib/test-generator.ts`
+    - 收窄通用 prompt：
+      - `businessId` 为空但 fallback 行已命中时，明确禁止继续生成 `else if (shared.businessId) { await page.goto(...) } else { throw ... }`
+      - 明确要求优先沿用 `recordCheck.row -> detailEntry / detailReadyLocator -> readDetailField('状态')` 回退链
+    - 新增 repair 定向提示：
+      - 当失败签名为 `状态证据缺失：列表行已命中，但无法从列表响应或详情读取状态` 时
+      - 明确要求对命中的 `recordCheck.row` 直接走 `__e2e.clickAntdRowAction(..., '查看')` + `__e2e.waitForVisibleAntdModal(...)`
+  - `lib/intent-execution-compiler.ts`
+    - 对齐 compiler 指令：
+      - 即使共享稳定标识为空，只要 `recordCheck.row` 已命中且 `detailEntry / 详情标题` 可用，也禁止生成 `else if (shared.businessId) { goto detail } else { throw ... }`
+      - 明确应改走 `clickAntdRowAction(...) + waitForVisibleAntdModal(...) / detailReadyLocator`
+  - `lib/intent-action-library.ts`
+    - 对齐能力说明与示例：
+      - 新增“共享稳定标识为空但列表行已命中时，不要直接 `else throw`”说明
+      - 示例骨架改成 `businessId || contactPhone` 主值，并补上无主键时的 `recordCheck.row -> 查看 -> 商机详情 modal -> readDetailField('状态')` 分支
+  - 测试补齐：
+    - `tests/unit/test-generator.spec.ts`
+      - 新增 repair prompt 回归：`businessId` 为空时不能直接 `else throw`
+      - 补充通用 prompt 断言，覆盖 `clickAntdRowAction(page, recordCheck.row, '查看')`
+    - `tests/unit/intent-execution-compiler.spec.ts`
+      - 补充 compiler 指令断言，覆盖“即使 shared.customerId 为空也要先走 detailEntry”
+    - `tests/unit/intent-action-library.spec.ts`
+      - 补充能力说明与示例断言，覆盖无主键时的 row-action 详情回退链
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/intent-action-library.spec.ts`
+  - `npm run build`
+  - 真实 UAT run：
+    - `intent-run-64104e25-7cd9-4691-ae83-3c356e8c7df1`
+      - `attempt1` 首轮失败点已从上一轮的
+        - `状态证据缺失：列表行已命中，但无法从列表响应或详情读取状态`
+        - 前移为 `未命中目标记录：列表未命中，且没有可用的详情回退路径`
+      - `attempt1` 首轮生成代码里：
+        - ownership active-locator 仍未回流（`plan_step_4` 不含 `.ant-tabs-tab-active / .ant-radio-button-wrapper-checked / .ant-select-selection-selected-value / getByText('我创建的')`）
+        - verification 里也不再保留上一轮那条 `else if (shared.businessId) { ... } else { throw 状态证据缺失... }` 旧分支
+      - `attempt2 / attempt3` 仍继续落在同一类 `not_found` 失败，最终被判定为 repair stagnation
+      - 说明本轮“row 命中后直接 `else throw`”这条状态证据缺口已退出首轮主失败链，但 first-pass 仍未恢复通过
+- 当前结果：
+  - 3 个测试文件通过
+  - 85 个测试通过
+  - `build` 通过
+  - 真实 rerun 已证明“列表行命中后直接状态报错”不再是首轮主失败点
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第二十七刀：`businessId` 为空时，列表行命中后先走 `detailEntry` 回退，不允许直接 `else throw` 已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前 family 仍未恢复 first-pass 通过。
+  - 最新真实首轮缺口重新收敛到：
+    - `未命中目标记录：列表未命中，且没有可用的详情回退路径`
+  - 当前首轮脚本仍没有稳定生成 `verificationUsesRowDetailEntryFallback` 分支，但这已经不是本轮首轮主失败签名。
+- 下一步：
+  - 继续 `R3`
+  - 只修当前这条新的真实首轮缺口：`未命中目标记录：列表未命中，且没有可用的详情回退路径`
+  - 修法只允许落在 `resolvePrimaryRecord(...)` 的首轮使用骨架 / `rowHasTexts` 保守降级 / `not_found` 验收链收窄，不扩到其他 family
+
+## 2026-03-28 第一百八十九次更新（R3 第二十八刀：`businessId` 为空时，fallback `rowHasTexts` 默认只保留手机号）
+
+- 本轮目标：
+  - 严格沿上一轮最新的真实首轮缺口继续推进，不扩到无关 family。
+  - 只修 `businessId` 为空时，首轮脚本仍把 fallback `rowHasTexts` 默认写成 `[leadMobile, leadContactName]`，导致联系人列未渲染就直接 `not_found` 的问题。
+- 已完成：
+  - `lib/test-generator.ts`
+    - 收窄生成 prompt：
+      - 商机创建回列表的 fallback `resolvePrimaryRecord(...)` 默认改为 `rowHasTexts: [leadMobile]`
+      - 明确禁止默认再把 `leadContactName` 拼回 fallback `rowHasTexts`
+    - 新增 repair 定向提示：
+      - 当 `未命中目标记录：列表未命中，且没有可用的详情回退路径` 与 `rowHasTexts + leadContactName` 同时出现时
+      - 明确要求收窄为 `rowHasTexts: [leadMobile]`
+  - `lib/intent-execution-compiler.ts`
+    - 对齐 compiler 指令：
+      - 当共享稳定标识为空、fallback 主值改用手机号时，明确要求 `rowHasTexts` 默认只放手机号
+      - 联系人名只允许在命中行文本里确实出现时再断言
+  - `lib/intent-action-library.ts`
+    - 对齐动作库说明与示例：
+      - 新增“fallback `rowHasTexts` 默认只放手机号”的能力说明
+      - 商机创建成功后的示例骨架里，fallback `resolvePrimaryRecord(...)` 改为 `rowHasTexts: [leadMobile]`
+  - 测试补齐：
+    - `tests/unit/test-generator.spec.ts`
+      - 更新通用 prompt 断言，覆盖 `rowHasTexts: [leadMobile]`
+      - 新增 repair prompt 回归：`leadContactName` 被当成硬前提导致 `not_found`
+    - `tests/unit/intent-execution-compiler.spec.ts`
+      - 新增 compiler 指令断言：`rowHasTexts 默认只放手机号`
+    - `tests/unit/intent-action-library.spec.ts`
+      - 更新动作库示例断言，覆盖 `rowHasTexts: [leadMobile]`
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/intent-action-library.spec.ts`
+  - `npm run build`
+  - 真实 UAT run：
+    - `intent-run-7681e145-b18f-462b-883b-5b8edf9357ac`
+      - `status = passed`
+      - `attempt1` 首轮失败点已从上一轮的
+        - `未命中目标记录：列表未命中，且没有可用的详情回退路径`
+        - 前移为 `状态证据缺失：列表行已命中，但无法从列表响应或详情获取状态`
+      - 首轮生成代码中，fallback `resolvePrimaryRecord(...)` 已收窄为：
+        - `rowHasTexts: shared.businessId ? [String(shared.businessId), leadMobile] : [leadMobile]`
+      - `leadContactName` 已退出 fallback 硬匹配前提，只保留为“命中行文本里出现时再断言”
+      - `attempt2` 修复后恢复 terminal `passed`
+      - 说明上一轮 `not_found` 主失败链已退出，当前 family 再次回到更靠后的状态证据缺口
+- 当前结果：
+  - 3 个测试文件通过
+  - 86 个测试通过
+  - `build` 通过
+  - 真实 rerun 已恢复 terminal `passed`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第二十八刀：`businessId` 为空时，fallback `rowHasTexts` 默认只保留手机号 已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前 family 虽已恢复 terminal `passed`，但 first-pass 仍未恢复通过。
+  - 最新真实首轮缺口已重新收敛到：
+    - `状态证据缺失：列表行已命中，但无法从列表响应或详情获取状态`
+  - 当前首轮 verification 已不再被 `not_found` 与 fallback 联系人硬匹配拦死，但状态证据链仍不够稳定。
+- 下一步：
+  - 继续 `R3`
+  - 只修当前这条新的真实首轮缺口：`状态证据缺失：列表行已命中，但无法从列表响应或详情获取状态`
+  - 修法只允许落在同一条状态证据链的首轮 skeleton / detailEntry 回退链收窄，不扩到其他 family
+
+## 2026-03-28 第一百九十次更新（R3 第二十九刀：首轮真实缺口重新收敛回“列表回查 not_found”，行详情状态 fallback 尚未进入执行）
+
+- 本轮目标：
+  - 先验证上一刀“行已命中时改走 查看 -> 商机详情弹层 -> `readDetailField('状态')`”是否真正进入首轮真实执行。
+  - 若真实首轮失败签名变化，则严格按最新签名继续，不延展到其他 family。
+- 已完成：
+  - 对齐中的生成/编译/动作库改动已验证：
+    - `lib/test-generator.ts`
+    - `lib/intent-execution-compiler.ts`
+    - `lib/intent-action-library.ts`
+  - 对应单测已通过：
+    - `tests/unit/test-generator.spec.ts`
+    - `tests/unit/intent-execution-compiler.spec.ts`
+    - `tests/unit/intent-action-library.spec.ts`
+  - 首轮真实代码已确认包含上一刀目标骨架：
+    - `recordCheck.row` 命中后会走 `__e2e.clickAntdRowAction(page, recordCheck.row, '查看')`
+    - 随后等待 `__e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000 })`
+    - 再用 `__e2e.readDetailField(page, { label: '状态', ... })` 读取状态
+    - 说明“列表已命中但直接抛状态缺失”的旧首轮分支，已不再是本轮真实首失败点
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/intent-action-library.spec.ts`
+  - `npm run build`
+  - 真实 UAT run：
+    - `intent-run-31d05f91-4826-4c1c-a4ff-072e5c9fd698`
+      - `status = failed`
+      - terminal 停在：
+        - `判定为修复停滞：连续 3 次都落在同一类失败模式`
+        - `最后一次失败: 未命中目标记录：列表未命中，且没有可用的详情回退路径`
+      - `attempt1` 首轮失败：
+        - `未命中目标记录：列表未命中，且没有可用的详情回退路径`
+      - `attempt2 / attempt3` repair 后仍停在同一签名
+      - 真实执行日志显示：
+        - `business-list ownership switched` 已触发
+        - 但手机号检索后的列表响应持续为 `[] records`
+        - helper 连续输出 `primary record row not found after lookup`
+      - 说明上一刀新增的“行已命中后读详情状态”骨架虽然已生成，但本轮根本没有进入 `recordCheck.row` 分支；当前首轮缺口重新收敛回更前面的列表回查搜空链路
+- 当前结果：
+  - 3 个测试文件通过
+  - 86 个测试通过
+  - `build` 通过
+  - 最新真实 rerun 失败，且首轮 / repair 都停在同一 `not_found` family
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第二十九刀：首轮真实缺口重新收敛回列表回查 `not_found`，诊断已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前 family 的真实首轮并未进入“列表行已命中 -> 读详情状态”阶段。
+  - repair 已把 `maxLookupAttempts` 提升到 5 / 6，但仍持续搜空，说明单纯增加轮询次数不足以恢复首轮。
+  - 当前首轮主失败点仍是“创建后切到我创建的，再按手机号回查时列表响应和 DOM 都未命中记录”。
+- 下一步：
+  - 继续 `R3`
+  - 只修当前最新真实首轮缺口：`未命中目标记录：列表未命中，且没有可用的详情回退路径`
+  - 修法只允许落在“创建后列表回查”的首轮 skeleton：
+    - 收窄 `resolvePrimaryRecord(...)` 的首轮参数默认值与 fallback 链
+    - 优先处理“切到我创建的后，手机号检索持续空结果”的保守回查策略
+    - 不扩到状态证据链、认证链或其他 family
+
+## 2026-03-28 第一百九十一次更新（R3 第三十刀：安全手机号模板已进入首轮真实代码，首轮缺口前移到最终提交按钮 selector drift）
+
+- 本轮目标：
+  - 严格沿上一轮最新真实 `not_found` family 继续推进，不扩到其他链路。
+  - 先验证“商机创建默认唯一手机号模板”是否能进入首轮真实代码，并观察首轮失败签名是否变化。
+- 已完成：
+  - `lib/test-generator.ts`
+    - 更新创建商机 family prompt：
+      - 默认唯一手机号模板从普通 `139${stamp}` 收紧为 live 已验证的安全模板
+      - 显式要求优先使用：
+        - `const stamp = Date.now().toString().slice(-6);`
+        - `const leadMobile = '1990000' + stamp.slice(-4);`
+      - 新增说明：不要继续默认使用普通 `139${stamp}` 号段，避免被 UAT 去重 / 黑名单 / 历史脏数据误导成列表回查问题
+    - 新增 repair 提示：
+      - 当真实错误已落到 `未命中目标记录：列表未命中，且没有可用的详情回退路径`
+      - 先提示修复脚本检查并改用安全手机号模板，而不是只机械增加 `maxLookupAttempts`
+  - `tests/unit/test-generator.spec.ts`
+    - 更新通用 prompt 断言，覆盖 `1990000` 安全手机号模板
+    - 更新 business create repair prompt 断言，覆盖“常见 13x 号段更容易出现提交成功但列表搜空”的提示
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/intent-action-library.spec.ts`
+  - `npm run build`
+  - 真实 UAT run：
+    - `intent-run-6c728af6-3e39-4b95-b683-29b9d87d7b9b`
+      - `status = failed`
+      - `attempt1` 首轮真实代码已确认改为：
+        - `const stamp = Date.now().toString().slice(-6);`
+        - `const leadMobile = '1990000' + stamp.slice(-4);`
+      - 说明上一轮针对“安全手机号模板”的 prompt 改动已进入首轮真实生成，而不是只停留在单测
+      - `attempt1` 首轮失败签名已从上一轮的
+        - `未命中目标记录：列表未命中，且没有可用的详情回退路径`
+        - 前移为 `selector_drift|Step 3: 保存商机|^保\\s*存$`
+      - 首轮失败代码显示：
+        - `const activePane = page.locator('.ant-tabs-tabpane-active, .ant-steps-content').first();`
+        - `const saveBtn = activePane.getByRole('button', { name: /^保\\s*存$/ }).first();`
+        - 卡在 `saveBtn.scrollIntoViewIfNeeded()`
+      - triage 也已明确收敛到：
+        - `failureClass = selector_drift`
+        - `failedStepTitle = Step 3: 保存商机`
+        - `failedLocator = locator('.ant-tabs-tabpane-active, .ant-steps-content').first().getByRole('button', { name: /^保\\s*存$/ }).first()`
+      - 说明上一轮 `not_found` family 已退出首轮主失败链，当前真实首轮缺口已经前移到最终提交按钮定位过窄
+- 当前结果：
+  - 3 个测试文件通过
+  - 86 个测试通过
+  - `build` 通过
+  - 最新真实 rerun 失败，但失败 family 已从列表回查 `not_found` 切换到最终提交按钮 `selector_drift`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第三十刀：安全手机号模板已进入首轮真实代码，当前缺口前移到最终提交按钮 selector drift）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前首轮已不再主要卡在“手机号回查搜空”，但最终提交按钮定位仍过窄。
+  - 首轮脚本把第三页主动作固化成 `^保\\s*存$`，没有覆盖真实页面可能出现的 `提 交 / 保 存 / 确 定` 等最终动作变体。
+  - 只要首轮还停在这里，就无法继续验证“保存后回列表 -> 我创建的 -> 列表回查”后半链。
+- 下一步：
+  - 继续 `R3`
+  - 只修当前最新真实首轮缺口：`selector_drift|Step 3: 保存商机|^保\\s*存$`
+  - 修法只允许落在“最终提交按钮”的首轮 skeleton / repair 指引：
+    - 不再把最后一步主动作固化成精确 `保存`
+    - 强化“第三页 / 最后一页 / 附件页 final submit”只能在当前可见步骤容器里按 `保 存 / 提 交 / 确 定` 的受控链路定位
+    - 不扩到手机号回查、状态证据链或其他 family
+
+## 2026-03-28 第一百九十二次更新（R3 第三十一刀：首轮最终提交按钮不再卡在精确 `保存`，first-pass 重新回到列表回查 `not_found`）
+
+- 本轮目标：
+  - 严格沿上一轮最新真实首轮缺口 `selector_drift|Step 3: 保存商机|^保\\s*存$` 继续推进。
+  - 只修“第三页最终提交按钮被固化成精确保存”的首轮 skeleton / repair 指引，不扩到其他 family。
+- 已完成：
+  - `lib/test-generator.ts`
+    - 强化通用保存/提交规则：
+      - 多步表单最后一步禁止把最终主动作写成 `getByRole('button', { name: /^保\\s*存$/ }).first()`
+      - 必须先收窄到当前可见步骤容器，再优先定位 `/保\\s*存|提\\s*交|确\\s*定/i` 的最后一个主动作
+      - 显式禁止把 `保存并继续` 误当最终提交
+    - 强化创建商机 family 规则：
+      - 第三页 / 附件页先用 `附件信息 / 上传录音文件 / 上传图片` 确认已到最后一步
+      - 再在当前 visible step scope 内定位最终主动作
+    - 新增 repair 提示：
+      - 当失败链包含 `^保\\s*存$` 与 `scrollIntoViewIfNeeded / toBeVisible / locator not found`
+      - 明确要求从“附件页锚点 + `/保\\s*存|提\\s*交|确\\s*定/i` 最后一个按钮”重建最终主动作
+  - `lib/intent-execution-compiler.ts`
+    - 对齐 compiler 指令：
+      - 最后一页主动作不再允许固化成精确 `保存`
+      - 明确要求优先定位 `/保\\s*存|提\\s*交|确\\s*定/i` 的最后一个按钮
+      - 明确提示不要把 `保存并继续 / 上一步` 误当最终提交
+  - 测试补齐：
+    - `tests/unit/test-generator.spec.ts`
+      - 更新通用 prompt 断言，覆盖“不要把最终主动作固化成精确保存”
+      - 新增 repair 回归：`scrollIntoViewIfNeeded` 卡在 `^保\\s*存$`
+    - `tests/unit/intent-execution-compiler.spec.ts`
+      - 新增 compiler 指令断言，覆盖 `/保\\s*存|提\\s*交|确\\s*定/i` 与“不要误把保存并继续当最终提交”
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/intent-action-library.spec.ts`
+  - `npm run build`
+  - 最新真实 UAT run 快照：
+    - `intent-run-32146c7c-b735-4d16-87b8-82b5575bd288`
+      - 截至当前快照，run 仍在 repair 循环中
+      - 但 `attempt1` 首轮结构化 patch 已明确显示：
+        - 第三页主动作已改为：
+          - `const finalSubmitBtn = activePane.getByRole('button', { name: /保\\s*存|提\\s*交|确\\s*定/i }).last();`
+        - `Step 3: 保存新建商机` 已首轮 `passed`
+        - `__e2e.observeSubmitState(...)` 也已正常收敛到列表页
+      - 说明上一轮的最终提交按钮 `selector_drift` 已退出首轮主失败链
+      - 当前 `attempt1` 首轮再次回到：
+        - `Step 5: 校验新建商机记录出现`
+        - `未命中目标记录：列表未命中，且没有可用的详情回退路径`
+      - 最新首轮日志显示：
+        - 提交响应已命中并被解析，但 `businessId` 仍未从响应中提取到
+        - 切到“我创建的”后，列表自身刷新有 10 条记录
+        - 但按手机号检索时连续出现 `[] records`
+        - 查询参数里仍然是 `createId: undefined`
+      - 说明“最终提交按钮”问题已消除，当前 first-pass 真正卡点重新收敛回“切到我创建的后，关键字检索搜空”的列表回查链
+- 当前结果：
+  - 3 个测试文件通过
+  - 87 个测试通过
+  - `build` 通过
+  - 最新真实首轮已通过 Step 3，当前 first-pass 主缺口重新回到列表回查 `not_found`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第三十一刀：首轮最终提交按钮已修通，当前缺口重新回到列表回查 `not_found`）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前 first-pass 已能完成创建和回列表，但 `businessId` 响应提取仍为空。
+  - “我创建的”视角切换后，列表刷新本身存在，但手机号关键字检索持续返回空结果。
+  - 当前真实首轮已经证明：安全手机号模板和最终提交按钮都不是剩余主阻塞，当前主阻塞再次回到列表回查策略本身。
+- 下一步：
+  - 继续 `R3`
+  - 只修当前最新真实首轮缺口：`未命中目标记录：列表未命中，且没有可用的详情回退路径`
+  - 修法只允许落在“切到我创建的后关键字检索搜空”的首轮 fallback 链：
+    - 继续收窄创建后列表回查 skeleton
+    - 优先处理“切换后列表已有刷新，但关键字检索为空”的首轮回查策略
+    - 不扩回最终提交按钮、认证链或其他 family
+
+## 2026-03-28 第一百九十三次更新（R3 第三十二刀：`tsToJs` fallback 不再把 `response: null` 剥成裸 `response`）
+
+- 本轮目标：
+  - 严格沿上一轮“只修当前这条真实 first-pass 缺口”的下一步执行，不扩范围。
+  - 最新真实 first-pass（`intent-run-f10fe91d-0955-43f1-afd3-c3cbd7ab5764`）已经证明：
+    - 提交后“先看当前可见列表行”的新回查骨架已经真正进入首轮代码
+    - worker 日志已出现 `table row matched`
+    - 但运行时立即死于 `response is not defined`
+  - 这条错误不属于 verifier 本身，而是 TS-like 兼容 fallback 在执行前错误改写了对象字面量。
+- 已完成：
+  - `lib/test-executor.ts`
+    - 收窄 `tsToJs(...)` 的“函数参数类型注解剥离”规则：
+      - 不再使用会误伤对象字面量属性的全局正则
+      - 改为只在函数签名参数列表上下文里做最小兼容剥离
+      - 退出 `response: null -> response`、`row: null -> row` 这类运行时回归
+  - `tests/unit/test-executor.spec.ts`
+    - 新增回归：
+      - `prepareTestCodeForExecution(...)` 在触发 TS fallback 时，必须保留对象字面量里的 `response: null`
+      - `executeTest(...)` 全链验证不会再触发裸 `response` ReferenceError
+- 验证：
+  - `npx vitest run tests/unit/test-executor.spec.ts`
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/intent-action-library.spec.ts`
+  - `npm run build`
+  - 真实 service rerun（复用 `proj_default / mod_1773303139537_c84d8476 / idraft_1773828109713_0959e432` 同一 payload + project auth）：
+    - `attempt1` 已不再出现 `response is not defined`
+    - `finalResult.success = true`
+    - `attempt1` 新的首轮失败点前移为：
+      - `locator.scrollIntoViewIfNeeded: Timeout 30000ms exceeded`
+      - `waiting for locator('.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible').first().getByRole('button', { name: /保\\s*存|提\\s*交|确\\s*定/i }).last()`
+    - `attempt2` 成功
+- 当前结果：
+  - `tests/unit/test-executor.spec.ts` 27 个测试通过
+  - 另外 3 个测试文件 88 个测试通过
+  - `build` 通过
+  - 真实 rerun 已证明当前 `currentVisibleRow -> recordCheck` 首轮链不再被 runtime fallback 回归误杀
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第三十二刀：`tsToJs` fallback 不再把 `response: null` 剥成裸 `response` 已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 这一步只移除了执行器兼容 fallback 的运行时回归，不代表当前 family 已恢复 first-pass 通过。
+  - 当前最新真实首轮缺口已经前移为：
+    - 最后一页提交按钮仍可能被 `.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible` 这条过窄 scope 锁死
+    - 当前 terminal `passed` 仍依赖 `attempt2`
+- 下一步：
+  - 继续 `R3`
+  - 只修当前最新真实首轮缺口：`scrollIntoViewIfNeeded|.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible|/保\\s*存|提\\s*交|确\\s*定/i`
+  - 修法只允许落在“最终提交按钮 step scope / active pane fallback”的首轮 skeleton / repair 指引：
+    - 先继续优先看当前可见 pane
+    - 当前 pane 内找不到最终主动作时，允许回退到更稳的页面级主动作链
+    - 不扩回列表回查、状态证据链、认证链或其他 family
+
+## 2026-03-28 第一百九十四次更新（R3 第三十三刀：最终提交按钮 current pane miss 时允许 page-level fallback）
+
+- 本轮目标：
+  - 严格沿上一轮“只修当前最新真实首轮缺口”的下一步执行，不扩范围。
+  - 当前唯一要修的是最新真实 first-pass 里这条最终提交按钮 scope 卡死：
+    - `locator.scrollIntoViewIfNeeded: Timeout 30000ms exceeded`
+    - `locator('.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible').first().getByRole('button', { name: /保\\s*存|提\\s*交|确\\s*定/i }).last()`
+  - 修法只允许落在“最终提交按钮 step scope / active pane fallback”的首轮 skeleton / repair 指引，不扩回列表回查、认证链或其他 family。
+- 已完成：
+  - `lib/test-generator.ts`
+    - 更新首轮 skeleton 规则 `11.1 / 21.2`：
+      - 最终提交按钮仍先优先收窄到当前可见步骤容器
+      - 如果当前 pane 内根本找不到 `/保\\s*存|提\\s*交|确\\s*定/i` 的最终主动作，明确允许回退到更稳的页面级可见主动作链
+      - 明确禁止把 selector 锁死在 `.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible` 这类单一路径
+      - 继续保留“不要把 `保存并继续` / `上一步` 误当最终提交”的旧约束
+    - 新增 repair diagnosis：
+      - 当失败链已经是 `activePane + /保\\s*存|提\\s*交|确\\s*定/i + scrollIntoViewIfNeeded`
+      - 明确提示改成“当前 pane 优先，但 scoped locator `count() === 0` 时立刻回退到 page-level 主动作链”
+  - `lib/intent-execution-compiler.ts`
+    - 编译器内联提示同步补齐：
+      - 当前 pane 优先
+      - pane miss 时回退 page-level 可见主动作链
+      - 不再把 selector 锁死在单一 pane locator
+  - `lib/intent-action-library.ts`
+    - `assert.watch-submit-state` capability 的 notes / example 对齐到同一口径：
+      - 示例改成 `scopedFinalSaveBtn.count()` 判空
+      - pane miss 时回退页面级 `/^(?!.*保存并继续)(?!.*上一步).*(保\\s*存|提\\s*交|确\\s*定).*$/i`
+  - `tests/unit/test-generator.spec.ts`
+    - 新增 repair 回归：覆盖 “active-pane selector trap final submit lookup”
+    - 同步更新通用 prompt 断言，确保 fallback 指引进入首轮生成文案
+  - `tests/unit/intent-execution-compiler.spec.ts`
+    - 新增断言：编译模板必须包含 current pane miss -> page-level fallback 规则
+  - `tests/unit/intent-action-library.spec.ts`
+    - 新增断言：capability example / notes 必须包含 scoped -> page-level fallback 骨架
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/intent-action-library.spec.ts`
+  - `npm run build`
+  - 真实 service rerun（复用 `proj_default / mod_1773303139537_c84d8476 / idraft_1773828109713_0959e432` 同一 payload + project auth）：
+    - 本次没有进入 `attempt1`
+    - `attempts.length = 0`
+    - `finalResult.success = false`
+    - 失败直接发生在 `前置检查`
+    - 错误为：
+      - `页面前置检查失败: page.goto: Timeout 30000ms exceeded.`
+      - `navigating to "https://uat-service.yikaiye.com/#/business/businesslist", waiting until "commit"`
+- 当前结果：
+  - `tests/unit/test-generator.spec.ts`、`tests/unit/intent-execution-compiler.spec.ts`、`tests/unit/intent-action-library.spec.ts` 共 89 个测试通过
+  - `build` 通过
+  - 首轮 prompt / compiler / capability example 已明确允许：
+    - 当前 pane 优先
+    - pane miss 时回退 page-level 可见主动作链
+  - 但这一步的真实 clean first-pass 仍未拿到；本次 rerun 被环境 `precheck page.goto` 超时挡住
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第三十三刀：最终提交按钮 current pane miss 时允许 page-level fallback 的首轮指引已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前只能确认代码、单测和 build 已落地，不能确认这条 selector_drift 是否已退出真实 first-pass 主失败链。
+  - 本次真实 rerun 在 precheck `page.goto` 就超时，尚未重新进入“最终提交按钮 scope”这条缺口。
+- 下一步：
+  - 继续 `R3`
+  - 严格复用同一 payload 继续发起干净 rerun，先拿到能进入 `attempt1` 的真实执行结果
+  - 若 clean rerun 已不再出现最终提交按钮 scope 卡死，则只修 rerun 暴露出的下一条最小首轮缺口
+  - 若 rerun 仍被 `precheck page.goto` 挡住，只记录为环境阻塞，不扩写新的代码 family
+
+## 2026-03-28 第一百九十五次更新（R3 复验：同 payload 第二次 rerun 仍卡 precheck `page.goto`）
+
+- 本轮目标：
+  - 严格沿上一轮下一步执行，不改代码，只复用同一 payload 再发一次干净 rerun。
+  - 目标只是确认当前是否能重新进入 `attempt1`，不扩到新的代码 family。
+- 已完成：
+  - 复用同一请求体再次调用本地 `POST /api/intent-e2e`
+  - 输出落盘复核，确认本轮没有进入生成/执行 attempts 阶段
+- 验证：
+  - 第二次真实 service rerun（同 `proj_default / mod_1773303139537_c84d8476 / idraft_1773828109713_0959e432` payload + project auth）：
+    - `attempts.length = 0`
+    - `finalResult.success = false`
+    - `finalFailureTriage.failureClass = unknown`
+    - 失败再次固定在：
+      - `页面前置检查失败: page.goto: Timeout 30000ms exceeded.`
+      - `navigating to "https://uat-service.yikaiye.com/#/business/businesslist", waiting until "commit"`
+- 当前结果：
+  - 同 payload 已连续两次 rerun 都被同一个 precheck `page.goto` timeout 挡住
+  - 当前还没有新的 clean `attempt1` 证据，无法确认“最终提交按钮 scope fallback”是否已退出真实 first-pass 主失败链
+- 风险 / 未完成：
+  - 当前阻塞已从“代码未对齐”变成“真实验证窗口未打开”
+  - 如果继续卡在 precheck，后续任何新的代码扩展都没有验证价值
+- 下一步：
+  - 继续 `R3`
+  - 只在环境恢复后继续复用同一 payload 发起 clean rerun，直到重新拿到 `attempt1`
+  - 在拿到 clean `attempt1` 之前，不扩写新的代码 family，也不回退本轮 page-level fallback 改动
+
+## 2026-03-28 第一百九十六次更新（R3 第三十四刀：最终验收不再对 helper 已命中的表格行重复做主值断言）
+
+- 本轮目标：
+  - 严格沿最新真实缺口继续推进，不扩到其他 family。
+  - 最新 live 证据已经说明：
+    - 业务主链路能跑到 `Verification: 最终业务验收`
+    - 但最终验收在 `currentVisibleRow / recordCheck.row` 已经命中后，又立刻对同一条 row locator 重复写了主值断言
+    - 结果把 helper 已命中的目标行重新打回：
+      - `locator('.ant-table-body tbody > tr, ...').nth(10)`
+      - `expect(locator).toContainText(primaryValue)`
+  - 本轮只修这条“重复身份断言 -> row locator drift”的 verifier / prompt / capability 示例收窄，不扩到其他链路。
+- 已完成：
+  - `lib/intent-execution-compiler.ts`
+    - 收窄 `table_row` 验收骨架：
+      - 不再默认生成 `await expect(recordCheck.row).toContainText(primaryValue)` 这类重复身份断言
+      - 明确把 helper 命中本身当作身份证据
+      - 行内状态断言改为优先使用已读取的 `rowText` 字符串，而不是再对同一 row locator 发起一次 live `toContainText(...)`
+    - 编译器指令 / verifier hint 同步补齐：
+      - `currentVisibleRow / recordCheck.row` 已命中后，不要继续重复回放主值断言
+      - 若还需要行内可见文本，只允许一次 `innerText().catch(() => '')` 保守读取
+  - `lib/test-generator.ts`
+    - 通用生成 prompt 新增明确约束：
+      - helper 已命中的 row，不要再写 `await expect(recordCheck.row).toContainText(primaryValue)` / `await expect(currentVisibleRow).toContainText(leadMobile)`
+      - 若 `rowText` 为空，但列表响应 / 详情证据仍可用，继续沿结构化证据链闭环，不要因为 stale row 直接失败
+    - repair diagnosis 新增定向提示：
+      - 命中 `locator('.ant-table-body tbody > tr, ...').nth(n)` 且旧代码里存在重复 row 主值断言时
+      - 明确要求删除这条重复身份断言，改为 `rowText + recordCheck.response / matchedRecord / detail` 闭环
+  - `lib/intent-action-library.ts`
+    - 对齐 `assert.resolve-primary-record` 与 `assert.watch-submit-state`：
+      - implementation notes 明确禁止对 helper 已命中的同一 row 再做主值 `toContainText(...)`
+      - example 改成优先读取 `innerText().catch(() => '')`，避免 capability 示例继续教模型写旧套路
+  - 测试补齐：
+    - `tests/unit/intent-execution-compiler.spec.ts`
+      - 新增断言：compiled template 不再包含对 helper 命中 row 的重复主值断言
+      - 新增断言：状态命中场景改为对 `rowText` 做字符串断言
+    - `tests/unit/test-generator.spec.ts`
+      - 更新通用 prompt 断言，覆盖“不要重复对 helper 已命中的 row 做主值 toContainText”
+      - 新增 repair 回归：覆盖 `locator('.ant-table-body ...').nth(n)` + 重复 row 主值断言
+    - `tests/unit/intent-action-library.spec.ts`
+      - 更新 capability 断言，覆盖新的 note / example 口径
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/intent-action-library.spec.ts`
+    - 结果：`91 / 91` 通过
+  - `npm run build`
+    - 通过
+  - 真实 service rerun（复用同一 payload，改打当前本地服务 `http://localhost:3666/api/intent-e2e`）：
+    - 输出：`/tmp/intent-e2e-r3-row-locator-rerun.json`
+    - 返回：HTTP `500`
+    - 错误不是业务 family 本身，而是更前层阻塞：
+      - `LLM 结构化 slot patch 失败`
+      - `结构化 LLM 返回的内容不是合法 JSON`
+      - `Unterminated string in JSON ...`
+    - 本次没有拿到新的 clean `attempt1` / `Verification: 最终业务验收` 业务结果，因此还不能用 live run 判定这条 row-locator drift 是否已退出 first-pass 主失败链
+- 当前结果：
+  - compiler / prompt / capability example 已统一改成：
+    - helper 命中 row 后，不再重复回放主值 `toContainText(...)`
+    - 行内可见文本优先走一次性 `rowText`
+    - 真正的业务闭环优先继续用列表响应 / 详情字段
+  - 3 个测试文件共 `91` 个测试通过
+  - `build` 通过
+  - 真实复验窗口重新被更前层的结构化 slot patch JSON 解析错误挡住，尚未重新进入可用于判定本 family 的 clean live attempt
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第三十四刀：最终验收不再对 helper 已命中的表格行重复做主值断言 已落地）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前只能确认代码、单测和 build 已落地，还不能确认这条 row-locator drift 是否已退出真实 first-pass 主失败链。
+  - 当前新的验证窗口阻塞不是业务 verifier，而是更前层的：
+    - `LLM 结构化 slot patch` 输出非法 JSON
+  - 在重新拿到 clean live `attempt1` 之前，不能继续对这条 business family 做更多推断。
+- 下一步：
+  - 继续 `R3`
+  - 严格复用同一 payload，继续发起 clean rerun，直到重新拿到可用于归因的 `attempt1`
+  - 若 clean rerun 已不再出现 row locator drift，只修 rerun 暴露出的下一条最小首轮缺口
+  - 若 rerun 继续被 `LLM 结构化 slot patch` 非法 JSON 挡住，先记录为新的验证窗口阻塞，不在本轮 row-locator family 上继续发散扩写
+
+## 2026-03-28 第一百九十七次更新（R3 第三十五刀：row locator drift 已退出首轮主缺口，当前转为 Step 2 枚举字段误判成下拉）
+
+- 本轮目标：
+  - 先把最新 clean live rerun 的结论补记到 roadmap，避免后续开发继续围着已经退出 `attempt1` 的 row locator drift 打转。
+  - 本轮只确认当前最小首轮缺口已经转移到 `Step 2` 的字段交互，不扩到状态链、详情链、环境抖动或其他 family。
+- 已完成：
+  - 复核最新有效 live rerun 结果：
+    - 请求体继续复用：`/tmp/intent-e2e-r3-step-scope-request.json`
+    - 输出：`/tmp/intent-e2e-r3-row-locator-rerun-2.json`
+    - service 返回：HTTP `200`
+  - 明确当前 clean `attempt1` 的业务失败已经变化：
+    - `attempt1`
+      - 失败阶段：`Step 2: 填写前三个表单并跳过附件表单`
+      - 失败原因：`未能打开当前字段的下拉面板`
+    - 执行轨迹显示：
+      - `商机来源 -> 抖音` 已成功
+      - `商机联系人 / 商机联系方式` 已成功
+      - 随后又发生一次 `ant-select open attempt`
+      - 紧接着失败在当前字段的面板打开
+  - 明确此前修复的 `row locator drift` 已不再是 clean `attempt1` 的首轮主失败：
+    - 之前的 verifier 问题原本卡在 `Verification: 最终业务验收`
+    - 但这次 clean rerun 已把首轮失败前移到 `Step 2`
+    - 说明“helper 已命中的表格行又被重复身份断言打回”的问题，至少已经退出当前首轮 head blocker 链
+  - 同步记录整轮 run 的尾部失败不应作为本轮优化对象：
+    - 后续 attempt 中虽然仍出现 `assertion_too_strict` / `selector_drift`
+    - terminal failure 为 `env_transient`
+      - `page.goto: net::ERR_NETWORK_CHANGED`
+    - 这些都不是本轮首要修复目标
+- 当前结果：
+  - 当前需要继续推进的最小真实缺口已经收敛为：
+    - `Step 2` 某个枚举字段（从轨迹看高度疑似 `性别`）被脚本按 Antd Select 处理
+    - 但真实控件更可能是当前 row 内的 `radio / segmented / inline enum`
+    - 因此 `__e2e.selectAntdOption(...)` 在该字段上先走“打开 dropdown”路径时直接失败
+  - 当前 live 证据已经足够支持后续只修“枚举字段打开策略”这一刀，不再继续围绕 row locator drift 扩写 prompt / verifier
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第三十五刀：row locator drift 已退出首轮主缺口，当前转为 Step 2 枚举字段误判成下拉）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 目前还没有证据证明真实失败字段百分百就是 `性别`，但从 `attempt1` 代码与执行顺序看，它是最高概率候选。
+  - 不能因为 `attempt2+` 又出现其他失败，就偏离 clean `attempt1` 的当前主缺口。
+  - terminal 的 `ERR_NETWORK_CHANGED` 属于环境抖动，不在这一刀内处理。
+- 下一步：
+  - 继续 `R3`
+  - 只检查执行层 `__e2e.selectAntdOption / __e2e.openAntdDropdown` 与对应 prompt/capability 口径
+  - 目标是让“当前 row 内本来就是 inline enum / radio / segmented 的字段”先走就地选择，而不是强制要求打开 dropdown
+
+## 2026-03-28 第一百九十八次更新（R3 第三十六刀：dropdown 打不开时，先回退当前 row 内 inline enum）
+
+- 本轮目标：
+  - 只修 clean `attempt1` 当前暴露的 Step 2 缺口：
+    - `未能打开当前字段的下拉面板`
+  - 不扩到状态链、详情链或其他 repair family。
+  - 约束是：
+    - 正常 Antd Select / TreeSelect 路径不改
+    - 只有当 dropdown 真的打不开时，才允许补一个极窄的 inline enum fallback
+- 已完成：
+  - `lib/test-worker.mjs`
+    - 为 `__e2e.selectAntdOption(...)` 增加保守 fallback：
+      - 正常流程仍先走 `openAntdDropdown(...)`
+      - 只有命中 `未能打开当前字段的下拉面板` 时，才额外尝试当前 row 内的精确枚举点击
+    - 新增当前 row 内 `radio / segmented / tab` 枚举候选识别
+    - 新增就地枚举选中态判断：
+      - `ant-radio-button-wrapper-checked`
+      - `ant-radio-wrapper-checked`
+      - `ant-segmented-item-selected`
+      - `ant-tabs-tab-active`
+      - `aria-selected / aria-checked / checked`
+    - 新增保守点击策略：
+      - `click`
+      - `mousedown`
+      - `mouse-click`
+    - 命中 inline enum 后直接视为 helper 成功，不再强制要求先看到 dropdown
+  - `lib/test-generator.ts`
+    - 通用 prompt 新增明确约束：
+      - 像 `性别=男/女` 这类当前 row 内的 `radio / segmented / tab` 枚举，不要手写 `getByText('男').click()`，继续优先用 `__e2e.selectAntdOption(...)`
+      - helper 会先尝试 row 内 inline enum，再处理真实 dropdown
+    - repair hint 对齐：
+      - 当报错是 `未能打开当前字段的下拉面板` 时，不再只往“远程搜索 Select 缺少 searchText”一个方向修
+      - 明确补充：
+        - 当前字段可能根本不是 dropdown，而是 row 内枚举
+        - 仍应继续用 `__e2e.selectAntdOption(...)`，不要退回手写 dropdown / click + waitForTimeout
+  - `lib/intent-action-library.ts`
+    - `ui.select-antd-option`
+      - implementation notes 明确：
+        - row 内 `radio / segmented / tab` 风格枚举也继续复用同一个 helper
+    - `ui.open-antd-dropdown`
+      - implementation notes 明确：
+        - 只有真的需要“先看到 dropdown 再继续观察/搜索/自定义操作”时才用它
+        - row 内 inline enum 不要强行先开 dropdown
+  - `lib/intent-execution-compiler.ts`
+    - 编译器指令新增明确约束：
+      - 当前字段若实际是 row 内 `radio / segmented / tab` 风格枚举，也继续优先用 `__e2e.selectAntdOption(...)`
+      - 不要先假定必须打开 dropdown
+  - 回归测试补齐：
+    - `tests/unit/test-generator.spec.ts`
+      - 覆盖生成 prompt 的 inline enum 新约束
+      - 覆盖 repair prompt 在 `未能打开当前字段的下拉面板` 下的新提示口径
+    - `tests/unit/intent-action-library.spec.ts`
+      - 覆盖 select capability / open capability 的新 notes
+    - `tests/unit/intent-execution-compiler.spec.ts`
+      - 覆盖 compiler 对 inline enum 字段仍优先 `__e2e.selectAntdOption(...)` 的指令
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/intent-execution-compiler.spec.ts`
+    - 结果：`93 / 93` 通过
+  - `npm run build`
+    - 通过
+  - 真实 service rerun（继续复用同一 payload）：
+    - 请求：`curl -sS -o /tmp/intent-e2e-r3-step2-enum-rerun.json -w "%{http_code}" -H 'Content-Type: application/json' --data @/tmp/intent-e2e-r3-step-scope-request.json http://localhost:3666/api/intent-e2e`
+    - 结果：
+      - 请求持续超过合理验证窗口仍未返回
+      - 最终未拿到新的 response body / `attempt1`
+      - 本轮只能人工终止该等待
+    - 因此当前 live 验证状态仍然是：
+      - 代码、本地单测和 build 已完成
+      - 但还没有新的 clean live `attempt1` 用于确认 Step 2 缺口是否已退出首轮主失败链
+- 当前结果：
+  - 执行层现在不再把“当前 row 内其实是 radio / segmented / tab 的枚举字段”硬按 dropdown 处理到底
+  - prompt / action library / compiler 已统一改口径，不再继续教模型把这类字段先当成必须打开 dropdown
+  - 本轮收敛仍严格停留在 Step 2 这条当前首轮缺口，没有继续扩到其他 family
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第三十六刀：dropdown 打不开时，先回退当前 row 内 inline enum）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 还没有新的 live `attempt1` 证明真实失败字段就是这次 fallback 已覆盖的那一种控件。
+  - 当前 live 验证窗口的问题不是本地代码失败，而是 service rerun 长时间未返回结果。
+  - 在拿到新的 clean rerun 前，不能宣称这一刀已经从真实首轮主失败链退出。
+- 下一步：
+  - 继续 `R3`
+  - 重新拿一个可返回的 clean live rerun
+  - 只检查新的 `attempt1`：
+    - 若 Step 2 已越过，继续按新的最小首轮缺口推进
+    - 若仍卡 `未能打开当前字段的下拉面板`，再根据新 `attempt1` 的实际代码和轨迹继续缩窄，不扩到其他 family
+
+## 2026-03-28 第一百九十九次更新（R3 第三十七刀：异步 rerun 已能返回，但再次被 slot patch 非法 JSON 挡在 attempt1 执行前）
+
+- 本轮目标：
+  - 按上一刀的下一步继续，只做一件事：
+    - 拿到一个可返回的 clean live rerun，确认新的 `attempt1`
+  - 为了避免同步 `curl` 长时间挂死，本轮改用项目内置异步 run 通道取回同一 payload 的结果。
+- 已完成：
+  - 复核项目内置异步运行接口：
+    - `POST /api/intent-e2e/runs`
+      - 可立即返回 `runId`
+    - `GET /api/intent-e2e/runs/[runId]`
+      - 可轮询 run 快照
+    - 这说明同步 `/api/intent-e2e` 长时间挂起，并不等于 run 本身没有推进
+  - 用同一 payload 发起新的异步 run：
+    - 请求体：`/tmp/intent-e2e-r3-step-scope-request.json`
+    - 新 runId：`intent-run-1a23c0f0-affb-42c6-a83e-cda29f5ab6ff`
+    - 运行快照文件：`/tmp/intent-e2e-r3-step2-async-run.json`
+  - 拿到完整 run 结果，并确认这次 run 的真实阻塞点：
+    - run 状态：`failed`
+    - run 阶段：`error`
+    - 它已经进入：
+      - `attempt_started`（attempt1 / generate）
+      - `stage=generating`
+      - `已将 ExecutionPlan 编译成受控脚手架，正在生成 slot patch...`
+    - 但仍然没有进入 `attempt_execution_started`
+    - 最终错误再次是：
+      - `LLM 结构化 slot patch 失败`
+      - `结构化 LLM 返回的内容不是合法 JSON`
+      - `Unterminated string in JSON ...`
+  - 因此可以更严格地确认：
+    - 当前并不是 Step 2 执行层再次失败
+    - 也不是刚落地的 inline enum fallback 逻辑被 live run 证伪
+    - 当前 live 验证窗口再次被更前层的 slot patch JSON 解析问题挡住，而且这次有完整异步 run 证据
+- 验证：
+  - 异步 run 创建：
+    - `curl -sS -H 'Content-Type: application/json' --data @/tmp/intent-e2e-r3-step-scope-request.json http://localhost:3666/api/intent-e2e/runs`
+    - 成功返回 runId
+  - 异步 run 轮询：
+    - `GET /api/intent-e2e/runs/intent-run-1a23c0f0-affb-42c6-a83e-cda29f5ab6ff`
+    - 成功拿到完整失败快照
+  - 关键事件序列：
+    - `attempt_started`（attempt=1, kind=generate）
+    - `stage=generating`
+    - `正在生成更稳定的 Playwright 测试脚本…`
+    - `已将 ExecutionPlan 编译成受控脚手架，正在生成 slot patch...`
+    - `LLM 结构化 slot patch 失败: ... 非法 JSON`
+- 当前结果：
+  - 本轮已经成功把“同步 rerun 不返回”收敛为更可操作的结论：
+    - run 通道本身可用
+    - 真正阻塞是 `attempt1` 生成阶段的 `slot patch` 非法 JSON
+  - 所以当前还不能继续拿这次 run 判断 Step 2 `未能打开当前字段的下拉面板` 是否已退出首轮主失败链
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第三十七刀：异步 rerun 已能返回，但再次被 slot patch 非法 JSON 挡在 attempt1 执行前）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 只要 `slot patch` 仍会输出非法 JSON，就拿不到 clean `attempt1`，后面的执行层 live 验证会持续被卡住。
+  - 当前还没有新的业务执行证据去确认 Step 2 dropdown/inline-enum family 是否已经退出首轮主失败链。
+- 下一步：
+  - 继续 `R3`
+  - 不回到 Step 2 family 本身继续猜测
+  - 先只看 `slot patch` 非法 JSON 的最小容错 / 恢复能力，目标是重新拿到可执行的 clean `attempt1`
+
+## 2026-03-28 第二百次更新（R3 第三十八刀：slot patch 容错补齐，显式步骤 successCriteria 去污染，clean attempt1 已推进到最终验收）
+
+- 本轮目标：
+  - 只清掉比执行层更前面的两个真实阻塞：
+    - `slot patch` 非法 JSON
+    - 全局 `successCriteria` 污染显式 scenario steps，导致 Step 1 提前继承最终保存/验收断言
+- 已完成：
+  - `lib/llm-client.ts`
+    - 给 `callLLMStructured(...)` 增加一次“仅解析失败时”的最小重试
+    - 首次结构化内容不是合法 JSON 时，自动放大 `maxOutputTokens` 后重试一次
+    - 新增 `resolveStructuredRetryMaxOutputTokens(...)`
+  - `tests/unit/llm-client-structured.spec.ts`
+    - 补结构化 JSON 解析失败后的重试回归
+  - `lib/intent-action-dsl.ts`
+    - `buildRequiredAssertions(...)` 只在“没有显式 `input.steps`”时才注入全局 `successCriteria`
+    - 对有显式步骤的 scenario，步骤断言只保留自己的 `expectedResult`（以及变量提取相关约束），不再把全局成功标准提前灌进 Step 1
+  - `tests/unit/intent-action-dsl.spec.ts`
+    - 补显式步骤不再被全局 `successCriteria` 污染的回归
+  - 真实 async run 验证：
+    - `intent-run-52841c35-1639-4daa-875f-45e20af3bd5b`
+      - 已越过 `slot patch` 非法 JSON
+      - 首轮新失败转移到 Step 1，确认不再被生成前层卡死
+    - `intent-run-367e4293-4001-4e85-a310-6215d1e69684`
+      - clean `attempt1` 已连续越过：
+        - 进入新建页
+        - 填写前 3 个表单
+        - 保存
+        - 切到“我创建的”
+        - 列表回查主流程
+      - 首轮只在最终业务验收失败
+      - 真实失败签名变为：
+        - `状态证据缺失：列表行已命中，但列表响应未返回状态`
+      - 说明：
+        - Step 2 `inline enum / dropdown` family 已不再处于当前首轮最前阻塞位
+        - Step 1 提前继承保存/验收断言的问题也已退出当前主失败链
+- 验证：
+  - `npx vitest run tests/unit/llm-client-structured.spec.ts tests/unit/llm-client.spec.ts tests/unit/intent-action-dsl.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/intent-action-library.spec.ts`
+    - 结果：`106 / 106` 通过
+  - `npm run build`
+    - 通过
+- 当前结果：
+  - 首轮 live 窗口已从“生成前层不稳定”推进到“最终验收状态证据链不闭环”
+  - 这一步已经把首轮真实问题缩窄到最终验收，不再继续回到 Step 2 family 发散
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第三十八刀：slot patch 容错补齐，显式步骤 successCriteria 去污染，clean attempt1 已推进到最终验收）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 虽然首轮已经推进到最终验收，但还没有拿到“状态证据链真正闭环”的 live 证据
+  - 下一刀仍必须只盯这条最终验收链，不能重新扩回其他 family
+- 下一步：
+  - 继续 `R3`
+  - 只修 `状态证据缺失：列表行已命中，但列表响应未返回状态` 这一条首轮真实阻塞
+  - 重新发 async run，只检查新的 `attempt1`
+
+## 2026-03-28 第二百零一次更新（R3 第三十九刀：真实首轮新阻塞收敛为“默认臆造查看动作”，本地已禁止无显式详情入口的 row-action fallback）
+
+- 本轮目标：
+  - 在上一刀的最终验收链上继续缩窄
+  - 只确认一个问题：
+    - 首轮到底是不是还在原来的“状态证据缺失”分支失败
+    - 还是已经变成了新的、更具体的错误
+- 已完成：
+  - 真实 async run：
+    - `intent-run-d4545127-7dd6-4c31-b150-8d740295fcd4`
+  - 这次 live `attempt1` 的真实推进结果：
+    - 前置检查通过
+    - 成功进入执行阶段
+    - `Step 1` 通过
+    - `Step 2` 通过
+    - `Step 3` 通过
+    - `Step 4` 通过
+    - `Step 5` 已命中目标行，并拿到了新的列表响应
+  - 真实末尾轨迹明确显示：
+    - `table row matched`
+    - `api response json parsed`
+    - `json record not found`
+    - 随后不是直接抛旧的“状态证据缺失：列表行已命中，但列表响应未返回状态”
+    - 而是继续走了默认 row action fallback，最终失败为：
+      - `未找到行操作：查看`
+  - 因此可以更严格确认：
+    - 上一刀里的旧失败签名已经不再原地复现
+    - 当前首轮新的最前阻塞是：
+      - 在没有明确详情入口信号时，脚本仍默认臆造了 `recordCheck.row -> 查看`
+  - `lib/intent-execution-compiler.ts`
+    - 新增 `hasExplicitRowDetailEntrySignal(...)`
+    - 只有当前链路已经明确给出：
+      - `detailEntry`
+      - `actionLabel`
+      - 详情标题
+      - `detailReadyLocator`
+      - 或其他明确详情面信号
+      - 才允许隐式生成 row action detail fallback
+    - 编译器指令补齐：
+      - 不要凭空假定每条列表行都存在“查看”动作
+      - 若 `detailUrl` 不存在、`businessId` 为空、当前页面也没有明确详情入口，不要臆造 `clickAntdRowAction(..., '查看')`
+      - 应直接抛出：
+        - `状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口`
+  - `lib/intent-action-library.ts`
+    - `assert.resolve-primary-record`
+      - implementation notes 改为与最新 live 事实对齐
+      - 示例代码不再默认把“查看”写成无主键 fallback 的必经动作
+      - 没有显式详情入口时，示例直接收口到“未提供详情入口”的明确错误
+  - `lib/test-generator.ts`
+    - repair hint 补齐新的真实失败类型：
+      - 当业务创建场景在状态 fallback 上报 `未找到行操作：查看`
+      - 且上下文并不是 `createOrder` 成功后多余的“查看”
+      - 明确提示：
+        - 不要继续保留默认 `clickAntdRowAction(..., '查看')`
+        - 只有 `detailEntry / actionLabel / 详情标题 / detailReadyLocator` 已明确给出时，才允许点“查看 / 详情”
+        - 否则就以“未提供详情入口”报错收口
+  - 回归测试补齐：
+    - `tests/unit/intent-execution-compiler.spec.ts`
+    - `tests/unit/intent-action-library.spec.ts`
+    - `tests/unit/test-generator.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-compiler.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/test-generator.spec.ts`
+    - 结果：`94 / 94` 通过
+  - `npm run build`
+    - 通过
+- 当前结果：
+  - 本地代码已经禁止把“查看”当成无条件存在的默认详情入口
+  - 当前真实首轮阻塞已经从泛化的“状态证据缺失”进一步收敛到：
+    - “结构化列表响应未命中记录时，模型还会不会继续臆造默认 row action”
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第三十九刀：真实首轮新阻塞收敛为“默认臆造查看动作”，本地已禁止无显式详情入口的 row-action fallback）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 这一步目前只完成了本地收口和回归验证
+  - 还没有新的 live rerun 证明这次“不再默认点查看”的约束已经从真实首轮主失败链退出
+- 下一步：
+  - 继续 `R3`
+  - 复用同一 payload 重新发 async run
+  - 只检查新的 `attempt1`
+    - 若不再出现 `未找到行操作：查看`，继续沿新的最小首轮缺口推进
+    - 若仍出现，再根据新的 `attempt1` 代码和末尾轨迹继续缩窄，不扩范围
+
+## 2026-03-28 第二百零二次更新（R3 第四十刀：live 已顶掉默认“查看”动作，新首轮阻塞收敛为 ScenarioCard 首步混入保存按钮成功条件）
+
+- 本轮目标：
+  - 不扩范围，只验证上一刀的本地约束是否真的改变了首轮 live 失败签名
+- 已完成：
+  - 真实 async run：
+    - `intent-run-8000e658-0b1a-434a-aeba-60b7a654b7e6`
+  - 这次 live `attempt1` 的真实结果：
+    - 已越过上一刀的 `未找到行操作：查看`
+    - 没有再在最终验收阶段默认臆造 row action
+    - 首轮新的最前失败改为：
+      - `Step 1: 进入新建商机页面`
+      - `expect(locator).toBeVisible() failed`
+      - `Locator: getByRole('button', { name: /保\\s*存|提\\s*交|确\\s*定/i }).filter({ hasNotText: /保存并继续|上一步/i }).last()`
+  - 对这次 live 结果的结构化定位：
+    - 失败不是 DSL 再次把全局 `successCriteria` 污染进 Step 1
+    - 而是这次 `ScenarioCard.flowDefinition.steps[0].expectedResult` 本身就被规划成：
+      - `打开新建商机页面，显示商机创建表单与“保 存”或同义按钮可见可点击`
+    - 同时 `successCriteria[0]` 也被写成：
+      - `成功进入新建商机页面，页面存在可操作的“保 存”或同义保存按钮`
+    - 所以编译阶段只是忠实执行了错误的首步成功条件
+  - `lib/ai/scenario-card.ts`
+    - 新增确定性清洗：
+      - 对“进入/打开新建商机页面”这类 entry step
+      - 若 `expectedResult` 混入了 `保存 / 提交 / 确定` 按钮“可见 / 可点击 / 可操作 / 存在”之类提交就绪条件
+      - 自动改写为仅保留页面锚点成功条件：
+        - `成功打开新建商机页面，出现商机联系人信息或其他创建表单区块锚点。`
+    - 同时清洗对应 `successCriteria`
+      - 将“进入新建商机页面 + 保存按钮可操作”改写为：
+        - `成功进入新建商机页面，页面出现商机联系人信息或其他创建表单锚点`
+    - 这条清洗不再依赖“是否存在商机名称幻觉提取”
+      - 即便没有 name-extract 相关问题，也会在 business-create 场景里应用
+  - `buildScenarioCardPrompt(...)`
+    - 补一条明确规则：
+      - “进入页面 / 打开新建页”这类前置步骤，`expectedResult` 优先写 URL、标题、表单锚点或页面 ready
+      - 不要把后续提交按钮“可见 / 可点击”塞进首个进入步骤或对应 `successCriteria`
+  - 回归测试补齐：
+    - `tests/unit/scenario-card.spec.ts`
+      - 覆盖“首个进入步骤 + successCriteria 混入保存按钮就绪条件”会被清洗成表单锚点
+- 验证：
+  - `npx vitest run tests/unit/scenario-card.spec.ts`
+    - 结果：`9 / 9` 通过
+  - `npm run build`
+    - 通过
+- 当前结果：
+  - 上一刀的 row-action 误生成已经被 live 顶掉，说明那条约束已退出当前首轮最前失败链
+  - 当前新的最前阻塞已经明确缩窄为：
+    - `ScenarioCard` 在首个“进入新建页”步骤里混入了保存按钮可见/可点击这一类提交就绪条件
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第四十刀：live 已顶掉默认“查看”动作，新首轮阻塞收敛为 ScenarioCard 首步混入保存按钮成功条件）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 这一步目前只完成了上游清洗和本地验证
+  - 还没有新的 live rerun 证明 Step 1 已回到“只看表单锚点/URL”的成功条件
+- 下一步：
+  - 继续 `R3`
+  - 复用同一 payload 再发 async run
+  - 只检查新的 `attempt1`
+    - 若 Step 1 不再要求保存按钮可见，继续沿新的最小首轮缺口推进
+    - 若仍出现相同签名，再继续只收敛 `ScenarioCard` 首步与 `successCriteria` 的生成口径，不扩到别的 family
+
+## 2026-03-28 第二百零三次更新（R3 第四十一刀：live 已确认首步修正生效，当前首轮缺口收敛到 fallback 列表 JSON 深层记录匹配）
+
+- 本轮目标：
+  - 不扩范围，只确认上一刀对 `ScenarioCard` 首步的修正是否真正从 live 首轮失败链退出，并只修新的最小首轮阻塞。
+- 已完成：
+  - 复查真实 async run：
+    - `intent-run-cd50d354-23fe-4d6b-870e-22fa1b4afd83`
+  - 本次 live `ScenarioCard` 已明确证明首步修正生效：
+    - `step-1.expectedResult` 已改为：
+      - `当前 URL 包含 #/business/createbusiness，且页面出现新建商机表单锚点（第1个表单区域）`
+    - 不再混入“保存按钮可见 / 可点击”这类提交就绪条件。
+  - 这次 live `attempt1` 的真实执行结果：
+    - `Step 1: 打开新建商机页面` 通过
+    - `Step 2: 填写前3个表单必填项` 通过
+    - `Step 3: 保存商机` 通过
+    - `Step 4: 切换列表筛选到我创建的` 通过
+    - 新的首轮最前失败收敛为：
+      - `Step 5: 校验新建记录出现`
+      - `状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口`
+  - 对这次 live 失败链的结构化定位：
+    - 日志里已经出现：
+      - `table row matched`
+      - `api response json parsed`
+      - `json record not found`
+    - 说明当前不是列表没命中，也不是又回退成默认“查看”动作，而是：
+      - fallback 行已按手机号命中
+      - 但随后 `__e2e.pickJsonRecord(...)` 只按平铺 path 匹配，没能在列表响应的深层记录结构里定位到同一条记录
+    - 这正好解释了为什么脚本停在：
+      - `状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口`
+  - `lib/test-worker.mjs`
+    - 只补执行层 helper，不碰业务逻辑：
+      - 新增 `valueMatchesExpected(...)`
+      - 新增 `recordMatchesExpectedValueByPaths(...)`
+      - 新增 `findNestedRecordValueMatch(...)`
+    - `pickJsonRecord(...)` / `recordMatchesExpectedValue(...)` 现在的策略是：
+      - 先按显式 `paths` 精确匹配
+      - 仅在 collection 内单条 record 上，再保守回退到深层 BFS 值匹配
+      - 不再把 root payload 自身误判成命中的 record
+    - 目的：
+      - 保持原有显式 path 优先级不变
+      - 但当手机号 / 联系人只出现在深层数组字段（例如联系人列表 / 联系方式数组）里时，仍能把命中的列表 record 抽出来继续读状态
+  - 执行层回归测试补齐：
+    - `tests/unit/test-executor.spec.ts`
+      - 新增回归：
+        - `matches nested list records when the fallback identifier is only present in deep array fields`
+      - 同时修正 helper 边界，确保已有用例：
+        - `locates a matched list record from nested list response json`
+        - 不会把 root payload 误当成命中的 record
+- 验证：
+  - `npx vitest run tests/unit/test-executor.spec.ts -t "nested"`
+    - 结果：`2 / 2` 通过
+    - 覆盖：
+      - 旧的 nested list record 匹配
+      - 新的 deep nested fallback identifier 匹配
+- 当前结果：
+  - Step 1 的“保存按钮可见”错误成功退出 live 首轮主链
+  - 当前首轮主链已进一步收敛为：
+    - fallback 列表行已命中后，列表 JSON 的深层记录匹配能力不够稳
+  - 这一刀已先在执行层补齐 deep-match 能力，等待下一次 live rerun 验证是否把 `json record not found` 顶掉
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第四十一刀：live 已确认首步修正生效，当前首轮缺口收敛到 fallback 列表 JSON 深层记录匹配）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 这一刀目前只完成了 live 定位与执行层 helper 修补
+  - 还没有新的 live rerun 证明 `Step 5` 已越过 `json record not found / 未命中记录且未提供详情入口`
+  - 当前也还没有证据证明商机列表状态字段一定是文本字段；若下一次 live 仍失败，再继续只围绕“状态字段路径 / 结构化状态读取”缩窄
+- 下一步：
+  - 继续 `R3`
+  - 复用同一 payload 再发 async run
+  - 只检查新的 `attempt1`
+    - 若不再出现 `json record not found` / `未命中记录且未提供详情入口`，继续沿新的最小首轮缺口推进
+    - 若仍卡在 Step 5，再继续只补状态字段 path / 结构化状态读取，不扩到别的 family
+
+## 2026-03-28 第二百零四次更新（R3 第四十二刀：live 证明 deep-match 不是当前头阻塞，首轮缺口前移为 businessId 空值与宽 GET `/business` 捕获）
+
+- 本轮目标：
+  - 不扩范围，只验证上一刀执行层 deep-match 修补是否已经把 Step 5 的首轮阻塞顶掉。
+- 已完成：
+  - 复用同一 payload 再发 async run：
+    - `intent-run-5b24ce41-c8a7-47ac-8c72-68f86df842c4`
+  - 本次 live `attempt1` 结果：
+    - `Step 1: 进入新建商机页面并确认页面就绪` 通过
+    - `Step 2: 填写前3个表单必填项` 通过
+    - `Step 3: 保存新建商机` 通过
+    - `Step 4: 切换列表筛选到“我创建的”` 通过
+    - `Step 5: 校验新建商机记录可见` 仍失败
+      - 失败签名仍然是：
+        - `状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口`
+  - 这次 rerun 进一步确认了失败链先后顺序：
+    - 提交后读取 `createResp` 时已经出现：
+      - `api response matched`
+      - `api response json parsed`
+      - `json value not found`
+    - 说明当前更早的问题不是 Step 5 的 deep nested record 匹配，而是：
+      - 提交响应虽然命中并被解析，但 `businessId` 仍未从响应 JSON 中提取出来
+    - 到 Step 5 时脚本只能继续回退到：
+      - `const primaryValue = shared.businessId || artifacts.leadMobile`
+      - 即实际还是按手机号回查
+  - 对 Step 5 当前脚本骨架的定位：
+    - live 快照里仍是：
+      - `listResponse: { urlIncludes: '/business', method: 'GET' }`
+    - 本次日志也显示命中的响应内容仍像列表外围统计或其他 GET，而不一定是目标列表记录响应：
+      - `sourceSearch`
+      - `allUseDetail-data`
+      - `records`
+    - 这说明上一刀的 deep-match helper 已经补上，但当前首轮更前的真实缺口仍在：
+      - `businessId` 提取为空
+      - 且手机号 fallback 时继续使用过宽的 `GET /business` 捕获，容易拿到错误响应
+- 验证：
+  - live 运行已明确证明：
+    - `ScenarioCard` 首步修正仍然有效
+    - 执行层 deep-match 修补没有解决当前最前失败链
+- 当前结果：
+  - 当前首轮头阻塞不再是“列表 JSON 深层匹配能力不足”本身
+  - 更前的真实缺口已经收敛为两点，而且先后顺序明确：
+    - 1. 提交响应里的 `businessId` 提取仍为空
+    - 2. Step 5 在手机号 fallback 时仍用过宽的 `listResponse: GET /business`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第四十二刀：live 证明 deep-match 不是当前头阻塞，首轮缺口前移为 businessId 空值与宽 GET `/business` 捕获）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 这一刀只完成了 live rerun 和失败链前移确认
+  - 还没有实现新的修补
+  - 目前没有直接证据证明必须先做更复杂的 response 筛选 helper；更小、更确定的下一步仍应先围绕 `businessId` 空值后的回退链修补
+- 下一步：
+  - 继续 `R3`
+  - 只修当前这条新的最小缺口，不扩到其他 family：
+    - 当提交响应提不出 `businessId`、但当前列表行已稳定命中时，补一条保守的主键回填 / 详情回退约束
+    - 同时约束生成器不要把过宽 `GET /business` 当成唯一结构化状态来源
+
+## 2026-03-28 第二百零五次更新（R3 第四十三刀：row 已命中时补保守 businessId 回填约束，避免继续只依赖宽 GET `/business`）
+
+- 本轮目标：
+  - 不扩范围，只修当前已确认的最小缺口：
+    - `businessId` 仍为空时，row 已命中却没有 `detailUrl` 可退
+    - 生成器继续把宽泛 `listResponse: { urlIncludes: '/business', method: 'GET' }` 当成唯一结构化状态来源
+- 已完成：
+  - `lib/test-generator.ts`
+    - 在主生成 prompt 的商机创建规则里补充保守约束：
+      - 当 `businessId` 为空、但 `currentVisibleRow` / `recordCheck.row` 已稳定命中时，允许只在这个已命中分支里做一次保守回填：
+        - `const derivedBusinessId = shared.businessId || ((rowText.match(/\b\d{6,12}\b/g) || []).find((item) => !/^1\d{10}$/.test(item)) || '')`
+      - 明确这条回填只用于：
+        - `row 已命中后解锁 detailUrl / 详情页回退`
+      - 明确禁止：
+        - 在列表未命中前对整页文本猜 `businessId`
+        - 把宽泛 `GET /business` 响应继续当成唯一结构化状态来源
+    - 新增对应 repair 提示：
+      - 当失败签名为
+        - `状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口`
+      - repair prompt 会直接引导模型：
+        - 先在已命中的 row 分支里读取 `rowText`
+        - 再保守派生 `derivedBusinessId`
+        - 若 `derivedBusinessId` 非空，优先跳 `#/business/detail/${derivedBusinessId}` 再读 `状态`
+        - 只有 `derivedBusinessId` 也为空时，才保留“未提供详情入口”的错误收口
+  - `lib/intent-action-library.ts`
+    - 在 `assert.resolve-primary-record` 能力说明里同步补齐同一条约束：
+      - row 已命中后可保守派生 `resolvedBusinessId`
+      - 它只用于解锁详情页回退，不得在列表未命中前猜主键
+      - 宽 `GET /business` 不是唯一结构化状态来源
+    - 同步更新 capability example：
+      - `const resolvedBusinessId = businessId || ((rowText.match(/\b\d{6,12}\b/g) || []).find((item) => !/^1\d{10}$/.test(item)) || '')`
+      - `else if (resolvedBusinessId) { await page.goto(\`#/business/detail/${resolvedBusinessId}\`, ...) }`
+  - 回归测试补齐：
+    - `tests/unit/test-generator.spec.ts`
+      - generation prompt 断言新增：
+        - `derivedBusinessId` 保守回填骨架
+      - repair prompt 新增场景：
+        - row 已命中、`businessId` 为空、当前只有宽 `GET /business` 可用时，要求先做保守回填再走详情
+    - `tests/unit/intent-action-library.spec.ts`
+      - 新增断言：
+        - capability notes 包含 `resolvedBusinessId`
+        - capability example 使用 `resolvedBusinessId` 解锁详情页回退
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/intent-action-library.spec.ts`
+    - 结果：`82 / 82` 通过
+- 当前结果：
+  - 这一刀还没有做 live rerun
+  - 但生成器和动作库已经不再只教模型“row 命中后继续死盯宽 GET /business”
+  - 当前首轮主链的下一次 live 观察点已经更明确：
+    - 是否会在 `businessId` 为空但 row 已命中时，改走保守 `derivedBusinessId/resolvedBusinessId -> detailUrl` 回退
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第四十三刀：row 已命中时补保守 businessId 回填约束，避免继续只依赖宽 GET `/business`）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 这一步仍属于生成 / repair 约束修补
+  - 还没有新的 live rerun 证明首轮脚本已经真的走到 `derivedBusinessId/resolvedBusinessId -> detailUrl`
+- 下一步：
+  - 继续 `R3`
+  - 复用同一 payload 再发 async run
+  - 只检查新的 `attempt1`
+    - 若 Step 5 已改走 `derivedBusinessId/resolvedBusinessId -> detailUrl` 并通过，继续沿新的最小缺口推进
+    - 若仍停在同一错误签名，再继续只围绕“生成代码是否真正采用回填骨架”做收敛，不扩到别的 family
+
+## 2026-03-28 第二百零六次更新（R3 第四十四刀：商机创建默认列表验收不再自动注入“新入库”状态）
+
+- 本轮目标：
+  - 不扩范围，只修当前 live 已暴露的上游过约束：
+    - 用户原始需求只是“切到我创建的后看到新建记录即可”
+    - `ScenarioCard` 规范化却默认把这类列表验收改写成“再单独校验状态为新入库”
+- 已完成：
+  - `lib/ai/scenario-card.ts`
+    - 新增 `cardExplicitlyRequiresBusinessStatus(card)`，只在卡片本身已显式要求“状态 / 新入库 / 商机进展”等语义时，才保留状态验收。
+    - 收紧商机创建 list-check 重写规则：
+      - 若卡片未显式要求状态：
+        - instruction 改为“优先用 `businessId`，否则用真实联系人/手机号定位记录”
+        - expectedResult 改为“我创建的列表中存在本次新建商机记录”
+      - 若卡片显式要求状态：
+        - 继续保留“再单独校验状态为新入库”的重写
+  - `tests/unit/scenario-card.spec.ts`
+    - 补充显式状态场景回归：
+      - 仍会保留“新入库”状态验收
+    - 补充非显式状态场景回归：
+      - 不再自动注入“新入库 / 状态”断言
+- 验证：
+  - `npx vitest run tests/unit/scenario-card.spec.ts`
+    - 结果：`10 / 10` 通过
+- 当前结果：
+  - 对“看到新建记录即可”的商机创建 family，`ScenarioCard` 上游不再默认升级成“还要验状态=新入库”
+  - 显式要求状态的历史卡片和业务场景不受影响
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第四十四刀：商机创建默认列表验收不再自动注入“新入库”状态）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 这一步只修了 `ScenarioCard` 上游约束
+  - 还没有新的 live rerun 证明同一 payload 的 `attempt1` 已不再生成“状态=新入库”的最终验收
+  - 若 rerun 里仍出现状态断言，需要继续只围绕下游 verifier/编译链里的状态注入点收窄
+- 下一步：
+  - 继续 `R3`
+  - 复用同一 payload 再发 async run
+  - 只检查新的 `ScenarioCard / attempt1`
+    - 若已不再注入“新入库”状态验收，则继续沿新的最小首轮缺口推进
+    - 若仍注入，则继续只修下游状态注入点，不扩到别的 family
+
+## 2026-03-28 第二百零七次更新（R3 第四十五刀：live 已确认默认状态过约束退出，当前同 payload 已恢复首轮直过）
+
+- 本轮目标：
+  - 不扩范围，只验证上一刀 `ScenarioCard` 收紧是否真的命中当前 live 头阻塞。
+- 已完成：
+  - `lib/ai/scenario-card.ts`
+    - 补齐了两层收紧：
+      - 不仅“带幻觉商机名提取”的 create-list 分支会去掉默认 `新入库` 状态验收
+      - “没有幻觉变量、但 assert 步骤已被 LLM 写成列表验收”的分支也统一走同一条 `rewriteBusinessCreateListVerificationStep(...)`
+    - 进一步收紧 `cardExplicitlyRequiresBusinessStatus(card)`：
+      - 只有显式出现 `新入库 / 商机进展 / 状态列 / 列表状态 / 详情状态 / displayStatus`
+      - 或 “状态/status” 与 “校验/验证/确认/断言/检查/列表/详情/记录/进展/列” 同时出现
+      - 才保留业务状态验收
+      - 像“页面进入可识别的保存后状态”这类通用 UI 状态描述，不再误判成业务状态要求
+  - `tests/unit/scenario-card.spec.ts`
+    - 新增回归：
+      - 无幻觉变量的 create-list 卡片，不再自动注入 `新入库`
+      - “页面状态更新 / 保存后状态”不会误触发业务状态验收
+  - live 复验：
+    - `intent-run-89db17b5-1be6-4639-aaaa-d7b17fd247cf`
+    - 新 `ScenarioCard.step-6` 已变为：
+      - instruction：`优先使用 businessId ... 否则使用真实填写的联系人/手机号定位对应记录。`
+      - expectedResult：`“我创建的”列表中存在本次新建商机记录。`
+    - 同一 payload 本轮 `attempt1` 结果：
+      - `Step 1` 通过
+      - `Step 2` 通过
+      - `Step 3` 通过
+      - `Step 4` 通过
+      - `Step 5` 通过
+      - `Verification` 通过
+      - 终态：`passed`
+- 验证：
+  - `npx vitest run tests/unit/scenario-card.spec.ts`
+    - 结果：`12 / 12` 通过
+  - live：
+    - `intent-run-89db17b5-1be6-4639-aaaa-d7b17fd247cf`
+    - 已确认首轮直过
+- 当前结果：
+  - 当前这条真实高频 payload 的头阻塞，已经从“默认额外要求状态=新入库”退出
+  - 同一 payload 现在已恢复首轮直过
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第四十五刀：live 已确认默认状态过约束退出，当前同 payload 已恢复首轮直过）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 尽管同一 payload 已首轮直过，但按 `runLimit=20` 读取的当前量化口径：
+    - `business_create_list_verify.totalRuns = 20`
+    - `firstPassPassRate = 5`
+    - `repairedPassRate = 10`
+    - `terminalPassRate = 15`
+  - 说明 family 级别的历史失败仍然很多，当前还不能仅凭这 1 条 live 直过就关闭 `R3`
+  - `evaluationBaseline` 也仍把这条链路归在：
+    - `complex_enterprise_flow`
+    - `runCount = 17`
+    - `failedRuns = 14`
+    - `firstPassPassRate = 5.9`
+    - `terminalPassRate = 17.6`
+    - 主失败类仍是 `repair_stagnated / assertion_too_strict / selector_drift`
+- 下一步：
+  - 继续 `R3`
+  - 不扩范围，只对同一已修复 payload 做受控复验批次
+  - 目标不是再补代码，而是确认最近窗口里的 `business_create_list_verify`：
+    - `firstPassPassRate`
+    - `terminalPassRate`
+    - “接口成功但最终失败”签名
+    是否已经实质退出主失败类
+  - 若批次复验仍出现新的高频失败签名，再只沿那个最小签名继续修
+
+## 2026-03-28 第二百零八次更新（R3 第四十六刀：列表筛选“状态生效”文案不再误判成业务状态验收）
+
+- 本轮目标：
+  - 不扩范围，只修当前同 payload fresh rerun 暴露出的剩余误判：
+    - 用户需求仍是“切到我创建的后看到新建记录即可”
+    - 但成功标准里出现“筛选状态生效 / 当前筛选状态正确显示”时，`ScenarioCard` 仍会把它误判成“业务状态要求”，再次把 step-6 改写回“再单独校验状态为新入库”
+- 已完成：
+  - `lib/ai/scenario-card.ts`
+    - 继续收紧 `cardExplicitlyRequiresBusinessStatus(card)`：
+      - 显式命中 `新入库 / 商机进展 / 状态列 / 列表状态 / 详情状态 / displayStatus` 时，仍保留业务状态验收
+      - 通用 `状态/status` 文案现在只在同时出现 `校验 / 验证 / 确认 / 断言 / 检查 / 详情 / 记录 / 进展` 时才视为业务状态要求
+      - 不再把“列表 / 列”本身当作状态验收信号，因此“筛选状态生效 / 当前筛选状态正确显示”不会再误触发 `新入库` 注入
+  - `tests/unit/scenario-card.spec.ts`
+    - 新增回归：
+      - `does not treat ownership filter state wording as an explicit business-status requirement`
+    - 现有“保存后状态”回归继续保留，避免回退到更宽泛的 UI 状态误判
+  - live 复验：
+    - 修补前 fresh rerun：`intent-run-25c531f8-f168-4070-92d5-3f0fc27120ac`
+      - `ScenarioCard.step-6` 仍被改写成：
+        - instruction：`... 再单独校验状态为“新入库”。`
+        - expectedResult：`... 且状态为“新入库”。`
+      - 该 run 的 successCriteria 中包含“当前筛选状态正确显示”，证明误判来源已收敛到筛选状态文案
+    - 修补后 fresh rerun：`intent-run-2d418748-ee03-49ea-89ca-fcba0df7745f`
+      - 当前 `ScenarioCard.step-6` 已变为：
+        - instruction：`优先使用 businessId 在列表中检索并定位对应记录；若未提取到 businessId，则使用真实填写的联系人/手机号定位对应记录。`
+        - expectedResult：`“我创建的”列表中存在本次新建商机记录。`
+- 验证：
+  - `npx vitest run tests/unit/scenario-card.spec.ts`
+    - 结果：`13 / 13` 通过
+  - live：
+    - `intent-run-2d418748-ee03-49ea-89ca-fcba0df7745f`
+    - 已确认最新 `ScenarioCard.step-6` 不再默认注入“新入库”状态验收
+- 当前结果：
+  - `business_create_list_verify` 这条真实高频 payload 上，列表筛选“状态生效 / 当前筛选状态正确显示”不再被误判成业务状态要求
+  - 当前最新 fresh rerun 已再次证明：默认 `新入库` 状态过约束可以稳定退出到 `ScenarioCard` 之外
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第四十六刀：列表筛选“状态生效”文案不再误判成业务状态验收）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - `intent-run-2d418748-ee03-49ea-89ca-fcba0df7745f` 在本次记录时仍未产出 `attempt1` 终态
+  - 因此本轮只能确认“默认状态注入误判已退出”，还不能据此关闭 `R3`
+  - 新的最小首轮缺口，需要等这条 fresh rerun 的 `attempt1` 真正落地后再继续收窄
+- 下一步：
+  - 继续 `R3`
+  - 不扩范围，只盯 `intent-run-2d418748-ee03-49ea-89ca-fcba0df7745f` 的 `attempt1`
+  - 若首轮失败：
+    - 只修新的最小失败签名
+  - 若首轮通过：
+    - 再看 recent window 里 `business_create_list_verify` 的复验稳定性是否实质抬升
+
+## 2026-03-28 第二百零九次更新（R3 第四十七刀：fresh rerun 已恢复首轮直过，最近窗口 first-pass 开始回升）
+
+- 本轮目标：
+  - 不扩范围，只完成上一刀 roadmap 里明确的后续核对：
+    - 先确认 `intent-run-2d418748-ee03-49ea-89ca-fcba0df7745f` 的 `attempt1`
+    - 再看 recent window 的 `business_create_list_verify` 指标是否开始抬升
+- 已完成：
+  - live：
+    - `intent-run-2d418748-ee03-49ea-89ca-fcba0df7745f`
+      - `ScenarioCard.step-6` 已保持为：
+        - instruction：`优先使用 businessId 在列表中检索并定位对应记录；若未提取到 businessId，则使用真实填写的联系人/手机号定位对应记录。`
+        - expectedResult：`“我创建的”列表中存在本次新建商机记录。`
+      - `attempt1` 已首轮通过：
+        - `success = true`
+        - `failedSteps = []`
+        - 最新 helper 信号已到 `primary record resolved in table`
+  - 指标复核：
+    - `GET /api/intent-e2e/insights?projectUid=proj_default&runLimit=20&auditLimit=0`
+    - 当前 `priorityScenarioFamilies.business_create_list_verify` 已变为：
+      - `totalRuns = 20`
+      - `firstPassPassRate = 20`
+      - `repairedPassRate = 5`
+      - `terminalPassRate = 25`
+    - 相比上一轮记录的：
+      - `firstPassPassRate = 5`
+      - `repairedPassRate = 10`
+      - `terminalPassRate = 15`
+    - 说明 recent window 已开始从“几乎全靠 repair / 终态也很差”向“首轮直过开始恢复”转动
+  - baseline 现状：
+    - `evaluationBaseline` 里该代表簇仍在 `complex_enterprise_flow`
+    - 当前口径：
+      - `runCount = 18`
+      - `failedRuns = 13`
+      - `firstPassPassRate = 22.2`
+      - `repairedPassRate = 5.6`
+      - `terminalPassRate = 27.8`
+    - 说明 family 级历史包袱仍重，但最新 real payload 已不再卡在之前那条默认状态过约束
+- 验证：
+  - live：
+    - `intent-run-2d418748-ee03-49ea-89ca-fcba0df7745f`
+    - 已确认 `attempt1` 直过
+  - insights：
+    - `curl --max-time 60 -sS 'http://localhost:3666/api/intent-e2e/insights?projectUid=proj_default&runLimit=20&auditLimit=0'`
+- 当前结果：
+  - 当前真实高频 payload 已再次确认首轮直过
+  - recent window 的 `business_create_list_verify` 已出现实质抬升：
+    - `firstPassPassRate`：`5 -> 20`
+    - `terminalPassRate`：`15 -> 25`
+  - 但该 family 还没有稳定到可以关闭 `R3`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第四十七刀：fresh rerun 已恢复首轮直过，最近窗口 first-pass 开始回升）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 尽管 latest live 已首轮直过，`business_create_list_verify` 最近窗口仍只有：
+    - `firstPassPassRate = 20`
+    - `terminalPassRate = 25`
+  - `evaluationBaseline` 的主失败类仍是：
+    - `assertion_too_strict`
+    - `repair_stagnated`
+    - `selector_drift`
+  - 因此 `R3` 还不能结束，需要继续只看这个 family 里“最近仍失败”的最小新签名
+- 下一步：
+  - 继续 `R3`
+  - 不扩范围，只提取 recent window 里 `business_create_list_verify / complex_enterprise_flow` 仍失败的最新 run 签名
+  - 若出现新的单一高频首轮阻塞：
+    - 只修那一个最小签名
+
+## 2026-03-28 第二百一十次更新（R3 第四十八刀：recent failed 样本确认仍混有修补前旧产物，当前代码主链先不再加补丁）
+
+- 本轮目标：
+  - 不扩范围，只确认 recent window 里仍失败的样本，是否真的代表“当前代码还有新的首轮阻塞”。
+- 已完成：
+  - recent traces 核对：
+    - `GET /api/intent-e2e/insights?projectUid=proj_default&runLimit=20&auditLimit=0`
+    - 同一 payload 最近窗口明细当前为：
+      - `intent-run-25c531f8-f168-4070-92d5-3f0fc27120ac`：`failed`，`attemptCount=6`
+      - `intent-run-2d418748-ee03-49ea-89ca-fcba0df7745f`：`passed`，`attemptCount=1`
+      - `intent-run-2c4090cf-7ec5-43a6-9949-55c4832a310e`：`passed`，`attemptCount=1`
+      - `intent-run-bbed831e-8654-4667-91a6-3503e307747a`：`passed`，`attemptCount=1`
+      - 更早的 `d46... / ede... / eab...` 仍是 `failed`
+  - 对 latest failed run 复盘：
+    - `intent-run-25c531f8-f168-4070-92d5-3f0fc27120ac`
+    - 其 `ScenarioCard.step-6` 仍是修补前旧产物：
+      - instruction：`... 再单独校验状态为“新入库”。`
+      - expectedResult：`... 且状态为“新入库”。`
+    - `attempt1` 失败签名为：
+      - `assertion_too_strict|Step 5: 校验新建商机记录存在|状态证据缺失：列表行已命中，但列表响应未返回状态`
+    - 最终失败已进一步漂移为：
+      - `状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口`
+    - 这说明该 latest failed sample 仍落在“默认状态注入尚未退出”的旧编译产物上，不能直接作为当前代码的新 blocker 继续加补丁
+- 验证：
+  - live：
+    - `intent-run-25c531f8-f168-4070-92d5-3f0fc27120ac`
+    - `intent-run-2d418748-ee03-49ea-89ca-fcba0df7745f`
+  - insights：
+    - `curl --max-time 60 -sS 'http://localhost:3666/api/intent-e2e/insights?projectUid=proj_default&runLimit=20&auditLimit=0'`
+- 当前结果：
+  - current code 下，至少最近 3 条 fresh rerun：
+    - `intent-run-2d418748-ee03-49ea-89ca-fcba0df7745f`
+    - `intent-run-2c4090cf-7ec5-43a6-9949-55c4832a310e`
+    - `intent-run-bbed831e-8654-4667-91a6-3503e307747a`
+    都已经 `attempt1` 直过
+  - recent window 里仍挂着的失败 run，目前确认仍混有修补前旧产物
+  - 因此这一轮不继续往执行层 / verifier 再补新代码，避免围绕旧签名过度修补
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第四十八刀：recent failed 样本确认仍混有修补前旧产物，当前代码主链先不再加补丁）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - `business_create_list_verify` 口径仍只有：
+    - `firstPassPassRate = 20`
+    - `terminalPassRate = 25`
+  - 说明 recent window 里的历史失败尚未被新成功样本完全冲淡
+  - 当前还不能关闭 `R3`
+- 下一步：
+  - 继续 `R3`
+  - 不扩范围，优先再补一小批 fresh rerun，尽快用当前代码的首轮通过样本替换 recent window 中的旧失败样本
+  - 若 fresh rerun 再次出现真正基于当前代码的新失败：
+    - 只修那个新签名
+
+## 2026-03-28 第二百一十一次更新（R3 第四十九刀：放宽 structured slot patch 对 businesslist/detail hash 的尾斜杠硬断言）
+
+- 本轮目标：
+  - 只修 current code fresh rerun 暴露出的单一首轮阻塞，不扩展到其他执行层 / verifier 逻辑。
+- 已完成：
+  - 复盘 fresh failed run：
+    - `intent-run-bd56c6a3-3c84-493c-ad27-a598efe2708e`
+    - `attempt1` 的 `structuredPatch.patch.slots.plan_step_5` 末尾生成了：
+      - `await expect(page.url()).toMatch(/#\/business\/(businesslist|detail)\//i);`
+    - 实际命中 URL 为：
+      - `https://uat-service.yikaiye.com/#/business/businesslist`
+    - 失败类确认是：
+      - `assertion_too_strict`
+  - 在 `lib/intent-execution-slot-patch.ts` 的 slot code sanitize 阶段新增窄范围归一化：
+    - 仅把 `/#\/business\/(businesslist|detail)\//flags`
+    - 放宽为 `/#\/business\/(businesslist|detail)(\/|$)/flags`
+    - 作用范围只限 structured slot patch 代码归一化，不扩散到其他 URL 断言逻辑
+  - 在 `tests/unit/intent-execution-slot-patch.spec.ts` 增加回归覆盖：
+    - `expect(page.url()).toMatch(...)`
+    - `expect(page).toHaveURL(...)`
+    两种写法都会被归一化为允许无尾斜杠的版本
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-slot-patch.spec.ts`
+  - 结果：
+    - `6 passed`
+- 当前结果：
+  - 这条 current-code 新 blocker 已被转成确定性兜底，不再依赖 LLM patch 自己避开 `businesslist` 无尾斜杠路径
+  - 当前还没有做 fresh rerun 复验，所以 `R3` 还不能关闭
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第四十九刀：放宽 structured slot patch 对 businesslist/detail hash 的尾斜杠硬断言）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - `business_create_list_verify` 最近窗口指标仍未被 fresh pass 样本完全冲淡
+  - 这次只完成了代码级 blocker 修复，还缺 live rerun 来确认该签名不再复现
+- 下一步：
+  - 继续 `R3`
+  - 不扩范围，优先做 fresh rerun / live 复验
+  - 如果该签名消失，就继续观察 recent window 是否被新的 `attempt1 pass` 替换
+  - 若 fresh rerun 再出现新的单一首轮阻塞：
+    - 只修那个新签名
+
+## 2026-03-28 第二百一十二次更新（R3 第五十刀：fresh rerun live 复验被环境连通性阻塞，暂不判为代码回归）
+
+- 本轮目标：
+  - 对上一刀的 `businesslist/detail` 尾斜杠断言修复做 live fresh rerun 复验。
+- 已完成：
+  - 先直接复用旧 run request 发起一次 fresh rerun：
+    - `intent-run-5f53d2a8-f377-4748-b2ab-ee2cb61a0739`
+    - 该请求未带项目 auth，`request.hasAuth=false`，不作为有效 live 样本继续使用
+  - 再补齐项目认证后发起有效 fresh rerun：
+    - `intent-run-daa08ead-eac4-46e1-b6ed-6f92b80ebcd9`
+    - `request.hasAuth=true`
+  - live 结果：
+    - 该 run 未进入 `attempt1`
+    - 在 `prechecking` 阶段直接失败：
+      - `页面前置检查失败: page.goto: Timeout 30000ms exceeded`
+      - `navigating to "https://uat-service.yikaiye.com/#/business/createbusiness", waiting until "commit"`
+  - 环境探针：
+    - `curl -I --max-time 15 -sS https://uat-service.yikaiye.com/`
+    - 返回：
+      - `curl: (28) Connection timed out after 15002 milliseconds`
+- 当前结果：
+  - 本轮 live rerun 没有跑到首轮生成 / 执行阶段，因此还不能用来验证 `/#\/business\/(businesslist|detail)(\/|$)/` 修复是否已在线上样本生效
+  - 当前证据更接近“测试环境从本机不可达 / 首包连通异常”，不是新的 R3 代码签名回归
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第五十刀：fresh rerun live 复验被环境连通性阻塞，暂不判为代码回归）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - `business_create_list_verify` 的最新代码修复仍缺一条真正进入 `attempt1` 的 live fresh 样本确认
+  - 当前环境网络不稳定时，recent window 会被 precheck 失败噪声污染，不能直接当作代码 regressions 处理
+- 下一步：
+  - 继续 `R3`
+  - 等 UAT 从当前机器恢复可达后，重新发起同任务 fresh rerun
+  - 只要 run 能进入 `attempt1`，优先确认是否还出现 `/#\/business\/(businesslist|detail)\//i` 这条旧签名
+  - 若旧签名不再出现，再继续按 recent window 观察是否还存在新的单一首轮阻塞
+
+## 2026-03-28 第二百一十三次更新（R3 第五十一刀：有效 fresh rerun 已 attempt1 直过，旧 URL 尾斜杠签名确认消失）
+
+- 本轮目标：
+  - 在 UAT 恢复可达后，对 `businesslist/detail` 尾斜杠断言修复做真正进入 `attempt1` 的 live fresh rerun 复验。
+- 已完成：
+  - 先复探环境：
+    - `curl -I --max-time 10 -sS https://uat-service.yikaiye.com/`
+    - 已返回 `HTTP/2 200`
+  - 发起有效 fresh rerun（带项目 auth）：
+    - `intent-run-39fa63da-6c80-4cba-afec-7665a84e5cb0`
+    - `hasAuth=true`
+  - live 结果：
+    - run 最终 `passed`
+    - `attemptCount = 1`
+    - 首轮直接通过，无 repair
+  - 对 `attempt1.code` 复核：
+    - 未再出现旧的过严断言：
+      - `/#\/business\/(businesslist|detail)\//i`
+    - 当前生成链路中，相关 URL 校验已退回到：
+      - `/#\/business\/businesslist/i`
+      - `/#\/business\/detail\//i`
+      等当前实际需要的具体匹配，不再复现“list/detail 二选一且强制尾斜杠”的旧签名
+- 验证：
+  - live：
+    - `intent-run-39fa63da-6c80-4cba-afec-7665a84e5cb0`
+  - attempt 摘要：
+    - `status=passed`
+    - `attemptCount=1`
+- 当前结果：
+  - `R3` 里这条 current-code blocker 已完成 live 闭环：
+    - 代码修复已落地
+    - 单测已通过
+    - fresh rerun 已 `attempt1` 直过
+    - 旧 URL 尾斜杠失败签名确认不再复现
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第五十一刀：有效 fresh rerun 已 attempt1 直过，旧 URL 尾斜杠签名确认消失）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前只确认了这一个新 blocker 已消失
+  - `business_create_list_verify` 最近窗口指标仍待 `insights` 新样本刷新后再看，当前还不能直接关闭 `R3`
+- 下一步：
+  - 继续 `R3`
+  - 不扩范围，重新看 `business_create_list_verify` recent window 最新指标
+  - 如果 recent failed 仍有新鲜 current-code 首轮失败：
+    - 只修那个新的单一签名
+  - 如果 recent window 已主要被 `attempt1 pass` 覆盖：
+    - 再判断 `R3` 是否可以收尾
+
+## 2026-03-28 第二百一十四次更新（R3 第五十二刀：收窄页面状态 wording 对业务状态的误判，阻断“新入库”再次被默认注入）
+
+- 本轮目标：
+  - 只处理项目内 fresh rerun 暴露出的一个新首轮签名，不扩其他方向。
+- 已完成：
+  - 复盘项目内 rerun：
+    - `intent-run-10bbdd16-0ffc-4674-8899-a81fa38ba16b`
+    - 已确认这条 run 真正挂到：
+      - `projectUid=proj_default`
+      - `moduleUid=mod_1773303139537_c84d8476`
+  - 其 `attempt1` 新失败签名为：
+    - `assertion_too_strict|Step 5: 校验新建记录可见|状态证据缺失：列表行已命中，但列表响应未返回状态`
+  - 根因定位：
+    - `scenario_card` 事件本身又重新带回了：
+      - `再单独校验状态为“新入库”`
+      - `且状态为“新入库”`
+    - 触发原因不是旧 URL 断言，而是 `cardExplicitlyRequiresBusinessStatus(...)` 把
+      - `页面进入可识别的商机详情/列表状态`
+      这类 UI / 页面状态 wording 错判成了业务状态要求
+    - 具体误判点：
+      - 旧逻辑里 `(状态|status)` 只要和 `详情` 同时出现，就会被认定为业务状态显式要求
+  - 代码修复：
+    - 在 `lib/ai/scenario-card.ts` 收窄 `cardExplicitlyRequiresBusinessStatus(...)`
+    - 新增一层排除：
+      - 若文本是“页面 / URL / 路由 / hash + 进入/返回/跳转/保存后/提交后 + 详情/列表/弹层/抽屉 + 状态”
+      - 则按 UI 页面状态处理，不再当成业务状态显式要求
+    - 同时把 fallback 触发词从
+      - `校验|验证|确认|断言|检查|详情|记录|进展`
+      收窄为
+      - `校验|验证|确认|断言|检查|核对`
+      避免再次把普通“详情状态/列表状态/页面状态”误判成业务状态
+  - 回归测试：
+    - `tests/unit/scenario-card.spec.ts`
+    - 新增 live 样本对应回归：
+      - `does not treat post-submit page-state wording as an explicit business-status requirement`
+- 验证：
+  - `npx vitest run tests/unit/scenario-card.spec.ts`
+  - 结果：
+    - `14 passed`
+- 当前结果：
+  - 这条项目内 rerun 暴露出的新 blocker 已缩到 `scenario-card` 显式状态判定误伤
+  - 代码与单测已经收口，但还缺新的项目内 fresh rerun 来确认 `新入库` 默认注入已在线消失
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第五十二刀：收窄页面状态 wording 对业务状态的误判，阻断“新入库”再次被默认注入）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 旧的 URL 尾斜杠签名已确认消失
+  - 当前剩余验证点变成：项目内 fresh rerun 下，`scenario_card.step-6` 是否不再重新带回 `新入库`
+- 下一步：
+  - 继续 `R3`
+  - 不扩范围，发起新的项目内 fresh rerun
+  - 优先核对 `scenario_card` 事件里的 `step-6` 是否已去掉 `新入库`
+  - 若 `scenario_card` 已恢复正常，再看 `attempt1` 是否重新回到直过
+
+## 2026-03-28 第二百一十五次更新（R3 第五十三刀：项目内 fresh rerun 已确认 `step-6` 去掉“新入库”并恢复 `attempt1` 直过）
+
+- 本轮目标：
+  - 只验证上一刀的 `scenario-card` 修复是否在项目内 fresh rerun 生效，不扩其他方向。
+- 已完成：
+  - 发起新的项目内 fresh rerun：
+    - `intent-run-0da8b37b-3f25-4f3a-9a62-d1c850efd7fa`
+  - live 复核 `scenario_card` 事件：
+    - `flowDefinition.entryUrl` 已回到 `https://uat-service.yikaiye.com/#/business/businesslist`
+    - `step-6.instruction` 已变为：
+      - `优先使用 businessId 在列表中检索并定位对应记录；若未提取到 businessId，则使用真实填写的联系人/手机号定位对应记录。`
+    - `step-6.expectedResult` 已变为：
+      - `“我创建的”列表中存在本次新建商机记录。`
+    - 已确认项目内 fresh rerun 下，`scenario_card` 不再重新带回：
+      - `再单独校验状态为“新入库”`
+      - `且状态为“新入库”`
+  - live 复核执行结果：
+    - 该 run 最终 `status=passed`
+    - `attemptCount=1`
+    - `attempt1` 直接通过
+  - 执行链路侧证据：
+    - `observeSubmitState` 已在保存后完成提交收敛
+    - 列表归属切换已成功切到“我创建的”
+    - 最终通过列表命中完成记录验收
+- 验证：
+  - live run：
+    - `intent-run-0da8b37b-3f25-4f3a-9a62-d1c850efd7fa`
+  - 结果：
+    - `passed`
+    - `attempt1` 直过
+- 当前结果：
+  - 上一刀修复已经完成项目内 live 闭环：
+    - `scenario_card.step-6` 的 `新入库` 默认注入已在线消失
+    - 同一条项目内 fresh rerun 已恢复 `attempt1` 直过
+  - 因此这条 current-code blocker 可以视为已完成收敛
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第五十三刀：项目内 fresh rerun 已确认 `step-6` 去掉“新入库”并恢复 `attempt1` 直过）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前已确认这条项目内新 blocker 消失
+  - 但 `business_create_list_verify` 的 recent window / `insights` 收尾证据本轮仍未稳定返回，暂时还不能仅凭这 1 条 live 样本直接关闭 `R3`
+- 下一步：
+  - 继续 `R3`
+  - 不扩范围，只补看 `business_create_list_verify` recent window 最新指标
+  - 如果 recent window 能证明新鲜样本已主要恢复 `attempt1 pass`：
+    - 再判断 `R3` 是否可以收尾
+  - 如果 recent window 里仍有新的 current-code 首轮失败：
+    - 继续只修那一个新的单一签名
+
+## 2026-03-28 第二百一十六次更新（R3 第五十四刀：模块级 recent window 仍未主要被 `attempt1 pass` 覆盖，暂不关闭 `R3`）
+
+- 本轮目标：
+  - 只补看 `business_create_list_verify` 的 recent window 最新指标，并据此判断 `R3` 能否收尾，不扩其他方向。
+- 已完成：
+  - 补看项目级 `insights`：
+    - `business_create_list_verify`
+    - `totalRuns=44`
+    - `firstPassPassedRuns=9`
+    - `firstPassPassRate=20.5`
+    - `terminalPassRate=36.4`
+  - 为避免项目级历史样本把当前模块判断冲淡，再补算模块级 recent window：
+    - `projectUid=proj_default`
+    - `moduleUid=mod_1773303139537_c84d8476`
+    - 最近 `20` 条 terminal runs 中：
+      - `totalRuns=20`
+      - `passedRuns=10`
+      - `failedRuns=10`
+      - `firstPassPassedRuns=7`
+      - `firstPassPassRate=35`
+      - `repairedPassRuns=3`
+      - `terminalPassRate=50`
+  - 复核最新模块级 recent traces：
+    - 最新 run `intent-run-0da8b37b-3f25-4f3a-9a62-d1c850efd7fa`
+      - `passed`
+      - `firstPassSucceeded=true`
+    - 紧邻上一条失败 `intent-run-10bbdd16-0ffc-4674-8899-a81fa38ba16b`
+      - `failed`
+      - `failureClass=assertion_too_strict`
+      - 该签名已被上一刀修复，并被 `0da8...` fresh rerun 直过所覆盖
+    - 再往前的失败样本仍混有更早期历史产物：
+      - 如 `intent-run-ec3bfad6-d875-4a9c-89a6-5852c8593ba1`
+      - `failureClass=repair_stagnated`
+- 验证：
+  - 模块级 recent window 计算结果：
+    - `business_create_list_verify.firstPassPassRate=35`
+    - `business_create_list_verify.terminalPassRate=50`
+  - 最新 live 样本：
+    - `intent-run-0da8b37b-3f25-4f3a-9a62-d1c850efd7fa`
+    - `attempt1` 直过
+- 当前结果：
+  - 当前模块级 recent window 还不能证明“新鲜样本已主要恢复 `attempt1 pass`”
+  - 因此 `R3` 现在还不能关闭
+  - 但本轮也没有再暴露出新的 current-code 首轮失败签名：
+    - 最新 fresh sample 已直过
+    - 最近可见失败里，最新那条 `assertion_too_strict` 已被后续 live 直过覆盖
+  - 所以这一轮不继续追加新的代码补丁，先维持主链不变
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第五十四刀：模块级 recent window 仍未主要被 `attempt1 pass` 覆盖，暂不关闭 `R3`）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前缺的不是新的代码修补点，而是 enough fresh evidence 来把 recent window 指标拉出历史失败带
+  - 在 recent window 仍只有 `35% first-pass / 50% terminal` 的情况下，直接关闭 `R3` 风险过高
+- 下一步：
+  - 继续 `R3`
+  - 不扩范围，不改主链代码
+  - 只补同 payload / 同模块 fresh rerun 样本，继续观察是否稳定保持 `attempt1 pass`
+  - 如果 fresh rerun 再次暴露新的 current-code 首轮失败：
+    - 继续只修那一个新的单一签名
+  - 如果连续 fresh rerun 都保持 `attempt1 pass`，且 recent window 指标继续回升：
+    - 再判断 `R3` 是否可以收尾
+
+## 2026-03-28 第二百一十七次更新（R3 第五十五刀：拦住 `scenario-card` 再次退回直接打开 create 页与“按商机名称匹配”提示回流）
+
+- 本轮目标：
+  - 只处理 fresh rerun 新暴露出的 `scenario-card` 回退问题，不扩其他方向。
+- 已完成：
+  - 发起新的同 payload / 同模块 fresh rerun：
+    - `intent-run-a24ab3ed-c653-4458-8b9f-925b3614c53c`
+  - 在其 `scenario_card` 事件中发现两处新的回退：
+    - 入口又退回成：
+      - `flowDefinition.entryUrl = https://uat-service.yikaiye.com/#/business/createbusiness`
+      - 首步直接写成“打开 URL ... createbusiness”
+    - 成功标准 / notes 又回流了无依据的商机名称提示：
+      - `“我创建的”列表中出现本次新建的商机记录（以创建时提取的商机名称为匹配）`
+      - `商机名称建议在填写后提取为变量，用于列表精确校验`
+  - 根因定位：
+    - 现有 `shouldForceBusinessListEntry` 只在首个 UI step 已明显带有“商机列表”特征时才会触发
+    - 当 LLM 首步直接写成“打开 createbusiness URL”时，即使整体任务语义仍是“从商机列表点击新建商机”，也不会被强制改回列表入口
+    - 同时现有名称去业务化主要覆盖 `sharedVariables / extract step / list verify step`，还没有覆盖：
+      - `successCriteria`
+      - `notes`
+      里的“按商机名称匹配”提示回流
+  - 代码修复：
+    - `lib/ai/scenario-card.ts`
+    - 新增 `cardExplicitlyStartsFromBusinessList(...)`
+      - 只要卡片整体语义明确包含“从商机列表点击 / 点击新建商机按钮发起”，即使首步被写成直接打开 `createbusiness`，也强制按列表入口归一化
+    - 新增 `stepDirectlyOpensBusinessCreatePage(...)` + `rewriteDirectBusinessCreateEntryStep(...)`
+      - 将首个“直接打开 create 页”的 UI step 改写回：
+        - `进入商机列表并打开新建页`
+        - 目标指向 `businesslist`
+    - 扩展 `sanitizeBusinessCreateSuccessCriterion(...)`
+      - 在未显式要求业务名称时，把
+        - `以创建时提取的商机名称为匹配`
+        - `名称与创建时一致`
+        这类成功标准改写为通用的“列表中出现本次新建商机记录”
+    - 新增 `sanitizeBusinessCreateNotes(...)`
+      - 去掉 notes 里的“商机名称建议在填写后提取为变量 / 按商机名称精确校验”等回流提示
+      - 保留 `businessId / 联系人 / 手机号` 优先链
+  - 回归测试：
+    - `tests/unit/scenario-card.spec.ts`
+    - 新增：
+      - `rewrites direct createbusiness entry back to business list when the card explicitly starts from the list action`
+      - `strips business-name matching hints from success criteria and notes when the card does not explicitly require a business name`
+- 验证：
+  - `npx vitest run tests/unit/scenario-card.spec.ts`
+  - 结果：
+    - `16 passed`
+- 当前结果：
+  - 这条 fresh rerun 暴露出的新问题已收敛为 `scenario-card` 归一化回退
+  - 代码与单测已经收口，但还缺新的 fresh rerun 确认：
+    - `entryUrl` 是否重新回到 `businesslist`
+    - `successCriteria / notes` 是否不再带回“按商机名称匹配”
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第五十五刀：拦住 `scenario-card` 再次退回直接打开 create 页与“按商机名称匹配”提示回流）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前新 blocker 已定位并修复
+  - 但还缺新的 fresh rerun 来确认 online `scenario_card` 已恢复列表入口与非名称匹配验收
+- 下一步：
+  - 继续 `R3`
+  - 不扩范围，重新发起同 payload / 同模块 fresh rerun
+  - 优先核对：
+    - `flowDefinition.entryUrl` 是否回到 `businesslist`
+    - `successCriteria / notes` 是否去掉“按商机名称匹配”
+  - 若 `scenario_card` 已恢复正常，再看 `attempt1` 是否继续保持直过
+
+## 2026-03-28 第二百一十八次更新（R3 第五十六刀：收窄 `scenario-card` 中“唯一标识字段 / 如商机名称”匹配提示回流）
+
+- 本轮目标：
+  - 只处理 fresh rerun 中剩余的 `successCriteria / notes` 匹配提示回流，不扩其他方向。
+- 已完成：
+  - 复核新一条 fresh rerun：
+    - `intent-run-15f682d5-ec7b-406e-a0f4-a9b015d68c70`
+  - 已确认上一刀的一半修复在线生效：
+    - `flowDefinition.entryUrl` 已恢复为 `https://uat-service.yikaiye.com/#/business/businesslist`
+    - 首步也已恢复为从商机列表点击“新建商机”进入创建页
+  - 但仍残留一处更窄的回流：
+    - `successCriteria` 里出现：
+      - `“我创建的”列表中出现本次新建的商机记录（以创建时提取的唯一标识字段匹配）`
+    - `notes` 里出现：
+      - `新建记录匹配建议优先使用创建时可提取的唯一字段（如商机名称）`
+  - 根因定位：
+    - 之前只去掉了显式“按商机名称匹配 / 名称与创建时一致”
+    - 还没有覆盖更抽象的：
+      - `唯一标识字段`
+      - `唯一字段`
+      - `唯一标识`
+      这类 wording
+    - 这些 wording 在当前 business-create family 下仍会把验收方向往“名称匹配”拉回去
+  - 代码修复：
+    - `lib/ai/scenario-card.ts`
+    - 扩展 `sanitizeBusinessCreateSuccessCriterion(...)`
+      - 当卡片未显式要求业务名称时，把
+        - `唯一标识字段`
+        - `唯一字段`
+        - `唯一标识`
+        - `以...匹配 / 按...匹配`
+        这类列表匹配提示统一改写回通用记录出现断言
+    - 扩展 `sanitizeBusinessCreateNotes(...)`
+      - 去掉 notes 中：
+        - `新建记录匹配建议优先使用创建时可提取的唯一字段（如商机名称）`
+        - 以及同类 `唯一字段 / 唯一标识字段` 提示
+      - 保留已有的 `businessId / 联系人 / 手机号` 优先链说明
+  - 回归测试：
+    - `tests/unit/scenario-card.spec.ts`
+    - 新增：
+      - `strips unique-identifier matching hints from success criteria and notes when they only suggest using business names as a match strategy`
+- 验证：
+  - `npx vitest run tests/unit/scenario-card.spec.ts`
+  - 结果：
+    - `17 passed`
+- 当前结果：
+  - 这条剩余回流点已在代码与单测层收口
+  - 当前还缺新的 fresh rerun，确认 online `scenario_card.successCriteria / notes` 里不再带回：
+    - `唯一标识字段匹配`
+    - `如商机名称`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第五十六刀：收窄 `scenario-card` 中“唯一标识字段 / 如商机名称”匹配提示回流）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 入口回退问题已确认在线消失
+  - 当前只剩最后一跳 live 复验：`successCriteria / notes` 的匹配提示是否也在线消失
+- 下一步：
+  - 继续 `R3`
+  - 不扩范围，重新发起同 payload / 同模块 fresh rerun
+  - 优先核对 `scenario_card`：
+    - `entryUrl` 继续保持 `businesslist`
+    - `successCriteria / notes` 不再出现“唯一标识字段匹配 / 如商机名称”
+  - 若这次 `scenario_card` 也恢复正常，再看 `attempt1` 是否继续保持直过
+
+## 2026-03-28 第二百一十九次更新（R3 第五十七刀：`scenario-card` 回退点已完成 live 闭环，模块级 recent window 明显回升）
+
+- 本轮目标：
+  - 只验证上一刀 `scenario-card` 修复是否在线生效，并重新评估模块级 recent window，不扩其他方向。
+- 已完成：
+  - 发起新的同 payload / 同模块 fresh rerun：
+    - `intent-run-b845b050-55d0-4fef-89ea-a386c5a104b6`
+  - live 复核其 `scenario_card`：
+    - `flowDefinition.entryUrl` 已稳定回到：
+      - `https://uat-service.yikaiye.com/#/business/businesslist`
+    - 首步已恢复为：
+      - `进入商机列表并打开新建页`
+    - `successCriteria` 已不再带回：
+      - `唯一标识字段匹配`
+    - `notes` 也不再带回：
+      - `新建记录匹配建议优先使用创建时可提取的唯一字段（如商机名称）`
+  - live 复核执行结果：
+    - `intent-run-b845b050-55d0-4fef-89ea-a386c5a104b6`
+    - 最终 `passed`
+    - `attempt1` 直过
+  - 重新计算模块级 recent window：
+    - `projectUid=proj_default`
+    - `moduleUid=mod_1773303139537_c84d8476`
+    - 最近 `20` 条 terminal runs：
+      - `totalRuns=20`
+      - `passedRuns=12`
+      - `failedRuns=8`
+      - `firstPassPassedRuns=10`
+      - `firstPassPassRate=50`
+      - `repairedPassRuns=2`
+      - `terminalPassRate=60`
+  - 复核最近 6 条模块级 traces：
+    - 最近 4 条 fresh rerun 已全部恢复为：
+      - `passed`
+      - `firstPassSucceeded=true`
+    - 分别为：
+      - `intent-run-b845b050-55d0-4fef-89ea-a386c5a104b6`
+      - `intent-run-15f682d5-ec7b-406e-a0f4-a9b015d68c70`
+      - `intent-run-a24ab3ed-c653-4458-8b9f-925b3614c53c`
+      - `intent-run-0da8b37b-3f25-4f3a-9a62-d1c850efd7fa`
+    - 紧邻的旧失败样本仍主要是修补前产物：
+      - `intent-run-10bbdd16-0ffc-4674-8899-a81fa38ba16b`
+      - `intent-run-ec3bfad6-d875-4a9c-89a6-5852c8593ba1`
+- 验证：
+  - live run：
+    - `intent-run-b845b050-55d0-4fef-89ea-a386c5a104b6`
+  - 结果：
+    - `passed`
+    - `attempt1` 直过
+  - 模块级 recent window：
+    - `business_create_list_verify.firstPassPassRate=50`
+    - `business_create_list_verify.terminalPassRate=60`
+- 当前结果：
+  - 这一轮 `scenario-card` 归一化回退点已经完成 live 闭环：
+    - 列表入口稳定
+    - 非业务名称匹配验收稳定
+    - fresh rerun 持续恢复 `attempt1 pass`
+  - 模块级 recent window 已明显回升
+  - 但当前还不能仅凭 `50% first-pass / 60% terminal` 就直接关闭 `R3`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第五十七刀：`scenario-card` 回退点已完成 live 闭环，模块级 recent window 明显回升）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前已经没有新的 current-code 首轮失败签名暴露出来
+  - 剩余问题主要是历史失败样本仍在 recent window 内，占比还没有下降到足以安全关闭 `R3`
+- 下一步：
+  - 继续 `R3`
+  - 不扩范围，不改主链代码
+  - 只继续补同 payload / 同模块 fresh rerun 样本，观察 recent window 是否继续抬升
+  - 如果后续 fresh rerun 再次暴露新的 current-code 首轮失败：
+    - 继续只修那一个新的单一签名
+  - 如果 recent window 继续被 `attempt1 pass` 覆盖：
+    - 再判断 `R3` 是否可以收尾
+
+## 2026-03-28 第二百二十次更新（R3 第五十八刀：收紧 `scenario-card` 列表校验识别，阻断表单填写步骤被误改写）
+
+- 本轮目标：
+  - 只修复新暴露的 `scenario-card` 回归：
+    - 非断言型表单填写步骤被误改写成列表校验步骤
+    - notes 中重新漏回了“可唯一识别字段（如商机名称）用于后续列表断言”
+- 已完成：
+  - 在 [lib/ai/scenario-card.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/scenario-card.ts) 收紧 `isBusinessCreateListVerificationStep(...)`：
+    - 列表校验步骤必须同时具备：
+      - 列表/表格/“我创建的”这类列表表面信号
+      - 记录检索/定位信号
+    - 明确排除表单填写类 UI 步骤：
+      - `填写/输入/选择/上传 + 表单/字段/必填/区块/附件`
+    - `assert` 步骤继续保留为列表校验优先候选，避免误伤真正的列表断言
+  - 扩展 `sanitizeBusinessCreateNotes(...)`：
+    - 额外清理：
+      - `可唯一识别的字段（如商机名称）用于后续列表断言`
+  - 在 [tests/unit/scenario-card.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/scenario-card.spec.ts) 新增回归覆盖：
+    - `填写前三个表单必填项` 这类 UI 步骤不得被改写成列表校验文案
+    - 新 notes 文案必须被清理掉
+  - 重新执行单测：
+    - `npx vitest run tests/unit/scenario-card.spec.ts`
+    - 结果：
+      - `19 passed`
+- 验证：
+  - 单测：
+    - `tests/unit/scenario-card.spec.ts`
+    - `19/19 passed`
+- 当前结果：
+  - 本轮新暴露的 `scenario-card` 文案污染点已在代码层收口
+  - 当前还没有完成 live 闭环，不能据此关闭 `R3`
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第五十八刀：收紧 `scenario-card` 列表校验识别，阻断表单填写步骤被误改写）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 这次只完成了 unit 层回归，尚未确认 live rerun 中 `step-2` 文案是否恢复正常
+- 下一步：
+  - 继续 `R3`
+  - 发起同 payload / 同模块 fresh rerun
+  - 只验证：
+    - `step-2` 不再被改写成列表校验步骤
+    - notes 不再带“可唯一识别字段（如商机名称）用于后续列表断言”
+  - 若 live 恢复：
+    - 再重新评估模块级 recent window
+
+## 2026-03-28 第二百二十一次更新（R3 第五十九刀：live 已确认 `step-2` 回正，继续补齐 notes 最后一条商机名称提示漏口）
+
+- 本轮目标：
+  - 只跟进上一刀的 live 结果，不扩新方向：
+    - 确认 `step-2` 表单填写步骤是否已不再被误改写
+    - 若仍有同类 business-name 提示漏回，只补那一个漏口
+- 已完成：
+  - 通过服务端 API 发起同 payload / 同模块 fresh rerun：
+    - `intent-run-9cfbadaf-5978-4799-82ce-69c034e6e473`
+  - live 复核其 `scenario_card` 事件，确认主回归已恢复：
+    - `flowDefinition.entryUrl`：
+      - `https://uat-service.yikaiye.com/#/business/businesslist`
+    - `step-1.title`：
+      - `进入商机列表并打开新建页`
+    - `step-2.title`：
+      - `填写前三个表单必填项`
+    - `step-2.instruction`：
+      - 已恢复为前三个表单填写说明
+      - 未再被改写为 `优先使用 businessId 在列表中检索...`
+    - `step-2.expectedResult`：
+      - 已恢复为表单必填通过说明
+      - 未再被改写为 `“我创建的”列表中存在本次新建商机记录`
+  - live 同时暴露剩余唯一漏口：
+    - notes 仍包含：
+      - `不预设固定商机名称，运行时生成并提取用于列表校验`
+  - 在 [lib/ai/scenario-card.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/scenario-card.ts) 扩展 notes 清洗：
+    - 补充拦截：
+      - `不预设固定商机名称`
+      - `运行时生成并提取...列表/记录...校验/断言/检索`
+  - 在 [tests/unit/scenario-card.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/scenario-card.spec.ts) 新增回归用例：
+    - `strips runtime-generated business-name list-verification hints from notes`
+  - 执行单测：
+    - `npx vitest run tests/unit/scenario-card.spec.ts`
+    - 结果：
+      - `20 passed`
+- 验证：
+  - live `scenario_card`：
+    - `intent-run-9cfbadaf-5978-4799-82ce-69c034e6e473`
+    - 已确认 `step-2` 回正
+  - 单测：
+    - `tests/unit/scenario-card.spec.ts`
+    - `20/20 passed`
+- 当前结果：
+  - `scenario-card` 的主回归已经完成 live 闭环：
+    - 列表入口正确
+    - `step-2` 填表步骤不再被误改写
+  - 目前只剩最后一条 notes 漏口，代码层和单测层已补齐
+  - 还差一次新的 live rerun 来确认 notes 也已清干净
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第五十九刀：live 已确认 `step-2` 回正，继续补齐 notes 最后一条商机名称提示漏口）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前仍未完成“notes 最后一条漏口”的 live 复核
+  - `intent-run-9cfbadaf-5978-4799-82ce-69c034e6e473` 仍在执行中，本轮只使用其 `scenario_card` 事件做了前半段 live 验证
+- 下一步：
+  - 继续 `R3`
+  - 再发 1 次 fresh rerun，仅复核：
+    - notes 不再出现 `不预设固定商机名称，运行时生成并提取用于列表校验`
+  - 若该条 notes 也恢复：
+    - 再看是否需要继续补 recent window 样本，或者可以准备收尾 `R3`
+
+## 2026-03-28 第二百二十二次更新（R3 第六十刀：notes 同义改写继续漏回，扩展清洗到“动态生成并提取为变量”）
+
+- 本轮目标：
+  - 只处理上一轮 live 暴露的同类 notes 漏口，不扩其他逻辑：
+    - `商机名称建议运行时动态生成并提取为变量，避免数据冲突`
+- 已完成：
+  - live 复核新的 fresh rerun：
+    - `intent-run-1ccb85a2-1650-4ace-869c-d771ecddcfa1`
+  - 确认主回归仍然稳定：
+    - `entryUrl` 仍为：
+      - `https://uat-service.yikaiye.com/#/business/businesslist`
+    - `step-2.title` 仍为：
+      - `填写前三个表单必填项`
+  - 但 notes 又换了一种 business-name 同义写法漏回：
+    - `商机名称建议运行时动态生成并提取为变量，避免数据冲突`
+  - 在 [lib/ai/scenario-card.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/scenario-card.ts) 扩展 notes 清洗：
+    - 额外补充：
+      - `商机名称建议.*动态生成并提取为变量`
+  - 在 [tests/unit/scenario-card.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/scenario-card.spec.ts) 新增回归用例：
+    - `strips dynamic business-name variable hints from notes`
+  - 执行单测：
+    - `npx vitest run tests/unit/scenario-card.spec.ts`
+    - 结果：
+      - `21 passed`
+- 验证：
+  - 单测：
+    - `tests/unit/scenario-card.spec.ts`
+    - `21/21 passed`
+- 当前结果：
+  - `scenario-card` 主链行为继续稳定：
+    - 列表入口正确
+    - `step-2` 表单填写步骤保持正确
+  - 当前只剩 notes 同义写法的 live 复核尚未完成
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第六十刀：notes 同义改写继续漏回，扩展清洗到“动态生成并提取为变量”）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 还差 1 次新的 live rerun 来确认 notes 已彻底清干净
+- 下一步：
+  - 继续 `R3`
+  - 再发 1 次 fresh rerun，只复核：
+    - notes 中不再出现任何商机名称动态生成 / 提取为变量 / 列表校验类提示
+  - 若该轮通过：
+    - 再回头重算 recent window，判断 `R3` 是否具备收尾条件
+
+## 2026-03-28 第二百二十三次更新（R3 第六十一刀：继续收口 notes 第三种同义写法“运行时生成并提取/复用”）
+
+- 本轮目标：
+  - 只修复最新 live 样本里仍漏回的同类 notes 文案：
+    - `不编造固定商机名称，使用运行时生成并提取/复用`
+- 已完成：
+  - 在 [lib/ai/scenario-card.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/scenario-card.ts) 扩展 notes 清洗规则：
+    - 新增拦截：
+      - `不编造固定商机名称`
+      - `使用运行时生成并提取/复用`
+  - 在 [tests/unit/scenario-card.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/scenario-card.spec.ts) 新增回归用例：
+    - `strips runtime-generated business-name reuse hints from notes`
+  - 执行单测：
+    - `npx vitest run tests/unit/scenario-card.spec.ts`
+    - 结果：
+      - `22 passed`
+- 验证：
+  - 单测：
+    - `tests/unit/scenario-card.spec.ts`
+    - `22/22 passed`
+- 当前结果：
+  - `scenario-card` 的 notes 清洗已继续覆盖到第三种 business-name 同义写法
+  - 当前仍缺最后一次新的 live rerun 复核，才能确认 notes 已彻底清干净
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第六十一刀：继续收口 notes 第三种同义写法“运行时生成并提取/复用”）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 还差 1 次新的有效 live rerun，确认 notes 中不再出现任何商机名称动态生成 / 提取 / 复用提示
+- 下一步：
+  - 继续 `R3`
+  - 发新的 fresh rerun 做最终 notes 复核
+  - 若该轮通过：
+    - 再重算 recent window，判断 `R3` 是否可以收尾
+
+## 2026-03-28 第二百二十四次更新（R3 第六十二刀：不再追逐单句同义词，统一剔除 business-name 类 notes）
+
+- 本轮目标：
+  - 只解决同一类问题反复换说法漏回的现象：
+    - 不再逐句补正则
+    - 对“不显式要求商机名称”的商机新建场景，统一剔除所有 business-name 类 notes
+- 已完成：
+  - 在 [lib/ai/scenario-card.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/scenario-card.ts) 调整 `sanitizeBusinessCreateNotes(...)`：
+    - 当卡片未显式要求 business name 时：
+      - 任何包含 `商机名称 / 商机名 / 机会名 / businessName / opportunityName` 的 notes 一律清理
+    - 仍统一补回固定保守指引：
+      - `不要预设页面一定存在“商机名称输入框”；若页面未明确暴露该字段，优先围绕真实可见的联系人/手机号填写，并在最终提交后优先从响应提取 businessId。`
+  - 在 [tests/unit/scenario-card.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/scenario-card.spec.ts) 扩展回归覆盖：
+    - 把 live 最新暴露的
+      - `新建商机名称应在流程中动态生成并提取，避免依赖固定测试数据`
+      - 一并纳入禁止回流断言
+  - 执行单测：
+    - `npx vitest run tests/unit/scenario-card.spec.ts`
+    - 结果：
+      - `22 passed`
+- 验证：
+  - 单测：
+    - `tests/unit/scenario-card.spec.ts`
+    - `22/22 passed`
+- 当前结果：
+  - 这轮已经把 notes 清洗策略从“补单句”提升为“按类别整体收口”
+  - 后续不应再因为 business-name 同义改写不断漏回
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第六十二刀：不再追逐单句同义词，统一剔除 business-name 类 notes）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 还差 1 次新的 live rerun，确认这次“按类别整体收口”已经在线生效
+- 下一步：
+  - 继续 `R3`
+  - 发新的 fresh rerun，只复核：
+    - `entryUrl` 仍是 `businesslist`
+    - `step-2` 仍保持表单填写语义
+    - notes 中已不再出现任何 business-name 类提示
+  - 若通过：
+    - 重算 recent window，判断 `R3` 是否进入收尾阶段
+
+## 2026-03-28 第二百二十五次更新（R3 收尾判断：`scenario-card` live 已稳定，recent window 达到可收尾区间）
+
+- 本轮目标：
+  - 完成 `R3` 最后一轮 live 复核与 recent window 重算，只判断是否具备收尾条件，不扩其他方向。
+- 已完成：
+  - 发起新的有效 fresh rerun：
+    - `intent-run-b7dfe68c-1550-4e2a-a619-ee50ffa6a64b`
+  - live 复核其 `scenario_card`：
+    - `entryUrl` 已稳定为：
+      - `https://uat-service.yikaiye.com/#/business/businesslist`
+    - `step-2.title`：
+      - `填写前三个表单必填项`
+    - `step-2.instruction`：
+      - 已稳定保持表单填写语义
+      - 不再回流列表校验文案
+    - `notes`：
+      - 已不再出现任何 business-name 动态生成 / 提取 / 复用类提示
+      - 当前只保留与按钮空格、跳转回列表、页面锚点、`businessId` 提取相关的保守指引
+  - live 复核该 run 的最终执行结果：
+    - `intent-run-b7dfe68c-1550-4e2a-a619-ee50ffa6a64b`
+    - 最终 `passed`
+    - `attemptCount=2`
+    - `attemptKinds=[generate, repair]`
+  - 重新计算模块级 recent window（最近 `20` 条 terminal runs）：
+    - `totalRuns=20`
+    - `passedRuns=17`
+    - `failedRuns=3`
+    - `firstPassPassedRuns=14`
+    - `firstPassPassRate=70`
+    - `repairedPassRuns=3`
+    - `terminalPassRate=85`
+  - 复核最近 `8` 条 terminal runs：
+    - `8/8 passed`
+    - 其中：
+      - `7` 条 `attempt1 pass`
+      - `1` 条 `repair pass`
+    - 最近 `8` 条分别为：
+      - `intent-run-b7dfe68c-1550-4e2a-a619-ee50ffa6a64b`
+      - `intent-run-0985897b-8f7f-42b2-96c8-6f04625119b3`
+      - `intent-run-dcb716b9-160f-433f-b667-cfad9d06ceef`
+      - `intent-run-1ccb85a2-1650-4ace-869c-d771ecddcfa1`
+      - `intent-run-9cfbadaf-5978-4799-82ce-69c034e6e473`
+      - `intent-run-843dff0f-3804-41a7-8067-8b7038214606`
+      - `intent-run-b845b050-55d0-4fef-89ea-a386c5a104b6`
+      - `intent-run-15f682d5-ec7b-406e-a0f4-a9b015d68c70`
+- 验证：
+  - live `scenario_card`：
+    - `intent-run-b7dfe68c-1550-4e2a-a619-ee50ffa6a64b`
+  - live run 终态：
+    - `passed`
+  - recent window：
+    - `firstPassPassRate=70`
+    - `terminalPassRate=85`
+  - 最近 `8` 条：
+    - `8/8 passed`
+    - `7/8 attempt1 pass`
+- 当前结果：
+  - `R3` 当前这条 roadmap scope 的核心目标已经满足：
+    - “接口成功但最终仍失败”的 run 已显著下降
+    - “回列表找不到记录 / 业务验收漂移”已退出最近主失败链
+    - `scenario-card` 回流问题已完成 live 闭环
+  - 以当前证据看，`R3` 已具备收尾条件
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前仍有 `1/8` 最新样本通过 repair 收口，说明执行层噪声还没有完全归零
+  - 但这已经不再阻塞本轮 `R3` 收尾判断
+- 下一步：
+  - 不再继续在 `R3` 上追加同类小修
+  - 后续若继续推进高成功率主线，应回到下一阶段任务，而不是继续把 notes / scenario-card 同义词问题挂在 `R3` 后面反复追
+
+## 2026-03-28 第二百二十六次更新（R1 第五刀：`insights summary` 补齐 `auth/env/assertion` 指标）
+
+- 本轮目标：
+  - `R3` 收尾后回到 `R1`，只补 `insights summary` 缺失的三类 blocker / assertion 指标，不扩其他方向。
+- 已完成：
+  - 在 [lib/ai/intent-e2e-insights.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-insights.ts) 扩展 `IntentE2EInsightSummary`：
+    - 新增：
+      - `authBlockRuns`
+      - `authBlockRate`
+      - `envBlockRuns`
+      - `envBlockRate`
+      - `assertionFailureRuns`
+      - `assertionFailureRate`
+  - 在同文件补充保守统计映射，直接复用现有 `failureClass`：
+    - `authBlockRuns = auth_failed + permission_blocked`
+    - `envBlockRuns = env_transient + data_missing`
+    - `assertionFailureRuns = assertion_too_strict`
+  - 在 [components/IntentE2EWorkbench.tsx](/Users/xiaolongbao/Workspace/ai-test/components/IntentE2EWorkbench.tsx) 同步前端 `summary` 类型，避免接口字段与页面本地类型漂移。
+  - 在 [tests/unit/intent-e2e-insights.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-insights.spec.ts) 补充回归：
+    - 覆盖 `auth_failed / permission_blocked / env_transient / data_missing / assertion_too_strict`
+    - 校验三类 summary runs / rates 聚合结果
+  - 在 [tests/unit/api-intent-e2e-insights-route.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/api-intent-e2e-insights-route.spec.ts) 同步 route mock 返回结构。
+- 验证：
+  - 执行：
+    - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - 结果：
+    - `2` 个测试文件通过
+    - `37/37 passed`
+- 当前结果：
+  - `R1` 交付物里要求的
+    - `auth_block_rate`
+    - `env_block_rate`
+    - `assertion_failure_rate`
+    - 已进入统一的 `insights summary / API` 输出
+  - 后续不需要再从 `failureClasses` 列表里手工反推这三项摘要指标
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第五刀：summary-level auth/env/assertion blocker 指标已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - 当前只补到了 `insights summary` 数据层与类型层，这一步还没有扩展新的 live 验证范围
+- 下一步：
+  - 继续回到 `R1`，补剩余 eval / trace 结构化缺口，不再回到 `R3`
+
+## 2026-03-28 第二百二十七次更新（R1 第六刀：`recent trace` 补齐 `chosen recipe / matched starter helpers`）
+
+- 本轮目标：
+  - 继续只补 `R1 trace schema` 缺口，把先前文档里标记仍缺的 `chosen recipe / starter helpers` 接进 `recentTraces`，不扩到别的治理链。
+- 已完成：
+  - 在 [lib/ai/intent-e2e-insights.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-insights.ts) 扩展 `IntentE2EInsightRecentTrace`：
+    - 新增：
+      - `matchedRecipeSlugs`
+      - `matchedStarterHelpers`
+  - 同文件 `normalizeTerminalRun(...)` 已开始从现有 run snapshot 里回收：
+    - `executionPlan.matchedRecipeSlugs + verificationPlan.matchedRecipeSlugs`
+      - 统一归并到 `matchedRecipeSlugs`
+    - `knowledge.starterAssets[].helper`
+      - 统一归并到 `matchedStarterHelpers`
+  - `buildRecentTraceSummaries(...)` 已把上述字段稳定下发到 `recentTraces` 输出。
+  - 在 [components/IntentE2EWorkbench.tsx](/Users/xiaolongbao/Workspace/ai-test/components/IntentE2EWorkbench.tsx) 同步 trace 本地类型，并在“最近 Trace 摘要”里补显示：
+    - `Starter`
+    - `recipe`
+  - 在 [tests/unit/intent-e2e-insights.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-insights.spec.ts) 扩展 `recentTraces` 回归样本：
+    - 覆盖 execution/verification 两处 recipe slug 合并
+    - 覆盖 `starterAssets[].helper` 回收到 trace 顶层
+- 验证：
+  - 执行：
+    - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - 结果：
+    - `2` 个测试文件通过
+    - `37/37 passed`
+- 当前结果：
+  - `R1` 文档里 trace schema 要求的
+    - `matched knowledge / starter helpers`
+    - `chosen helpers / chosen recipe`
+    - 现在都已进入统一的 `recentTraces` 输出
+  - 后续查看最近 trace 时，不需要再从 executionPlan / knowledge 原始对象手工拼这两类信息
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第六刀：recent trace 补齐 chosen recipe / matched starter helpers）
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - `key response events / verifier results / final grader result` 仍未作为独立 trace 顶层字段进入 `recentTraces`
+- 下一步：
+  - 继续 `R1`，补剩余 trace schema 缺口
+
+## 2026-03-28 第二百二十八次更新（R1 第七刀：`recent trace` 补齐 `key response events`）
+
+- 本轮目标：
+  - 继续只补 `R1 trace schema` 缺口，把 worker 已有结构化响应日志提升成 `recentTraces` 顶层 `key response events`，不扩 verifier / grader 治理。
+- 已完成：
+  - 在 [lib/ai/intent-e2e-insights.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-insights.ts) 新增：
+    - `IntentE2EInsightRecentTraceResponseEvent`
+    - `recentTraces[].responseEvents`
+  - 同文件新增 `extractTraceResponseEvents(...)`，开始从 attempt logs 里回收现有 worker 已写入的结构化响应日志：
+    - `api response matched`
+    - `api response json parsed`
+  - 当前每条 response event 会保留：
+    - `attempt`
+    - `kind`
+    - `url`
+    - `method`
+    - `status`
+    - `topLevelKeys`
+  - `normalizeTerminalRun(...)` 现已把 attempt logs 中的响应元数据提升到 run 级 `responseEvents`，避免后续再从原始 logs 手工下钻解析。
+  - 在 [components/IntentE2EWorkbench.tsx](/Users/xiaolongbao/Workspace/ai-test/components/IntentE2EWorkbench.tsx) 同步 trace 本地类型，并在“最近 Trace 摘要”里补一行：
+    - `响应`
+    - 直接展示最近响应事件摘要
+  - 在 [tests/unit/intent-e2e-insights.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-insights.spec.ts) 扩展 `recentTraces` 回归样本：
+    - 覆盖 `api response matched`
+    - 覆盖 `api response json parsed`
+    - 覆盖 `url / method / status / topLevelKeys` 提取
+- 验证：
+  - 执行：
+    - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - 结果：
+    - `2` 个测试文件通过
+    - `37/37 passed`
+- 当前结果：
+  - `R1` 文档里 trace schema 要求的 `key response events` 已进入统一的 `recentTraces` 顶层输出
+  - 后续看最近 trace 时，不需要再从 attempt logs 里手工找 `waitForApiResponse/readJsonResponse` 的日志 meta
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第七刀：recent trace 补齐 key response events）
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - `verifier results / final grader result` 仍未作为独立 trace 顶层字段进入 `recentTraces`
+- 下一步：
+  - 继续 `R1`，补剩余 trace schema 缺口
+
+## 2026-03-28 第二百二十九次更新（R1 第八刀：`recent trace` 补齐 `final grader result`）
+
+- 本轮目标：
+  - 继续只补 `R1 trace schema` 缺口，先把当前 run snapshot 已有的终态判定结果整理成 `recentTraces` 顶层 `final grader result`，不扩 verifier 明细治理。
+- 已完成：
+  - 在 [lib/ai/intent-e2e-insights.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-insights.ts) 新增：
+    - `IntentE2EInsightRecentTraceFinalGraderResult`
+    - `recentTraces[].finalGraderResult`
+  - 同文件新增 `buildTraceFinalGraderResult(...)`，开始直接复用现有 run snapshot 里的：
+    - `result.finalFailureTriage.failureClass`
+    - `result.finalFailureTriage.repairable`
+    - `result.finalFailureTriage.summary`
+    - `result.finalResult.error`
+    - `snapshot.status`
+  - 当前每条 `finalGraderResult` 会稳定返回：
+    - `status`
+    - `summary`
+    - `failureClass`
+    - `repairable`
+  - 对通过态 run：
+    - 统一输出 `summary = 终态通过`
+    - `repairable = null`
+  - 在 [components/IntentE2EWorkbench.tsx](/Users/xiaolongbao/Workspace/ai-test/components/IntentE2EWorkbench.tsx) 同步 trace 本地类型，并在“最近 Trace 摘要”结果卡片里补显示：
+    - `grader`
+    - `repair`
+  - 在 [tests/unit/intent-e2e-insights.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-insights.spec.ts) 扩展 `recentTraces` 回归：
+    - 覆盖失败态 `summary / repairable`
+    - 覆盖 `review / verify / unknown` 三类 run 的终态 grader 摘要
+- 验证：
+  - 执行：
+    - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - 结果：
+    - `2` 个测试文件通过
+    - `37/37 passed`
+- 当前结果：
+  - `R1` 文档里 trace schema 要求的 `final grader result` 已进入统一的 `recentTraces` 顶层输出
+  - 后续看最近 trace 时，不需要再从 `finalFailureTriage / finalResult.error` 原始对象手工拼终态结论
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第八刀：recent trace 补齐 final grader result）
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - `verifier results` 仍未作为独立 trace 顶层字段进入 `recentTraces`
+- 下一步：
+  - 继续 `R1`，补剩余 trace schema 缺口
+
+## 2026-03-29 第二百三十次更新（R1 第九刀：`recent trace` 补齐 `verifier result`）
+
+- 本轮目标：
+  - 继续只补 `R1 trace schema` 缺口，把当前 run snapshot 已有的 verifier 相关信息整理成 `recentTraces` 顶层 `verifier result`。
+  - 保持保守口径，只复用当前真实持久化的 `verificationPlan / finalResult.steps`，不虚构逐 check 运行结果。
+- 已完成：
+  - 在 [lib/ai/intent-e2e-insights.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-insights.ts) 完成：
+    - `IntentE2EInsightRecentTraceVerifierCheckResult`
+    - `IntentE2EInsightRecentTraceVerifierResult`
+    - `recentTraces[].verifierResult`
+  - 同文件新增并接入 `buildTraceVerifierResult(...)`，开始保守复用现有 run snapshot 里的：
+    - `result.verificationPlan.expectedOutcome`
+    - `result.verificationPlan.checks`
+    - `result.finalResult.steps`
+  - 当前每条 `verifierResult` 会稳定返回：
+    - `expectedOutcome`
+    - `failingCheckCount`
+    - `failingChecks`
+  - 当前 `failingChecks` 的取值口径为：
+    - 只有当 `finalResult.steps` 里存在失败的 `verification / 验收 / 校验` 终态步骤时，才回填失败检查项
+    - 失败检查项直接来自 `verificationPlan.checks`
+    - 不额外伪造未持久化的逐 check runtime pass/fail 证据
+  - 在 [components/IntentE2EWorkbench.tsx](/Users/xiaolongbao/Workspace/ai-test/components/IntentE2EWorkbench.tsx) 同步 trace 本地类型，并在“最近 Trace 摘要”结果卡片里补显示：
+    - `verifier`
+    - `期望`
+  - 在 [tests/unit/intent-e2e-insights.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-insights.spec.ts) 扩展 `recentTraces` 回归：
+    - 覆盖 `expectedOutcome / checks / finalResult.steps`
+    - 覆盖 `Verification: 最终业务验收` 失败时的 `failingCheckCount / failingChecks`
+    - 修正精确断言样例，确保 `recentTraces` 新字段受回归保护
+- 验证：
+  - 执行：
+    - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - 结果：
+    - `2` 个测试文件通过
+    - `37/37 passed`
+- 当前结果：
+  - `R1` 文档里 trace schema 要求的 `verifier result` 已进入统一的 `recentTraces` 顶层输出
+  - 当前 `recentTraces` 已补齐本轮 roadmap 里持续回收的关键 trace 顶层字段：
+    - `matchedRecipeSlugs`
+    - `matchedStarterHelpers`
+    - `responseEvents`
+    - `finalGraderResult`
+    - `verifierResult`
+  - `R1 Eval 基线与 Trace 结构化` 在当前 roadmap scope 内收口完成
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
+- 风险 / 未完成：
+  - `R1` 本轮 scope 已收口；后续不再继续回补 `recentTraces` 字段
+  - 下一阶段未开始的工作已切回 `R7`
+- 下一步：
+  - 严格按 roadmap 进入 `R7`，不再追加 `R1`
+
+## 2026-03-29 第二百三十一次更新（R7 第一刀：场景族 SLO 落地）
+
+- 本轮目标：
+  - 严格按 `R7` 先补最小必要闭环，只落 `场景族 SLO` 和 `first pass 提升目标` 的统一口径。
+  - 本轮不扩 `regression watchlist / recipe 自动回滚 / 上线灰度策略`。
+- 已完成：
+  - 在 [lib/ai/intent-e2e-insights.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-insights.ts) 新增：
+    - `IntentE2EInsightScenarioFamilySloStatus`
+    - `IntentE2EInsightScenarioFamilySloItem`
+    - `IntentE2EInsightScenarioFamilySloOverview`
+    - `scenarioFamilySlo`
+  - 同文件新增 `SCENARIO_FAMILY_SLO_TARGETS`，先对当前 `R1` 已稳定分层的场景族设置统一目标：
+    - `page_task`: `first_pass >= 85%`，`terminal >= 95%`
+    - `simple_scenario`: `first_pass >= 70%`，`terminal >= 85%`
+    - `complex_enterprise_flow`: `first_pass >= 60%`，`terminal >= 80%`
+    - `unknown`: 先沿用保守兜底目标
+  - 同文件新增 `buildScenarioFamilySloOverview(...)`，开始基于现有 `scenarioFamilies` 聚合输出：
+    - `generatedFromRuns`
+    - `meetingCount / atRiskCount / offTrackCount / insufficientDataCount`
+    - 每个场景族的：
+      - `currentFirstPassRate`
+      - `currentTerminalPassRate`
+      - `targetFirstPassRate`
+      - `targetTerminalPassRate`
+      - `firstPassGap`
+      - `terminalGap`
+      - `status`
+      - `recommendation`
+  - 当前 SLO 状态口径为：
+    - 样本数不足 `minRuns` 时，标记 `insufficient_data`
+    - 首轮和终态都达标时，标记 `meeting`
+    - 仅轻微差距或终态已达标时，标记 `at_risk`
+    - 否则标记 `off_track`
+  - 在 [components/IntentE2EWorkbench.tsx](/Users/xiaolongbao/Workspace/ai-test/components/IntentE2EWorkbench.tsx) 同步 response 类型，并在洞察面板里新增：
+    - `场景族 SLO`
+    - 直接展示各场景族当前值、目标值、差距和建议动作
+  - 在 [tests/unit/intent-e2e-insights.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-insights.spec.ts) 补齐回归：
+    - 样本不足场景的 `insufficient_data`
+    - 达标 / 临界 / 未达标 三种 SLO 状态
+    - 复杂企业流程样例按真实归类规则补成三步含 `extract` 的复杂流
+- 验证：
+  - 执行：
+    - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - 结果：
+    - `2` 个测试文件通过
+    - `38/38 passed`
+- 当前结果：
+  - `R7` 里最基础的 `场景族 SLO / first pass 提升目标` 已进入统一洞察输出，不再只靠人工看 `scenarioFamilies` 自行脑补目标线
+  - 后续做 `watchlist / rollback / 灰度` 时，可以直接复用这套 SLO 聚合，而不需要再重做目标口径
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：进行中（第一刀：场景族 SLO 已落地）
+- 风险 / 未完成：
+  - `regression watchlist` 还未形成独立输出
+  - `recipe / knowledge 自动降级与回滚规则` 还未和 SLO 打通
+  - `上线灰度策略` 还未进入实现
+- 下一步：
+  - 继续 `R7`，只补 `regression watchlist`
+
+## 2026-03-29 第二百三十二次更新（R7 第二刀：`regression watchlist` 落地）
+
+- 本轮目标：
+  - 严格按 `R7` 只补 `regression watchlist`，不提前扩到自动回滚和灰度策略。
+  - 直接复用当前已有洞察信号，不新造第二套对比口径。
+- 已完成：
+  - 在 [lib/ai/intent-e2e-insights.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-insights.ts) 新增：
+    - `IntentE2EInsightRegressionWatchlistSource`
+    - `IntentE2EInsightRegressionWatchlistSeverity`
+    - `IntentE2EInsightRegressionWatchlistItem`
+    - `IntentE2EInsightRegressionWatchlistOverview`
+    - `regressionWatchlist`
+  - 同文件新增 `buildRegressionWatchlist(...)`，当前 watchlist 只消费三类已存在信号：
+    - `scenarioFamilySlo`
+    - `evaluationBaseline`
+    - `rollbackCandidates`
+  - 当前 watchlist 的纳入口径为：
+    - `rollbackCandidates` 直接进入高优先 watchlist
+    - `evaluationBaseline` 中 `p0 / p1` 且存在失败或 repair 依赖的代表簇进入 watchlist
+    - `scenarioFamilySlo` 中 `off_track / at_risk` 的场景族进入 watchlist
+  - 当前每个 watchlist item 会稳定返回：
+    - `watchId`
+    - `source`
+    - `severity`
+    - `title / summary / recommendation`
+    - `latestObservedAt`
+    - `runCount`
+    - `currentFirstPassRate / currentTerminalPassRate`
+    - `compareLabel / compareFirstPassRate / compareTerminalPassRate`
+    - `targetFirstPassRate / targetTerminalPassRate`
+    - `sourceRef`
+    - `relatedRuleIds`
+    - `failureClasses`
+  - 在 [components/IntentE2EWorkbench.tsx](/Users/xiaolongbao/Workspace/ai-test/components/IntentE2EWorkbench.tsx) 同步 response 类型，并新增：
+    - `Regression Watchlist`
+    - 直接展示高风险 / 观察项、来源、当前值、对比值和建议动作
+  - 在 [tests/unit/intent-e2e-insights.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-insights.spec.ts) 补齐 watchlist 回归：
+    - 覆盖 `rollback_candidate`
+    - 覆盖 `evaluation_baseline`
+    - 覆盖 `scenario_family_slo`
+- 验证：
+  - 执行：
+    - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - 结果：
+    - `2` 个测试文件通过
+    - `39/39 passed`
+- 当前结果：
+  - `R7` 所需的 `regression watchlist` 已进入统一洞察输出，不再需要人工在 `rollbackCandidates / evaluationBaseline / scenarioFamilySlo` 三块面板之间手工对照
+  - 后续做自动降级 / 回滚或灰度门禁时，可以直接消费同一份 watchlist 输出
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：进行中（第二刀：regression watchlist 已落地）
+- 风险 / 未完成：
+  - `recipe / knowledge 自动降级与回滚规则` 还未和 watchlist 打通
+  - `上线灰度策略` 还未进入实现
+- 下一步：
+  - 继续 `R7`，只补 `recipe / knowledge 自动降级与回滚规则`
+
+## 2026-03-29 第二百三十三次更新（R7 第三刀：`recipe / knowledge` 自动降级与回滚规则落地）
+
+- 本轮目标：
+  - 严格按 `R7` 只补 `recipe / knowledge 自动降级与回滚规则`，不提前扩到上线灰度策略。
+  - 直接复用现有 `evaluationBaseline / riskLifecycleRules / rollbackCandidates`，不新造第二套治理系统。
+- 已完成：
+  - 在 [lib/ai/intent-e2e-insights.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-insights.ts) 给 `evaluationBaseline.candidates` 补齐：
+    - `matchedRecipeSlugs`
+  - 同文件的 `buildEvaluationBaseline(...)` 现在会从聚类后的 terminal runs 聚合并输出对应的 recipe 命中集合，供治理层直接复用。
+  - 在 [lib/intent-project-recipe-governance.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-project-recipe-governance.ts) 新增并接入：
+    - `RecipeGovernanceEvaluationCandidateSignal`
+    - `RecipeGovernanceRiskSignal`
+    - `buildRecipeGovernanceRiskSignalMap(...)`
+    - `prependRecipeGovernanceRiskSignal(...)`
+  - 同文件当前 recipe 自动降级口径补成：
+    - 当 `evaluationBaseline` 命中 `p0 / p1` 高风险固定回归簇
+    - 且对应 recipe 最近 terminal run 已出现失败
+    - 且成功率 `<= 70%`
+    - 即使还没跌到原始 `<= 50%` 降级线，也会提前进入 `degrade`
+  - 当前 recipe 治理 reason 会补充高风险簇上下文：
+    - `命中 N 个高风险固定回归簇`
+  - 在 [tests/unit/intent-project-recipe-governance.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-project-recipe-governance.spec.ts) 新增回归：
+    - 覆盖“成功率中等但命中高风险固定回归簇时提前降级”
+    - 覆盖 reason 文案里高风险簇提示
+  - 在 [app/api/intent-e2e/project-knowledge/merge/route.ts](/Users/xiaolongbao/Workspace/ai-test/app/api/intent-e2e/project-knowledge/merge/route.ts) 扩展现有 merge guardrail：
+    - 不再只看 `rollbackCandidates`
+    - 同时消费 `riskLifecycleRules` 中 `policy === block_default_merge` 的规则
+  - 当前 knowledge merge 护栏口径补成：
+    - 新增规则若与历史可疑回滚候选重叠，继续发出原有 guardrail
+    - 新增规则若命中 `block_default_merge` 生命周期规则，即使当前没有 rollback candidate，也会返回 guardrail warning / receipt
+  - 当前 merge guardrail 仍保持原有 response 结构，只增强已有：
+    - `guardrailWarning`
+    - `mergeReceipts`
+  - 在 [tests/unit/api-intent-project-knowledge-merge-route.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/api-intent-project-knowledge-merge-route.spec.ts) 新增回归：
+    - 覆盖仅由 `block_default_merge` lifecycle rule 触发的 guardrail warning
+    - 确认 receipt 仍走统一 `guardrail` provenance
+- 验证：
+  - 执行：
+    - `npx vitest run tests/unit/intent-project-recipe-governance.spec.ts tests/unit/api-intent-project-knowledge-merge-route.spec.ts tests/unit/api-project-intent-recipes-governance-route.spec.ts`
+    - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+  - 结果：
+    - `3` 个测试文件通过，`15/15 passed`
+    - `2` 个测试文件通过，`39/39 passed`
+- 当前结果：
+  - `R7` 里的 `recipe / knowledge 自动降级与回滚规则` 已和现有洞察信号打通，不再需要人工在 `evaluationBaseline / riskLifecycleRules / rollbackCandidates` 之间手动比对后再决定是否降级或护栏提示
+  - recipe 侧现在可以基于高风险固定回归簇提前触发保守降级
+  - knowledge merge 侧现在可以基于 `block_default_merge` 生命周期规则提前发出回滚护栏，而不是只等历史 rollback candidate 出现
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：进行中（第三刀：recipe / knowledge 自动降级与回滚规则已落地）
+- 风险 / 未完成：
+  - `上线灰度策略` 还未进入实现
+- 下一步：
+  - 继续 `R7`，只补 `上线灰度策略`
+
+## 2026-03-29 第二百三十四次更新（R7 第四刀：`上线灰度策略` 落地）
+
+- 本轮目标：
+  - 严格按 `R7` 只补 `上线灰度策略`，不再扩展新的治理子系统。
+  - 直接复用已经落地的 `scenarioFamilySlo / regressionWatchlist / riskLifecycleRules / rollbackCandidates`，把“是否放量”收口成统一结论。
+- 已完成：
+  - 在 [lib/ai/intent-e2e-insights.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-insights.ts) 新增：
+    - `IntentE2EInsightRolloutStrategyStage`
+    - `IntentE2EInsightRolloutStrategyGateSource`
+    - `IntentE2EInsightRolloutStrategyGateStatus`
+    - `IntentE2EInsightRolloutStrategyGate`
+    - `IntentE2EInsightRolloutStrategyOverview`
+    - `rolloutStrategy`
+  - 同文件新增 `buildIntentE2ERolloutStrategy(...)`，当前灰度门禁只消费四类现有信号：
+    - `scenarioFamilySlo`
+    - `regressionWatchlist`
+    - `riskLifecycleRules`
+    - `rollbackCandidates`
+  - 当前灰度策略输出口径补成：
+    - 只要存在阻断门禁，推荐阶段为 `hold`
+    - 没有阻断但还有观察门禁，推荐阶段为 `small_batch`
+    - 关键门禁全部通过时，推荐阶段为 `full_release`
+  - 当前 `rolloutStrategy.gates` 会稳定返回：
+    - `gateId`
+    - `source`
+    - `status`
+    - `title / summary / recommendation`
+    - `sourceRef`
+  - 当前灰度门禁判定规则为：
+    - `scenarioFamilySlo` 有 `off_track` 时直接阻断
+    - `regressionWatchlist` 存在 `high` 项时直接阻断
+    - `riskLifecycleRules` 存在 `block_default_merge` 时直接阻断
+    - `rollbackCandidates` 非空时直接阻断
+    - `at_risk / insufficient_data / medium severity / observe_guarded / probation watching` 归入观察门禁
+  - 在 [components/IntentE2EWorkbench.tsx](/Users/xiaolongbao/Workspace/ai-test/components/IntentE2EWorkbench.tsx) 同步 response 类型，并新增：
+    - `上线灰度策略`
+    - 直接展示当前推荐阶段：
+      - `暂停放量`
+      - `小流量灰度`
+      - `可默认放量`
+    - 同时展示每一条灰度门禁的来源、状态和建议动作
+  - 同文件顺带补齐 `evaluationBaseline` 前端类型里的：
+    - `matchedRecipeSlugs`
+    - 避免洞察 UI 本地类型落后于后端返回体
+  - 在 [tests/unit/intent-e2e-insights.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-insights.spec.ts) 补齐回归：
+    - 覆盖阻断态 `hold`
+    - 覆盖观察态 `small_batch`
+    - 覆盖放量态 `full_release`
+    - 覆盖已有 watchlist 样例里 rollout gate 的聚合计数
+- 验证：
+  - 执行：
+    - `npx vitest run tests/unit/intent-e2e-insights.spec.ts tests/unit/api-intent-e2e-insights-route.spec.ts`
+    - `npm run build`
+  - 结果：
+    - `2` 个测试文件通过，`41/41 passed`
+    - `build` 通过
+- 当前结果：
+  - `R7` 里的 `上线灰度策略` 已进入统一洞察输出，不再需要人工把 `SLO / watchlist / 规则治理 / 回滚候选` 四块面板手工拼成“要不要放量”
+  - 当前 workbench 已能直接给出：
+    - `暂停放量`
+    - `小流量灰度`
+    - `可默认放量`
+    三档建议
+  - 这条灰度建议完全复用现有治理信号，不额外引入第二套独立发布系统
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+- 风险 / 未完成：
+  - 当前这版 roadmap 的 `R0-R7` 已收口完成
+  - 若后续继续扩展，只能在新 roadmap 里另行定义目标和边界
+- 下一步：
+  - 当前 roadmap scope 已完成，本轮不再追加新开发项

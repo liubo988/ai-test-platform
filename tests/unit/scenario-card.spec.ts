@@ -73,9 +73,948 @@ describe('scenario-card', () => {
     expect(input.description).toContain('视觉锚点');
     expect(input.context.taskMode).toBe('scenario');
     expect(input.context.scenarioSummary).toContain('填写表单');
+    expect(input.context.successCriteria).toEqual(['URL 保持在 create 页面', '页面出现新建商机记录']);
     expect(input.context.sharedVariables).toEqual(['businessId']);
     expect(input.context.scenarioSteps?.[0]?.stepUid).toBe('flow_1');
     expect(input.context.actionDsl?.steps[0]?.allowedActions).toContain('click');
     expect(input.context.actionDsl?.globalRules.join('\n')).toContain('共享变量');
+  });
+
+  it('uses scenario entry url for execution context while preserving business target url', () => {
+    const normalized = normalizeScenarioCard({
+      version: 1,
+      title: '从商机列表进入创建页并保存',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription: '先进入商机列表，再点击新建商机完成保存。',
+      successCriteria: ['进入创建页', '保存成功'],
+      visualAnchors: ['商机列表', '创建商机'],
+      notes: [],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/businesslist',
+        sharedVariables: ['businessId'],
+        expectedOutcome: '成功创建商机',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'flow_1',
+            stepType: 'ui',
+            title: '打开商机列表',
+            target: 'https://example.com/#/business/businesslist',
+            instruction: '进入商机列表并点击新建商机',
+            expectedResult: '进入创建商机页',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'flow_2',
+            stepType: 'ui',
+            title: '提交创建表单',
+            target: 'https://example.com/#/business/createbusiness',
+            instruction: '填写必填项并保存',
+            expectedResult: '创建成功',
+            extractVariable: 'businessId',
+          },
+        ],
+      },
+    });
+
+    const input = buildGenerateInputFromScenarioCard(normalized);
+
+    expect(input.targetUrl).toBe('https://example.com/#/business/createbusiness');
+    expect(input.context.scenarioEntryUrl).toBe('https://example.com/#/business/businesslist');
+    expect(input.context.actionDsl?.targetUrl).toBe('https://example.com/#/business/createbusiness');
+  });
+
+  it('falls back to the first navigable scenario step when entry url is missing', () => {
+    const input = buildGenerateInputFromScenarioCard(
+      normalizeScenarioCard({
+        version: 1,
+        title: '从列表发起创建流程',
+        taskMode: 'scenario',
+        targetUrl: '',
+        featureDescription: '从列表发起新建流程并校验创建成功。',
+        successCriteria: ['成功进入创建链路'],
+        visualAnchors: ['列表页'],
+        notes: [],
+        flowDefinition: {
+          version: 1,
+          entryUrl: '',
+          sharedVariables: [],
+          expectedOutcome: '创建流程可执行',
+          cleanupNotes: '',
+          steps: [
+            {
+              stepUid: 'flow_1',
+              stepType: 'ui',
+              title: '打开列表页',
+              target: 'https://example.com/#/business/businesslist',
+              instruction: '进入列表并点击新建',
+              expectedResult: '进入创建链路',
+              extractVariable: '',
+            },
+          ],
+        },
+      })
+    );
+
+    expect(input.targetUrl).toBe('https://example.com/#/business/businesslist');
+    expect(input.context.scenarioEntryUrl).toBe('https://example.com/#/business/businesslist');
+  });
+
+  it('rewrites business create entry url back to business list when the first step starts from the list page', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '新建商机并在我创建的列表中验证记录出现',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription: '登录后从商机列表进入新建商机，保存成功后回列表校验。',
+      successCriteria: ['保存成功', '我创建的列表出现新记录'],
+      visualAnchors: ['商机列表页存在新建商机按钮'],
+      notes: [],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/createbusiness',
+        sharedVariables: ['businessId'],
+        expectedOutcome: '我创建的列表可看到新建商机记录',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step-1',
+            stepType: 'ui',
+            title: '进入新建商机页面',
+            target: '商机列表页',
+            instruction: '登录后进入商机列表页，点击新建商机按钮。',
+            expectedResult: '成功打开新建商机页面',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step-2',
+            stepType: 'ui',
+            title: '返回商机列表并切换筛选',
+            target: '商机列表页筛选下拉',
+            instruction: '进入商机列表页，在筛选下拉中将我跟进的切换为我创建的。',
+            expectedResult: '筛选状态显示为我创建的',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    expect(card.flowDefinition.entryUrl).toBe('https://example.com/#/business/businesslist');
+    expect(card.flowDefinition.steps[0]?.target).toBe('https://example.com/#/business/businesslist');
+    expect(card.flowDefinition.steps[1]?.target).toBe('https://example.com/#/business/businesslist');
+
+    const input = buildGenerateInputFromScenarioCard(card);
+    expect(input.targetUrl).toBe('https://example.com/#/business/createbusiness');
+    expect(input.context.scenarioEntryUrl).toBe('https://example.com/#/business/businesslist');
+  });
+
+  it('rewrites direct createbusiness entry back to business list when the card explicitly starts from the list action', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '新建商机并在“我创建的”列表中验证记录出现',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription: '登录后从商机列表点击“新建商机”，完成前三个表单必填项并保存后回列表校验。',
+      successCriteria: [
+        '成功进入新建商机页面，URL 包含 #/business/createbusiness 且页面出现商机创建表单锚点',
+        '返回商机列表后，筛选项从“我跟进的”成功切换为“我创建的”',
+      ],
+      visualAnchors: ['商机列表页存在“新建商机”按钮'],
+      notes: [],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/createbusiness',
+        sharedVariables: ['businessId'],
+        expectedOutcome: '在“我创建的”商机列表中可看到刚创建的商机记录。',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step-1',
+            stepType: 'ui',
+            title: '进入新建商机页面',
+            target: '新建商机页',
+            instruction: '打开 URL https://example.com/#/business/createbusiness；若未登录则先完成登录并回到该地址。',
+            expectedResult: 'URL 包含 #/business/createbusiness，页面出现新建商机表单主标题或首个表单锚点。',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step-5',
+            stepType: 'ui',
+            title: '进入商机列表并切换筛选',
+            target: '商机列表筛选下拉',
+            instruction: '进入商机列表页，打开当前为“我跟进的”的下拉筛选，选择“我创建的”。',
+            expectedResult: '筛选控件当前值变为“我创建的”，列表完成刷新。',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    expect(card.flowDefinition.entryUrl).toBe('https://example.com/#/business/businesslist');
+    expect(card.flowDefinition.steps[0]?.title).toBe('进入商机列表并打开新建页');
+    expect(card.flowDefinition.steps[0]?.target).toBe('https://example.com/#/business/businesslist');
+    expect(card.flowDefinition.steps[0]?.instruction).toContain('点击“新建商机”按钮');
+    expect(card.flowDefinition.steps[1]?.target).toBe('https://example.com/#/business/businesslist');
+
+    const input = buildGenerateInputFromScenarioCard(card);
+    expect(input.context.scenarioEntryUrl).toBe('https://example.com/#/business/businesslist');
+    expect(input.targetUrl).toBe('https://example.com/#/business/createbusiness');
+  });
+
+  it('sanitizes business-create entry readiness so the first step does not require save visibility', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '新建商机并在我创建的列表中验证记录出现',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription: '登录后从商机列表进入新建商机，完成前三个表单并保存后回列表校验。',
+      successCriteria: [
+        '成功进入新建商机页面，页面存在可操作的“保 存”或同义保存按钮',
+        '点击“保 存”后出现成功提示',
+      ],
+      visualAnchors: ['商机列表页存在新建商机按钮'],
+      notes: [],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/createbusiness',
+        sharedVariables: ['businessId'],
+        expectedOutcome: '我创建的列表可看到新建商机记录',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step-1',
+            stepType: 'ui',
+            title: '进入新建商机页面',
+            target: '商机列表页',
+            instruction: '登录后进入商机列表页，点击新建商机按钮。',
+            expectedResult: '打开新建商机页面，显示商机创建表单与“保 存”或同义按钮可见可点击',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step-2',
+            stepType: 'ui',
+            title: '保存新建商机',
+            target: '新建商机页面底部操作区',
+            instruction: '点击“保 存”按钮提交',
+            expectedResult: '出现保存成功提示',
+            extractVariable: 'businessId',
+          },
+        ],
+      },
+    });
+
+    expect(card.successCriteria[0]).toBe('成功进入新建商机页面，页面出现商机联系人信息或其他创建表单锚点');
+    expect(card.successCriteria[1]).toBe('点击“保 存”后出现成功提示');
+    expect(card.flowDefinition.steps[0]?.expectedResult).toBe('成功打开新建商机页面，出现商机联系人信息或其他创建表单区块锚点。');
+    expect(card.flowDefinition.steps[1]?.expectedResult).toBe('出现保存成功提示');
+  });
+
+  it('still rewrites list entry and hallucinated business-name extraction when success criteria mention the extracted name', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '新建商机并在我创建的列表中验证记录出现',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription: '登录后从商机列表进入新建商机，保存成功后回列表校验。',
+      successCriteria: ['在我创建的列表中可见本次新建的商机记录（以创建时提取的商机名称为匹配）'],
+      visualAnchors: ['商机列表页存在新建商机按钮'],
+      notes: [],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/createbusiness',
+        sharedVariables: ['createdBusinessName'],
+        expectedOutcome: '成功创建商机并在我创建的列表中检索到该记录。',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step-1',
+            stepType: 'ui',
+            title: '进入新建商机页面',
+            target: '商机列表页',
+            instruction: '在已登录状态下打开商机列表页，点击新建商机按钮进入创建页。',
+            expectedResult: '页面跳转到新建商机页面',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step-2',
+            stepType: 'extract',
+            title: '提取商机名称',
+            target: '商机名称输入框',
+            instruction: '从已填写的商机名称字段读取当前值并保存为变量。',
+            expectedResult: '成功提取非空商机名称。',
+            extractVariable: 'createdBusinessName',
+          },
+        ],
+      },
+    });
+
+    expect(card.flowDefinition.entryUrl).toBe('https://example.com/#/business/businesslist');
+    expect(card.flowDefinition.sharedVariables).toContain('businessId');
+    expect(card.flowDefinition.sharedVariables).not.toContain('createdBusinessName');
+    expect(card.flowDefinition.steps.some((step) => step.extractVariable === 'createdBusinessName')).toBe(false);
+  });
+
+  it('adds stable anchor notes for business create scenarios', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '创建商机并列表校验',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription: '在商机列表点击新建商机后填写三段表单并校验落库',
+      successCriteria: ['进入创建商机页面', '保存后列表出现新记录'],
+      visualAnchors: ['创建页存在三段向导'],
+      notes: [],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/businesslist',
+        sharedVariables: [],
+        expectedOutcome: '新建记录出现在商机列表',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step-1',
+            stepType: 'ui',
+            title: '从商机列表进入创建页',
+            target: 'https://example.com/#/business/businesslist',
+            instruction: '点击新建商机进入创建商机页',
+            expectedResult: '进入创建页',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    expect(card.notes.some((note) => note.includes('本月创建商机'))).toBe(true);
+    expect(card.notes.some((note) => note.includes('商机联系人信息'))).toBe(true);
+  });
+
+  it('rewrites hallucinated opportunity-name extraction into response-first businessId verification for business create flows', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '新建商机并在我创建的列表校验新入库',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription: '完成前三个表单区块并保存，切到我创建的列表校验新记录状态',
+      successCriteria: ['保存成功后回到商机列表', '我创建的列表中可定位本次新建商机'],
+      visualAnchors: ['商机联系人信息', '附件信息'],
+      notes: ['不编造固定企业名/商机名，使用运行时生成唯一值并在后续列表检索'],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/businesslist',
+        sharedVariables: ['opportunityName'],
+        expectedOutcome: '在我创建的列表中看到新建记录且状态为新入库',
+        cleanupNotes: '如环境要求数据清理，可在测试后按商机名称删除本次创建记录。',
+        steps: [
+          {
+            stepUid: 'step-1',
+            stepType: 'ui',
+            title: '进入创建页',
+            target: 'https://example.com/#/business/businesslist',
+            instruction: '点击新建商机进入创建页',
+            expectedResult: '进入创建商机页面',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step-2',
+            stepType: 'extract',
+            title: '生成并记录唯一商机名称',
+            target: '新建商机表单',
+            instruction: '生成唯一商机名称并保存到变量 opportunityName。',
+            expectedResult: '变量 opportunityName 已生成且可用于表单填写与列表检索。',
+            extractVariable: 'opportunityName',
+          },
+          {
+            stepUid: 'step-3',
+            stepType: 'ui',
+            title: '填写前3个表单区块',
+            target: '新建商机表单',
+            instruction: '在前3个表单区块内填写必填字段；商机名称使用 opportunityName；附件区块不进行上传或填写。',
+            expectedResult: '前3个区块必填项校验通过，页面无必填报错。',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step-4',
+            stepType: 'ui',
+            title: '保存新建商机',
+            target: '新建商机页面底部操作区',
+            instruction: '点击保存并等待提交成功',
+            expectedResult: '出现保存成功反馈',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step-5',
+            stepType: 'assert',
+            title: '校验新建记录存在且状态正确',
+            target: '商机列表表格',
+            instruction: '在列表中按 opportunityName 检索并定位记录，校验该记录状态列为新入库。',
+            expectedResult: '存在名称为 opportunityName 的记录，且状态准确显示为新入库。',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    expect(card.flowDefinition.sharedVariables).toContain('businessId');
+    expect(card.flowDefinition.sharedVariables).not.toContain('opportunityName');
+    expect(card.flowDefinition.steps.some((step) => step.extractVariable === 'opportunityName')).toBe(false);
+    expect(card.flowDefinition.steps.find((step) => step.title === '保存新建商机')?.extractVariable).toBe('businessId');
+    expect(card.flowDefinition.steps.find((step) => step.title === '填写前3个表单区块')?.instruction).not.toContain('opportunityName');
+    expect(card.flowDefinition.steps.find((step) => step.title === '校验新建记录存在且状态正确')?.instruction).toContain(
+      '优先使用 businessId 在列表中检索并定位对应记录'
+    );
+    expect(card.flowDefinition.steps.find((step) => step.title === '校验新建记录存在且状态正确')?.instruction).toContain(
+      '再单独校验状态为“新入库”'
+    );
+    expect(card.flowDefinition.steps.find((step) => step.title === '校验新建记录存在且状态正确')?.expectedResult).toContain('状态为“新入库”');
+    expect(card.flowDefinition.cleanupNotes).toContain('businessId');
+    expect(card.notes.some((note) => note.includes('不要预设页面一定存在“商机名称输入框”'))).toBe(true);
+  });
+
+  it('does not inject 新入库 status verification into business-create list checks unless the card explicitly requires status', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '新建商机并在我创建的列表中验证记录出现',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription: '完成前三个表单区块并保存，切到我创建的列表看到新建记录。',
+      successCriteria: ['保存成功后回到商机列表', '我创建的列表中可定位本次新建商机'],
+      visualAnchors: ['商机联系人信息', '附件信息'],
+      notes: ['不编造固定企业名/商机名，使用运行时生成唯一值并在后续列表检索'],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/businesslist',
+        sharedVariables: ['opportunityName'],
+        expectedOutcome: '在我创建的列表中看到新建记录',
+        cleanupNotes: '如环境要求数据清理，可在测试后按商机名称删除本次创建记录。',
+        steps: [
+          {
+            stepUid: 'step-1',
+            stepType: 'ui',
+            title: '进入创建页',
+            target: 'https://example.com/#/business/businesslist',
+            instruction: '点击新建商机进入创建页',
+            expectedResult: '进入创建商机页面',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step-2',
+            stepType: 'extract',
+            title: '生成并记录唯一商机名称',
+            target: '新建商机表单',
+            instruction: '生成唯一商机名称并保存到变量 opportunityName。',
+            expectedResult: '变量 opportunityName 已生成且可用于表单填写与列表检索。',
+            extractVariable: 'opportunityName',
+          },
+          {
+            stepUid: 'step-3',
+            stepType: 'ui',
+            title: '填写前3个表单区块',
+            target: '新建商机表单',
+            instruction: '在前3个表单区块内填写必填字段；商机名称使用 opportunityName；附件区块不进行上传或填写。',
+            expectedResult: '前3个区块必填项校验通过，页面无必填报错。',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step-4',
+            stepType: 'ui',
+            title: '保存新建商机',
+            target: '新建商机页面底部操作区',
+            instruction: '点击保存并等待提交成功',
+            expectedResult: '出现保存成功反馈',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step-5',
+            stepType: 'assert',
+            title: '校验新建记录存在',
+            target: '商机列表表格',
+            instruction: '在列表中按 opportunityName 检索并定位记录。',
+            expectedResult: '存在名称为 opportunityName 的记录。',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    const verifyStep = card.flowDefinition.steps.find((step) => step.title === '校验新建记录存在');
+    expect(verifyStep?.instruction).toContain('优先使用 businessId 在列表中检索并定位对应记录');
+    expect(verifyStep?.instruction).not.toContain('新入库');
+    expect(verifyStep?.instruction).not.toContain('状态');
+    expect(verifyStep?.expectedResult).toBe('“我创建的”列表中存在本次新建商机记录。');
+    expect(card.flowDefinition.expectedOutcome).toBe('在我创建的列表中看到新建记录');
+  });
+
+  it('strips default 新入库 status verification from business-create list checks even when there is no hallucinated name extraction', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '新建商机并在“我创建的”列表中验证记录出现',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription: '登录后从商机列表进入新建商机，完成前三个表单必填项（附件表单不填）并保存成功；随后切换列表筛选从“我跟进的”到“我创建的”，校验新建商机记录可见。',
+      successCriteria: [
+        '新建商机保存后出现成功反馈',
+        '保存后返回或可进入商机列表页',
+        '商机列表筛选从“我跟进的”成功切换为“我创建的”',
+        '“我创建的”列表中出现本次新建商机记录',
+      ],
+      visualAnchors: ['商机列表页存在“新建商机”按钮'],
+      notes: ['不要预设页面一定存在“商机名称输入框”'],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/createbusiness',
+        sharedVariables: ['businessId'],
+        expectedOutcome: '成功创建商机并在“我创建的”列表中查询到该记录',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step-1',
+            stepType: 'ui',
+            title: '进入新建商机页面',
+            target: '新建商机页面',
+            instruction: '打开目标URL并等待页面加载完成，确认出现新建商机表单锚点。',
+            expectedResult: 'URL为新建商机相关路由，页面可见新建商机表单区域。',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step-6',
+            stepType: 'assert',
+            title: '校验新建商机记录出现',
+            target: '商机列表表格',
+            instruction: '优先使用 businessId 在列表中检索并定位对应记录；若未提取到 businessId，则使用真实填写的联系人/手机号定位对应记录，再单独校验状态为“新入库”。',
+            expectedResult: '“我创建的”列表中存在本次新建商机记录，且状态为“新入库”。',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    const verifyStep = card.flowDefinition.steps.find((step) => step.stepUid === 'step-6');
+    expect(verifyStep?.instruction).toBe(
+      '优先使用 businessId 在列表中检索并定位对应记录；若未提取到 businessId，则使用真实填写的联系人/手机号定位对应记录。'
+    );
+    expect(verifyStep?.expectedResult).toBe('“我创建的”列表中存在本次新建商机记录。');
+  });
+
+  it('does not treat generic 页面状态 wording as an explicit business-status requirement', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '新建商机并在“我创建的”列表中验证记录出现',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription: '登录后从商机列表进入新建商机，完成前3个表单必填内容并保存成功；随后切换到我创建的列表验证记录出现。',
+      successCriteria: [
+        '新建商机保存后出现明确成功反馈（如“保存成功”提示）或页面进入可识别的保存后状态',
+        '流程返回或进入商机列表页，URL包含商机列表路由特征',
+      ],
+      visualAnchors: [],
+      notes: [],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/createbusiness',
+        sharedVariables: ['businessId'],
+        expectedOutcome: '成功创建商机并在“我创建的”列表中看到该记录。',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step-6',
+            stepType: 'assert',
+            title: '校验新建商机记录存在',
+            target: '商机列表表格',
+            instruction: '优先使用 businessId 在列表中检索并定位对应记录；若未提取到 businessId，则使用真实填写的联系人/手机号定位对应记录，再单独校验状态为“新入库”。',
+            expectedResult: '“我创建的”列表中存在本次新建商机记录，且状态为“新入库”。',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    const verifyStep = card.flowDefinition.steps[0];
+    expect(verifyStep?.instruction).not.toContain('再单独校验状态为“新入库”');
+    expect(verifyStep?.expectedResult).toBe('“我创建的”列表中存在本次新建商机记录。');
+  });
+
+  it('does not treat ownership filter state wording as an explicit business-status requirement', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '新建商机并在“我创建的”列表中验证记录出现',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription: '登录后从商机列表进入新建商机，完成前3个表单必填内容并保存成功；随后切换到我创建的列表验证记录出现。',
+      successCriteria: [
+        '新建商机保存后出现明确成功反馈（如“保存成功”提示）或页面成功进入商机列表且无错误提示',
+        '商机列表筛选项可从“我跟进的”切换为“我创建的”且筛选状态生效',
+        '在“我创建的”列表中可检索到本次新建的商机记录',
+      ],
+      visualAnchors: [],
+      notes: [],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/createbusiness',
+        sharedVariables: ['businessId'],
+        expectedOutcome: '成功创建商机并在“我创建的”列表中看到该记录。',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step-6',
+            stepType: 'assert',
+            title: '校验新建商机记录存在',
+            target: '商机列表表格',
+            instruction: '优先使用 businessId 在列表中检索并定位对应记录；若未提取到 businessId，则使用真实填写的联系人/手机号定位对应记录，再单独校验状态为“新入库”。',
+            expectedResult: '“我创建的”列表中存在本次新建商机记录，且状态为“新入库”。',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    const verifyStep = card.flowDefinition.steps[0];
+    expect(verifyStep?.instruction).not.toContain('再单独校验状态为“新入库”');
+    expect(verifyStep?.expectedResult).toBe('“我创建的”列表中存在本次新建商机记录。');
+  });
+
+  it('does not treat post-submit page-state wording as an explicit business-status requirement', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '新建商机并在“我创建的”列表中可见',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription:
+        '登录后从商机列表进入“新建商机”，完成前三个表单必填项（附件表单不填）并保存成功；随后回到商机列表将筛选从“我跟进的”切换为“我创建的”，校验新建商机记录出现。',
+      successCriteria: [
+        '新建保存后出现明确成功反馈（如“保存成功”提示）或页面进入可识别的商机详情/列表状态',
+        '商机列表筛选项从“我跟进的”成功切换为“我创建的”',
+        '在“我创建的”列表中可检索到本次新建的商机记录（名称与创建时一致）',
+      ],
+      visualAnchors: [
+        '商机列表页存在“新建商机”按钮',
+        '新建商机页面包含4段表单区域，其中最后一个为附件相关表单',
+      ],
+      notes: [
+        '按钮文案可能包含空格（如“保 存”“提 交”），定位时优先使用去空格匹配或角色+近义文案匹配',
+      ],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/createbusiness',
+        sharedVariables: ['businessId'],
+        expectedOutcome: '成功创建商机并在“我创建的”列表中看到该记录',
+        cleanupNotes: '如环境要求数据清理，可在用例后通过UI或API删除本次创建记录',
+        steps: [
+          {
+            stepUid: 'step-6',
+            stepType: 'assert',
+            title: '校验新建记录可见',
+            target: '商机列表表格',
+            instruction:
+              '优先使用 businessId 在列表中检索并定位对应记录；若未提取到 businessId，则使用真实填写的联系人/手机号定位对应记录，再单独校验状态为“新入库”。',
+            expectedResult: '“我创建的”列表中存在本次新建商机记录，且状态为“新入库”。',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    const verifyStep = card.flowDefinition.steps[0];
+    expect(verifyStep?.instruction).not.toContain('再单独校验状态为“新入库”');
+    expect(verifyStep?.expectedResult).toBe('“我创建的”列表中存在本次新建商机记录。');
+    expect(card.flowDefinition.expectedOutcome).toBe('成功创建商机并在“我创建的”列表中看到该记录');
+  });
+
+  it('strips business-name matching hints from success criteria and notes when the card does not explicitly require a business name', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '新建商机并在“我创建的”列表中验证记录出现',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription:
+        '登录后从商机列表点击“新建商机”，完成前三个表单必填项（附件表单不填）并保存；随后回到商机列表将筛选从“我跟进的”切换为“我创建的”，校验新建商机记录可见。',
+      successCriteria: [
+        '成功进入新建商机页面，URL 包含 #/business/createbusiness 且页面出现商机创建表单锚点',
+        '“我创建的”列表中出现本次新建的商机记录（以创建时提取的商机名称为匹配）',
+      ],
+      visualAnchors: ['商机列表页存在“新建商机”按钮'],
+      notes: [
+        '商机名称建议在填写后提取为变量，用于列表精确校验',
+        '按钮文案匹配需兼容中间空格（如“保 存”“提 交”）',
+      ],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/createbusiness',
+        sharedVariables: ['businessId'],
+        expectedOutcome: '在“我创建的”商机列表中可看到刚创建的商机记录。',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step-1',
+            stepType: 'ui',
+            title: '进入新建商机页面',
+            target: '新建商机页',
+            instruction: '打开 URL https://example.com/#/business/createbusiness。',
+            expectedResult: 'URL 包含 #/business/createbusiness，页面出现新建商机表单主标题或首个表单锚点。',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    expect(card.successCriteria).toContain('“我创建的”列表中出现本次新建商机记录');
+    expect(card.successCriteria.join('\n')).not.toContain('商机名称');
+    expect(card.successCriteria.join('\n')).not.toContain('名称与创建时一致');
+    expect(card.notes.join('\n')).not.toContain('商机名称建议在填写后提取为变量');
+    expect(card.notes.some((note) => note.includes('不要预设页面一定存在“商机名称输入框”'))).toBe(true);
+  });
+
+  it('strips unique-identifier matching hints from success criteria and notes when they only suggest using business names as a match strategy', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '新建商机并在“我创建的”列表中可见',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription:
+        '登录后从商机列表发起“新建商机”，完成前三个表单并保存（附件表单不填），随后在商机列表将筛选从“我跟进的”切换为“我创建的”，校验新建商机记录出现。',
+      successCriteria: [
+        '新建页成功打开，URL 包含 /business/createbusiness，且出现商机创建表单锚点',
+        '“我创建的”列表中出现本次新建的商机记录（以创建时提取的唯一标识字段匹配）',
+      ],
+      visualAnchors: ['商机列表页存在“新建商机”按钮'],
+      notes: [
+        '新建记录匹配建议优先使用创建时可提取的唯一字段（如商机名称）',
+        '按钮文案可能包含空格（如“保 存”“提 交”），定位时优先使用去空格匹配或角色+近义文案匹配',
+      ],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/businesslist',
+        sharedVariables: ['businessId'],
+        expectedOutcome: '成功创建商机并在“我创建的”列表中看到该记录',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step-1',
+            stepType: 'ui',
+            title: '进入商机新建页',
+            target: 'https://example.com/#/business/businesslist',
+            instruction: '登录后进入商机列表页，点击“新建商机”按钮打开创建页面。',
+            expectedResult: 'URL 包含 /business/createbusiness，且页面出现商机创建表单主标题或首个必填字段。',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    expect(card.successCriteria).toContain('“我创建的”列表中出现本次新建商机记录');
+    expect(card.successCriteria.join('\n')).not.toContain('唯一标识字段');
+    expect(card.notes.join('\n')).not.toContain('唯一字段');
+    expect(card.notes.join('\n')).not.toContain('新建记录匹配建议优先使用创建时可提取的唯一字段');
+    expect(card.notes.some((note) => note.includes('不要预设页面一定存在“商机名称输入框”'))).toBe(true);
+  });
+
+  it('does not rewrite form-fill ui steps into list verification steps', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '新建商机并在“我创建的”列表中验证记录出现',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription:
+        '登录后从商机列表点击“新建商机”，填写前三个表单必填项并保存，随后回到“我创建的”列表校验记录出现。',
+      successCriteria: ['“我创建的”列表中出现本次新建商机记录'],
+      visualAnchors: ['商机列表页存在“新建商机”按钮'],
+      notes: [],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/businesslist',
+        sharedVariables: ['businessId'],
+        expectedOutcome: '成功创建商机并在“我创建的”列表中看到该记录',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step-2',
+            stepType: 'ui',
+            title: '填写前三个表单必填项',
+            target: '新建商机表单',
+            instruction: '在前三个表单区块内填写联系人、手机号等页面真实可见的必填字段；附件区块不填写。',
+            expectedResult: '前3个区块必填项校验通过，页面无必填报错。',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step-6',
+            stepType: 'assert',
+            title: '校验新建记录可见',
+            target: '商机列表表格',
+            instruction: '校验“我创建的”列表中存在本次新建商机记录。',
+            expectedResult: '“我创建的”列表中出现本次新建商机记录。',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    expect(card.flowDefinition.steps[0]?.title).toBe('填写前三个表单必填项');
+    expect(card.flowDefinition.steps[0]?.instruction).toContain('填写联系人、手机号等页面真实可见的必填字段');
+    expect(card.flowDefinition.steps[0]?.instruction).not.toContain('优先使用 businessId 在列表中检索');
+    expect(card.flowDefinition.steps[0]?.expectedResult).toBe('前3个区块必填项校验通过，页面无必填报错。');
+    expect(card.flowDefinition.steps[1]?.instruction).toContain('优先使用 businessId 在列表中检索并定位对应记录');
+  });
+
+  it('strips new unique-field follow-up list assertion note wording', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '新建商机并在“我创建的”列表中验证记录出现',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription:
+        '登录后从商机列表点击“新建商机”，填写前三个表单必填项并保存，随后回到“我创建的”列表校验记录出现。',
+      successCriteria: ['“我创建的”列表中出现本次新建商机记录'],
+      visualAnchors: ['商机列表页存在“新建商机”按钮'],
+      notes: [
+        '不编造固定业务数据；创建时使用页面可接受的最小必填数据，并提取可唯一识别的字段（如商机名称）用于后续列表断言',
+        '按钮文案可能包含空格（如“保 存”“提 交”），定位时优先使用去空格匹配',
+      ],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/businesslist',
+        sharedVariables: ['businessId'],
+        expectedOutcome: '成功创建商机并在“我创建的”列表中看到该记录',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step-1',
+            stepType: 'ui',
+            title: '进入商机列表并打开新建页',
+            target: 'https://example.com/#/business/businesslist',
+            instruction: '登录后进入商机列表页，点击“新建商机”按钮打开创建页面。',
+            expectedResult: 'URL 包含 /business/createbusiness，且页面出现商机创建表单主标题或首个必填字段。',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    expect(card.notes.join('\n')).not.toContain('可唯一识别的字段');
+    expect(card.notes.join('\n')).not.toContain('后续列表断言');
+    expect(card.notes.some((note) => note.includes('不要预设页面一定存在“商机名称输入框”'))).toBe(true);
+  });
+
+  it('strips runtime-generated business-name list-verification hints from notes', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '新建商机并在“我创建的”列表中验证记录出现',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription:
+        '登录后从商机列表点击“新建商机”，填写前三个表单必填项并保存，随后回到“我创建的”列表校验记录出现。',
+      successCriteria: ['“我创建的”列表中出现本次新建商机记录'],
+      visualAnchors: ['商机列表页存在“新建商机”按钮'],
+      notes: [
+        '不预设固定商机名称，运行时生成并提取用于列表校验',
+        '附件表单明确不填写，避免引入不稳定上传步骤',
+      ],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/businesslist',
+        sharedVariables: ['businessId'],
+        expectedOutcome: '成功创建商机并在“我创建的”列表中看到该记录',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step-1',
+            stepType: 'ui',
+            title: '进入商机列表并打开新建页',
+            target: 'https://example.com/#/business/businesslist',
+            instruction: '登录后进入商机列表页，点击“新建商机”按钮打开创建页面。',
+            expectedResult: 'URL 包含 /business/createbusiness，且页面出现商机创建表单主标题或首个必填字段。',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    expect(card.notes.join('\n')).not.toContain('不预设固定商机名称');
+    expect(card.notes.join('\n')).not.toContain('运行时生成并提取用于列表校验');
+    expect(card.notes).toContain('附件表单明确不填写，避免引入不稳定上传步骤');
+    expect(card.notes.some((note) => note.includes('不要预设页面一定存在“商机名称输入框”'))).toBe(true);
+  });
+
+  it('strips dynamic business-name variable hints from notes', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '新建商机并在“我创建的”列表中验证记录出现',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription:
+        '登录后从商机列表点击“新建商机”，填写前三个表单必填项并保存，随后回到“我创建的”列表校验记录出现。',
+      successCriteria: ['“我创建的”列表中出现本次新建商机记录'],
+      visualAnchors: ['商机列表页存在“新建商机”按钮'],
+      notes: [
+        '商机名称建议运行时动态生成并提取为变量，避免数据冲突',
+        '不填写附件表单，仅完成前三个表单的必填项',
+      ],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/businesslist',
+        sharedVariables: ['businessId'],
+        expectedOutcome: '成功创建商机并在“我创建的”列表中看到该记录',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step-1',
+            stepType: 'ui',
+            title: '进入商机列表并打开新建页',
+            target: 'https://example.com/#/business/businesslist',
+            instruction: '登录后进入商机列表页，点击“新建商机”按钮打开创建页面。',
+            expectedResult: 'URL 包含 /business/createbusiness，且页面出现商机创建表单主标题或首个必填字段。',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    expect(card.notes.join('\n')).not.toContain('商机名称建议运行时动态生成并提取为变量');
+    expect(card.notes.join('\n')).not.toContain('避免数据冲突');
+    expect(card.notes).toContain('不填写附件表单，仅完成前三个表单的必填项');
+    expect(card.notes.some((note) => note.includes('不要预设页面一定存在“商机名称输入框”'))).toBe(true);
+  });
+
+  it('strips runtime-generated business-name reuse hints from notes', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '新建商机并在“我创建的”列表中验证记录出现',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription:
+        '登录后从商机列表点击“新建商机”，填写前三个表单必填项并保存，随后回到“我创建的”列表校验记录出现。',
+      successCriteria: ['“我创建的”列表中出现本次新建商机记录'],
+      visualAnchors: ['商机列表页存在“新建商机”按钮'],
+      notes: [
+        '不编造固定商机名称，使用运行时生成并提取/复用',
+        '新建商机名称应在流程中动态生成并提取，避免依赖固定测试数据',
+        '按钮文本匹配需兼容中间空格（可用去空格后匹配）',
+      ],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/businesslist',
+        sharedVariables: ['businessId'],
+        expectedOutcome: '成功创建商机并在“我创建的”列表中看到该记录',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step-1',
+            stepType: 'ui',
+            title: '进入商机列表并打开新建页',
+            target: 'https://example.com/#/business/businesslist',
+            instruction: '登录后进入商机列表页，点击“新建商机”按钮打开创建页面。',
+            expectedResult: 'URL 包含 /business/createbusiness，且页面出现商机创建表单主标题或首个必填字段。',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    expect(card.notes.join('\n')).not.toContain('不编造固定商机名称');
+    expect(card.notes.join('\n')).not.toContain('使用运行时生成并提取/复用');
+    expect(card.notes.join('\n')).not.toContain('新建商机名称应在流程中动态生成并提取');
+    expect(card.notes.join('\n')).not.toContain('避免依赖固定测试数据');
+    expect(card.notes).toContain('按钮文本匹配需兼容中间空格（可用去空格后匹配）');
+    expect(card.notes.some((note) => note.includes('不要预设页面一定存在“商机名称输入框”'))).toBe(true);
   });
 });

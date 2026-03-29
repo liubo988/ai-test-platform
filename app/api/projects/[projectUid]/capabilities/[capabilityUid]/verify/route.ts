@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
-import { getProjectCapabilityByUid } from '@/lib/db/repository';
+import { getProjectCapabilityByUid, insertExecutionEvent } from '@/lib/db/repository';
 import { getCapabilityLastVerificationAttempt } from '@/lib/capability-verification';
 import { createCapabilityVerificationConfig } from '@/lib/capability-verification-service';
+import {
+  CAPABILITY_VERIFICATION_OBSERVATION_EVENT_TYPE,
+  hasCapabilityVerificationExecutionObservation,
+  normalizeCapabilityVerificationExecutionObservation,
+} from '@/lib/capability-verification-observation-cache';
 import { executePlan, generatePlanFromConfig, repairExecution } from '@/lib/services/test-plan-service';
 import { applyActorCookie, requireProjectRole, toErrorResponse } from '@/lib/server/project-actor';
 
@@ -22,6 +27,14 @@ export async function POST(
     const body = await req.json().catch(() => ({}));
     const moduleUid = String(body?.moduleUid || '').trim();
     const mode = String(body?.mode || 'verify').trim();
+    const verificationIntent = body?.verificationIntent === 'review' ? 'review' : 'verify';
+    const requestedObservation = normalizeCapabilityVerificationExecutionObservation({
+      capabilityUid,
+      verificationIntent: body?.verificationIntent,
+      latestRepairObservationAt: body?.latestRepairObservationAt,
+      latestRepairObservationSummary: body?.latestRepairObservationSummary,
+      latestRepairObservationVerifierCheckUids: body?.latestRepairObservationVerifierCheckUids,
+    });
 
     if (mode === 'repair') {
       const lastAttempt = getCapabilityLastVerificationAttempt(capability.meta);
@@ -29,7 +42,23 @@ export async function POST(
         return NextResponse.json({ error: '该能力还没有可修复的失败验证记录，请先发起一次验证' }, { status: 409 });
       }
 
-      const repaired = await repairExecution(lastAttempt.executionUid, { actorLabel: actor.displayName });
+      const repaired = await repairExecution(lastAttempt.executionUid, {
+        actorLabel: actor.displayName,
+        repairTriggerKind: 'manual',
+      });
+      const repairObservation = normalizeCapabilityVerificationExecutionObservation({
+        ...requestedObservation,
+        capabilityUid,
+        verificationIntent: requestedObservation.verificationIntent || lastAttempt.intent,
+      });
+      if (hasCapabilityVerificationExecutionObservation(repairObservation)) {
+        await insertExecutionEvent(
+          repaired.executionUid,
+          CAPABILITY_VERIFICATION_OBSERVATION_EVENT_TYPE,
+          repairObservation,
+          projectUid
+        ).catch(() => undefined);
+      }
       return applyActorCookie(
         NextResponse.json(
           {
@@ -50,9 +79,22 @@ export async function POST(
       capabilityUid,
       moduleUid,
       actorLabel: actor.displayName,
+      verificationIntent,
     });
     const plan = await generatePlanFromConfig(config.configUid, { actorLabel: actor.displayName });
     const execution = await executePlan(plan.planUid, { actorLabel: actor.displayName });
+    if (hasCapabilityVerificationExecutionObservation(requestedObservation)) {
+      await insertExecutionEvent(
+        execution.executionUid,
+        CAPABILITY_VERIFICATION_OBSERVATION_EVENT_TYPE,
+        {
+          ...requestedObservation,
+          capabilityUid,
+          verificationIntent,
+        },
+        projectUid
+      ).catch(() => undefined);
+    }
 
     return applyActorCookie(
       NextResponse.json(

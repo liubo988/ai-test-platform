@@ -37,6 +37,7 @@ describe('intent repair memory', () => {
       executionError: 'Error: 未找到行操作：查看',
       previousCode: "await __e2e.clickAntdRowAction(page, targetRow, '查看');",
       recentEvents: ['INFO createOrder success'],
+      observationTags: ['obs-page-surface', 'obs-anchor-missing'],
     };
 
     const first = await recordIntentRepairFailure(failureInput);
@@ -54,6 +55,8 @@ describe('intent repair memory', () => {
       seenCount: 2,
     });
     expect(hints[0].tags).toContain('row-action');
+    expect(hints[0].tags).toContain('obs-page-surface');
+    expect(hints[0].tags).toContain('obs-anchor-missing');
     expect(saved.clusters).toHaveLength(1);
     expect(saved.clusters[0].clusterId).toBe(first.clusterId);
   });

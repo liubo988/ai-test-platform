@@ -58,14 +58,10 @@ npm run edge:generate
 同时可读取当前服务端默认配置：
 - `GET /api/llm/config`
 
-### 最近一次联调验证（2026-03-19）
-- 已修正 `intent-e2e` 前置检查的阻断分支：`precheckPageAccess()` 返回 `blocked` 时会直接产出结构化终态结果，不再继续走页面分析。
-- 已兼容 Next 16 生产构建要求：`/intent-e2e` 与 `/projects/[projectUid]` 页面中依赖 `useSearchParams()` 的工作台已包进 `Suspense`，`npm run build:web` 可稳定通过。
-- 已补上 OpenAI Responses API 的重试兜底：当上游返回 `reasoning item was provided without its required following item` 时会自动重试。
-- 已修正需求编排工作台中的已归档能力目录展示，恢复操作可直接在 UI 中完成。
-- 已补上项目知识新规则观察期 guardrail：洞察接口会返回 `probationRules`，工作台会展示观察期卡片；观察中规则轻微降权，观察期内明显拉低通过率时会自动降级并支持直接回滚。
-- 当前验证结果：`npm run build`、`npm run build:web`、`npm run test:integration`、`npm run test:e2e` 均已通过；`product-create.spec.ts` 仅因缺少真实账号环境变量而按预期跳过。
-- 本轮补充验证：`npm run test:unit -- tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-e2e-service.spec.ts`、`npm run build`、`npm run build:web` 已通过。
+### Intent E2E 开发主线
+- `intent-e2e` 当前的开发主文档、阶段状态、逐轮完成内容、验证结果、风险与下一步，统一以 [docs/intent-e2e-high-success-roadmap-2026-03-20.md](docs/intent-e2e-high-success-roadmap-2026-03-20.md) 为准。
+- 详细的“最近一次联调验证”与阶段回写不再在 README 和 roadmap 双份维护，避免状态漂移。
+- 如果当前任务涉及 `ExecutionPlan / VerificationPlan`、verifier、starter helper、repair memory、project knowledge 或 `/intent-e2e` 工作台，请先阅读 roadmap 中的“当前状态快照”“阶段状态”和最新一条进度更新。
 
 ### 工作台能力
 在 `/intent-e2e` 页面里可以直接：
@@ -75,11 +71,17 @@ npm run edge:generate
 - 填写可选登录信息
 - 临时覆盖 provider / model / baseUrl / vision / retry 配置
 - 实时查看阶段状态、ScenarioCard、动作约束 DSL / 高频动作库、尝试日志、脚本生成、自愈过程与浏览器实时画面
-- 运行完成后直接查看：命中了哪些项目知识规则、推荐了哪些 helper、最终脚本实际用了哪些 helper
+- 运行完成后直接查看：命中了哪些项目知识规则、推荐了哪些 helper、洞察里建议优先复用哪些 starter helper、最终脚本实际用了哪些 helper
 - repair 阶段会自动命中历史相似失败记忆，把已验证修法与常见误区一起注入到修复 Prompt
 - generate / repair 阶段都会先匹配项目知识规则文件，自动裁剪 DSL、动作库和 Prompt；最近历史通过率更高的规则会被前置，观察期中的新规则会轻微降权，已降级或命中过去可疑回滚候选的高风险规则会被自动跳过
+- generate / repair 阶段还会额外吃到来自已转正或稳定高通过率规则的 starter helper 建议；如果当前步骤语义匹配，会优先复用已验证过的 `__e2e.*` helper，而不是再手写一套脆弱的底层点击 / 等待逻辑
+- starter helper 不再只是自然语言提示：首批通过 catalog 白名单的 helper 会直接回写到 DSL `preferredHelpers`，并把对应 capability 作为 Starter 资产插进高频动作库，连同历史复用次数、通过率和支持规则一起给到模型
+- 成功运行后，如果本次确实命中了 Starter 资产，可直接把它们预填到项目能力工作台；保存后会立刻进入项目 capability / recipe 体系，不再只是停留在运行时建议
+- 成功运行后，如果本次命中了多条 Starter 资产，可直接在结果区勾选后批量沉淀到项目能力库；若只想精修某一条，再单独打开对应 capability 草稿
+- 项目能力工作台里可先按来源 / Starter Helper / 验证状态筛出 Starter 能力，再对当前筛选结果做批量归档、批量验证或批量修复失败项，避免沉淀后又只能逐条清理
+- 无论是单条验证还是批量验证 / 修复，顶部“能力验证批次”面板都会持续显示执行状态、等待目录回写数和每条运行入口，直到 capability `meta` 真正同步完成
 - repair memory 达到阈值后，可在工作台里直接预览 / 写出项目知识规则草稿，并勾选候选后一键合并回项目规则文件；合并时会自动备份旧文件、展示本次变更预览、给出 merge / restore 前后覆盖对比，并保留最近审计记录
-- 可直接在工作台查看“历史运行洞察”：最近通过率、知识命中率、推荐 helper 复用率、Top 规则 / helper / 失败类别，以及疑似导致成功率下滑的规则合并回滚提示
+- 可直接在工作台查看“历史运行洞察”：最近通过率、知识命中率、推荐 helper 复用率、Starter Helper 建议、Top 规则 / helper / 失败类别，以及疑似导致成功率下滑的规则合并回滚提示
 - 新 merge 的规则会先进入“观察期”卡片：默认观察前 6 次终态运行，展示基线通过率、当前通过率、剩余样本数；若前 3 次起通过率跌到 35% 以下，或相对合并前基线下滑 15 个点以上，会自动降级并支持直接回滚到对应备份
 - 随时停止当前自动测试，并保留已生成的上下文和尝试记录
 - 自动显示服务端 `runId`，刷新页面后可自动恢复当前运行
@@ -124,7 +126,7 @@ npm run edge:generate
 - `GET /api/intent-e2e/runs/:runId/stream`：先补发 backlog，再推送实时事件，适合刷新恢复 / 断线重连
 - `POST /api/intent-e2e/runs/:runId/cancel`：触发服务端停止当前运行
 - `POST /api/intent-e2e/runs/:runId/workspace`：把最终运行结果导入现有项目工作台，沉淀为任务、脚本版本和执行历史
-- `GET /api/intent-e2e/insights`：汇总最近终态运行的通过率、知识命中率、helper 复用率、Top 规则 / helper / 失败类别、`probationRules`，以及基于 merge 审计推导的回滚候选
+- `GET /api/intent-e2e/insights`：汇总最近终态运行的通过率、知识命中率、helper 复用率、`starterHelpers`、Top 规则 / helper / 失败类别、`probationRules`，以及基于 merge 审计推导的回滚候选
 
 ### Repair Memory
 - 默认会把失败聚类和成功修法写入 `reports/intent-e2e-repair-memory.json`
@@ -156,7 +158,11 @@ npm run edge:generate
 - `GET /api/intent-e2e/insights` 可选带 `projectUid`、`runLimit`、`auditLimit`；若指定 `projectUid`，会校验该项目的 `owner/editor/viewer` 权限
 - `GET /api/intent-e2e/insights` 当前直接复用已持久化的 run snapshot 和知识审计，不额外建表；新 merge 的规则会进入最多 6 次终态运行的观察期，并结合合并前最多 5 次终态运行做基线对比
 - 观察期在满足至少 3 次样本后，如果通过率降到 35% 以下，或相对基线下滑达到 15 个点，会自动标记为 `degraded`；完成 6 次观察且未降级则自动转正
-- 当前服务端在执行 generate / repair 前，会把最近运行沉淀出的规则表现反馈回规划阶段：高通过率规则会前置进 DSL / Prompt，观察期规则轻微降权，已降级或历史低通过率且命中过回滚候选的规则会被降权甚至跳过
+- `GET /api/intent-e2e/insights` 还会从已转正或稳定高通过率规则里提炼 `starterHelpers`：要求 helper 至少复用 2 次、成功 2 次且通过率不低于 70%，并给出来源规则、复用次数和推荐文案
+- 当前服务端在执行 generate / repair 前，会把最近运行沉淀出的规则表现反馈回规划阶段：高通过率规则会前置进 DSL / Prompt，观察期规则轻微降权，已降级或历史低通过率且命中过回滚候选的规则会被降权甚至跳过；同时把 `starterHelpers` 一起注入规划，让首轮生成优先复用已验证过的 helper
+- 当前 starter helper 还会先经过 runtime helper catalog 过滤：只有执行层真实存在、且能映射到当前 DSL 语义的 helper 才会进入 Prompt / DSL / 动作库；命中的 helper 会被回写进步骤级 `preferredHelpers`，并计入本次推荐 helper 复用统计
+- 当前运行结果里的 `knowledge` 还会额外返回 `starterAssets`，前端结果区既可把它们批量写入项目能力库，也可单条转成 capability 草稿；preset 在 URL / sessionStorage 往返时也会保留 starter 证据元信息
+- 项目工作台里的能力目录现在会解析 capability `meta`：即使某条 Starter 能力后续已经被验证升级，仍会保留 Starter 来源标记，并允许按来源 / Helper / 验证状态继续筛选；当前筛选结果还支持直接批量归档、批量验证和批量修复失败项，验证批次面板也会自动追踪结果回写
 - 草稿默认只会把“重复出现且至少修成功过一次”的失败模式提炼成候选规则，并标记哪些规则已经被现有知识覆盖
 
 ## GitHub 自动化
@@ -165,8 +171,8 @@ npm run edge:generate
 - `ai-generate-tests.yml`：`edge-cases/**` 变更后自动生成测试并发 PR
 
 ## 下一步建议
-1. 把已经转正且连续稳定的规则进一步沉淀成 starter recipe / runtime helper，继续降低新项目首次接入成本
-2. 把更多业务动作沉淀成 runtime helper（如 `login`、`submit_order`、`assert_order_created`）
+1. 给能力验证批次再补“失败原因聚合 / 一键只看未回写项”视图，减少大批量治理时在目录卡片和运行页之间来回切换
+2. 继续扩充 runtime helper catalog，把更多已稳定高收益的 helper 纳入白名单（如 `select_option`、`enter_frame_context`、`wait_for_visible_modal`）
 3. 决定是否把当前全局 `intent-e2e.project-knowledge.json` 继续拆成 project-scoped 知识文件，减少多项目之间的规则串扰
 4. 接入真实预发环境 E2E（通过 `E2E_BASE_URL`）
 5. 完善 provider 切换占位（OpenAI / Claude / Gemini），保持执行层不变

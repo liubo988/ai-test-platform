@@ -11,10 +11,14 @@ function normalizeNumber(value: string | number | null | undefined, fallback: nu
 }
 
 function buildOptions(source: Record<string, unknown>): GenerateIntentProjectKnowledgeDraftOptions {
+  const projectUid = typeof source.projectUid === 'string' ? source.projectUid.trim() : '';
+  const moduleUid = typeof source.moduleUid === 'string' ? source.moduleUid.trim() : '';
   return {
     minSeenCount: normalizeNumber((source.minSeenCount as string | number | undefined) ?? null, 2),
     minResolvedCount: normalizeNumber((source.minResolvedCount as string | number | undefined) ?? null, 1),
     maxCandidates: normalizeNumber((source.maxCandidates as string | number | undefined) ?? null, 12),
+    projectUid: projectUid || undefined,
+    moduleUid: moduleUid || undefined,
   };
 }
 
@@ -26,6 +30,8 @@ export async function GET(req: NextRequest) {
         minSeenCount: search.get('minSeenCount'),
         minResolvedCount: search.get('minResolvedCount'),
         maxCandidates: search.get('maxCandidates'),
+        projectUid: search.get('projectUid'),
+        moduleUid: search.get('moduleUid'),
       })
     );
 

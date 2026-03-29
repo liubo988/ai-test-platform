@@ -45,12 +45,13 @@ function createAbortError(message = '测试执行已取消'): Error {
 }
 
 /**
- * 将 LLM 生成的 TypeScript 测试代码转换为可在 .mjs 中执行的 JavaScript
- * 1. 移除 import 语句
- * 2. 移除 TypeScript 特有语法（非空断言、类型注解、as 断言等）
+ * 兼容旧链路里残留的 TypeScript-like 代码，把它降级为可在 .mjs 中执行的 JavaScript。
+ * 当前主链路已要求输出纯 JavaScript；这里只保留最小兼容兜底。
  */
 function tsToJs(code: string): string {
   let result = code;
+  const stripSimpleTypedParams = (params: string): string =>
+    params.replace(/\b([A-Za-z_$][\w$]*)\s*:\s*(?:string|number|boolean|any|void|never|null|undefined|object)\b/g, '$1');
 
   // ── 移除 import（含 import type）──
   // import type { X, Y } from '...';（多行）
@@ -76,7 +77,7 @@ function tsToJs(code: string): string {
   // USERNAME!  →  USERNAME
   // foo()!.bar →  foo().bar
   // arr[0]!   →  arr[0]
-  result = result.replace(/([\w\)\]])!(?=[.\[),;\s}:=]|$)/gm, '$1');
+  result = result.replace(/([\w\)\]])!(?=(?:[.\[),;\s}:]|$))/gm, '$1');
 
   // ── 移除 as Type 断言 ──
   // x as string  →  x
@@ -93,19 +94,57 @@ function tsToJs(code: string): string {
 
   // ── 移除函数参数类型注解 ──
   // (x: string, y: number) → (x, y)
-  result = result.replace(/(\w)\s*:\s*(?:string|number|boolean|any|void|never|null|undefined|object)\b/g, '$1');
+  // 这里只在函数签名的参数列表里做替换，避免把对象字面量 `response: null`
+  // 误删成裸 `response`，从而在运行态触发 ReferenceError。
+  result = result.replace(/((?:async\s+)?function\s+\w+\s*\()([^)]*)(\))/g, (_match, start, params, end) => {
+    return `${start}${stripSimpleTypedParams(params)}${end}`;
+  });
+  result = result.replace(/((?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?\()([^)]*)(\))/g, (_match, start, params, end) => {
+    return `${start}${stripSimpleTypedParams(params)}${end}`;
+  });
+
+  // ── 移除函数返回类型注解 ──
+  // 这里只收窄到真实函数签名，避免把三元表达式 `?:` 误判成返回类型。
+  // function foo(): void { ... } → function foo() { ... }
+  // const foo = (): Promise<void> => ... → const foo = () => ...
+  result = result.replace(/((?:async\s+)?function\s+\w+\s*\([^)]*\))\s*:\s*[^={>\n]+(?=\s*\{)/gm, '$1');
+  result = result.replace(/((?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?\([^)]*\))\s*:\s*[^={>\n]+(?=\s*=>)/gm, '$1');
+  result = result.replace(/((?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?[A-Za-z_$][\w$]*)\s*:\s*[^={>\n]+(?=\s*=>)/gm, '$1');
 
   return result;
 }
 
-export function renderWorkerCodeForExecution(template: string, strippedCode: string): string {
+const TYPESCRIPT_ONLY_SYNTAX_PATTERNS: RegExp[] = [
+  /(^|\n)\s*import\s+type\b/m,
+  /(^|\n)\s*(?:export\s+)?interface\s+\w/m,
+  /(^|\n)\s*(?:export\s+)?type\s+\w+\s*=/m,
+  /(?:const|let|var)\s+\w+\s*:\s*[^=;\n]+(?=\s*=)/m,
+  /[,(]\s*\w+\s*:\s*[^=),\n]+(?=\s*(?:[=,)]))/m,
+  /(?:async\s+)?function\s+\w+\s*\([^)]*\)\s*:\s*[^={>\n]+(?=\s*\{)/m,
+  /(?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?\([^)]*\)\s*:\s*[^={>\n]+(?=\s*=>)/m,
+  /(?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?[A-Za-z_$][\w$]*\s*:\s*[^={>\n]+(?=\s*=>)/m,
+  /\s+as\s+[A-Za-z_$][\w<>{},\s\[\]|&?:]*/m,
+  /\s+satisfies\s+[A-Za-z_$][\w<>{},\s\[\]|&?:]*/m,
+  /[\w\)\]]!(?=(?:[.\[),;\s}:]|$))/m,
+];
+
+function containsTypeScriptOnlySyntax(code: string): boolean {
+  return TYPESCRIPT_ONLY_SYNTAX_PATTERNS.some((pattern) => pattern.test(code));
+}
+
+export function prepareTestCodeForExecution(code: string): string {
+  const normalizedCode = String(code || '');
+  return containsTypeScriptOnlySyntax(normalizedCode) ? tsToJs(normalizedCode) : normalizedCode;
+}
+
+export function renderWorkerCodeForExecution(template: string, executableCode: string): string {
   if (!template.includes(AUTH_SHARED_MODULE_PLACEHOLDER)) {
     throw new Error('worker 模板缺少共享认证模块占位符');
   }
 
   return template
     .replace(AUTH_SHARED_MODULE_PLACEHOLDER, AUTH_SHARED_MODULE_URL)
-    .replace('// __GENERATED_CODE_PLACEHOLDER__', strippedCode);
+    .replace('// __GENERATED_CODE_PLACEHOLDER__', executableCode);
 }
 
 export async function executeTest(
@@ -118,8 +157,8 @@ export async function executeTest(
   await fs.mkdir(tmpDir, { recursive: true });
 
   const template = await fs.readFile(WORKER_TEMPLATE_PATH, 'utf8');
-  const strippedCode = tsToJs(code);
-  const workerCode = renderWorkerCodeForExecution(template, strippedCode);
+  const executableCode = prepareTestCodeForExecution(code);
+  const workerCode = renderWorkerCodeForExecution(template, executableCode);
 
   const tmpFile = path.join(tmpDir, `worker-${Date.now()}.mjs`);
   await fs.writeFile(tmpFile, workerCode, 'utf8');

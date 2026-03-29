@@ -21,6 +21,18 @@ export interface StructuredLLMRequest<T> {
   maxOutputTokens?: number;
 }
 
+class StructuredLLMParseError extends Error {
+  rawPreview: string;
+
+  constructor(label: string, raw: string, cause?: unknown) {
+    const preview = String(raw || '').trim().slice(0, 240);
+    const causeMessage = cause instanceof Error && cause.message ? `: ${cause.message}` : '';
+    super(`${label} 返回的内容不是合法 JSON${causeMessage}${preview ? `；片段=${preview}` : ''}`);
+    this.name = 'StructuredLLMParseError';
+    this.rawPreview = preview;
+  }
+}
+
 function getRuntimeConfig(runtimeOverrides?: LLMRuntimeOverrides): LLMRuntimeConfig {
   const config = getLLMRuntimeConfig(runtimeOverrides);
   assertSupportedLLMProvider(config);
@@ -83,10 +95,18 @@ function buildChatUserContent(prompt: string, imageDataUrls?: string[]) {
   ];
 }
 
+function parseJsonCandidate<T>(candidate: string, label: string, raw: string): T {
+  try {
+    return JSON.parse(candidate) as T;
+  } catch (error) {
+    throw new StructuredLLMParseError(label, raw, error);
+  }
+}
+
 function parseJsonFromText<T>(raw: string, label: string): T {
   const trimmed = raw.trim();
   if (!trimmed) {
-    throw new Error(`${label} 返回为空`);
+    throw new StructuredLLMParseError(label, raw);
   }
 
   try {
@@ -94,10 +114,19 @@ function parseJsonFromText<T>(raw: string, label: string): T {
   } catch {
     const match = trimmed.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
     if (match) {
-      return JSON.parse(match[0]) as T;
+      return parseJsonCandidate<T>(match[0], label, raw);
     }
-    throw new Error(`${label} 返回的内容不是合法 JSON: ${trimmed.slice(0, 240)}`);
+    throw new StructuredLLMParseError(label, raw);
   }
+}
+
+function resolveStructuredRetryMaxOutputTokens(request: StructuredLLMRequest<unknown>, attempt: number): number | undefined {
+  if (attempt <= 1) {
+    return request.maxOutputTokens;
+  }
+
+  const baseMaxOutputTokens = Math.max(1, Number(request.maxOutputTokens ?? 1600));
+  return Math.max(baseMaxOutputTokens * 2, baseMaxOutputTokens + 1600);
 }
 
 function extractResponsesText(data: any): string {
@@ -301,10 +330,32 @@ export async function callLLMStructured<T>(
   signal?: AbortSignal
 ): Promise<T> {
   const config = getRuntimeConfig(runtimeOverrides);
-  if (prefersResponsesApi(config)) {
-    return callLLMStructuredResponses<T>(request, config, signal);
+  const maxParseAttempts = 2;
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= maxParseAttempts; attempt += 1) {
+    try {
+      const effectiveRequest =
+        attempt <= 1
+          ? request
+          : {
+              ...request,
+              maxOutputTokens: resolveStructuredRetryMaxOutputTokens(request, attempt),
+            };
+      const runner = prefersResponsesApi(config)
+        ? () => callLLMStructuredResponses<T>(effectiveRequest, config, signal)
+        : () => callLLMStructuredChat<T>(effectiveRequest, config, signal);
+      return await runner();
+    } catch (error) {
+      if (error instanceof StructuredLLMParseError && attempt < maxParseAttempts) {
+        lastError = error;
+        continue;
+      }
+      throw error;
+    }
   }
-  return callLLMStructuredChat<T>(request, config, signal);
+
+  throw lastError instanceof Error ? lastError : new Error('结构化 LLM 调用失败');
 }
 
 async function callLLMStructuredResponses<T>(

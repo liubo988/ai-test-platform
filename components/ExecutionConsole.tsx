@@ -12,6 +12,10 @@ import {
   createIntentCapabilityLaunchToken,
   stashIntentCapabilityPreset,
 } from '@/lib/intent-capability-preset';
+import {
+  pickLatestCapabilityVerificationExecutionObservationFromEvents,
+  readCapabilityVerificationExecutionObservation,
+} from '@/lib/capability-verification-observation-cache';
 import { buildFlowSummary, type FlowDefinition, type TaskMode } from '@/lib/task-flow';
 
 type ExecutionStatus = 'queued' | 'running' | 'passed' | 'failed' | 'canceled';
@@ -75,6 +79,13 @@ type ExecutionDetail = {
     name: string;
     authRequired: boolean;
     loginDescription: string;
+  } | null;
+  capabilityVerification: {
+    capabilityUid: string;
+    chainCapabilityUids: string[];
+    intent: 'verify' | 'review';
+    targetName: string;
+    strategyLabel: string;
   } | null;
   events: EventItem[];
   conversations: ConversationItem[];
@@ -173,9 +184,19 @@ function renderEventLine(event: EventItem): string {
   return JSON.stringify(event.payload);
 }
 
+function summarizeTextList(values: string[], limit = 2): string {
+  const items = values.map((item) => item.trim()).filter(Boolean);
+  if (items.length === 0) return '';
+  if (items.length <= limit) return items.join(' / ');
+  return `${items.slice(0, limit).join(' / ')} 等 ${items.length} 项`;
+}
+
 export default function ExecutionConsole({ executionUid }: { executionUid: string }) {
   const router = useRouter();
   const [detail, setDetail] = useState<ExecutionDetail | null>(null);
+  const [capabilityExecutionObservation, setCapabilityExecutionObservation] = useState(
+    () => readCapabilityVerificationExecutionObservation(executionUid)
+  );
   const [events, setEvents] = useState<EventItem[]>([]);
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [error, setError] = useState('');
@@ -281,6 +302,7 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
     setReplayMode(false);
     setReplayFrames([]);
     setReplayPlaying(false);
+    setCapabilityExecutionObservation(readCapabilityVerificationExecutionObservation(executionUid));
   }, [executionUid]);
 
   useEffect(() => {
@@ -344,6 +366,11 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
   }, [detail, executionUid, replayLoading, replayMode, loadReplayFrames]);
 
   const frameCount = useMemo(() => events.filter((item) => item.eventType === 'frame').length, [events]);
+  const persistedCapabilityExecutionObservation = useMemo(
+    () => pickLatestCapabilityVerificationExecutionObservationFromEvents(events),
+    [events]
+  );
+  const effectiveCapabilityExecutionObservation = persistedCapabilityExecutionObservation || capabilityExecutionObservation;
   const visibleEvents = useMemo(
     () => events.filter((item) => item.eventType !== 'frame').slice(-120),
     [events]
@@ -435,8 +462,25 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
     setActionNotice('');
     setError('');
     try {
+      const observationPayload =
+        effectiveCapabilityExecutionObservation &&
+        (effectiveCapabilityExecutionObservation.latestRepairObservationSummary ||
+          effectiveCapabilityExecutionObservation.latestRepairObservationVerifierCheckUids.length > 0)
+          ? {
+              capabilityUid:
+                detail?.capabilityVerification?.capabilityUid || effectiveCapabilityExecutionObservation.capabilityUid || '',
+              verificationIntent:
+                detail?.capabilityVerification?.intent || effectiveCapabilityExecutionObservation.verificationIntent,
+              latestRepairObservationAt: effectiveCapabilityExecutionObservation.latestRepairObservationAt,
+              latestRepairObservationSummary: effectiveCapabilityExecutionObservation.latestRepairObservationSummary,
+              latestRepairObservationVerifierCheckUids:
+                effectiveCapabilityExecutionObservation.latestRepairObservationVerifierCheckUids,
+            }
+          : {};
       const res = await fetch(`/api/test-executions/${executionUid}/repair`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(observationPayload),
       });
       const json = (await res.json()) as { executionUid?: string; runPath?: string; error?: string };
       if (!res.ok) {
@@ -635,6 +679,26 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
                   </div>
                 </div>
               )}
+              {detail.capabilityVerification && effectiveCapabilityExecutionObservation?.latestRepairObservationSummary ? (
+                <div className="rounded-2xl border border-sky-200 bg-sky-50 px-3.5 py-2.5">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-sky-500">能力验证上下文</p>
+                  <p className="mt-1.5 text-xs leading-5 text-slate-700">
+                    <span className="font-medium text-slate-900">
+                      {detail.capabilityVerification.targetName || detail.capabilityVerification.capabilityUid}
+                    </span>
+                    {detail.capabilityVerification.strategyLabel ? ` · ${detail.capabilityVerification.strategyLabel}` : ''}
+                  </p>
+                  <p className="mt-1 text-[11px] leading-5 text-slate-600">
+                    最近关联 verifier observation：{effectiveCapabilityExecutionObservation.latestRepairObservationSummary}
+                    {effectiveCapabilityExecutionObservation.latestRepairObservationVerifierCheckUids.length > 0
+                      ? ` · verifier ${summarizeTextList(effectiveCapabilityExecutionObservation.latestRepairObservationVerifierCheckUids, 2)}`
+                      : ''}
+                    {effectiveCapabilityExecutionObservation.latestRepairObservationAt
+                      ? ` · ${formatMoment(effectiveCapabilityExecutionObservation.latestRepairObservationAt)}`
+                      : ''}
+                  </p>
+                </div>
+              ) : null}
               <div className="rounded-2xl border border-slate-200 bg-white px-3.5 py-2.5">
                 <p className="text-[10px] uppercase tracking-[0.18em] text-slate-400">任务描述</p>
                 <p className="mt-1.5 text-xs leading-5 text-slate-600">{config?.featureDescription || '暂无任务描述。'}</p>

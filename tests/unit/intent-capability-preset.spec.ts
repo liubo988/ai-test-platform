@@ -105,4 +105,52 @@ describe('intent capability preset helpers', () => {
     expect(href).toContain('intentToken=preset-1');
     expect(href).not.toContain('capabilityPreset=');
   });
+
+  it('preserves starter asset evidence in preset meta during serialize / parse', () => {
+    const parsed = parseIntentCapabilityPreset(
+      serializeIntentCapabilityPreset({
+        sourceLabel: 'Starter 资产「关键接口成功响应」',
+        slug: 'starter.assert.wait-for-api-response',
+        name: '关键接口成功响应',
+        description: '由意图 E2E 成功运行沉淀的 starter helper 能力草稿。',
+        capabilityType: 'assertion',
+        entryUrl: 'https://example.com/checkout',
+        triggerPhrases: ['关键接口成功响应'],
+        preconditions: ['已登录系统'],
+        steps: ['优先复用 __e2e.waitForApiResponse'],
+        assertions: ['业务成功响应可见'],
+        cleanupNotes: '',
+        dependsOn: [],
+        sortOrder: 60,
+        sourceDocumentUid: '',
+        meta: {
+          source: 'intent-e2e-starter-asset',
+          verificationStatus: 'knowledge_inferred',
+          starterHelper: '__e2e.waitForApiResponse',
+          starterPassRate: 100,
+          starterSupportingRuleTitles: ['结算提交页'],
+          starterKnowledgeChangeSignal: 'positive',
+          starterKnowledgeChangeDecisionableRuleCount: 2,
+          starterKnowledgeChangeSupportingAuditIds: ['audit_starter_positive'],
+          starterPromotionDecisionStatus: 'promote_project_capability',
+          starterPromotionDecisionReasonCode: 'positive_long_term',
+          starterPromotionDecisionAutoSelected: true,
+        },
+      })
+    );
+
+    expect(parsed?.meta).toMatchObject({
+      source: 'intent-e2e-starter-asset',
+      verificationStatus: 'knowledge_inferred',
+      starterHelper: '__e2e.waitForApiResponse',
+      starterPassRate: 100,
+      starterSupportingRuleTitles: ['结算提交页'],
+      starterKnowledgeChangeSignal: 'positive',
+      starterKnowledgeChangeDecisionableRuleCount: 2,
+      starterKnowledgeChangeSupportingAuditIds: ['audit_starter_positive'],
+      starterPromotionDecisionStatus: 'promote_project_capability',
+      starterPromotionDecisionReasonCode: 'positive_long_term',
+      starterPromotionDecisionAutoSelected: true,
+    });
+  });
 });

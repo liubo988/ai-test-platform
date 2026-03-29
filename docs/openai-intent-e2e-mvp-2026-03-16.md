@@ -1,5 +1,409 @@
 # OpenAI 意图驱动 E2E MVP 迭代文档（2026-03-16）
 
+## 2026-03-20 第三十次更新（后续开发主线切换到“首次高成功率 + 自主学习”路线）
+这一轮不继续直接补单个 prompt 或 helper，而是基于当前真实运行统计、主编排代码和 OpenAI 官方方法论，先把下一阶段路线冻结。当前系统已经能完成一部分端到端测试，但仍处在“可运行 MVP”而不是“高首次成功率系统”阶段：当前 `proj_default` 最近 49 次 run 里通过 7 次、失败 41 次、取消 1 次，通过率只有 14.3%；而且 `knowledgeHitRuns` 和 `suggestedHelperReuseRuns` 仍然是 0，说明自主学习闭环还没有真正打通。
+- 已新增独立路线文档 `docs/intent-e2e-high-success-roadmap-2026-03-20.md`，后续这条主线的开发、阶段状态和每一步完成情况都统一记录到该文件，不再继续混在这份 MVP 流水账里
+- 当前冻结结论：现有设计在 `ScenarioCard -> precheck -> analyze -> DSL/action library/helper -> generate/repair -> execute` 这一层是合理的，但生成主链路仍然是自由文本代码输出，repair memory 也还主要停留在错误文本聚类；要提升首次成功率，下一步必须先补 eval / trace 基线，然后再推进 `ExecutionPlan/IR` 结构化执行、业务 verifier、recipe registry 和 trace -> grader -> asset promotion 的学习闭环
+- 当前下一步已固定为 `R1.1 Eval 基线与 Trace 结构化`：先把 scenario family、`first_pass_rate / repair_pass_rate / terminal_pass_rate`、trace schema 和固定评测样本建立起来，否则后面所有“成功率提升”都无法被量化证明
+
+新增 / 更新关键文件：
+- `docs/intent-e2e-high-success-roadmap-2026-03-20.md`
+- `docs/openai-intent-e2e-mvp-2026-03-16.md`
+
+当前状态更新：
+- P0 ~ P3.16：延续上一轮，状态不变
+- R0：高成功率 / 自主学习架构评审与路线冻结，已完成
+- 下一步建议优先做：严格从 `R1.1 Eval 基线与 Trace 结构化` 开始，先把量化基线和 trace 结构补齐，再进入执行链路重构
+
+## 2026-03-20 第二十九次更新（商机列表回查改成 businessId 主键优先，列表找不到目标行不再归到 unknown）
+这一轮不再动执行层 helper，而是直接收口“新建成功后回列表验收”的生成/修复策略。真实 run 已经证明首轮脚本会用 `__e2e.observeSubmitState`、`__e2e.findAntdTableRow`，当前主要缺口不是 helper 不存在，而是“列表找不到目标行”时，repair 还没有足够明确地切到 `businessId` 主键回查和详情 fallback。
+- `lib/ai/intent-e2e-failure-triage.ts` 已新增商机列表场景下的明确失败类 `target_row_not_found`：当 `__e2e.findAntdTableRow(...)` 报 `未找到表格目标行` 时，不再落到 `unknown`，而是归类为“列表目标行定位失败”，继续自动修复，但会明确提示优先从提交/检索响应里提取 `businessId`、再按主键回查
+- `lib/intent-action-library.ts` 已把动作库骨架改成同一条稳定路径：提交后先从接口响应提取 `businessId`，再 `observeSubmitState -> switchBusinessListOwnershipView -> input#businessList_keywords:visible -> wait list response -> findAntdTableRow([businessId, '新入库'])`；如果主键检索后仍未命中，就直接跳详情页断言，不再继续放宽联系人/手机号文本匹配
+- `extract.capture-shared-variable` 也同步收紧：示例不再从列表行文本里反推 `businessId`，而是优先从 `createResp` / 提交响应 JSON 提取主键，再立即 `expect(businessId).toBeTruthy()` 并复用到详情页或后续列表检索
+- `lib/test-generator.ts` 的生成 Prompt 与 repair hint 已把这条策略写死：创建商机回列表时，默认先按 `businessId` 检索并等待列表查询接口；如果 `findAntdTableRow` 仍然找不到目标行，就改读列表搜索响应里的记录，或直接打开详情页 / 详情抽屉断言联系人、手机号和状态，而不是无限继续放宽文本匹配
+- 定向单测已覆盖这轮收口：`intent-e2e-failure-triage`、`intent-action-library`、`test-generator` 现在都显式断言 `businessId` 主键优先、详情 fallback，以及 `target_row_not_found` 失败分类
+
+新增 / 更新关键文件：
+- `lib/ai/intent-e2e-failure-triage.ts`
+- `lib/intent-action-library.ts`
+- `lib/test-generator.ts`
+- `tests/unit/intent-e2e-failure-triage.spec.ts`
+- `tests/unit/intent-action-library.spec.ts`
+- `tests/unit/test-generator.spec.ts`
+- `README.md`
+- `docs/openai-intent-e2e-mvp-2026-03-16.md`
+
+当前状态更新：
+- P0 ~ P3.15：延续上一轮，状态不变
+- P3.16：商机列表主键回查与 target-row triage 收口（triage -> action library -> prompt/repair -> tests），已完成
+- 下一步建议优先做：继续观察真实 run 是否会从“列表找不到目标行”再前移到“详情断言 / 搜索响应核对”层；如果是，再补一个专门的列表结果解析 helper，而不是继续加自然语言提示
+
+## 2026-03-20 第二十八次更新（分析阶段超时兜底，run 不再无期限卡在 `analyzing`）
+这一轮先不继续扩 project knowledge，也不继续加新的生成规则，而是优先把最近两次真实 run 暴露出来的 `analyzing` 悬挂问题收口：`intent-run-82180277-0dc1-45dd-ae6d-89cb57963d29` 已经证明确实会一直停在分析阶段，因此先把服务端超时边界补齐，避免前端和 registry 永远等不到终态。
+- `lib/ai/intent-e2e-service.ts` 已给 `analyzePage()` 外层补上 60s 总超时，并且沿用现有 `AbortSignal` 一起监听；如果页面分析长期不返回，现在会明确抛出 `页面分析超时 (60000ms)，请检查目标页面 iframe / loading 状态或稍后重试`
+- `lib/page-analyzer.ts` 已给 page/frame 里的 `waitForLoadState('domcontentloaded')` 补显式 timeout，不再依赖底层默认行为；这一步主要是减少 iframe 卡死、页面脚本异常或半加载状态导致的分析线程悬挂
+- `tests/unit/intent-e2e-service.spec.ts` 已新增“分析阶段超时”单测：mock `analyzePage()` 永不返回，断言 stream 已进入 `prechecking` 和 `analyzing`，随后在 60s 边界抛出明确错误，而不是继续卡住
+- `tests/unit/intent-e2e-run-registry.spec.ts` 已补 registry 侧断言：当 `runIntentDrivenE2EStream()` 因分析超时抛错时，run 会被收敛成 `failed/error` 终态，并追加 `type='error'` 事件，避免 UI 只有“analyzing”而没有真正终态
+- 这一步解决的是“运行永远 pending、无法判断该重试还是该修 prompt”的问题；它不直接提升脚本通过率，但会把问题从无期限挂起收敛成可见、可统计、可回放的失败类别
+
+新增 / 更新关键文件：
+- `lib/ai/intent-e2e-service.ts`
+- `lib/page-analyzer.ts`
+- `tests/unit/intent-e2e-service.spec.ts`
+- `tests/unit/intent-e2e-run-registry.spec.ts`
+- `README.md`
+- `docs/openai-intent-e2e-mvp-2026-03-16.md`
+
+当前状态更新：
+- P0 ~ P3.14：延续上一轮，状态不变
+- P3.15：分析阶段超时兜底（service timeout -> page analyzer timeout -> stream/registry terminal state -> tests），已完成
+- 下一步建议优先做：重发当前草稿，确认 `analyzing` 不再悬挂后，再继续盯“疑难工商注销”下拉稳定性和 `businessId` 回查是否真正被首轮 / repair 吃到
+
+## 2026-03-20 第二十七次更新（Ant Design 表格目标行 helper 已接入执行 / 生成 / 修复闭环）
+这一轮不继续扩 project knowledge，而是顺着“纯 AI 生成成功率”继续补执行稳定性。`observeSubmitState` 修完之后，新的主失败类已经很明确：不是登录，也不是提交后 URL，而是 Ant Design 表格固定列克隆、错行命中和 `tbody tr ... first()` 带来的误判。
+- `lib/test-worker.mjs` 已新增 `__e2e.findAntdTableRow(page, { hasTexts, hasText, table?, scope?, timeoutMs? })`：helper 会跨主表体 / fixed-left / fixed-right 收集可见行，按 `data-row-key` / row id 分组去重，优先返回真实主表体行；如果命中多条真实记录，会明确抛错，而不是继续偷偷 `.first()` 硬选
+- `buildIntentActionDSL()` 现在会把表格目标行定位显式建模成 `find_table_row(hasTexts)`，并把 `__e2e.findAntdTableRow` 写入步骤级 `preferredHelpers`、全局规则和 forbidden patterns，直接压制模型继续生成 `page.locator('tbody tr').filter({ hasText: ... }).first()`
+- `selectIntentActionLibrary()` 已新增 `ui.find-antd-table-row` capability，并把行操作示例改成“先 `findAntdTableRow`，再 `clickAntdRowAction`”；`assert.watch-submit-state` 也同步改成“先收敛提交状态，再用 `findAntdTableRow` 做列表结果断言”
+- `buildPrompt()` / `buildRepairPrompt()` 已补齐表格行定位约束：创建商机回列表、商机转订单、商机列表修复等场景都会优先注入 `__e2e.findAntdTableRow`；针对 `toHaveCount(1)` 命中 2 条、`tbody tr ... first()` 命中错行这两类历史高频失败，也会直接提示“按 `data-row-key` 去重 + 增补稳定业务字段”
+- 已确认 `intent-run-a9fe3859-008c-4b62-8f0d-77b45514925e` 的“第二次已经成功了为什么最终还显示失败”并不是 UI 状态错乱，而是后续 attempts 继续失败，所以最终 `final_result.success=false`；这进一步证明当前应优先治理表格目标行定位，而不是继续优化登录或 submit URL
+- 实际重跑 `intent-run-9f7deaf1-153e-45f1-aef6-39c0e2f41c8e` 后，首轮生成已经稳定改用 `__e2e.findAntdTableRow(...)`；新的失败不再是错行 / 克隆误判，而是“新建后回列表仍找不到目标记录”。因此 Prompt / repair 又继续补上了“提交响应里优先提取 `businessId`，再按 `businessId + 新入库` 回查”的指引，避免模型只会继续放宽姓名 / 手机号文本匹配
+- 单测已补齐两类执行层验证：一类验证 fixed-column clone 会被去重并优先返回主表体行，另一类验证多条真实记录同时命中时会明确报错；同时补了 DSL / 动作库 / Prompt / repair hint 对应断言
+- 本轮回归命令：`npx vitest run tests/unit/test-executor.spec.ts tests/unit/intent-action-dsl.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/test-generator.spec.ts`
+
+新增 / 更新关键文件：
+- `lib/test-worker.mjs`
+- `lib/intent-action-dsl.ts`
+- `lib/intent-action-library.ts`
+- `lib/test-generator.ts`
+- `tests/unit/test-executor.spec.ts`
+- `tests/unit/intent-action-dsl.spec.ts`
+- `tests/unit/intent-action-library.spec.ts`
+- `tests/unit/test-generator.spec.ts`
+- `README.md`
+- `docs/openai-intent-e2e-mvp-2026-03-16.md`
+
+当前状态更新：
+- P0 ~ P3.13：延续上一轮，状态不变
+- P3.14：Ant Design 表格目标行稳定定位 helper 闭环（worker -> DSL -> 动作库 -> Prompt -> repair hints -> tests），已完成
+- 下一步建议优先做：把 `findAntdTableRow` / `observeSubmitState` 的有效修法继续沉淀回 starter helper / repair memory / project knowledge draft，让这两条稳定路径能自动回流成可治理资产
+
+## 2026-03-20 第二十六次更新（提交后状态收敛 helper 已接入 DSL / 动作库 / Prompt）
+这一轮先不继续扩 project knowledge 治理，而是沿“纯 AI 生成成功率”路线补执行稳定性：承接上一轮已经进入 `lib/test-worker.mjs` 的 `__e2e.observeSubmitState`，把它从 runtime helper 真正接到规划层和修复层，专门解决“接口已成功但按钮 loading / Drawer/Modal 关闭 / 列表刷新还没等稳”造成的误判。
+- `lib/test-worker.mjs` 中的 `__e2e.observeSubmitState(page, { submitButton, closeTitleIncludes, closeLocator, successLocator, busyScope, urlIncludes })` 已形成最小可用闭环：优先观察按钮 loading 收敛、Ant Design Drawer/Modal 关闭、局部 busy 指示器结束，以及列表 / URL 稳定
+- `observeSubmitState` 里的 `urlIncludes` 已继续收敛成“短窗口辅助观察”而不是默认硬阻断：同页 hash 路由切换不会再卡在 `waitForURL(... until "load")`，而“可能自动返回列表、也可能需要脚本手动回退”的流程不会被 helper 提前判死；若业务要求最终 URL 必须命中，改为 helper 之后显式断言
+- `buildIntentActionDSL()` 现在会把保存 / 提交 / 生成订单类 UI 步骤显式建模为 `observe_submit_state`，并把 `__e2e.observeSubmitState` 自动写入步骤级 `preferredHelpers`、全局规则和推荐原语；生成阶段不再只说“等接口”，而是明确要求提交后的 UI 收敛
+- `selectIntentActionLibrary()` 已新增 `assert.watch-submit-state` capability；高频动作库会直接给出 `__e2e.waitForApiResponse + __e2e.observeSubmitState` 的组合骨架，模型更容易优先复用这条稳定路径，而不是继续手写 toast / timeout 断言
+- `buildPrompt()` 与 `buildRepairPrompt()` 已补上面向生成和自愈的指引：普通保存场景会直接注入 `observe_submit_state(...)` 原语；`crmapi/business/createOrder` / “确定订单信息”Drawer 这类历史高频失败，也会明确提示“先等接口，再等 Drawer 收敛”，不再鼓励 `page.getByText(/成功/i).first()`
+- 单测已补两类执行层验证：一类覆盖“提交后按钮 loading 结束并关闭 Modal”，另一类覆盖“结果行出现后继续等待列表 loading 消失”的刷新场景，避免 helper 只停留在 DSL / Prompt 层
+- 本轮回归已通过：`npx vitest run tests/unit/test-executor.spec.ts tests/unit/intent-action-dsl.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-project-knowledge.spec.ts tests/unit/intent-starter-assets.spec.ts`
+
+新增 / 更新关键文件：
+- `lib/test-worker.mjs`
+- `lib/intent-action-dsl.ts`
+- `lib/intent-action-library.ts`
+- `lib/test-generator.ts`
+- `tests/unit/test-executor.spec.ts`
+- `tests/unit/intent-action-dsl.spec.ts`
+- `tests/unit/intent-action-library.spec.ts`
+- `tests/unit/test-generator.spec.ts`
+- `README.md`
+- `docs/openai-intent-e2e-mvp-2026-03-16.md`
+
+当前状态更新：
+- P0 ~ P3.12：延续上一轮，状态不变
+- P3.13：提交后状态收敛 helper 闭环（worker -> DSL -> 动作库 -> Prompt -> repair hints -> tests），已完成
+- 下一步建议优先做：把 `__e2e.observeSubmitState` 继续接进 starter helper / repair memory / project knowledge draft 提炼，让这条稳定修法能自动回流为可治理资产
+
+## 2026-03-19 第二十五次更新（能力验证批次已支持自动回流与目录刷新）
+上一轮把 Starter 能力补成了可批量治理的资产面板，这一轮继续把“启动验证以后怎么收口”补完整：
+- `ProjectIntentWorkbench` 顶部已新增“能力验证批次”面板；单条验证、批量验证、批量修复都会统一登记到这张卡片，不再只弹一个“已启动”提示就结束
+- 面板会自动轮询现有 `GET /api/test-executions/[executionUid]` 和 capability 列表，不新增新的验证监控接口；等执行终态和 capability `meta` 回写都完成后，批次才会转成“已完成”
+- 回写判定不只看 `lastVerificationExecutionUid === 当前 executionUid`，还兼容“同一能力被后续验证覆盖”的场景：只要本批次启动后已经有更晚的验证结果回写，并且状态与当前终态一致，就不会一直卡在“等待目录回写”
+- 批次卡会直接展示每条能力的执行状态、目录是否已同步、摘要错误，以及“打开运行”入口；这让用户不用再在目录页和 `/runs/:executionUid` 之间来回猜
+- 这一步真正解决的是“批量治理已经能发起，但验证结果还只能手工回查”的问题：现在验证闭环终于从“已启动”推进到了“结果已回流能力目录”
+
+新增 / 更新关键文件：
+- `components/ProjectIntentWorkbench.tsx`
+- `README.md`
+- `docs/openai-intent-e2e-mvp-2026-03-16.md`
+
+当前状态更新：
+- P0：后端最小闭环，已完成
+- P1：前端工作台第一版，已完成
+- P1.5：流式执行反馈，已完成
+- P1.8：服务端 runId / 断线恢复 / 服务端停止，已完成
+- P2.1：动作约束 DSL，已完成
+- P2.3：高频动作库 + 新 runtime helper，已完成
+- P2.4：修复记忆（失败聚类 + 策略回写），已完成
+- P2.5：项目知识驱动裁剪，已完成
+- P2.6：repair memory 反推项目规则草稿，已完成
+- P2.7：工作台项目知识草稿面板，已完成
+- P2.8：候选规则一键合并回项目知识文件，已完成
+- P2.9：合并前自动备份 + 变更预览，已完成
+- P3.0：从 backup 一键回滚项目知识规则，已完成
+- P3.1：项目工作台 / 需求编排联调收口（前置检查阻断 / Next 16 build / smoke 对齐），已完成
+- P3.2：项目知识 merge / restore 收益对比 + 审计记录，已完成
+- P3.3：运行结果知识命中 / helper 使用可观测性，已完成
+- P3.4：历史运行洞察 / 回滚候选提示，已完成
+- P3.5：新规则观察期 guardrail（自动降级 / 转正 / 直接回滚），已完成
+- P3.6：starter helper 建议闭环（洞察 -> 工作台 -> Prompt），已完成
+- P3.7：starter helper 资产化（catalog -> DSL preferredHelpers -> 动作库证据），已完成
+- P3.8：starter asset -> project capability workbench 预填，已完成
+- P3.9：starter asset 批量审核 / 一键保存到项目能力库，已完成
+- P3.10：Starter 能力目录标记与来源 / Helper / 验证状态筛选，已完成
+- P3.11：Starter 能力批量归档 / 批量验证 / 批量修复，已完成
+- P3.12：能力验证批次自动回流 / 目录刷新，已完成
+- 下一步建议优先做：给验证批次补“失败原因聚合 / 一键只看未回写项”，继续降低大批量治理时的回查成本
+
+## 2026-03-19 第二十四次更新（项目能力目录已支持批量归档 / 批量验证 / 批量修复）
+上一轮把 Starter 能力先做成“可识别、可筛选”的目录，这一轮继续把“可治理”补完整：
+- `ProjectIntentWorkbench` 的能力目录现在支持勾选当前筛选下的 active capability，并提供 `全选当前筛选 / 清空 / 批量归档 / 批量验证 / 批量修复失败项`
+- 批量操作没有额外新建一套 capability 后台协议，而是直接复用现有单条接口：归档继续走 `DELETE /api/projects/[projectUid]/capabilities/[capabilityUid]`，验证 / 修复继续走 `POST /api/projects/[projectUid]/capabilities/[capabilityUid]/verify`
+- 批量验证和批量修复被显式拆开：普通 active 能力走批量验证；最近一次验证失败且保留 `executionUid` 的能力走批量修复，避免把“重新验证”和“失败重跑”混成一个黑盒动作
+- 批量验证 / 修复只给聚合提示，不会一次性弹出多条运行页面；归档成功后会刷新目录并自动剔除已失效的选择态，避免批量操作后卡在脏 UI 状态
+- 这一步真正解决的是“Starter 资产已经能批量进库、也能在目录里筛出来，但治理动作还只能逐条点”的问题：现在至少在项目工作台里已经形成一层可批量处理的资产面板
+
+新增 / 更新关键文件：
+- `components/ProjectIntentWorkbench.tsx`
+- `README.md`
+- `docs/openai-intent-e2e-mvp-2026-03-16.md`
+
+当前状态更新：
+- P0：后端最小闭环，已完成
+- P1：前端工作台第一版，已完成
+- P1.5：流式执行反馈，已完成
+- P1.8：服务端 runId / 断线恢复 / 服务端停止，已完成
+- P2.1：动作约束 DSL，已完成
+- P2.3：高频动作库 + 新 runtime helper，已完成
+- P2.4：修复记忆（失败聚类 + 策略回写），已完成
+- P2.5：项目知识驱动裁剪，已完成
+- P2.6：repair memory 反推项目规则草稿，已完成
+- P2.7：工作台项目知识草稿面板，已完成
+- P2.8：候选规则一键合并回项目知识文件，已完成
+- P2.9：合并前自动备份 + 变更预览，已完成
+- P3.0：从 backup 一键回滚项目知识规则，已完成
+- P3.1：项目工作台 / 需求编排联调收口（前置检查阻断 / Next 16 build / smoke 对齐），已完成
+- P3.2：项目知识 merge / restore 收益对比 + 审计记录，已完成
+- P3.3：运行结果知识命中 / helper 使用可观测性，已完成
+- P3.4：历史运行洞察 / 回滚候选提示，已完成
+- P3.5：新规则观察期 guardrail（自动降级 / 转正 / 直接回滚），已完成
+- P3.6：starter helper 建议闭环（洞察 -> 工作台 -> Prompt），已完成
+- P3.7：starter helper 资产化（catalog -> DSL preferredHelpers -> 动作库证据），已完成
+- P3.8：starter asset -> project capability workbench 预填，已完成
+- P3.9：starter asset 批量审核 / 一键保存到项目能力库，已完成
+- P3.10：Starter 能力目录标记与来源 / Helper / 验证状态筛选，已完成
+- P3.11：Starter 能力批量归档 / 批量验证 / 批量修复，已完成
+- 下一步建议优先做：把批量验证 / 批量修复的运行结果继续回流到能力目录，补一层批次进度与自动刷新，不要让治理链路停在“已启动”这一步
+
+## 2026-03-19 第二十三次更新（项目能力目录已支持 Starter 来源标记与筛选）
+上一轮解决了 Starter 资产怎么批量写入项目能力库，这一轮继续补“写进去之后怎么管”：
+- 已新增 `lib/intent-capability-origin.ts`，统一解析 capability `meta` 里的来源信息；即使某条 Starter 能力后续被验证升级，只要还保留 `starterHelper` / `starterAssetSlug` 证据，就不会在目录页丢失 Starter 来源
+- `ProjectIntentWorkbench` 的能力目录现在会显式展示来源标签：Starter 资产、执行沉淀、知识提炼、手工维护，不再只能从描述和 slug 猜
+- 能力目录已新增三维筛选：来源、验证状态、Starter Helper；搜索框也会把来源标签、helper 名和支持规则一起纳入检索
+- Starter 能力卡片会额外展示 Helper、来源规则类型（转正规则 / 稳定规则）和支持规则摘要，方便后续批量审核、归档或重新验证
+- 这一步真正解决的是“批量沉淀以后能力库又变回一锅粥”的问题：现在 Starter 资产至少已经在目录层面变成可识别、可筛选、可继续治理的对象
+
+新增 / 更新关键文件：
+- `lib/intent-capability-origin.ts`
+- `components/ProjectIntentWorkbench.tsx`
+- `tests/unit/intent-capability-origin.spec.ts`
+- `README.md`
+- `docs/openai-intent-e2e-mvp-2026-03-16.md`
+
+当前状态更新：
+- P0：后端最小闭环，已完成
+- P1：前端工作台第一版，已完成
+- P1.5：流式执行反馈，已完成
+- P1.8：服务端 runId / 断线恢复 / 服务端停止，已完成
+- P2.1：动作约束 DSL，已完成
+- P2.3：高频动作库 + 新 runtime helper，已完成
+- P2.4：修复记忆（失败聚类 + 策略回写），已完成
+- P2.5：项目知识驱动裁剪，已完成
+- P2.6：repair memory 反推项目规则草稿，已完成
+- P2.7：工作台项目知识草稿面板，已完成
+- P2.8：候选规则一键合并回项目知识文件，已完成
+- P2.9：合并前自动备份 + 变更预览，已完成
+- P3.0：从 backup 一键回滚项目知识规则，已完成
+- P3.1：项目工作台 / 需求编排联调收口（前置检查阻断 / Next 16 build / smoke 对齐），已完成
+- P3.2：项目知识 merge / restore 收益对比 + 审计记录，已完成
+- P3.3：运行结果知识命中 / helper 使用可观测性，已完成
+- P3.4：历史运行洞察 / 回滚候选提示，已完成
+- P3.5：新规则观察期 guardrail（自动降级 / 转正 / 直接回滚），已完成
+- P3.6：starter helper 建议闭环（洞察 -> 工作台 -> Prompt），已完成
+- P3.7：starter helper 资产化（catalog -> DSL preferredHelpers -> 动作库证据），已完成
+- P3.8：starter asset -> project capability workbench 预填，已完成
+- P3.9：starter asset 批量审核 / 一键保存到项目能力库，已完成
+- P3.10：Starter 能力目录标记与来源 / Helper / 验证状态筛选，已完成
+- 下一步建议优先做：在这个目录基础上补 Starter 能力的批量归档 / 批量重新验证，形成真正可治理的资产面板
+
+## 2026-03-19 第二十二次更新（Starter 资产已支持批量审核 / 一键保存）
+上一轮把单条 starter asset 接到了项目能力工作台预填，这一轮继续把“多条资产怎么沉淀”补齐：
+- `/intent-e2e` 结果区里的 “Starter 资产沉淀” 卡片现在支持勾选 / 全选 / 清空，可直接对本次命中的多条 starter asset 做批量审核
+- 已复用现有 `POST /api/projects/[projectUid]/capabilities` 写入链路，批量保存时直接按 `IntentCapabilityPreset` 生成项目能力；不新增第二套 capability 持久化协议
+- 批量保存后会保留现有单条“打开草稿精修”入口：想一键入库时可以直接写，想逐条修 trigger / 描述 / 断言时仍然能进 capability workbench 编辑
+- 这一步真正解决的是“starter asset 已经能看见、也能单条转草稿，但多条命中时沉淀成本还是太高”的问题：现在至少能先批量写入，再去项目能力目录里做后续治理
+
+新增 / 更新关键文件：
+- `components/IntentE2EWorkbench.tsx`
+- `README.md`
+- `docs/openai-intent-e2e-mvp-2026-03-16.md`
+
+当前状态更新：
+- P0：后端最小闭环，已完成
+- P1：前端工作台第一版，已完成
+- P1.5：流式执行反馈，已完成
+- P1.8：服务端 runId / 断线恢复 / 服务端停止，已完成
+- P2.1：动作约束 DSL，已完成
+- P2.3：高频动作库 + 新 runtime helper，已完成
+- P2.4：修复记忆（失败聚类 + 策略回写），已完成
+- P2.5：项目知识驱动裁剪，已完成
+- P2.6：repair memory 反推项目规则草稿，已完成
+- P2.7：工作台项目知识草稿面板，已完成
+- P2.8：候选规则一键合并回项目知识文件，已完成
+- P2.9：合并前自动备份 + 变更预览，已完成
+- P3.0：从 backup 一键回滚项目知识规则，已完成
+- P3.1：项目工作台 / 需求编排联调收口（前置检查阻断 / Next 16 build / smoke 对齐），已完成
+- P3.2：项目知识 merge / restore 收益对比 + 审计记录，已完成
+- P3.3：运行结果知识命中 / helper 使用可观测性，已完成
+- P3.4：历史运行洞察 / 回滚候选提示，已完成
+- P3.5：新规则观察期 guardrail（自动降级 / 转正 / 直接回滚），已完成
+- P3.6：starter helper 建议闭环（洞察 -> 工作台 -> Prompt），已完成
+- P3.7：starter helper 资产化（catalog -> DSL preferredHelpers -> 动作库证据），已完成
+- P3.8：starter asset -> project capability workbench 预填，已完成
+- P3.9：starter asset 批量审核 / 一键保存到项目能力库，已完成
+- 下一步建议优先做：在这个目录基础上补 Starter 能力的批量归档 / 批量重新验证，形成真正可治理的资产面板
+
+## 2026-03-19 第二十一次更新（starter asset 已接入项目能力工作台预填）
+这一轮不再停在“helper 已经进入 DSL / 动作库”，而是把命中的 starter asset 真正接到项目能力体系入口：
+- `IntentE2EKnowledgeSummary` 现在会把本次真正命中的 `starterAssets` 一起带回前端结果区，不再只有 `suggestedHelpers` 这层扁平字符串
+- 已新增 `buildIntentStarterCapabilityPreset()`，把 starter asset 转成 `IntentCapabilityPreset`：会自动带上 helper 名、来源类型、支持规则、复用次数、通过率、命中步骤，以及 `verificationStatus=knowledge_inferred`
+- `parseIntentCapabilityPreset()` 不再只保留 `flowDefinition` / `sourceTaskMode`，starter asset 的证据元信息在 launch token / sessionStorage 往返后也不会丢
+- `/intent-e2e` 成功运行后，如果本次确实命中了 starter asset，结果区会直接展示“Starter 资产沉淀”卡片，并复用现有 project capability workbench launch 机制打开预填草稿
+- 这一步真正解决的是“我们已经把 helper 资产化了，但还只能留在运行时上下文里”的断层：现在人工确认后，starter asset 可以正式写入项目 capability / recipe 体系，而不是继续停在 Prompt 侧
+
+新增 / 更新关键文件：
+- `lib/intent-capability-preset.ts`
+- `lib/intent-starter-capability-preset.ts`
+- `lib/ai/intent-e2e-service.ts`
+- `components/IntentE2EWorkbench.tsx`
+- `tests/unit/intent-capability-preset.spec.ts`
+- `tests/unit/intent-starter-capability-preset.spec.ts`
+- `tests/unit/intent-e2e-service.spec.ts`
+- `README.md`
+- `docs/openai-intent-e2e-mvp-2026-03-16.md`
+
+当前状态更新：
+- P0：后端最小闭环，已完成
+- P1：前端工作台第一版，已完成
+- P1.5：流式执行反馈，已完成
+- P1.8：服务端 runId / 断线恢复 / 服务端停止，已完成
+- P2.1：动作约束 DSL，已完成
+- P2.3：高频动作库 + 新 runtime helper，已完成
+- P2.4：修复记忆（失败聚类 + 策略回写），已完成
+- P2.5：项目知识驱动裁剪，已完成
+- P2.6：repair memory 反推项目规则草稿，已完成
+- P2.7：工作台项目知识草稿面板，已完成
+- P2.8：候选规则一键合并回项目知识文件，已完成
+- P2.9：合并前自动备份 + 变更预览，已完成
+- P3.0：从 backup 一键回滚项目知识规则，已完成
+- P3.1：项目工作台 / 需求编排联调收口（前置检查阻断 / Next 16 build / smoke 对齐），已完成
+- P3.2：项目知识 merge / restore 收益对比 + 审计记录，已完成
+- P3.3：运行结果知识命中 / helper 使用可观测性，已完成
+- P3.4：历史运行洞察 / 回滚候选提示，已完成
+- P3.5：新规则观察期 guardrail（自动降级 / 转正 / 直接回滚），已完成
+- P3.6：starter helper 建议闭环（洞察 -> 工作台 -> Prompt），已完成
+- P3.7：starter helper 资产化（catalog -> DSL preferredHelpers -> 动作库证据），已完成
+- P3.8：starter asset -> project capability workbench 预填，已完成
+- 下一步建议优先做：把这层“单条 starter asset 预填”继续推进成批量审核 / 一键保存链路，再考虑单独的 starter recipe / 版本管理面板
+
+## 2026-03-19 第二十次更新（starter helper 已进入 DSL 与动作库资产层）
+这一轮不是继续扩“推荐文案”，而是把 starter helper 真正推进到结构化规划资产：
+- 已新增 starter asset catalog，只允许执行层真实存在、且当前 DSL 语义能命中的 helper 进入后续规划；像 `__e2e.assertTextVisible` 这类洞察里可能出现、但 runtime 并不存在的 helper，不会再继续注入 Prompt
+- `resolveIntentPromptPlanningContext()` 现在会先基于知识裁剪 DSL，再把命中的 starter asset 回写到步骤级 `preferredHelpers`；也就是说这批 helper 不再只是“模型看一眼”，而是正式进入动作约束
+- `selectIntentActionLibrary()` 现在会把命中的 starter asset 作为 capability 证据一起渲染到“高频动作库”里，直接展示 helper 名、来源类型、历史复用次数、通过率和支持规则
+- 当前首批正式资产化的 helper 主要是：`__e2e.waitForApiResponse`、`__e2e.clickAntdRowAction`、`__e2e.selectAntdOption`、`__e2e.getFrame`
+- 服务端运行结果里的推荐 helper 覆盖统计也已经吃到这批 starter asset；如果首轮真的按建议复用了这些 helper，后续洞察里的“命中推荐 helper”不会再漏记
+- 这一步真正解决的是“我们已经知道哪些 helper 稳，但模型仍可能优先手写一套脆弱逻辑”的问题：现在稳定 helper 已经从 insight 提示推进到了规划资产
+
+新增 / 更新关键文件：
+- `lib/intent-starter-assets.ts`
+- `lib/test-generator.ts`
+- `lib/intent-action-library.ts`
+- `lib/ai/intent-e2e-service.ts`
+- `tests/unit/intent-starter-assets.spec.ts`
+- `tests/unit/intent-action-library.spec.ts`
+- `tests/unit/test-generator.spec.ts`
+- `tests/unit/intent-e2e-service.spec.ts`
+- `README.md`
+- `docs/openai-intent-e2e-mvp-2026-03-16.md`
+
+当前状态更新：
+- P0：后端最小闭环，已完成
+- P1：前端工作台第一版，已完成
+- P1.5：流式执行反馈，已完成
+- P1.8：服务端 runId / 断线恢复 / 服务端停止，已完成
+- P2.1：动作约束 DSL，已完成
+- P2.3：高频动作库 + 新 runtime helper，已完成
+- P2.4：修复记忆（失败聚类 + 策略回写），已完成
+- P2.5：项目知识驱动裁剪，已完成
+- P2.6：repair memory 反推项目规则草稿，已完成
+- P2.7：工作台项目知识草稿面板，已完成
+- P2.8：候选规则一键合并回项目知识文件，已完成
+- P2.9：合并前自动备份 + 变更预览，已完成
+- P3.0：从 backup 一键回滚项目知识规则，已完成
+- P3.1：项目工作台 / 需求编排联调收口（前置检查阻断 / Next 16 build / smoke 对齐），已完成
+- P3.2：项目知识 merge / restore 收益对比 + 审计记录，已完成
+- P3.3：运行结果知识命中 / helper 使用可观测性，已完成
+- P3.4：历史运行洞察 / 回滚候选提示，已完成
+- P3.5：新规则观察期 guardrail（自动降级 / 转正 / 直接回滚），已完成
+- P3.6：starter helper 建议闭环（洞察 -> 工作台 -> Prompt），已完成
+- P3.7：starter helper 资产化（catalog -> DSL preferredHelpers -> 动作库证据），已完成
+- 下一步建议优先做：把这批 starter asset 持久化进项目 capability / recipe 体系，做成真正可审核、可禁用、可版本化的 execution-derived capabilities
+
+## 2026-03-19 第十九次更新（starter helper 建议已接入洞察、工作台与 Prompt）
+这一轮不是继续加新面板，而是把“哪些 helper 已经被真实成功流验证过”从回看信息真正推进到首轮生成阶段：
+- `lib/ai/intent-e2e-insights.ts` 现在会基于最近终态运行和知识审计额外提炼 `starterHelpers`：只从已转正或稳定高通过率规则里选 helper，并过滤掉观察中、已降级或带 rollback risk 的规则来源
+- `starterHelpers` 自身还会再做一层筛选：helper 至少复用 2 次、至少成功 2 次且通过率不低于 70%，并保留来源类型、支持规则、命中推荐次数和推荐文案，避免把偶发成功误判成 starter 能力
+- `GET /api/intent-e2e/insights` 现在除了原来的 summary / `probationRules` / rollbackCandidates，还会直接返回 `starterHelpers`，前端不需要再自己二次推导
+- `IntentE2EWorkbench` 的“历史运行洞察”区域现在新增“Starter Helper 建议”卡片，能直接看到哪些 `__e2e.*` helper 更适合首轮生成优先复用，以及它们背后的支持规则
+- `runIntentDrivenE2EStream()` 在 generate 前会并行加载规则表现和 `starterHelpers`，并把这批建议一起塞进规划上下文
+- `lib/test-generator.ts` 现在会在 generate / repair Prompt 中显式加入“项目 Starter Helper 建议”段落，同时在 thinking 事件里把关键 helper 名称打出来，避免这层信号只存在于后端上下文
+- 这一步真正解决的是“我们已经知道哪些 helper 稳，但模型首轮仍从零拼脚本”的浪费：现在洞察可以直接反哺生成，而不是只供人类回看
+
+新增 / 更新关键文件：
+- `lib/ai/intent-e2e-insights.ts`
+- `lib/ai/intent-e2e-service.ts`
+- `lib/test-generator.ts`
+- `components/IntentE2EWorkbench.tsx`
+- `tests/unit/intent-e2e-insights.spec.ts`
+- `tests/unit/intent-e2e-service.spec.ts`
+- `tests/unit/test-generator.spec.ts`
+- `tests/unit/api-intent-e2e-insights-route.spec.ts`
+- `README.md`
+- `docs/openai-intent-e2e-mvp-2026-03-16.md`
+
+当前状态更新：
+- P0：后端最小闭环，已完成
+- P1：前端工作台第一版，已完成
+- P1.5：流式执行反馈，已完成
+- P1.8：服务端 runId / 断线恢复 / 服务端停止，已完成
+- P2.1：动作约束 DSL，已完成
+- P2.3：高频动作库 + 新 runtime helper，已完成
+- P2.4：修复记忆（失败聚类 + 策略回写），已完成
+- P2.5：项目知识驱动裁剪，已完成
+- P2.6：repair memory 反推项目规则草稿，已完成
+- P2.7：工作台项目知识草稿面板，已完成
+- P2.8：候选规则一键合并回项目知识文件，已完成
+- P2.9：合并前自动备份 + 变更预览，已完成
+- P3.0：从 backup 一键回滚项目知识规则，已完成
+- P3.1：项目工作台 / 需求编排联调收口（前置检查阻断 / Next 16 build / smoke 对齐），已完成
+- P3.2：项目知识 merge / restore 收益对比 + 审计记录，已完成
+- P3.3：运行结果知识命中 / helper 使用可观测性，已完成
+- P3.4：历史运行洞察 / 回滚候选提示，已完成
+- P3.5：新规则观察期 guardrail（自动降级 / 转正 / 直接回滚），已完成
+- P3.6：starter helper 建议闭环（洞察 -> 工作台 -> Prompt），已完成
+- 下一步建议优先做：把这批已经能自动推荐的 starter helper 继续沉淀成 starter recipe / runtime helper 资产，再补更多业务 helper
+
 ## 2026-03-19 第十八次更新（新规则观察期 guardrail 已接入洞察与规划）
 这一轮继续围绕“简单上手、成功率高”推进，但依然没有引入更多人工控制，而是把新规则的生命周期补成可观测、可降级、可回滚：
 - `GET /api/intent-e2e/insights` 现在除了原来的汇总指标和回滚候选，还会返回结构化 `probationRules`；所有新 merge 且确实新增了 ruleId 的规则批次，都会进入观察期

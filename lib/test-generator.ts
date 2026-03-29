@@ -1,7 +1,44 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { callLLMStream } from './llm-client';
+import { Script } from 'node:vm';
+import { callLLMStructured, callLLMStream } from './llm-client';
 import { renderIntentActionLibrary, selectIntentActionLibrary } from './intent-action-library';
+import {
+  renderIntentRecipeRegistry,
+  selectIntentRecipeRegistry,
+  type IntentRecipePerformanceFeedback,
+  type IntentMatchedRecipe,
+} from './intent-recipe-registry';
+import {
+  renderIntentExecutionPlan,
+  renderIntentVerificationPlan,
+  buildIntentExecutionPlan,
+  buildIntentVerificationPlan,
+  type IntentExecutionPlan,
+  type IntentVerificationPlan,
+} from './intent-execution-plan';
+import {
+  compileIntentExecutionTemplate,
+  renderCompiledIntentExecutionTemplate,
+  type IntentCompiledExecutionTemplate,
+} from './intent-execution-compiler';
+import {
+  applyIntentExecutionSlotPatch,
+  buildIntentExecutionRepairPatchSchema,
+  buildIntentExecutionSlotPatchSchema,
+  extractIntentExecutionSlotCode,
+  hasIntentExecutionSlotMarkers,
+  normalizeIntentExecutionRepairPatch,
+  normalizeIntentExecutionSlotPatch,
+  resolveIntentExecutionPatchTargetSlotUids,
+  type IntentExecutionRepairPatch,
+  type IntentExecutionSlotPatch,
+} from './intent-execution-slot-patch';
+import type {
+  IntentExecutionBaseCodeSource,
+  IntentExecutionStructuredPatch,
+  IntentExecutionStructuredRepairOutput,
+} from './intent-execution-artifacts';
 import { renderIntentRepairMemoryHints, type IntentRepairMemoryHint } from './ai/intent-repair-memory';
 import { buildIntentActionDSL, renderIntentActionDSL, type IntentActionDSL, type IntentActionStepInput } from './intent-action-dsl';
 import {
@@ -11,34 +48,124 @@ import {
   type IntentProjectKnowledgeResolution,
   type IntentProjectKnowledgeRulePerformance,
 } from './intent-project-knowledge';
+import {
+  applyIntentStarterAssetsToDsl,
+  collectIntentStarterAssetCapabilitySlugs,
+  resolveIntentStarterAssets,
+  type IntentResolvedStarterAsset,
+} from './intent-starter-assets';
+import type { IntentE2EInsightStarterHelper } from './ai/intent-e2e-insights';
+import { buildIntentSharedVariableJsonPaths } from './intent-shared-variable-utils';
 import type { LLMRuntimeOverrides } from './llm/provider-config';
 import type { PageSnapshot, AuthConfig } from './page-analyzer';
 
-export interface GenerateEvent {
-  type: 'thinking' | 'code' | 'complete' | 'error';
-  content: string;
-}
+export type GenerateEvent =
+  | {
+      type: 'thinking' | 'code' | 'complete' | 'error';
+      content: string;
+    }
+  | {
+      type: 'structured_patch';
+      content: string;
+      structuredPatch: IntentExecutionStructuredPatch;
+      repairOutput?: IntentExecutionStructuredRepairOutput;
+    };
 
 export interface GenerateTestContext {
   taskMode?: 'page' | 'scenario';
   scenarioEntryUrl?: string;
   scenarioSummary?: string;
   expectedOutcome?: string;
+  successCriteria?: string[];
   sharedVariables?: string[];
   cleanupNotes?: string;
+  repairObservationSnapshot?: PageSnapshot;
+  repairObservationReport?: RepairObservationReport;
   relatedSnapshots?: PageSnapshot[];
   scenarioSteps?: IntentActionStepInput[];
   actionDsl?: IntentActionDSL;
+  executionPlan?: IntentExecutionPlan;
+  verificationPlan?: IntentVerificationPlan;
 }
 
 export interface RepairTestContext {
   previousCode: string;
   executionError: string;
   recentEvents?: string[];
+  latestTrace?: string[];
   repairMemoryHints?: IntentRepairMemoryHint[];
+  failedStepTitle?: string;
+  failedSlotUids?: string[];
+  failureSummary?: string;
+  failedPlanNodes?: RepairFailedPlanNode[];
+  verifierResult?: RepairVerifierResult | null;
+  graderDiagnosis?: RepairGraderDiagnosis | null;
+}
+
+export interface RepairFailedPlanNode {
+  nodeUid: string;
+  kind: IntentCompiledExecutionTemplate['slots'][number]['kind'];
+  title: string;
+  preferredHelpers: string[];
+  relatedCheckUids: string[];
+  instructions: string[];
+}
+
+export interface RepairVerifierResultCheck {
+  checkUid: string;
+  title: string;
+  instruction: string;
+  preferredHelpers: string[];
+  relatedPlanStepUids: string[];
+  required: boolean;
+}
+
+export interface RepairVerifierResult {
+  expectedOutcome: string;
+  failingChecks: RepairVerifierResultCheck[];
+}
+
+export interface RepairGraderDiagnosis {
+  failureClass: string;
+  summary: string;
+  failureSignature?: string;
+  failedStepTitle?: string;
+  failedLocator?: string;
+  targetAnchor?: string;
+  repeatedCount?: number;
+  nextActions?: string[];
+}
+
+export type RepairObservationProbeKind =
+  | 'page_surface'
+  | 'anchor_presence'
+  | 'candidate_anchor_presence'
+  | 'frame_probe';
+
+export type RepairObservationProbeStatus = 'observed' | 'not_found' | 'not_applicable';
+
+export interface RepairObservationProbe {
+  probeUid: string;
+  kind: RepairObservationProbeKind;
+  status: RepairObservationProbeStatus;
+  summary: string;
+  evidence: string[];
+}
+
+export interface RepairObservationReport {
+  observedAt: string;
+  pageUrl: string;
+  pageTitle: string;
+  probes: RepairObservationProbe[];
 }
 
 const ROOT = process.cwd();
+const BUSINESS_ID_JSON_PATHS = buildIntentSharedVariableJsonPaths('businessId');
+const ORDER_ID_JSON_PATHS = buildIntentSharedVariableJsonPaths('orderId');
+
+function renderJsStringArray(items: string[]): string {
+  return `[${items.map((item) => JSON.stringify(item)).join(', ')}]`;
+}
 
 async function loadEdgeCases(_url: string): Promise<any[]> {
   try {
@@ -77,14 +204,220 @@ function buildIntentHaystack(description: string, context?: GenerateTestContext)
     .toLowerCase();
 }
 
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const items: string[] = [];
+
+  for (const raw of values) {
+    const value = typeof raw === 'string' ? raw.trim() : '';
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    items.push(value);
+  }
+
+  return items;
+}
+
+function collectSnapshotFieldHints(snapshot: Pick<PageSnapshot, 'forms'>): string[] {
+  return uniqueStrings(
+    snapshot.forms.flatMap((form) => form.fields.flatMap((field) => [field.label, field.placeholder, field.id]))
+  );
+}
+
+function collectFrameHintPhrases(frame: NonNullable<PageSnapshot['frames']>[number]): string[] {
+  const pathToken = (() => {
+    try {
+      const pathname = new URL(frame.url).pathname;
+      return pathname.split('/').filter(Boolean).pop() || '';
+    } catch {
+      return '';
+    }
+  })();
+
+  return uniqueStrings([
+    frame.name,
+    frame.elementId,
+    frame.elementName,
+    frame.elementClassName,
+    frame.selectorHint,
+    pathToken,
+    ...frame.headings.map((item) => item.text),
+    ...frame.forms.flatMap((form) => form.fields.flatMap((field) => [field.label, field.placeholder, field.id])),
+  ]).filter((item) => item.length >= 2 && item.length <= 80);
+}
+
+function buildFrameHaystack(frame: NonNullable<PageSnapshot['frames']>[number]): string {
+  return [
+    frame.name,
+    frame.url,
+    frame.elementId || '',
+    frame.elementName || '',
+    frame.elementClassName || '',
+    frame.selectorHint || '',
+    frame.bodyTextExcerpt || '',
+    ...frame.headings.map((item) => item.text),
+    ...frame.forms.flatMap((form) => form.fields.flatMap((field) => [field.label, field.placeholder, field.id])),
+  ]
+    .join('\n')
+    .toLowerCase();
+}
+
+function isLikelyBusinessFrame(frame: NonNullable<PageSnapshot['frames']>[number]): boolean {
+  const haystack = buildFrameHaystack(frame);
+  if (!haystack.trim()) return false;
+  if (/(recaptcha|captcha|challenge|beacon|tracker|analytics|intercom|chat|客服|support)/i.test(haystack)) {
+    return false;
+  }
+
+  let surfaceSignals = 0;
+  if (frame.forms.some((form) => form.fields.length > 0)) surfaceSignals += 1;
+  if (frame.buttons.length > 0) surfaceSignals += 1;
+  if (frame.headings.length > 0) surfaceSignals += 1;
+  if ((frame.bodyTextExcerpt || '').trim().length >= 30) surfaceSignals += 1;
+  return surfaceSignals >= 2;
+}
+
+function shouldPreferFrameContext(
+  snapshot: PageSnapshot,
+  description: string,
+  context?: GenerateTestContext
+): boolean {
+  const businessFrames = (snapshot.frames || []).filter(isLikelyBusinessFrame);
+  if (businessFrames.length === 0) return false;
+
+  const intentHaystack = buildIntentHaystack(description, context);
+  if (/(iframe|frame|内嵌|嵌入)/i.test(intentHaystack)) return true;
+
+  if (
+    businessFrames.some((frame) =>
+      collectFrameHintPhrases(frame).some((phrase) => intentHaystack.includes(phrase.toLowerCase()))
+    )
+  ) {
+    return true;
+  }
+
+  const mainSurfaceSignalCount =
+    Number(snapshot.forms.some((form) => form.fields.length > 0)) +
+    Number(snapshot.buttons.length > 2) +
+    Number(snapshot.headings.length > 1) +
+    Number((snapshot.bodyTextExcerpt || '').trim().length >= 60) +
+    Number(collectSnapshotFieldHints(snapshot).length > 0);
+
+  return businessFrames.length === 1 && mainSurfaceSignalCount <= 1;
+}
+
+function applySnapshotPlanningHintsToDsl(
+  dsl: IntentActionDSL,
+  snapshot: PageSnapshot,
+  description: string,
+  context?: GenerateTestContext
+): IntentActionDSL {
+  if (!shouldPreferFrameContext(snapshot, description, context)) {
+    return dsl;
+  }
+
+  const frameAwareStepTypes = new Set(['ui', 'assert', 'extract']);
+
+  return {
+    ...dsl,
+    globalRules: uniqueStrings([
+      ...dsl.globalRules,
+      '当前页面存在业务 iframe 线索时，优先使用 __e2e.getFrame 进入真实业务上下文，再在 frame 内定位 placeholder / 按钮 / 列表。',
+    ]),
+    preferredPrimitives: uniqueStrings([
+      ...dsl.preferredPrimitives,
+      'enter_frame_context(selector?, urlIncludes?, nameIncludes?): 通过 helper 进入真实业务 iframe',
+    ]),
+    steps: dsl.steps.map((step) =>
+      frameAwareStepTypes.has(step.stepType)
+        ? {
+            ...step,
+            preferredHelpers: uniqueStrings(['__e2e.getFrame', ...step.preferredHelpers]),
+          }
+        : step
+    ),
+  };
+}
+
+function looksLikePrimaryLoginTask(
+  dsl: IntentActionDSL,
+  auth?: AuthConfig
+): boolean {
+  const loginUrl = String(auth?.loginUrl || '').trim().toLowerCase();
+  if (!loginUrl) return false;
+
+  const firstExecutableStep = dsl.steps.find((step) => step.stepType !== 'cleanup');
+  const target = String(firstExecutableStep?.target || dsl.targetUrl || '').trim().toLowerCase();
+  const haystack = [
+    dsl.summary,
+    firstExecutableStep?.title || '',
+    firstExecutableStep?.goal || '',
+    ...firstExecutableStep?.requiredAssertions || [],
+    target,
+  ]
+    .join('\n')
+    .toLowerCase();
+
+  if (!haystack.includes('登录') && !haystack.includes('登陆') && !/\/login\b|sign in|signin/.test(haystack)) {
+    return false;
+  }
+
+  return (
+    target === loginUrl ||
+    target.includes('/login') ||
+    /登录页|登陆页|登录流程|登陆流程|登录表单|登陆表单|验证登录|测试登录|账号登录|密码登录|验证码登录/.test(haystack)
+  );
+}
+
+function applyAuthPlanningHintsToDsl(
+  dsl: IntentActionDSL,
+  auth?: AuthConfig
+): IntentActionDSL {
+  const loginUrl = String(auth?.loginUrl || '').trim();
+  if (!loginUrl) return dsl;
+  if (looksLikePrimaryLoginTask(dsl, auth)) return dsl;
+
+  const firstExecutableStep = dsl.steps.find((step) => step.stepType !== 'cleanup');
+  if (!firstExecutableStep) return dsl;
+
+  return {
+    ...dsl,
+    globalRules: uniqueStrings([
+      ...dsl.globalRules,
+      '如果请求提供统一登录信息，优先使用 __e2e.ensureLoggedIn(page, { targetUrl }) 完成登录和复访，不要手写 page.goto(LOGIN_URL) + locator 登录流程。',
+    ]),
+    preferredPrimitives: uniqueStrings([
+      ...dsl.preferredPrimitives,
+      'ensure_auth(targetUrl?): 通过 helper 统一处理登录态检测、登录和目标页复访',
+    ]),
+    steps: dsl.steps.map((step) =>
+      step.stepUid === firstExecutableStep.stepUid
+        ? {
+            ...step,
+            preferredHelpers: uniqueStrings(['__e2e.ensureLoggedIn', ...step.preferredHelpers]),
+          }
+        : step
+    ),
+  };
+}
+
 export interface ResolvedPromptPlanningContext {
   dsl: IntentActionDSL;
   knowledge: IntentProjectKnowledgeResolution;
+  starterHelpers?: IntentResolvedStarterAsset[];
+  recipes?: IntentMatchedRecipe[];
+  executionPlan?: IntentExecutionPlan;
+  verificationPlan?: IntentVerificationPlan;
 }
 
 export interface ResolveIntentPromptPlanningOptions {
   rulePerformanceById?: Record<string, IntentProjectKnowledgeRulePerformance>;
+  starterHelpers?: IntentE2EInsightStarterHelper[];
+  auth?: AuthConfig;
+  recipePerformanceBySlug?: Record<string, IntentRecipePerformanceFeedback>;
 }
+
+type ResolvedStarterHelper = NonNullable<ResolvedPromptPlanningContext['starterHelpers']>[number];
 
 export function resolveIntentPromptPlanningContext(
   snapshot: PageSnapshot,
@@ -103,18 +436,72 @@ export function resolveIntentPromptPlanningContext(
       cleanupNotes: context?.cleanupNotes,
       steps: context?.scenarioSteps,
     });
+  const authHintedDsl = applyAuthPlanningHintsToDsl(baseDsl, options.auth);
+  const snapshotHintedDsl = applySnapshotPlanningHintsToDsl(authHintedDsl, snapshot, description, context);
 
   const knowledge = resolveIntentProjectKnowledge({
     snapshot,
     description,
-    dsl: baseDsl,
+    dsl: snapshotHintedDsl,
   }, {
     rulePerformanceById: options.rulePerformanceById,
   });
+  const knowledgeAppliedDsl = applyIntentProjectKnowledgeToDsl(snapshotHintedDsl, knowledge);
+  const starterHelpers = resolveIntentStarterAssets({
+    dsl: knowledgeAppliedDsl,
+    snapshot,
+    auth: options.auth,
+    starterHelpers: options.starterHelpers,
+  });
+  const finalDsl = applyIntentStarterAssetsToDsl(knowledgeAppliedDsl, starterHelpers);
+  const recipes = selectIntentRecipeRegistry({
+    dsl: finalDsl,
+    auth: options.auth,
+    snapshot,
+    preferredCapabilitySlugs: [
+      ...knowledge.capabilitySlugs,
+      ...collectIntentStarterAssetCapabilitySlugs(starterHelpers),
+    ],
+    performanceBySlug: options.recipePerformanceBySlug,
+  }).items;
+  const executionPlan = buildIntentExecutionPlan({
+    taskMode: context?.taskMode,
+    targetUrl: context?.scenarioEntryUrl || snapshot.url,
+    featureDescription: description,
+    expectedOutcome: context?.expectedOutcome,
+    successCriteria: context?.successCriteria,
+    sharedVariables: context?.sharedVariables,
+    cleanupNotes: context?.cleanupNotes,
+    scenarioSteps: context?.scenarioSteps,
+    dsl: finalDsl,
+    recipes,
+  });
+  const verificationPlan = buildIntentVerificationPlan(
+    {
+      taskMode: context?.taskMode,
+      targetUrl: context?.scenarioEntryUrl || snapshot.url,
+      featureDescription: description,
+      expectedOutcome: context?.expectedOutcome,
+      successCriteria: context?.successCriteria?.length
+        ? context.successCriteria
+        : executionPlan.steps.flatMap((step) => step.requiredAssertions).slice(0, 12),
+      sharedVariables: context?.sharedVariables,
+      cleanupNotes: context?.cleanupNotes,
+      scenarioSteps: context?.scenarioSteps,
+      knowledge,
+      dsl: finalDsl,
+      recipes,
+    },
+    executionPlan
+  );
 
   return {
-    dsl: applyIntentProjectKnowledgeToDsl(baseDsl, knowledge),
+    dsl: finalDsl,
     knowledge,
+    starterHelpers,
+    recipes,
+    executionPlan,
+    verificationPlan,
   };
 }
 
@@ -124,25 +511,602 @@ ${renderIntentActionDSL(planning.dsl)}`;
 }
 
 function buildProjectKnowledgeSection(planning: ResolvedPromptPlanningContext): string {
-  const rendered = renderIntentProjectKnowledge(planning.knowledge);
+  const rendered = planning.knowledge
+    ? renderIntentProjectKnowledge(planning.knowledge)
+    : '';
   return rendered ? `
 ${rendered}` : '';
 }
 
+function buildStarterHelperPreferredPromotionFragment(
+  item: ResolvedStarterHelper
+): string {
+  switch (item.preferredPromotionStatus) {
+    case 'await_more_positive_rules':
+      return `；提级状态=待补正向规则(长期正向 ${item.preferredPromotionPositiveRuleCount || 0}/${item.preferredPromotionRequiredPositiveRuleCount || 0} 条)`;
+    case 'blocked_by_mixed_evidence':
+      return `；提级状态=混合证据未清零(正向 ${item.preferredPromotionPositiveRuleCount || 0} / 负向或混合 ${item.preferredPromotionNegativeRuleCount || 0})`;
+    case 'await_long_term_recovery':
+      return '；提级状态=等待长期转正';
+    default:
+      return '';
+  }
+}
+
+function buildStarterHelperGovernanceEvidenceFragment(
+  item: ResolvedStarterHelper
+): string {
+  if (item.governanceReleaseStatus !== 'released_from_suppressed') return '';
+
+  return `；治理恢复证据=直接验证通过 ${item.governanceReleaseDirectVerifyPassedCapabilityCount || 0} 条${
+    (item.governanceReleaseManualRepairPassedCapabilityCount || 0) > 0
+      ? `，人工repair通过 ${item.governanceReleaseManualRepairPassedCapabilityCount || 0} 条`
+      : ''
+  }${
+    (item.governanceReleaseAutoRepairPassedCapabilityCount || 0) > 0
+      ? `，自动repair通过 ${item.governanceReleaseAutoRepairPassedCapabilityCount || 0} 条(弱恢复)`
+      : ''
+  }`;
+}
+
+function buildStarterHelperSection(planning: ResolvedPromptPlanningContext): string {
+  if (!planning.starterHelpers?.length) return '';
+
+  return `
+## Starter Helper 建议（按适用范围分层）
+${planning.starterHelpers
+  .slice(0, 4)
+  .map(
+    (item) =>
+      `- ${item.helper}: 范围=${item.scope === 'project_capability' ? '项目级 capability' : '全局 runtime heuristic'}；来源=${item.source === 'promoted' ? '已转正规则' : '稳定规则'}；资产=${item.assetTitle}；复用 ${item.runCount} 次；通过率 ${item.passRate}%；支持规则=${item.supportingRuleTitles.slice(0, 2).join(' / ') || item.supportingRuleIds.slice(0, 2).join(' / ') || '未记录'}${
+        item.knowledgeChangeSignal === 'positive'
+          ? `；长期证据=正向${item.knowledgeChangeDecisionableRuleCount ? `(${item.knowledgeChangeDecisionableRuleCount} 条已判定规则)` : ''}`
+          : item.knowledgeChangeTier === 'watching'
+            ? `；长期证据=${
+                item.knowledgeChangeWatchingKind === 'mixed'
+                  ? '混合观察'
+                  : item.knowledgeChangeWatchingKind === 'recovering'
+                    ? '恢复观察'
+                    : '观察中'
+              }${item.knowledgeChangeDecisionableRuleCount ? `(${item.knowledgeChangeDecisionableRuleCount} 条已判定规则)` : ''}`
+            : ''
+            }${
+        item.governanceReleaseStatus === 'released_from_suppressed'
+          ? `；治理状态=已从 suppressed 保守释放${
+              item.governanceReleaseCapabilityCount
+                ? `(${item.governanceReleaseCapabilityCount} 条治理目标能力`
+                : '('
+            }${
+              item.governanceReleaseDirectVerifyPassedCapabilityCount
+                ? `，直接验证通过 ${item.governanceReleaseDirectVerifyPassedCapabilityCount} 条`
+                : ''
+            }${
+              item.governanceReleaseLatestVerifyExecutionAt
+                ? `，最近验证=${item.governanceReleaseLatestVerifyExecutionAt}`
+                : ''
+            })`
+          : ''
+      }${
+        buildStarterHelperGovernanceEvidenceFragment(item)
+      }${
+        (item.governanceReleaseAutoRepairPassedCapabilityCount || 0) > 0
+          ? '；注意=自动repair只算弱恢复，不等于长期正向证据'
+          : ''
+      }${
+        buildStarterHelperPreferredPromotionFragment(item)
+      }${
+        item.preferredPromotionStatus && item.preferredAutoPromotionCondition
+          ? `；自动提级条件=${item.preferredAutoPromotionCondition}`
+          : ''
+      }${
+        item.recentFailedVerifyExecutionCount
+          ? `；近${item.recentFailureWindowDays || 14}天标准验证失败=${item.recentFailedVerifyExecutionCount}`
+          : item.recentFailedReviewExecutionCount
+            ? `；近${item.recentFailureWindowDays || 14}天保守复核失败=${item.recentFailedReviewExecutionCount}`
+            : ''
+      }${
+        item.recentFailedVerifyCapabilityCount
+          ? `；最近标准验证失败=${item.recentFailedVerifyCapabilityCount}`
+          : item.recentFailedReviewCapabilityCount
+            ? `；最近保守复核失败=${item.recentFailedReviewCapabilityCount}`
+            : ''
+      }`
+  )
+  .join('\n')}
+
+使用要求：
+1. 当前步骤语义如果已经被这些 helper 覆盖，优先直接复用，不要再手写等价的 click + waitForTimeout + locator 拼装逻辑。
+2. 标记为“全局 runtime heuristic”的 helper 可以跨系统复用，但仍要先确认动作语义一致。
+3. 标记为“项目级 capability”的 helper 只在当前项目业务语义匹配时使用，避免为了复用而硬套到别的系统。
+4. 标记为“已从 suppressed 保守释放”的 helper 只能按恢复观察层使用；语义明确匹配时才复用，不能替代长期正向 helper 的优先级。`;
+}
+
+function buildRecipeRegistrySection(planning: ResolvedPromptPlanningContext): string {
+  if (!planning.recipes?.length) return '';
+
+  return `\n${renderIntentRecipeRegistry({
+    version: 1,
+    items: planning.recipes,
+  })}`;
+}
+
+function buildExecutionPlanSection(planning: ResolvedPromptPlanningContext): string {
+  return planning.executionPlan ? `\n${renderIntentExecutionPlan(planning.executionPlan)}` : '';
+}
+
+function buildVerificationPlanSection(planning: ResolvedPromptPlanningContext): string {
+  return planning.verificationPlan ? `\n${renderIntentVerificationPlan(planning.verificationPlan)}` : '';
+}
+
+function buildVerificationIntentSection(planning: ResolvedPromptPlanningContext): string {
+  if (planning.verificationPlan?.intent !== 'review') return '';
+
+  const notes = uniqueStrings(planning.verificationPlan.policyNotes || []);
+  return `
+## 当前能力验证意图
+- 模式: 保守复核（review）
+- 目标: 优先确认既有 helper、selector、断言与业务入口是否仍稳定可复用，而不是主动扩写新的业务链路。
+${notes.map((item, index) => `${index + 1}. ${item}`).join('\n')}`;
+}
+
+function compilePlanningExecutionTemplate(
+  planning: ResolvedPromptPlanningContext,
+  auth: AuthConfig | undefined,
+  description: string
+): IntentCompiledExecutionTemplate | null {
+  if (!planning.executionPlan) return null;
+
+  return compileIntentExecutionTemplate({
+    executionPlan: planning.executionPlan,
+    verificationPlan: planning.verificationPlan,
+    auth,
+    description,
+  });
+}
+
+type LegacyCodeFallbackMode = 'generate' | 'repair';
+
+function buildLegacyCodeFallbackReason(
+  mode: LegacyCodeFallbackMode,
+  planning: ResolvedPromptPlanningContext
+): string {
+  const cause = planning.executionPlan
+    ? '当前 ExecutionPlan 未能编译成受控脚手架'
+    : '当前 planning 未提供 ExecutionPlan';
+
+  if (mode === 'repair') {
+    return `${cause}，当前 repair 显式回退到自由代码修复（legacy fallback，非主链）...`;
+  }
+
+  return `${cause}，当前显式回退到自由代码生成（legacy fallback，非主链）...`;
+}
+
+function buildCompiledExecutionTemplateSection(
+  planning: ResolvedPromptPlanningContext,
+  auth: AuthConfig | undefined,
+  description: string
+): string {
+  const template = compilePlanningExecutionTemplate(planning, auth, description);
+  if (!template) return '';
+
+  return `\n${renderCompiledIntentExecutionTemplate(template)}`;
+}
+
+function buildRepairFailedPlanNodes(
+  template: IntentCompiledExecutionTemplate,
+  targetSlotUids: string[]
+): RepairFailedPlanNode[] {
+  return targetSlotUids
+    .map((slotUid) => template.slots.find((item) => item.slotUid === slotUid))
+    .filter((slot): slot is IntentCompiledExecutionTemplate['slots'][number] => Boolean(slot))
+    .map((slot) => ({
+      nodeUid: slot.slotUid,
+      kind: slot.kind,
+      title: slot.title,
+      preferredHelpers: [...slot.preferredHelpers],
+      relatedCheckUids: [...slot.relatedCheckUids],
+      instructions: [...slot.instructions],
+    }));
+}
+
+function buildRepairVerifierResult(
+  template: IntentCompiledExecutionTemplate,
+  targetSlotUids: string[],
+  verificationPlan?: IntentVerificationPlan
+): RepairVerifierResult | null {
+  if (!verificationPlan) return null;
+
+  const targetSlots = targetSlotUids
+    .map((slotUid) => template.slots.find((item) => item.slotUid === slotUid))
+    .filter((slot): slot is IntentCompiledExecutionTemplate['slots'][number] => Boolean(slot));
+  const explicitCheckUids = uniqueStrings(targetSlots.flatMap((slot) => slot.relatedCheckUids || []));
+  const inferredCheckUids = uniqueStrings(
+    targetSlots.flatMap((slot) =>
+      slot.planStepUid
+        ? verificationPlan.checks
+            .filter((check) => check.relatedPlanStepUids.includes(slot.planStepUid || ''))
+            .map((check) => check.checkUid)
+        : []
+    )
+  );
+  const targetCheckUids = uniqueStrings([...explicitCheckUids, ...inferredCheckUids]);
+  const failingChecks = targetCheckUids
+    .map((checkUid) => verificationPlan.checks.find((check) => check.checkUid === checkUid))
+    .filter((check): check is IntentVerificationPlan['checks'][number] => Boolean(check))
+    .map((check) => ({
+      checkUid: check.checkUid,
+      title: check.title,
+      instruction: check.instruction,
+      preferredHelpers: [...check.preferredHelpers],
+      relatedPlanStepUids: [...check.relatedPlanStepUids],
+      required: check.required,
+    }));
+
+  if (!verificationPlan.expectedOutcome && failingChecks.length === 0) {
+    return null;
+  }
+
+  return {
+    expectedOutcome: verificationPlan.expectedOutcome || '',
+    failingChecks,
+  };
+}
+
+function enrichRepairContextWithStructuredInputs(
+  repair: RepairTestContext,
+  template: IntentCompiledExecutionTemplate,
+  targetSlotUids: string[],
+  planning: ResolvedPromptPlanningContext
+): RepairTestContext {
+  return {
+    ...repair,
+    latestTrace: repair.latestTrace?.length ? repair.latestTrace : repair.recentEvents,
+    failedPlanNodes: repair.failedPlanNodes?.length ? repair.failedPlanNodes : buildRepairFailedPlanNodes(template, targetSlotUids),
+    verifierResult:
+      repair.verifierResult === undefined
+        ? buildRepairVerifierResult(template, targetSlotUids, planning.verificationPlan)
+        : repair.verifierResult,
+  };
+}
+
+function renderTargetSlotPatchSection(
+  template: IntentCompiledExecutionTemplate,
+  targetSlotUids: string[],
+  currentCode: string,
+  mode: 'generate' | 'repair',
+  repair?: RepairTestContext | null
+): string {
+  const slotLines = targetSlotUids
+    .map((slotUid) => {
+      const slot = template.slots.find((item) => item.slotUid === slotUid);
+      if (!slot) return '';
+
+      const currentSlotCode = extractIntentExecutionSlotCode(currentCode, slotUid);
+      return `### Slot ${slotUid}
+- kind: ${slot.kind}
+- title: ${slot.title}
+- preferredHelpers: ${slot.preferredHelpers.join(' / ') || '无'}
+- relatedChecks: ${slot.relatedCheckUids.join(' / ') || '无'}
+- instructions:
+${slot.instructions.map((item, index) => `  ${index + 1}. ${item}`).join('\n') || '  1. 保持当前 slot 语义完整'}
+- 当前实现：
+\`\`\`javascript
+${currentSlotCode || '// 当前仍是占位实现，请在这个 slot 内补全真实逻辑'}
+\`\`\``;
+    })
+    .filter(Boolean)
+    .join('\n\n');
+
+  return `\n## Structured Slot Patch Mode（本节优先级最高）
+- mode: ${mode === 'repair' ? 'repair_targeted_slot_patch' : 'initial_slot_fill'}
+- targetSlots: ${targetSlotUids.join(' / ') || '无'}
+- baseCodeHasMarkers: ${targetSlotUids.every((slotUid) => hasIntentExecutionSlotMarkers(currentCode, slotUid)) ? 'yes' : 'no'}
+${repair?.failedStepTitle ? `- failedStepTitle: ${repair.failedStepTitle}` : ''}
+${repair?.failureSummary ? `- failureSummary: ${repair.failureSummary}` : ''}
+
+要求：
+1. 只修改 targetSlots 列出的 slot；不要返回完整 \`test(...)\` 脚本。
+2. 每个 slot 的 \`code\` 只填写 \`SLOT_START / SLOT_END\` 之间的代码体，不要包含这两个标记，不要包含外层 \`test.step(...)\` 包裹。
+3. 不要删除或重命名 \`shared\`、\`artifacts\`、现有 slotUid，也不要把多个步骤合并到一个 slot 里。
+4. 如果是 repair，只修失败 slot 所需的 locator / wait / helper / assertion；不要顺手重写其他已成功 slot。
+5. 返回的每个 slot code 都必须是可直接插入现有模板的 JavaScript 语句块，不要加代码围栏。
+
+${slotLines}`;
+}
+
+function collectRepairLatestTraceLines(repair: RepairTestContext): string[] {
+  return (repair.latestTrace?.length ? repair.latestTrace : repair.recentEvents || []).map((item) => clampText(item, 220));
+}
+
+function renderRepairStructuredInputSection(repair: RepairTestContext): string {
+  const parts: string[] = [];
+
+  if (repair.failedPlanNodes?.length) {
+    parts.push(`### Failed Plan Nodes
+${repair.failedPlanNodes
+  .map(
+    (node, index) => `${index + 1}. [${node.nodeUid}] ${node.kind} · ${node.title || '未命名节点'}
+   - helpers: ${node.preferredHelpers.join(' / ') || '无'}
+   - relatedChecks: ${node.relatedCheckUids.join(' / ') || '无'}
+   - instructions: ${node.instructions.slice(0, 2).join(' / ') || '无'}`
+  )
+  .join('\n')}`);
+  }
+
+  if (repair.verifierResult) {
+    parts.push(`### Verifier Result
+- expectedOutcome: ${repair.verifierResult.expectedOutcome || '未提供'}
+- failingChecks: ${repair.verifierResult.failingChecks.length}
+${repair.verifierResult.failingChecks
+  .map(
+    (check, index) => `${index + 1}. [${check.checkUid}] ${check.title || '未命名检查'}
+   - instruction: ${check.instruction || '无'}
+   - relatedPlanSteps: ${check.relatedPlanStepUids.join(' / ') || '无'}
+   - helpers: ${check.preferredHelpers.join(' / ') || '无'}
+   - required: ${check.required ? 'yes' : 'no'}`
+  )
+  .join('\n')}`);
+  }
+
+  return parts.length > 0 ? `\n## Repair Context（结构化输入）\n${parts.join('\n\n')}` : '';
+}
+
+function renderRepairGraderDiagnosisSection(repair: RepairTestContext): string {
+  const diagnosis = repair.graderDiagnosis;
+  if (!diagnosis) return '';
+
+  const lines = [
+    `- failureClass: ${diagnosis.failureClass || 'unknown'}`,
+    `- summary: ${diagnosis.summary || '未提供'}`,
+    diagnosis.failureSignature ? `- failureSignature: ${diagnosis.failureSignature}` : '',
+    diagnosis.failedStepTitle ? `- failedStepTitle: ${diagnosis.failedStepTitle}` : '',
+    diagnosis.failedLocator ? `- failedLocator: ${diagnosis.failedLocator}` : '',
+    diagnosis.targetAnchor ? `- targetAnchor: ${diagnosis.targetAnchor}` : '',
+    diagnosis.repeatedCount ? `- repeatedCount: ${diagnosis.repeatedCount}` : '',
+  ].filter(Boolean);
+
+  if (diagnosis.nextActions?.length) {
+    lines.push(`- nextActions:\n${diagnosis.nextActions.map((item, index) => `  ${index + 1}. ${item}`).join('\n')}`);
+  }
+
+  return `\n## Grader Diagnosis\n${lines.join('\n')}`;
+}
+
+interface StructuredRepairOutputContext {
+  planStepUids: string[];
+  checkUids: string[];
+  recipeSlugs: string[];
+}
+
+function renderStructuredRepairOutputIds(values: string[]): string {
+  return values.length > 0 ? values.join(' / ') : '空数组 []';
+}
+
+function buildStructuredRepairOutputContext(
+  template: IntentCompiledExecutionTemplate,
+  targetSlotUids: string[],
+  planning: ResolvedPromptPlanningContext,
+  repair?: RepairTestContext | null
+): StructuredRepairOutputContext {
+  const targetSlots = targetSlotUids
+    .map((slotUid) => template.slots.find((item) => item.slotUid === slotUid))
+    .filter((slot): slot is IntentCompiledExecutionTemplate['slots'][number] => Boolean(slot));
+  const verificationPlan = planning.verificationPlan;
+  const explicitCheckUids = uniqueStrings(targetSlots.flatMap((slot) => slot.relatedCheckUids || []));
+  const inferredCheckUids = uniqueStrings(
+    targetSlots.flatMap((slot) =>
+      slot.planStepUid && verificationPlan
+        ? verificationPlan.checks
+            .filter((check) => check.relatedPlanStepUids.includes(slot.planStepUid || ''))
+            .map((check) => check.checkUid)
+        : []
+    )
+  );
+  let checkUids = uniqueStrings([
+    ...(repair?.verifierResult?.failingChecks || []).map((check) => check.checkUid),
+    ...explicitCheckUids,
+    ...inferredCheckUids,
+  ]);
+
+  if (checkUids.length === 0 && targetSlots.some((slot) => slot.kind === 'verification') && verificationPlan) {
+    checkUids = uniqueStrings(verificationPlan.checks.map((check) => check.checkUid));
+  }
+
+  const relatedCheckUidSet = new Set(checkUids);
+  const planStepUids = uniqueStrings([
+    ...targetSlots.map((slot) => slot.planStepUid || ''),
+    ...(verificationPlan?.checks || [])
+      .filter((check) => relatedCheckUidSet.has(check.checkUid))
+      .flatMap((check) => check.relatedPlanStepUids || []),
+    ...(repair?.verifierResult?.failingChecks || []).flatMap((check) => check.relatedPlanStepUids || []),
+  ]);
+  const recipeSlugs = uniqueStrings([
+    ...(planning.recipes || []).map((item) => item.recipe.slug),
+    ...(planning.executionPlan?.matchedRecipeSlugs || []),
+    ...(planning.verificationPlan?.matchedRecipeSlugs || []),
+  ]);
+
+  return {
+    planStepUids,
+    checkUids,
+    recipeSlugs,
+  };
+}
+
+function buildStructuredRepairOutputFormatSection(
+  targetSlotUids: string[],
+  context: StructuredRepairOutputContext
+): string {
+  return `
+## Repair Output Contract（覆盖上文所有“输出纯 JS”要求）
+1. 只返回一个严格 JSON 对象，结构必须为：
+   - \`version: 1\`
+   - \`patchedPlan: { planStepUids: [] }\`
+   - \`patchedVerifier: { checkUids: [] }\`
+   - \`patchedRecipeSelection: { recipeSlugs: [] }\`
+   - \`slots: [{ slotUid, code }]\`
+2. \`patchedPlan.planStepUids\` 只能从以下集合选择：${renderStructuredRepairOutputIds(context.planStepUids)}；如果本次没有改计划层，返回 \`[]\`。
+3. \`patchedVerifier.checkUids\` 只能从以下集合选择：${renderStructuredRepairOutputIds(context.checkUids)}；如果本次没有改验收链，返回 \`[]\`。
+4. \`patchedRecipeSelection.recipeSlugs\` 只能从以下集合选择：${renderStructuredRepairOutputIds(context.recipeSlugs)}；如果本次没有改 recipe 选择，返回 \`[]\`。
+5. \`slots\` 必须且只能覆盖这些 targetSlots：${targetSlotUids.join(' / ') || '无'}。
+6. \`code\` 不要包含 \`SLOT_START\` / \`SLOT_END\` / \`test(\` / \`test.step(\` / 代码围栏。
+7. 不要输出解释、不要输出 markdown、不要输出额外字段。`;
+}
+
+function buildStructuredRepairOutput(
+  patch: IntentExecutionRepairPatch,
+  template: IntentCompiledExecutionTemplate,
+  planning: ResolvedPromptPlanningContext,
+  targetSlotUids: string[],
+  options: {
+    reusePreviousCode: boolean;
+    baseCodeSource: IntentExecutionBaseCodeSource;
+  }
+): IntentExecutionStructuredRepairOutput {
+  const slotDerivedPlanStepUids = uniqueStrings(
+    patch.slots.flatMap((slot) => {
+      const templateSlot = template.slots.find((item) => item.slotUid === slot.slotUid);
+      return templateSlot?.planStepUid ? [templateSlot.planStepUid] : [];
+    })
+  );
+  const planStepUids = uniqueStrings([...patch.patchedPlan.planStepUids, ...slotDerivedPlanStepUids]);
+  const checkUids = uniqueStrings(patch.patchedVerifier.checkUids);
+  const recipeSlugs = uniqueStrings(patch.patchedRecipeSelection.recipeSlugs);
+
+  return {
+    version: 1,
+    strategy: 'deterministic_repair_patch_v1',
+    targetSlotUids: [...targetSlotUids],
+    returnedSlotUids: patch.slots.map((slot) => slot.slotUid),
+    reusedPreviousCode: options.reusePreviousCode,
+    baseCodeSource: options.baseCodeSource,
+    patch: {
+      version: 1,
+      slots: patch.slots.map((slot) => ({
+        slotUid: slot.slotUid,
+        code: slot.code,
+      })),
+    },
+    patchedPlan: {
+      planStepUids,
+      steps: (planning.executionPlan?.steps || [])
+        .filter((step) => planStepUids.includes(step.planStepUid))
+        .map((step) => ({
+          planStepUid: step.planStepUid,
+          title: step.title,
+          preferredHelpers: [...step.preferredHelpers],
+        })),
+    },
+    patchedVerifier: {
+      checkUids,
+      checks: (planning.verificationPlan?.checks || [])
+        .filter((check) => checkUids.includes(check.checkUid))
+        .map((check) => ({
+          checkUid: check.checkUid,
+          title: check.title,
+          preferredHelpers: [...check.preferredHelpers],
+          relatedPlanStepUids: [...check.relatedPlanStepUids],
+          required: check.required,
+        })),
+    },
+    patchedRecipeSelection: {
+      recipeSlugs,
+      recipes: (planning.recipes || [])
+        .filter((item) => recipeSlugs.includes(item.recipe.slug))
+        .map((item) => ({
+          slug: item.recipe.slug,
+          title: item.recipe.title,
+          matchedSignals: [...item.matchedSignals],
+        })),
+    },
+  };
+}
+
+function buildStructuredPatchFromRepairOutput(
+  repairOutput: IntentExecutionStructuredRepairOutput
+): IntentExecutionStructuredPatch {
+  return {
+    version: 1,
+    strategy: 'deterministic_slot_patch_v1',
+    targetSlotUids: [...repairOutput.targetSlotUids],
+    returnedSlotUids: [...repairOutput.returnedSlotUids],
+    reusedPreviousCode: repairOutput.reusedPreviousCode,
+    baseCodeSource: repairOutput.baseCodeSource,
+    patch: {
+      version: 1,
+      slots: repairOutput.patch.slots.map((slot) => ({
+        slotUid: slot.slotUid,
+        code: slot.code,
+      })),
+    },
+  };
+}
+
+export function buildSlotPatchPrompt(
+  snapshot: PageSnapshot,
+  description: string,
+  auth: AuthConfig | undefined,
+  edgeCases: any[],
+  existingExample: string,
+  template: IntentCompiledExecutionTemplate,
+  targetSlotUids: string[],
+  currentCode: string,
+  context?: GenerateTestContext,
+  planning?: ResolvedPromptPlanningContext,
+  repair?: RepairTestContext | null
+): string {
+  const resolvedPlanning = planning || resolveIntentPromptPlanningContext(snapshot, description, context, { auth });
+  const basePrompt = repair
+    ? buildRepairPrompt(snapshot, description, auth, edgeCases, existingExample, repair, context, resolvedPlanning)
+    : buildPrompt(snapshot, description, auth, edgeCases, existingExample, context, resolvedPlanning);
+  const repairOutputContext = repair
+    ? buildStructuredRepairOutputContext(template, targetSlotUids, resolvedPlanning, repair)
+    : null;
+
+  return `${basePrompt}
+${renderTargetSlotPatchSection(template, targetSlotUids, currentCode, repair ? 'repair' : 'generate', repair)}
+${repair && repairOutputContext
+  ? buildStructuredRepairOutputFormatSection(targetSlotUids, repairOutputContext)
+  : `
+## 输出格式（覆盖上文所有“输出纯 JS”要求）
+1. 只返回一个严格 JSON 对象，结构必须为：
+   - \`version: 1\`
+   - \`slots: [{ slotUid, code }]\`
+2. \`slots\` 必须且只能覆盖这些 targetSlots：${targetSlotUids.join(' / ') || '无'}。
+3. \`code\` 不要包含 \`SLOT_START\` / \`SLOT_END\` / \`test(\` / \`test.step(\` / 代码围栏。
+4. 不要输出解释、不要输出 markdown、不要输出额外字段。`}`;
+}
+
 function formatPlanningKnowledgeHitMessage(prefix: string, planning: ResolvedPromptPlanningContext): string {
-  if (planning.knowledge.matches.length === 0) {
-    return planning.knowledge.deprioritizedMatches.length > 0
-      ? `${prefix}未启用项目知识规则；另有 ${planning.knowledge.deprioritizedMatches.length} 条规则因历史表现、观察期或回滚风险被降权跳过。`
+  const knowledge = planning.knowledge || { matches: [], deprioritizedMatches: [], capabilitySlugs: [] };
+  if (knowledge.matches.length === 0) {
+    return knowledge.deprioritizedMatches.length > 0
+      ? `${prefix}未启用项目知识规则；另有 ${knowledge.deprioritizedMatches.length} 条规则因历史表现、观察期或回滚风险被降权跳过。`
       : `${prefix}未命中项目知识规则，继续使用通用 DSL。`;
   }
 
-  const hitText = `${prefix}命中 ${planning.knowledge.matches.length} 条项目知识规则：${planning.knowledge.matches
+  const hitText = `${prefix}命中 ${knowledge.matches.length} 条项目知识规则：${knowledge.matches
     .slice(0, 3)
     .map((item) => item.title)
     .join(' / ')}`;
-  return planning.knowledge.deprioritizedMatches.length > 0
-    ? `${hitText}；另有 ${planning.knowledge.deprioritizedMatches.length} 条规则因历史表现、观察期或回滚风险被降权跳过。`
+  return knowledge.deprioritizedMatches.length > 0
+    ? `${hitText}；另有 ${knowledge.deprioritizedMatches.length} 条规则因历史表现、观察期或回滚风险被降权跳过。`
     : hitText;
+}
+
+function formatPlanningStarterHelperMessage(planning: ResolvedPromptPlanningContext): string {
+  if (!planning.starterHelpers?.length) return '';
+  const releasedCount = planning.starterHelpers.filter((item) => item.governanceReleaseStatus === 'released_from_suppressed').length;
+  const pendingPromotionCount = planning.starterHelpers.filter((item) => Boolean(item.preferredPromotionStatus)).length;
+  const weakRecoveryCount = planning.starterHelpers.filter(
+    (item) => (item.governanceReleaseAutoRepairPassedCapabilityCount || 0) > 0
+  ).length;
+  return `项目 starter helper 建议：${planning.starterHelpers
+    .slice(0, 3)
+    .map((item) => item.helper)
+    .join(' / ')}。${releasedCount > 0 ? `其中 ${releasedCount} 个来自 suppressed 治理恢复，只能按恢复观察层保守使用。` : ''}${
+    pendingPromotionCount > 0 ? `另有 ${pendingPromotionCount} 个尚未满足 preferred 自动提级条件。` : ''
+  }${weakRecoveryCount > 0 ? `其中 ${weakRecoveryCount} 个仍含自动 repair 弱恢复信号，不等于长期正向证据。` : ''}`;
 }
 
 function buildActionLibrarySection(
@@ -150,11 +1114,16 @@ function buildActionLibrarySection(
   auth: AuthConfig | undefined,
   planning: ResolvedPromptPlanningContext
 ): string {
+  const knowledge = planning.knowledge || { matches: [], deprioritizedMatches: [], capabilitySlugs: [] };
   const library = selectIntentActionLibrary({
     dsl: planning.dsl,
     auth,
     snapshot,
-    preferredCapabilitySlugs: planning.knowledge.capabilitySlugs,
+    preferredCapabilitySlugs: [
+      ...knowledge.capabilitySlugs,
+      ...collectIntentStarterAssetCapabilitySlugs(planning.starterHelpers || []),
+    ],
+    starterHelpers: planning.starterHelpers,
   });
 
   const rendered = renderIntentActionLibrary(library);
@@ -172,7 +1141,10 @@ function looksLikeBusinessCreateOrderTask(snapshot: PageSnapshot, description: s
       intentHaystack.includes('订单信息') ||
       intentHaystack.includes('签约成功') ||
       intentHaystack.includes('商机转订单') ||
-      intentHaystack.includes('转订单'))
+      intentHaystack.includes('转订单') ||
+      intentHaystack.includes('商机转化主链路') ||
+      intentHaystack.includes('转化主链路') ||
+      (intentHaystack.includes('商机转化') && intentHaystack.includes('主链路')))
   );
 }
 
@@ -270,8 +1242,57 @@ function extractEmbeddedExample(source: string): string {
   return match ? match[1].trim() : source;
 }
 
-async function loadExistingExample(snapshot: PageSnapshot, description: string, context?: GenerateTestContext): Promise<string> {
-  const candidates = looksLikeBusinessCreateOrderTask(snapshot, description, context)
+type ExistingExampleCandidate = {
+  filePath: string;
+  embedded: boolean;
+};
+
+const RECIPE_FIRST_EXISTING_EXAMPLE_CANDIDATES: Record<string, ExistingExampleCandidate[]> = {
+  'business.create-to-order': [
+    { filePath: path.join(ROOT, 'scripts', 'seed-yikaiye-business-create-order-case.mjs'), embedded: true },
+    { filePath: path.join(ROOT, 'scripts', 'seed-yikaiye-business-create-case.mjs'), embedded: true },
+    { filePath: path.join(ROOT, 'tests', 'e2e', 'product-create.spec.ts'), embedded: false },
+  ],
+  'business.create': [
+    { filePath: path.join(ROOT, 'scripts', 'seed-yikaiye-business-create-case.mjs'), embedded: true },
+    { filePath: path.join(ROOT, 'tests', 'e2e', 'product-create.spec.ts'), embedded: false },
+  ],
+  'business.batch-add-contacts': [
+    { filePath: path.join(ROOT, 'scripts', 'seed-yikaiye-business-batch-add-contacts-case.mjs'), embedded: true },
+    { filePath: path.join(ROOT, 'tests', 'e2e', 'product-create.spec.ts'), embedded: false },
+  ],
+};
+
+function pushUniqueExampleCandidates(
+  target: ExistingExampleCandidate[],
+  candidates: ExistingExampleCandidate[]
+): void {
+  const seen = new Set(target.map((item) => `${item.filePath}::${item.embedded ? 'embedded' : 'plain'}`));
+  for (const candidate of candidates) {
+    const key = `${candidate.filePath}::${candidate.embedded ? 'embedded' : 'plain'}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    target.push(candidate);
+  }
+}
+
+function listExistingExampleCandidates(
+  snapshot: PageSnapshot,
+  description: string,
+  context?: GenerateTestContext,
+  planning?: ResolvedPromptPlanningContext
+): ExistingExampleCandidate[] {
+  const candidates: ExistingExampleCandidate[] = [];
+  const matchedRecipeSlugs = uniqueStrings((planning?.recipes || []).map((item) => item.recipe.slug));
+
+  for (const slug of matchedRecipeSlugs) {
+    const recipeCandidates = RECIPE_FIRST_EXISTING_EXAMPLE_CANDIDATES[slug];
+    if (recipeCandidates?.length) {
+      pushUniqueExampleCandidates(candidates, recipeCandidates);
+    }
+  }
+
+  const legacyCandidates = looksLikeBusinessCreateOrderTask(snapshot, description, context)
     ? [
         { filePath: path.join(ROOT, 'scripts', 'seed-yikaiye-business-create-order-case.mjs'), embedded: true },
         { filePath: path.join(ROOT, 'scripts', 'seed-yikaiye-business-create-case.mjs'), embedded: true },
@@ -293,6 +1314,18 @@ async function loadExistingExample(snapshot: PageSnapshot, description: string, 
           { filePath: path.join(ROOT, 'tests', 'e2e', 'product-create.spec.ts'), embedded: false },
         ]
       : [{ filePath: path.join(ROOT, 'tests', 'e2e', 'product-create.spec.ts'), embedded: false }];
+
+  pushUniqueExampleCandidates(candidates, legacyCandidates);
+  return candidates;
+}
+
+async function loadExistingExample(
+  snapshot: PageSnapshot,
+  description: string,
+  context?: GenerateTestContext,
+  planning?: ResolvedPromptPlanningContext
+): Promise<string> {
+  const candidates = listExistingExampleCandidates(snapshot, description, context, planning);
 
   for (const candidate of candidates) {
     try {
@@ -616,12 +1649,51 @@ function buildServiceCommissionConfigTemplate(snapshot: PageSnapshot, descriptio
 });`;
 }
 
+type DeterministicRecipeTemplateInput = {
+  snapshot: PageSnapshot;
+  description: string;
+  existingExample: string;
+  context?: GenerateTestContext;
+};
+
+const RECIPE_FIRST_TEMPLATE_RESOLVERS: Record<string, (input: DeterministicRecipeTemplateInput) => string> = {
+  'business.batch-add-contacts': () => buildBusinessBatchAddContactsTemplate(),
+  'commission.service-ratio-config': ({ snapshot, description, context }) =>
+    buildServiceCommissionConfigTemplate(snapshot, description, context),
+  'business.create-to-order': ({ snapshot, description, existingExample, context }) =>
+    looksLikeBusinessCreateOrderTask(snapshot, description, context) ? existingExample.trim() : '',
+};
+
+function resolveDeterministicRecipeTemplate(
+  snapshot: PageSnapshot,
+  description: string,
+  existingExample: string,
+  context?: GenerateTestContext,
+  planning?: ResolvedPromptPlanningContext
+): string {
+  const matchedRecipeSlugs = uniqueStrings((planning?.recipes || []).map((item) => item.recipe.slug));
+
+  for (const slug of matchedRecipeSlugs) {
+    const resolver = RECIPE_FIRST_TEMPLATE_RESOLVERS[slug];
+    if (!resolver) continue;
+
+    const template = resolver({ snapshot, description, existingExample, context }).trim();
+    if (template) return template;
+  }
+
+  return '';
+}
+
 export function resolveDeterministicTemplate(
   snapshot: PageSnapshot,
   description: string,
   existingExample: string,
-  context?: GenerateTestContext
+  context?: GenerateTestContext,
+  planning?: ResolvedPromptPlanningContext
 ): string {
+  const recipeTemplate = resolveDeterministicRecipeTemplate(snapshot, description, existingExample, context, planning);
+  if (recipeTemplate) return recipeTemplate;
+
   if (looksLikeBusinessBatchAddContactsTask(snapshot, description, context)) {
     return buildBusinessBatchAddContactsTemplate();
   }
@@ -750,6 +1822,28 @@ ${buildFrameSection(snapshot)}
 5. 如果 Iframe 摘要已经给出了“定位建议”或 DOM id，优先使用这些精确 selector；不要凭空假设 iframe 的 name 属性。`;
 }
 
+function renderRepairObservationReportSection(report?: RepairObservationReport): string {
+  if (!report?.probes?.length) return '';
+
+  return `
+## Repair Observation Protocol（受控观察结果）
+- observedAt: ${report.observedAt || '未记录'}
+- pageUrl: ${report.pageUrl || '未记录'}
+- pageTitle: ${report.pageTitle || '未记录'}
+${report.probes
+  .map(
+    (probe, index) => `${index + 1}. [${probe.probeUid}] ${probe.kind} · ${probe.status}
+   - summary: ${probe.summary || '无'}
+   - evidence: ${probe.evidence.join(' / ') || '无'}`
+  )
+  .join('\n')}
+
+使用边界：
+1. 只能基于以上受控观察结果修补 locator、frame 进入方式、helper 选择和断言，不要臆造未观察到的新 DOM 契约。
+2. 如果 \`anchor_presence\` / \`candidate_anchor_presence\` 都显示 \`not_found\`，优先暴露真实漂移或回退到候选锚点，而不是虚构成功路径。
+3. 如果 \`frame_probe\` 显示存在 frame 线索，优先确认是否缺少 \`__e2e.getFrame(...)\` 或 frame 内定位。`;
+}
+
 export function buildPrompt(
   snapshot: PageSnapshot,
   description: string,
@@ -760,18 +1854,29 @@ export function buildPrompt(
   planning?: ResolvedPromptPlanningContext
 ): string {
   const parts: string[] = [];
-  const resolvedPlanning = planning || resolveIntentPromptPlanningContext(snapshot, description, context);
+  const resolvedPlanning = planning || resolveIntentPromptPlanningContext(snapshot, description, context, { auth });
 
   parts.push('你是一个 Playwright E2E 测试专家。请根据以下信息生成完整可执行的 Playwright 测试代码。');
+  const verificationIntentSection = buildVerificationIntentSection(resolvedPlanning);
+  if (verificationIntentSection) {
+    parts.push(verificationIntentSection);
+  }
 
   parts.push(buildSnapshotSection(context?.taskMode === 'scenario' ? '业务流入口页面信息' : '目标页面信息', snapshot));
+  if (context?.repairObservationSnapshot) {
+    parts.push(buildSnapshotSection('Repair 观察快照（最新受控观察）', context.repairObservationSnapshot));
+  }
+  if (context?.repairObservationReport) {
+    parts.push(renderRepairObservationReportSection(context.repairObservationReport));
+  }
 
   parts.push(`\n## 列表页与批量操作规则
 1. 对列表页，非必要不要点击“全部清除”“重置”等会重载筛选状态的按钮；先观察页面是否已经有可用数据。
 2. 如果任务描述要求批量操作，优先考虑“勾选行 + 顶部批量按钮”的真实入口，不要臆造不存在的行内按钮。
 3. 从列表行提取关键主键时，优先使用明确的链接文本、编号列或字段标签，不要用宽泛正则从整行文本中猜测，以免误取手机号、企业 ID 或金额。
 4. 如果目标行没有可见的“查看 / 编辑 / 生成订单”按钮，而是只有末列三点菜单或 \`.ant-dropdown-trigger\` 图标，必须先打开该行操作菜单，再在当前可见 menu 内点击目标动作。
-5. 对 Ant Design 表格，禁止先写 \`expect(page.locator('.ant-table-tbody')).toBeVisible()\` 这类表体可见性断言；固定列、粘性列和克隆节点会让 \`.ant-table-tbody\` 同时命中多个元素。应直接等待目标行、表格请求完成，或等待 \`.ant-table-placeholder\` / 行数变化。`);
+5. 对 Ant Design 表格，禁止先写 \`expect(page.locator('.ant-table-tbody')).toBeVisible()\` 这类表体可见性断言；固定列、粘性列和克隆节点会让 \`.ant-table-tbody\` 同时命中多个元素。应直接等待目标行、表格请求完成，或等待 \`.ant-table-placeholder\` / 行数变化。
+6. 对 Ant Design 表格目标行，优先使用 \`__e2e.findAntdTableRow(page, { hasTexts: [...] })\`；至少组合手机号、联系人、状态、businessId、企业名中的两个以上稳定字段，让 helper 按 \`data-row-key\` 去重固定列克隆。不要继续对 \`page.locator('tbody tr').filter({ hasText: ... }).first()\` 写 \`toHaveCount(1)\` 或硬编码 \`.first()\`。`);
 
   parts.push(`\n## 下拉与重复文案规则
 1. 遇到 Ant Design Select / Cascader / TreeSelect / 弹层枚举项时，必须先定位到当前可见的弹层容器，再在容器内选择选项，例如：
@@ -797,23 +1902,159 @@ export function buildPrompt(
 3. 直接选择普通 Select / TreeSelect 选项：
    - await __e2e.selectAntdOption(page, sourceRow, { label: '抖音', tree: true });
    - await __e2e.selectAntdOption(page, companyRow, { label: '中铁上海工程局集团有限公司(91310000566528939E)', searchText: '中铁上海工程局集团有限公司' });
-4. 如果是长列表 / 树形枚举，优先通过 \`searchText\` 缩小范围，再由 helper 负责 scrollIntoViewIfNeeded() 和点击。
-5. 对“企业名称”这类远程搜索 Select，点击 wrapper 后不一定立刻出现候选；必须传 \`searchText\`，helper 会先聚焦字段并输入关键词，再等待候选返回。
-6. 对列表行末尾只有三点菜单 / \`.ant-dropdown-trigger\` 的场景，优先直接写：
+4. 如果当前字段实际是 row 内 radio / segmented / tab 风格枚举（例如“性别=男/女”），也继续直接用 \`__e2e.selectAntdOption(page, scopedRow, { label: '男' })\`；helper 会先尝试当前 row 内的可见枚举，再处理真实 dropdown，不要手写 \`getByText('男').click()\` 或强行先开 dropdown。
+5. 如果是长列表 / 树形枚举，优先通过 \`searchText\` 缩小范围，再由 helper 负责 scrollIntoViewIfNeeded() 和点击。
+6. 对“企业名称”这类远程搜索 Select，点击 wrapper 后不一定立刻出现候选；必须传 \`searchText\`，helper 会先聚焦字段并输入关键词，再等待候选返回。
+7. 对 Ant Design 表格目标行，优先直接写：
+   - const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [targetPhone, targetName, '新入库'] });
+   - helper 会优先选主表体可见行，并按 \`data-row-key\` 去重固定列 / 粘性列克隆；不要继续写 \`page.locator('tbody tr').filter({ hasText: ... }).first()\`，也不要再对它做 \`toHaveCount(1)\`。
+8. 对列表行末尾只有三点菜单 / \`.ant-dropdown-trigger\` 的场景，优先直接写：
    - await __e2e.clickAntdRowAction(page, targetRow, '生成订单');
    - await __e2e.clickAntdRowAction(page, targetRow, '查看');
-7. 只要场景是 Ant Design 下拉或 Ant Design 行操作菜单，默认先考虑 \`__e2e.openAntdDropdown\` / \`__e2e.selectAntdOption\` / \`__e2e.clickAntdRowAction\`，除非页面控件明显不是该类组件。`);
-  parts.push(`8. 对标题会拼接实体名称的 Ant Design 弹框，优先直接写：
-   - const modal = await \`__e2e.waitForVisibleAntdModal(page, { titleIncludes: '服务分佣配置' })\`;
+9. 只要场景是 Ant Design 下拉、Ant Design 表格目标行定位或 Ant Design 行操作菜单，默认先考虑 \`__e2e.openAntdDropdown\` / \`__e2e.selectAntdOption\` / \`__e2e.findAntdTableRow\` / \`__e2e.clickAntdRowAction\`，除非页面控件明显不是该类组件。`);
+  parts.push(`9. 对商机列表“我创建的 / 我跟进的 / 归属 / 范围”视角切换，优先直接写：
+   - await __e2e.switchBusinessListOwnershipView(page, { label: '我创建的', listUrl: LIST_URL });
+   - helper 会先尝试 tab / radio / segmented，再尝试顶部归属 dropdown，最后回退到筛选区 dropdown；不要继续手写 \`getByText('我创建的')\` 或 form-item 正则猜控件形态。
+   - helper 自己会处理“当前已经是目标视角”和切换后的 settle；默认直接调用 helper，不要在外层无条件包一层 \`waitForApiResponse\`。
+   - 不要写 \`const listResp = __e2e.waitForApiResponse(...); await __e2e.switchBusinessListOwnershipView(...); await listResp;\` 这种固定链；如果当前本来就是目标视角，helper 会直接返回，不会再触发新的 GET，这条等待会超时。
+   - helper 返回后，不要再补 \`.ant-tabs-tab-active\` / \`.ant-radio-button-wrapper-checked\` / \`.ant-select-selection-selected-value\` 这类 active-locator 断言，也不要再对整页 \`getByText('我创建的')\` 写 \`toBeVisible()\`；helper 成功本身就说明归属切换已收敛。
+   - 如果还需要辅助收敛证据，只允许检查当前 URL 已回列表、可见搜索框 / 列表 ready，或直接进入后续搜索 / 回查；不要把“选中态 class 可见”当成业务成功标准。
+   - 只有脚本已经先确认当前不是目标视角、且这次切换请求本身就是必须消费的证据时，才允许在 helper 前注册 wait promise；更稳妥的是把后续搜索/回查接口当成最终列表证据。`);
+  parts.push(`10. 对标题会拼接实体名称的 Ant Design 弹框，优先直接写：
+   - const modal = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '服务分佣配置' });
    - 然后在 \`modal\` 内断言标题后缀、表单行和保存按钮；不要对完整标题做精确匹配。`);
+  parts.push(`11. 对保存 / 提交 / 生成订单后的收敛，优先把接口等待和 submit-state helper 配对使用：
+   - const saveResp = __e2e.waitForApiResponse(page, { urlIncludes: '/api/customer/save', method: 'POST' });
+   - await saveButton.click();
+   - await saveResp;
+   - await __e2e.observeSubmitState(page, { submitButton: saveButton, closeLocator: modal, urlIncludes: '#/customer/list' });
+   - const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [customerName, customerPhone] });
+   - await expect(targetRow).toContainText(customerName);
+   - helper 会继续观察按钮 loading、Drawer/Modal 关闭、URL/列表结果稳定；不要只写 \`page.getByText(/成功/i).first()\`。
+   - 只对最终“保存 / 提交 / 确定 / 生成订单”主动作套用这条链；对中间步骤的“保存并继续 / 下一步”，如果接口名不明确，优先点击后等待下一块表单标题、字段或步骤锚点出现，不要臆造宽泛 \`/business\` POST 等待。
+   - 如果提交响应里已经拿到 \`businessId\` / \`orderId\` / \`id\`，优先用可见搜索框按主键检索，再等待列表查询接口完成；不要一上来继续放宽姓名 / 手机号匹配。
+   - 如果 \`businessId\` / \`orderId\` 这类共享稳定标识提取为空，不要立刻写 \`expect(variable).toBeTruthy()\`；保持变量为空，继续用手机号 / 联系人 / 状态等稳定文本完成列表或详情终态验收。
+   - 如果成功结果落在 Ant Design 列表里，不要把 \`successLocator\` 写成裸 \`tbody tr\` 过滤；先让 helper 收敛页面，再用 \`__e2e.findAntdTableRow\` 做最终行断言。
+   - 如果按主键检索后的 \`findAntdTableRow\` 仍未命中，不要无限重试表格文本匹配；优先读取列表搜索响应里的目标记录，或直接跳详情页 / 详情抽屉做终态断言。
+   - 如果提交后“可能自动回列表，也可能仍停留当前页再由脚本手动返回”，\`urlIncludes\` 只能当辅助观察；helper 后仍要显式检查当前 URL，不匹配时再走 breadcrumb / \`page.goto(...)\` 回退，再继续做“我创建的 / 我跟进的”归属切换和列表回查。`);
+  parts.push(`11.1 对多步表单 / Ant Tabs 最后一页的“保存 / 提交”，不要直接写 \`page.getByRole('button', { name: /保\\s*存|提\\s*交/i }).first()\`，更不要把最终主动作固化成 \`getByRole('button', { name: /^保\\s*存$/ }).first()\`。必须先收窄到当前可见 \`.ant-tabs-tabpane-active\` / 当前步骤容器 / 当前 Modal / Drawer 内，先尝试定位 \`/保\\s*存|提\\s*交|确\\s*定/i\` 的最后一个主动作；如果当前 pane 内根本找不到这个最终主动作，就回退到更稳的页面级可见主动作链，并继续排除 \`保存并继续\` / \`上一步\`，不要把 selector 锁死在 \`.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible\` 这类单一路径；命中后再 \`scrollIntoViewIfNeeded()\`。如果点击日志已经是 \`subtree intercepts pointer events\`，只允许对这个已收窄的按钮使用 \`click({ force: true })\`，不要对整页模糊按钮直接 force，也不要把 \`保存并继续\` 误当成最终提交。`);
+  parts.push(`12. 对接口 JSON 里的共享变量/主键提取，优先直接复用：
+   - const createJson = await __e2e.readJsonResponse(await createResp);
+   - const businessId = __e2e.pickJsonValue(createJson, { label: 'businessId', paths: ${renderJsStringArray(BUSINESS_ID_JSON_PATHS)} });
+   - const orderId = __e2e.pickJsonValue(createJson, { label: 'orderId', paths: ${renderJsStringArray(ORDER_ID_JSON_PATHS)}, required: false });
+   - 对 \`businessId / orderId / id\` 这类主键，不要继续手写一长串 \`foo?.bar?.id || foo?.id || ...\` 猜测路径；优先让 helper 统一提取并给出清晰失败日志。`);
+  parts.push(`12.1 这套共享变量提取链不只适用于 \`businessId / orderId\`：
+   - 对 \`recordUid / customerCode / serialNo / bizNo\` 这类共享稳定标识，也优先继续用 \`__e2e.readJsonResponse(...)\` + \`__e2e.pickJsonValue(...)\` 提取，不要退回多段可选链或整页文本猜测。
+   - 目标是统一围绕“共享稳定标识”组织后续列表回查与详情校验，而不是把 helper 限死在 CRM 的 \`businessId / orderId\`。`);
+  parts.push(`13. 对“已拿到 businessId / orderId，再回列表检索并在必要时回退详情”的验收链，优先直接复用：
+   - 如果你刚切完“我创建的 / 我跟进的”或刚回到列表页，不要看到搜索框就立刻填值搜索；先短超时检查当前可见列表是否已经出现目标行，例如 \`const currentVisibleRow = primaryValue ? await (async () => { try { return await __e2e.findAntdTableRow(page, { hasTexts: [primaryValue], timeoutMs: 1200 }); } catch { return null; } })() : null;\`。若 \`currentVisibleRow\` 已命中，先把它当作 \`table_row\` 身份证据继续做状态 / 详情校验；只有当前可见列表未命中时，才调用 \`__e2e.resolvePrimaryRecord(...)\` 触发关键词搜索。
+   - 如果 \`currentVisibleRow\` / \`recordCheck.row\` 已经由 helper 命中，不要紧接着再写 \`await expect(recordCheck.row).toContainText(primaryValue)\` 或 \`await expect(currentVisibleRow).toContainText(leadMobile)\` 去证明同一个身份；helper 命中本身已经是身份证据，这类重复断言很容易重新落回 \`locator(...).nth(...)\` 行漂移。若还需要行内可见文本，只做一次 \`const rowText = await recordCheck.row.innerText().catch(() => '')\` 的保守读取；\`rowText\` 为空但列表响应 / 详情证据还在时，继续沿响应 / 详情链闭环，不要因为 stale row 直接失败。
+   - const recordCheck = await __e2e.resolvePrimaryRecord(page, {
+   -   primaryValue: businessId,
+   -   keywordInput: page.locator('input#businessList_keywords:visible').first(),
+   -   searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(),
+   -   listResponse: { urlIncludes: '/business', method: 'GET' },
+   -   rowHasTexts: [businessId, '新入库'],
+   -   detailUrl: \`#/business/detail/\${businessId}\`,
+   - });
+   - if (recordCheck.mode === 'table_row' && recordCheck.row) { ... } else { ... }
+   - helper 会先按主键检索列表、等待结果收敛；若列表未命中且提供了 \`detailUrl\`，会直接回退详情页。不要继续无限放宽姓名 / 手机号匹配。
+   - 如果 \`businessId\` 暂时为空、但你手里已经有本次唯一手机号/联系人，也优先沿用同一个 helper，而不是手写“一次搜索 + 一次 findAntdTableRow 就失败”：\`const recordCheck = await __e2e.resolvePrimaryRecord(page, { primaryValue: leadMobile, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: [leadMobile], maxLookupAttempts: 4, retryIntervalMs: 1200 })\`。
+   - 这种手机号 fallback 的目标不是把手机号当 CRM 主键，而是复用 helper 的保守列表收敛轮询；只有 helper 明确返回 \`not_found\` 时，才考虑退回可见文本链或详情入口。
+   - 如果 \`businessId\` 为空、但 \`currentVisibleRow\` / \`recordCheck.row\` 已经稳定命中，且 \`rowText\` 里存在清晰的非手机号 6~12 位数字 ID，可只在这个已命中的分支里做一次保守回填，例如：\`const derivedBusinessId = shared.businessId || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')\`\n   - 这个 \`derivedBusinessId\` 只能用于“row 已命中后解锁 \`detailUrl\` / 详情页回退”；不要在列表未命中前对整页文本猜 \`businessId\`
+   - 如果列表行可能省略状态列或“新入库”没有出现在同一行可见文本里，\`rowHasTexts\` 优先传 \`businessId + 联系人/手机号\` 这类身份字段；不要把状态文案当成唯一匹配前提。
+   - 如果目标行已经按主键 + 联系人/手机号命中，但状态没有出现在可见行文本 / 状态单元格里，不要继续写 \`await expect(targetRow).toContainText('新入库')\` 或 \`targetRow.locator('td').filter({ hasText: /新入库/ })\`；把该行当作身份证据，优先继续读取 \`recordCheck.response\` -> \`__e2e.pickJsonRecord(...)\` -> \`__e2e.pickJsonValue(...状态 paths...)\`，仍拿不到时再跳详情页 / 详情抽屉用 \`__e2e.readDetailField(...)\` 验证状态。
+   - 如果 \`matchedRecord\` 和 \`__e2e.readDetailField(page, { label: '状态', required: false })\` 都拿不到状态，不要写 \`expect(statusText || '').toContain('新入库')\` 或任何空串兜底断言；应直接抛出“状态证据缺失”这类明确错误，让 repair 看到真实缺口。 
+   - 如果当前页面的搜索框/搜索按钮定位并不稳定，可以先只传 \`primaryValue / listResponse / rowHasTexts / detailUrl\`，省略 \`keywordInput / searchButton\`，让 helper 自动探测可见检索控件。`);
+  parts.push(`13.1 如果当前页面已知明确的表格容器或详情页 ready 锚点，也优先显式传给 \`resolvePrimaryRecord(...)\`：
+   - 例如 \`table: page.locator('.customer-table-wrapper').first()\`
+   - 或 \`detailReadyLocator: page.getByText(/客户详情/i).first()\`
+   - 这样 helper 会在更窄的列表作用域里找目标行，并在详情页真正 ready 后再进入字段断言，避免整页误命中或过早读取。`);
+  parts.push(`13.2 同理，只要你拿到的是 \`recordUid / customerCode / serialNo / bizNo\` 这类共享稳定标识，也优先沿用同一条 \`resolvePrimaryRecord(...)\` 回查链；不要因为变量名不是 \`*Id\` 就退回模糊列表匹配。`);
+  parts.push(`13.3 如果 \`VerificationPlan\` / 固定骨架已经给出 \`recordLookup.detailEntry\`，必须优先沿用这条结构化详情入口，而不是自由手写“点查看再猜容器”：
+   - 例如 \`detailEntry{ trigger=row_action; actionLabel=查看; target=drawer_or_modal }\`
+   - 先命中目标行，再写 \`await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')\`
+   - 若 target 是 \`drawer_or_modal\`，立刻等待 \`__e2e.waitForVisibleAntdModal(...)\`，并把返回容器继续传给 \`__e2e.readDetailField(...)\`
+   - 若 target 是 \`page\`，优先等待 \`detailReadyLocator\` 或 URL ready 后再读字段
+   - 不要改写成整页 \`page.getByText('查看').click()\`，也不要点击后再去猜当前可见容器。`);
+  parts.push(`14. 对详情页 / 详情抽屉字段验收，优先直接复用：
+   - const detailScope = page.locator('.ant-drawer-content:visible, .ant-modal-content:visible').last();
+   - const contactText = await __e2e.readDetailField(page, { label: '联系人', scope: detailScope, required: false });
+   - const phoneText = await __e2e.readDetailField(page, { label: '手机号', scope: detailScope, required: false });
+   - const statusText = await __e2e.readDetailField(page, { label: '状态', scope: detailScope, required: false });
+   - await expect(contactText).toContain(contactName);
+   - await expect(phoneText).toContain(contactPhone);
+   - 如果 \`resolvePrimaryRecord(...)\` 已回退到详情页 / 详情抽屉，不要再对 \`page.locator('body')\` 或整个 Drawer 文本做大段 \`toContain\`；优先按 label 逐项读取联系人、手机号、状态、创建时间。`);
+  parts.push(`15. 如果 \`resolvePrimaryRecord(...)\` 已拿到列表响应 \`recordCheck.response\`，优先继续复用：
+   - const listJson = recordCheck.response ? await __e2e.readJsonResponse(recordCheck.response, { required: false }) : null;
+   - const matchedRecord = listJson ? __e2e.pickJsonRecord(listJson, { label: 'primaryId', value: primaryId, paths: ['primaryId', 'id'], required: false }) : null;
+   - const expectedStatus = matchedRecord ? __e2e.pickJsonValue(matchedRecord, { label: '状态', paths: ['status', 'statusName', 'statusText', 'state', 'stateName', 'stateText', 'displayStatus'], required: false }) : '';
+   - 如果详情字段的期望值能从列表响应记录里拿到，优先用它去对比 \`__e2e.readDetailField(...)\` 的结果；不要退回整页模糊文本，也不要只留 TODO。
+   - 如果列表响应和详情字段都拿不到状态 / 关键字段，不要把断言改成 \`toBeTruthy()\`、\`not.toBe('')\` 或 \`expect(statusText || '')\`；应直接抛出“字段证据缺失”错误。`);
+  parts.push(`15.0 如果 \`currentVisibleRow\` 已命中，但你随手把 \`recordCheck.response\` 固定成了 \`null\`，后面又还需要状态 / 详情期望值，不要直接退化成“开详情 + 读裸状态字段”：
+   - 保留 \`currentVisibleRow\` 作为身份证据，但额外补一跳只为拿结构化列表响应，例如 \`const statusEvidenceRecordCheck = recordCheck.response ? recordCheck : currentVisibleRow ? await __e2e.resolvePrimaryRecord(page, { primaryValue, keywordInput, searchButton, listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts, maxLookupAttempts: 1, retryIntervalMs: 200, detailUrl }) : recordCheck;\`
+   - 再从 \`statusEvidenceRecordCheck.response\` 读取 \`listJson -> matchedRecord -> expectedStatus\`
+   - 这里也不要再补 \`await expect(recordCheck.row).toContainText(primaryValue)\` / \`await expect(currentVisibleRow).toContainText(leadMobile)\` 这类重复身份断言；helper 命中本身已经是身份证据，优先继续用 \`rowText\`、列表响应或详情字段闭环
+   - 只有结构化列表响应仍然拿不到状态时，才继续开详情 / 抽屉读字段
+   - 这样可以避免把来源枚举、渠道值或意向标签误当成业务状态。`);
+  parts.push(`15.1 如果 \`businessId\` 为空，但你已经用手机号 + 联系人命中了 fallback 行，也不要在 fallback 分支里直接 \`throw new Error('状态证据缺失...')\` 结束：
+   - 更稳的写法是先把手机号继续交给 \`__e2e.resolvePrimaryRecord(...)\` 做列表收敛轮询，例如 \`primaryValue: leadMobile\`、\`rowHasTexts: [leadMobile]\`、\`maxLookupAttempts: 4\`、\`retryIntervalMs: 1200\`；不要只做一次搜索就失败。
+   - fallback \`rowHasTexts\` 默认只放 \`leadMobile\`；不要把 \`leadContactName\` 再塞回默认匹配条件，否则联系人列未渲染时会把本可命中的记录误判成 \`not_found\`。
+   - 必须优先复用这次 fallback 查询响应（例如 \`artifacts['plan_step_5']\` / 当前列表 GET 响应）
+   - const fallbackListJson = artifacts['plan_step_5'] ? await __e2e.readJsonResponse(artifacts['plan_step_5'], { required: false }) : null;
+   - const fallbackMatchedRecord = fallbackListJson ? __e2e.pickJsonRecord(fallbackListJson, { label: 'leadMobile', value: leadMobile, paths: ['mobile', 'phone', 'contactPhone', 'contactMobile'], required: false }) : null;
+   - const fallbackExpectedStatus = fallbackMatchedRecord ? __e2e.pickJsonValue(fallbackMatchedRecord, { label: '状态', paths: ['status', 'statusName', 'statusText', 'state', 'stateName', 'stateText', 'displayStatus'], required: false }) : '';
+   - if (fallbackExpectedStatus) expect(String(fallbackExpectedStatus)).toContain('新入库');
+   - 如果 fallback 行已经命中、但当前结构化来源只是宽泛的 \`listResponse: { urlIncludes: '/business', method: 'GET' }\`，不要把这次响应当成唯一结构化状态来源；可先从已命中 \`rowText\` 里保守提取 \`derivedBusinessId = shared.businessId || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')\`
+   - 如果 \`derivedBusinessId\` 非空，优先继续 \`await page.goto(\`#/business/detail/\${derivedBusinessId}\`, { waitUntil: 'domcontentloaded' })\` 再读 \`__e2e.readDetailField(page, { label: '状态', required: false })\`；只有 \`derivedBusinessId\` 也为空时，才保留“未提供详情入口”的错误收口
+   - 如果 fallback 行已命中、列表响应也还没有状态，不要写 \`else if (shared.businessId) { await page.goto(...) } else { throw ... }\` 这类分支；若 \`recordLookup.detailEntry\` / 已知“查看”动作 / 详情标题可用，优先直接对 \`recordCheck.row\` 执行 \`await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')\`，随后等待 \`__e2e.waitForVisibleAntdModal(...)\` 或现成 \`detailReadyLocator\`，再读 \`状态\`。
+   - 可直接收敛成这类骨架：\`await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')\` -> \`const detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000 })\` -> \`const statusText = await __e2e.readDetailField(page, { label: '状态', scope: detailScope, titleIncludes: '商机详情', required: false })\`\n   - 若 \`statusText\` 仍为空，再抛出“状态证据缺失：列表行已命中，但列表响应、详情抽屉与详情页都未返回状态”；不要在 row 已命中时直接 \`throw new Error('状态证据缺失：列表行已命中，但无法从列表响应或详情获取状态')\`。
+   - 如果当前链路没有 \`detailEntry / actionLabel / 详情标题 / detailReadyLocator\`，不要擅自写 \`await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')\`；\`businessId\` 非空时可优先走 \`detailUrl\`，为空时则保留 row 作为身份证据，结构化列表响应仍然拿不到状态就直接抛出“状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口”。
+   - 只有当 fallback 行文本、fallback 列表响应、详情字段三处都拿不到状态时，才允许抛出“状态证据缺失”错误。`);
+  parts.push(`15.2 如果列表行已经命中、列表响应里也拿不到状态，而当前页面还停留在列表页，不要直接在裸列表页上调用 \`__e2e.readDetailField(page, { label: '状态' })\` 然后判空：
+   - 如果当前链路已经有稳定 \`detailUrl\` / \`detailReadyLocator\`，优先直接沿用这条详情页链：\`await page.goto(detailUrl, { waitUntil: 'domcontentloaded' })\` 或等待现成的详情页 ready 锚点，然后再读 \`__e2e.readDetailField(page, { label: '状态', required: false })\`
+   - 只有当没有稳定 \`detailUrl\`，且 \`recordLookup.detailEntry\` 明确指向 \`drawer_or_modal\` 或项目里已知详情标题时，才把命中的目标行当作详情入口，写 \`await __e2e.clickAntdRowAction(page, targetRow, '查看')\` + \`await __e2e.waitForVisibleAntdModal(...)\`
+   - 即使 \`businessId\` 为空，只要 \`recordCheck.mode === 'table_row'\` 且 \`recordCheck.row\` 已命中，也不要直接 \`else { throw new Error('状态证据缺失...') }\`；优先继续沿用这条 \`row -> detailEntry / detailReadyLocator\` 回退链。
+   - 如果确实拿到了详情弹层容器，再写 \`const statusText = await __e2e.readDetailField(page, { label: '状态', scope: detailScope, required: false })\`
+   - 如果详情抽屉/详情页仍然没有状态字段，再抛出“状态证据缺失”；不要在列表页裸读字段后直接失败。`);
+  parts.push(`15.3 如果 \`recordCheck.mode === 'not_found'\`，且当前链路没有可用的 \`detailUrl / detailEntry\` 回退路径，不要凭空写：
+   - \`const detailScope = page.locator('.ant-drawer-content:visible, .ant-modal-content:visible').last()\`
+   - \`const statusText = await __e2e.readDetailField(page, { label: '状态', scope: detailScope, required: false })\`
+   - 正确做法是先继续复用 \`recordCheck.response\`，例如 \`const listJson = recordCheck.response ? await __e2e.readJsonResponse(recordCheck.response, { required: false }) : null\`
+   - 再用 \`__e2e.pickJsonRecord(...)\` / \`__e2e.pickJsonValue(...)\` 尝试读取命中记录和状态
+   - 如果列表响应仍然没有命中记录 / 状态，就直接抛出“未命中目标记录：列表未命中，且没有可用的详情回退路径”这类错误，让 repair 去修搜索链或详情入口，而不是伪造详情容器。`);
+
+  if (looksLikeBusinessCreateTask(snapshot, description, context)) {
+    parts.push(`\n## 创建商机向导锚点规则
+1. 进入 \`#/business/createbusiness\` 后，不要写 \`await expect(page.getByText('创建商机').first()).toBeVisible()\`；页面里可能同时存在隐藏统计文案“本月创建商机”，\`.first()\` 很容易命中隐藏节点。
+2. 第一页优先断言 \`page.getByRole('heading', { name: '商机联系人信息' }).first()\`、\`page.getByText('请填写正确的商机联系人信息').first()\` 或 \`label[title="商机来源"]\`，不要把裸“创建商机”文本当成唯一入口锚点。
+3. 第二/第三页优先断言当前步骤专属锚点，如“关联产品意向信息”“附件信息”“上传录音文件”“上传图片”，不要反复回到裸“创建商机”文本。
+4. \`请填写正确的商机联系人信息\` 这类文案通常是第一页静态步骤说明，只能作为“已经进入当前步骤”的正向锚点；不要在填写后或翻页后写“它应该消失”的负断言，也不要对 \`.ant-form-item-explain-error\` / \`.ant-form-explain\` 直接做 \`toHaveCount(0)\`。
+5. 第三页提交后，如果 URL 已回到 \`#/business/businesslist\`、关键提交响应成功，或列表里已能检索到新记录，就不要把 toast 作为唯一成功条件。
+6. 返回商机列表后，搜索框经常在 DOM 中同时存在隐藏克隆节点；优先使用 \`page.locator('input#businessList_keywords:visible').first()\` 或其他明确可见的搜索框，不要直接对 \`getByPlaceholder('商机ID/联系人名称/电话/企业名称').first()\` 做可见性断言。
+7. 返回列表校验新建商机时，不要继续写 \`page.locator('tbody tr').filter({ hasText: leadMobile }).first()\` 或对匹配结果断言 \`toHaveCount(1)\`。切到“我创建的”后，不要看到搜索框就立刻填手机号；先短超时检查当前可见列表是否已经出现目标行，例如 \`const currentVisibleRow = leadMobile ? await (async () => { try { return await __e2e.findAntdTableRow(page, { hasTexts: [leadMobile], timeoutMs: 1200 }); } catch { return null; } })() : null;\`。如果 \`currentVisibleRow\` 已命中，先把它当作当前列表已收敛的身份证据，再继续读状态 / 详情；只有当前可见列表未命中时，才优先写 \`const recordCheck = await __e2e.resolvePrimaryRecord(page, { primaryValue: leadMobile, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: [leadMobile], maxLookupAttempts: 4, retryIntervalMs: 1200 })\`。不要默认再把 \`leadContactName\` 拼回 fallback \`rowHasTexts\`，联系人只在命中行文本里确实出现时再断言。只有 helper 明确 \`not_found\` 时，才退回 \`findAntdTableRow(...)\`。
+8. 运行时生成联系人手机号时，必须保证最终字符串严格匹配 \`/^1\\d{10}$/\`。不要写 \`13\${stamp.slice(-9)}\` 这类实际只会得到 10 位号码的表达式；针对当前商机创建 family，优先沿用 live 已验证的安全模板，例如 \`const stamp = Date.now().toString().slice(-6); const leadMobile = '1990000' + stamp.slice(-4);\`\n   - 不要继续默认用普通 \`139\${stamp}\` 这类时间戳号段；UAT 里可能存在去重 / 黑名单 / 历史脏数据，容易把“提交成功但列表搜空”误判成列表链问题。
+8.1 第三页 / 附件信息页的最终主动作，不要固化成 \`getByRole('button', { name: /^保\\s*存$/ }).first()\`：
+   - 先用 \`附件信息 / 上传录音文件 / 上传图片\` 这些末页锚点确认当前真的在最后一步
+   - 再只在当前可见步骤容器内定位 \`/保\\s*存|提\\s*交|确\\s*定/i\` 的最后一个按钮
+   - 不要把 \`保存并继续\` / \`上一步\` 当成最终提交，也不要在未确认已到附件页前就直接找最终按钮
+9. 第三页提交响应如果返回 \`businessId\` / \`id\` / \`data.id\`，必须立刻提取并保存。优先写 \`const createJson = await __e2e.readJsonResponse(await createResp)\` 再用 \`__e2e.pickJsonValue(createJson, { label: 'businessId', paths: ${renderJsStringArray(BUSINESS_ID_JSON_PATHS)} })\` 提取。回到列表校验时，优先使用 \`page.locator('input#businessList_keywords:visible').first()\` 按 \`businessId\` 检索，并等待列表查询接口完成，再用 \`await __e2e.findAntdTableRow(page, { hasTexts: [businessId, '新入库'] })\` 定位。
+9.1 不论是按 \`businessId\` 还是按 fallback 手机号回查，切到“我创建的”后都不要看到搜索框就立刻填值；先短超时检查当前可见列表是否已经出现目标行，例如：
+   - \`const currentVisibleRow = primaryValue ? await (async () => { try { return await __e2e.findAntdTableRow(page, { hasTexts: [primaryValue], timeoutMs: 1200 }); } catch { return null; } })() : null;\`
+   - 若 \`currentVisibleRow\` 已命中，先把它当作当前列表已收敛的身份证据，继续读状态 / 详情字段
+   - 但如果后面还需要状态证据，而你此时手里的 \`recordCheck.response\` 会是 \`null\`，不要直接一路掉进详情字段读取；先补一跳只为拿结构化列表响应的 \`__e2e.resolvePrimaryRecord(...)\`（例如 \`maxLookupAttempts: 1\`、\`retryIntervalMs: 200\`），再从 \`statusEvidenceRecordCheck.response -> __e2e.pickJsonRecord(...) -> __e2e.pickJsonValue(...状态 paths...)\` 读取状态
+   - 只有当前可见列表未命中时，才调用 \`__e2e.resolvePrimaryRecord(...)\` 触发关键词搜索；不要在切换 helper 返回后立刻 \`fill + 搜索\`
+10. 如果按 \`businessId\` 回查列表，优先直接写 \`const recordCheck = await __e2e.resolvePrimaryRecord(page, { primaryValue: businessId, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: [businessId, leadMobile], detailUrl: \`#/business/detail/\${businessId}\` })\`。若 \`recordCheck.mode === 'table_row'\`，先把该行当作目标记录已命中的身份证据；只有当“新入库”真的出现在可见行文本里时才直接断言它。若状态不在行文本 / 状态单元格里，优先继续读取 \`recordCheck.response\` + \`__e2e.pickJsonRecord(...)\` 的状态字段，仍拿不到时再去详情页 / 详情抽屉用 \`__e2e.readDetailField(...)\` 校验状态。若 helper 已回退到详情页 / 详情抽屉，就直接在详情面校验联系人、手机号和状态，不要退回整页 \`toContain\`。如果列表响应和详情字段都没有状态，不要写 \`expect(statusText || '').toContain('新入库')\`；应直接抛出“状态证据缺失”错误。等价地，如果按 \`businessId\` 检索后 \`findAntdTableRow\` 仍然找不到目标行，不要无限继续放宽姓名 / 手机号文本匹配；如果 \`businessId\` 本身为空，也不要立刻写 \`expect(businessId).toBeTruthy()\`，而要先切到“我创建的”，再优先写 \`const recordCheck = await __e2e.resolvePrimaryRecord(page, { primaryValue: leadMobile, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: [leadMobile], maxLookupAttempts: 4, retryIntervalMs: 1200 })\`\n   - 这条 fallback helper 的目标是保守轮询列表收敛；若 \`recordCheck.mode === 'table_row'\`，先断言手机号，联系人只在行文本里确实出现时再断言，否则继续读列表响应 / 详情字段。\n   - 只有 helper 明确返回 \`not_found\` 且没有详情入口时，才允许退回 \`const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [leadMobile, leadContactName] })\` 这类可见文本链。fallback 行已经命中后，只有当“新入库”确实出现在可见行文本里时才直接断言；若状态不在该行文本里，优先继续读取这次列表检索响应，用 \`__e2e.pickJsonRecord(..., { label: 'leadMobile', value: leadMobile, paths: ['mobile', 'phone', 'contactPhone', 'contactMobile'], required: false })\` 找命中的列表记录，再配合 \`__e2e.pickJsonValue(...状态 paths...)\` 或 \`__e2e.readDetailField(page, { label: '状态', required: false })\` 完成验收。`);
+  }
 
   if (looksLikeBusinessCreateOrderTask(snapshot, description, context)) {
     parts.push(`\n## 商机转订单规则
-1. 商机列表里的“生成订单”通常收在目标行末列三点菜单里，不要假设行内有固定的“查看 / 详情 / 生成订单”按钮；优先直接用 \`await __e2e.clickAntdRowAction(page, targetRow, '生成订单')\`。
-2. 点击“生成订单”后，当前 UAT 会打开“确定订单信息”Drawer，而不是简单 confirm 弹窗。必须先等待 Drawer 可见，再在 Drawer 内点击“确定”。
-3. 点击 Drawer 内“确定”后，优先等待 \`POST /crmapi/business/createOrder\` 成功响应，并校验响应成功；不要只靠页面上模糊的“成功”文案。
-4. 生成订单成功后，原手机号对应的商机记录可能立即从当前商机列表移除或不再提供“查看”动作。除非需求明确要求继续打开详情，否则不要再强行查找同一行并点击“查看”。
-5. 如果需求只是“创建商机并生成订单”，以“createOrder 响应成功 + Drawer 关闭 + 关键清理信息已记录”作为主要成功判定即可；可附加校验“签约成功(n)”计数不下降，但不要把“原商机行仍可见”作为硬前提。`);
+1. 回到商机列表后，先用 \`await __e2e.findAntdTableRow(page, { hasTexts: [contactPhone, contactName, '新入库'] })\` 稳定定位目标商机，再触发行内“生成订单”；不要继续用 \`tbody tr ... first()\` 或对匹配结果写 \`toHaveCount(1)\`。
+2. 商机列表里的“生成订单”通常收在目标行末列三点菜单里，不要假设行内有固定的“查看 / 详情 / 生成订单”按钮；优先直接用 \`await __e2e.clickAntdRowAction(page, targetRow, '生成订单')\`。
+3. 点击“生成订单”后，当前 UAT 会打开“确定订单信息”Drawer，而不是简单 confirm 弹窗。必须先等待 Drawer 可见，再在 Drawer 内点击“确定”。
+4. 点击 Drawer 内“确定”后，优先等待 \`POST /crmapi/business/createOrder\` 成功响应，并校验响应成功；不要只靠页面上模糊的“成功”文案。
+5. 生成订单成功后，原手机号对应的商机记录可能立即从当前商机列表移除或不再提供“查看”动作。除非需求明确要求继续打开详情，否则不要再强行查找同一行并点击“查看”。
+6. 如果需求只是“创建商机并生成订单”，以“createOrder 响应成功 + Drawer 关闭 + 关键清理信息已记录”作为主要成功判定即可；可附加校验“签约成功(n)”计数不下降，但不要把“原商机行仍可见”作为硬前提。`);
   }
 
   parts.push(`\n## 媒体播放 / 预览 / 下载 / 打开详情成功判定规则
@@ -854,6 +2095,11 @@ ${context.scenarioSummary || '未提供'}
   }
 
   parts.push(buildProjectKnowledgeSection(resolvedPlanning));
+  parts.push(buildStarterHelperSection(resolvedPlanning));
+  parts.push(buildRecipeRegistrySection(resolvedPlanning));
+  parts.push(buildExecutionPlanSection(resolvedPlanning));
+  parts.push(buildVerificationPlanSection(resolvedPlanning));
+  parts.push(buildCompiledExecutionTemplateSection(resolvedPlanning, auth, description));
   parts.push(buildActionDslSection(resolvedPlanning));
   parts.push(buildActionLibrarySection(snapshot, auth, resolvedPlanning));
 
@@ -924,14 +2170,21 @@ await __e2e.ensureLoggedIn(page, { targetUrl: TARGET_URL });
 16. 如果快照暴露了 iframe DOM id / 定位建议 / frame URL，优先使用这些精确线索进入 iframe；不要臆造 iframe[name="..."]。
 17. 修复 iframe 场景时，优先写 “等待 iframe selector 出现 -> 按 selector 或 frame URL 进入 frame -> 等待 frame 内 placeholder/按钮可见” 这类顺序，不要直接在顶层 page 上重试同一个 placeholder
 18. 只要步骤涉及 Ant Design 下拉，优先复用执行环境内置的 \`__e2e.openAntdDropdown\` / \`__e2e.selectAntdOption\`，不要再自行拼装脆弱 helper
-19. 如果列表目标动作收在行尾三点菜单 / \`.ant-dropdown-trigger\` 里，优先复用执行环境内置的 \`__e2e.clickAntdRowAction(page, targetRow, '动作名')\`，不要臆造行内可见按钮
-20. 禁止写 \`page.getByText(/成功/i).first()\` 这类宽泛成功断言；应优先等待具体 toast/弹窗标题、目标 Drawer/Modal 消失、接口响应成功或业务状态字段发生变化
-21. 对播放录音 / 预览媒体 / 打开详情 / 下载文件这类触发型动作，优先等待业务响应成功、资源 URL 返回或对应容器出现；禁止使用 \`Promise.race([...catch(() => false)])\` 这类会把较早失败误判成整体失败的写法
-22. 有统一登录信息时，优先使用执行环境内置的 \`__e2e.ensureLoggedIn(page, { targetUrl: TARGET_URL })\` 或 \`__e2e.loginWithEnvAuth(page)\`；不要重复手写 \`page.goto(LOGIN_URL)\` 并猜登录页 DOM
-23. 如果当前页已经是登录页，禁止再额外跳一次 \`LOGIN_URL\` 根地址；那可能把页面从真实登录页跳回首页壳，导致后续手机号/验证码输入框全部消失
-24. 对 Ant Design 表格，禁止直接断言裸 \`.ant-table-tbody\` 可见；优先等待目标行、行数或 placeholder，并基于目标行继续操作
-25. 对标题会附带业务实体名称的 Modal / Drawer，禁止精确断言整个标题字符串；应在当前可见容器内断言公共后缀文案，必要时直接使用 \`__e2e.waitForVisibleAntdModal(page, { titleIncludes: '公共标题片段' })\`
-26. 除非任务描述或 cleanupNotes 明确要求恢复现场，否则不要在脚本尾部自动把刚修改的业务数据改回去`);
+19. 如果任务要求在商机列表切到“我创建的 / 我跟进的 / 归属 / 范围”再搜索或断言，优先复用执行环境内置的 \`__e2e.switchBusinessListOwnershipView(page, { label: '我创建的', listUrl: LIST_URL })\`，不要手写一套 tab/radio/form-item 分支猜测；helper 已处理“当前已是目标视角”和切换后的 settle，默认不要在外层无条件包 \`waitForApiResponse / waitForResponse\`。helper 返回后也不要再补 \`.ant-tabs-tab-active\` / \`.ant-radio-button-wrapper-checked\` / \`.ant-select-selection-selected-value\` 或整页 \`getByText('我创建的')\` 这类 active-locator 断言；helper 成功本身就足够。只有脚本已先确认当前不是目标视角、且必须消费这次切换请求本身时，才允许在 helper 前注册 wait promise；如需辅助收敛，只看已回列表 URL、可见搜索框或列表 ready
+20. 如果列表目标动作收在行尾三点菜单 / \`.ant-dropdown-trigger\` 里，优先复用执行环境内置的 \`__e2e.clickAntdRowAction(page, targetRow, '动作名')\`，不要臆造行内可见按钮
+21. 禁止写 \`page.getByText(/成功/i).first()\` 这类宽泛成功断言；应优先等待具体 toast/弹窗标题、目标 Drawer/Modal 消失、接口响应成功或业务状态字段发生变化
+21.1 中间步骤的“保存并继续 / 下一步”如果只是切到下一块表单且接口并不明确，禁止发明宽泛的 \`waitForApiResponse({ urlIncludes: '/business', method: 'POST' })\`；优先等待下一块表单标题或字段出现
+21.2 对多步表单 / Ant Tabs 最后一页的“保存 / 提交”，禁止直接写 \`page.getByRole('button', { name: /保\\s*存|提\\s*交/i }).first()\`，也禁止把最终主动作写死成 \`getByRole('button', { name: /^保\\s*存$/ }).first()\`；必须先 scope 到当前可见 \`.ant-tabs-tabpane-active\` / 当前步骤容器，先尝试定位 \`/保\\s*存|提\\s*交|确\\s*定/i\` 的最后一个主动作；如果当前 pane 内根本找不到这个最终主动作，就回退到更稳的页面级可见主动作链，并继续排除 \`保存并继续\` / \`上一步\`，不要把 selector 锁死在 \`.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible\` 这类单一路径；命中后再 \`scrollIntoViewIfNeeded()\`。如果仍是 \`subtree intercepts pointer events\` 才允许对这个 scoped button 使用 \`click({ force: true })\`，同时不要把 \`保存并继续\` 误当最终提交
+22. 对播放录音 / 预览媒体 / 打开详情 / 下载文件这类触发型动作，优先等待业务响应成功、资源 URL 返回或对应容器出现；禁止使用 \`Promise.race([...catch(() => false)])\` 这类会把较早失败误判成整体失败的写法
+23. 有统一登录信息时，优先使用执行环境内置的 \`__e2e.ensureLoggedIn(page, { targetUrl: TARGET_URL })\` 或 \`__e2e.loginWithEnvAuth(page)\`；不要重复手写 \`page.goto(LOGIN_URL)\` 并猜登录页 DOM
+24. 如果当前页已经是登录页，禁止再额外跳一次 \`LOGIN_URL\` 根地址；那可能把页面从真实登录页跳回首页壳，导致后续手机号/验证码输入框全部消失
+25. 对 Ant Design 表格，禁止直接断言裸 \`.ant-table-tbody\` 可见；优先等待目标行、行数或 placeholder，并基于目标行继续操作
+26. 对标题会附带业务实体名称的 Modal / Drawer，禁止精确断言整个标题字符串；应在当前可见容器内断言公共后缀文案，必要时直接使用 \`__e2e.waitForVisibleAntdModal(page, { titleIncludes: '公共标题片段' })\`
+27. 优先基于上面的 \`DeterministicExecutionTemplate\` 生成最终代码：保留外层 \`test(...)\`、\`shared / artifacts\`、\`test.step(...)\` 和 slot 顺序，只在 slot 内补 locator / action / assertion 细节
+28. 不要删除 \`SLOT_START / SLOT_END\` 标记，也不要新增第二个 \`test(...)\`；最终脚本只能有一个主测试用例
+29. 最终代码不得残留任何 \`__PLAN_SLOT_\` 占位符；如果某个 slot 无法确定实现，应在该 slot 内抛出带原因的业务错误，而不是保留模板占位实现
+30. 除非任务描述或 cleanupNotes 明确要求恢复现场，否则不要在脚本尾部自动把刚修改的业务数据改回去
+31. 如果 \`VerificationPlan\` 或固定骨架已经给出 \`recordLookup.detailEntry\`，必须保留这条详情入口链：命中目标行 -> \`__e2e.clickAntdRowAction(...)\` -> \`__e2e.waitForVisibleAntdModal(...)\` / \`detailReadyLocator\` -> \`__e2e.readDetailField(...)\`。禁止改写成全局点击“查看”或点击后再猜容器。`);
 
   return parts.join('\n');
 }
@@ -956,9 +2209,11 @@ export function buildRepairPrompt(
   context?: GenerateTestContext,
   planning?: ResolvedPromptPlanningContext
 ): string {
-  const parts = [buildPrompt(snapshot, description, auth, edgeCases, existingExample, context, planning)];
-  const recentEvents = (repair.recentEvents || []).map((item) => `- ${clampText(item, 220)}`).join('\n');
-  const recentEventText = (repair.recentEvents || []).join('\n');
+  const resolvedPlanning = planning || resolveIntentPromptPlanningContext(snapshot, description, context, { auth });
+  const parts = [buildPrompt(snapshot, description, auth, edgeCases, existingExample, context, resolvedPlanning)];
+  const latestTraceLines = collectRepairLatestTraceLines(repair);
+  const recentEvents = latestTraceLines.map((item) => `- ${item}`).join('\n');
+  const recentEventText = (repair.latestTrace?.length ? repair.latestTrace : repair.recentEvents || []).join('\n');
   const diagnosisHints: string[] = [];
   const dropdownOptionLabel = extractDropdownOptionLabelFromError(repair.executionError);
 
@@ -985,6 +2240,174 @@ export function buildRepairPrompt(
     diagnosisHints.push('目标列表行可能没有内联 button/link，而是把“查看 / 生成订单”等操作收在末列三点菜单里。修复时先定位目标行，再优先改用 `await __e2e.clickAntdRowAction(page, targetRow, \'生成订单\')` 或 `await __e2e.clickAntdRowAction(page, targetRow, \'查看\')`，不要继续假设行内存在可见 button。');
   }
   if (
+    /locator\('tbody tr'\)\.filter\(\{ hasText:/.test(`${repair.executionError}\n${repair.previousCode}`) &&
+    (/toHaveCount\(expected\)/i.test(repair.executionError) || /Expected:\s*1/i.test(repair.executionError)) &&
+    (/Received:\s*2/i.test(repair.executionError) || /toHaveCount\(1\)/.test(repair.previousCode))
+  ) {
+    diagnosisHints.push('这次不是“列表出现了两条真实业务记录”，而是你把 Ant Design 表格的裸 `tbody tr` 匹配结果直接拿来做 `toHaveCount(1)` 了；固定列 / 粘性列克隆会让同一条记录出现多个副本。修复时删除这类数量断言，改成 `const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [contactPhone, contactName, \'新入库\'] })`；helper 会按 `data-row-key` 去重并优先返回主表体真实行。');
+  }
+  if (
+    /business\/businesslist|商机列表/.test(`${snapshot.url}\n${repair.previousCode}\n${description}`) &&
+    /locator\('tbody tr'\)\.filter\(\{ hasText:/.test(`${repair.executionError}\n${repair.previousCode}`) &&
+    /\.first\(\)/.test(`${repair.executionError}\n${repair.previousCode}`) &&
+    /Expected substring:|toContain\(|toContainText\(|Received string:/i.test(`${repair.executionError}\n${repair.previousCode}`)
+  ) {
+    diagnosisHints.push('这次不是字段没渲染，而是 `tbody tr ... first()` 命中了错误记录。修复时不要只用单个手机号或联系人做 `.first()`；改成 `await __e2e.findAntdTableRow(page, { hasTexts: [contactPhone, contactName, \'新入库\'] })`，必要时继续补 businessId / 企业名称，让 helper 在多条真实记录之间稳定区分。');
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /未找到表格目标行：hasTexts=/.test(repair.executionError)
+  ) {
+    diagnosisHints.push(`这次不是还要继续一味放宽 \`findAntdTableRow\`，而是缺少更稳定的业务主键和“列表结果收敛”回查链。修复时在第三页提交后立刻读取 \`createResp\` / 提交响应 JSON，优先写 \`const createJson = await __e2e.readJsonResponse(await createResp)\`，再用 \`__e2e.pickJsonValue(createJson, { label: 'businessId', paths: ${renderJsStringArray(BUSINESS_ID_JSON_PATHS)}, required: false })\` 提取并保存；如果 \`businessId\` 非空，回到列表后优先直接写 \`const recordCheck = await __e2e.resolvePrimaryRecord(page, { primaryValue: businessId, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: [businessId, leadMobile], detailUrl: \`#/business/detail/\${businessId}\` })\`。若 \`businessId\` 为空，不要立刻写 \`expect(businessId).toBeTruthy()\`，也不要退回“一次 search + 一次 findAntdTableRow 就失败”；先切到“我创建的”，再优先写 \`const recordCheck = await __e2e.resolvePrimaryRecord(page, { primaryValue: leadMobile, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: [leadMobile], maxLookupAttempts: 4, retryIntervalMs: 1200 })\`\n- 让 helper 保守轮询几次列表收敛；如果 \`recordCheck.mode === 'table_row'\`，先断言手机号，联系人只在行文本确实出现时再断言，否则继续读取 \`recordCheck.response\`。\n- 只有 helper 明确返回 \`not_found\` 且没有详情入口时，才允许再退回 \`const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [leadMobile, leadContactName] })\` 这类可见文本链。\n- fallback 行命中后，只有当“新入库”真的出现在该行可见文本里时才直接断言；如果状态不在该行可见文本 / 状态单元格里，不要继续把 \`新入库\` 写成硬断言，而要优先继续读这次列表检索响应，用 \`__e2e.pickJsonRecord(..., { label: 'leadMobile', value: leadMobile, paths: ['mobile', 'phone', 'contactPhone', 'contactMobile'], required: false })\` 找到命中的列表记录，再配合 \`__e2e.pickJsonValue(...状态 paths...)\` 或 \`__e2e.readDetailField(page, { label: '状态', required: false })\` 完成状态校验。若 helper 已回退到详情页 / 详情抽屉，就优先继续读 \`recordCheck.response\`，用 \`__e2e.pickJsonRecord(...)\` 找到命中的列表记录，再配合 \`__e2e.readDetailField(page, { label: '联系人', required: false })\`、\`__e2e.readDetailField(page, { label: '手机号', required: false })\`、\`__e2e.readDetailField(page, { label: '状态', required: false })\` 做字段对比，不要改成整页模糊文本断言。`);
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /未命中目标记录：列表未命中，且没有可用的详情回退路径/.test(repair.executionError)
+  ) {
+    diagnosisHints.push(
+      "这次先不要继续机械地只加 `maxLookupAttempts`；如果脚本里仍在用普通 `139${stamp}` 这类时间戳手机号生成测试数据，优先改成 live 已验证的安全模板：`const stamp = Date.now().toString().slice(-6); const leadMobile = '1990000' + stamp.slice(-4);`。当前 UAT 里可能存在去重 / 黑名单 / 历史脏数据，常见 13x 号段更容易出现“提交成功但列表搜空”，把问题误导到列表回查链上。"
+    );
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /\^保\\\\s\*存\$/.test(`${repair.executionError}\n${repair.previousCode}`) &&
+    /activePane|getByRole\('button'/.test(repair.previousCode) &&
+    /scrollIntoViewIfNeeded|locator not found|toBeVisible/i.test(repair.executionError)
+  ) {
+    diagnosisHints.push(
+      "这次不是 `scrollIntoViewIfNeeded()` 本身有问题，而是最后一步主动作被你固化成了精确 `保存`。修复时先用 `附件信息 / 上传录音文件 / 上传图片` 这些末页锚点确认已经进入最后一步，再只在当前可见步骤容器里定位 `/保\\s*存|提\\s*交|确\\s*定/i` 的最后一个按钮；不要继续写 `getByRole('button', { name: /^保\\s*存$/ }).first()`，也不要把 `保存并继续` / `上一步` 当成最终提交。"
+    );
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /scrollIntoViewIfNeeded|locator not found|toBeVisible/i.test(repair.executionError) &&
+    /\.ant-tabs-tabpane-active:visible, \.step-content:visible, form:visible/.test(
+      `${repair.executionError}\n${repair.previousCode}`
+    ) &&
+    /保\\\\s\*存\|提\\\\s\*交\|确\\\\s\*定/.test(`${repair.executionError}\n${repair.previousCode}`)
+  ) {
+    diagnosisHints.push(
+      "这次不是最终按钮文案还不够宽，而是你把定位链锁死在 `.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible` 这个当前 pane selector 上了。修复时仍先优先看当前可见步骤容器；但如果 scoped locator `count() === 0` 或该 pane 里根本找不到 `/保\\s*存|提\\s*交|确\\s*定/i` 的最终主动作，就立刻回退到更稳的页面级可见主动作链，并继续排除 `保存并继续` / `上一步`；不要继续只对这个单一 pane 做 `scrollIntoViewIfNeeded()` 直到超时。"
+    );
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /未命中目标记录：列表未命中，且没有可用的详情回退路径/.test(repair.executionError) &&
+    /rowHasTexts[\s\S]*leadContactName/.test(repair.previousCode)
+  ) {
+    diagnosisHints.push(`这次不是还要继续放宽联系人名匹配，而是 \`businessId\` 为空时 fallback \`rowHasTexts\` 仍然把 \`leadContactName\` 当成硬前提，导致联系人列未渲染就直接 \`not_found\`。修复时把 fallback helper 收窄成 \`rowHasTexts: [leadMobile]\`，联系人只在命中行文本里确实出现时再断言；不要继续生成 \`rowHasTexts: [leadMobile, leadContactName]\` 这类默认值。只有 helper 明确 \`not_found\` 且没有详情入口时，才允许退回 \`findAntdTableRow(page, { hasTexts: [leadMobile, leadContactName] })\` 这类可见文本链。`);
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /(Expected substring:\s*"新入库"|hasText:\s*\/新入库\/)/.test(repair.executionError) &&
+    /(resolvePrimaryRecord|findAntdTableRow)/.test(repair.previousCode)
+  ) {
+    diagnosisHints.push(`这次不是列表没命中，而是脚本已经按主键/联系人命中了目标行，却还把 \`新入库\` 写成同一行可见文本 / 状态单元格的硬断言。修复时保留 \`targetRow\` 作为身份命中证据，不要继续写 \`await expect(targetRow).toContainText('新入库')\` 或 \`targetRow.locator('td').filter({ hasText: /新入库/ })\`。优先继续读取 \`recordCheck.response\` / 列表检索响应，用 \`__e2e.pickJsonRecord(...)\` 找到命中的列表记录，再用 \`__e2e.pickJsonValue(..., { label: '状态', paths: ['status', 'statusName', 'statusText', 'state', 'stateName', 'stateText', 'displayStatus'], required: false })\` 校验状态；如果列表 JSON 仍拿不到状态，就直接跳 \`detailUrl\` 或打开“查看 / 详情”抽屉后用 \`__e2e.readDetailField(page, { label: '状态', required: false })\` 完成验收。如果 \`matchedRecord\` 和详情字段都为空，不要写 \`expect(statusText || '').toContain('新入库')\`；应直接抛出“状态证据缺失”错误。`);
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /状态证据缺失：fallback 行已命中/.test(repair.executionError)
+  ) {
+    diagnosisHints.push(`这次不是 fallback 行没命中，而是 \`businessId\` 为空时，你已经按手机号/联系人命中了目标行，却在可见行文本没出现“新入库”时直接停止了。修复时保留 fallback 行作为身份证据，但不要直接在这个分支里 \`throw\`；必须继续复用这次 fallback 查询响应（例如 \`artifacts['plan_step_5']\` 或当前列表 GET 响应），优先写 \`const fallbackListJson = artifacts['plan_step_5'] ? await __e2e.readJsonResponse(artifacts['plan_step_5'], { required: false }) : null;\`，再用 \`__e2e.pickJsonRecord(..., { label: 'leadMobile', value: leadMobile, paths: ['mobile', 'phone', 'contactPhone', 'contactMobile'], required: false })\` 找命中的列表记录，并配合 \`__e2e.pickJsonValue(...状态 paths...)\` 读取状态。只有当 fallback 行文本、fallback 列表响应、详情字段三处都拿不到状态时，才允许抛出“状态证据缺失”错误。`);
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /状态证据缺失：列表行已命中，但列表响应和详情字段都未返回状态/.test(repair.executionError)
+  ) {
+    diagnosisHints.push(`这次不是列表行没命中，而是你已经命中了目标行、也读过列表响应，但还没有真正进入详情面就直接把 \`readDetailField(page, { label: '状态' })\` 判空了。修复时不要继续在裸列表页上读状态；若当前链路已经有稳定 \`detailUrl\` / \`detailReadyLocator\`，优先直接沿用这条详情页链，先 \`await page.goto(detailUrl, { waitUntil: 'domcontentloaded' })\` 或等待详情页 ready，再用 \`__e2e.readDetailField(page, { label: '状态', required: false })\` 读取状态。只有当没有稳定 \`detailUrl\`、且 \`detailEntry\` 明确指向 \`drawer_or_modal\` 或项目里已知详情标题时，才对命中的 \`targetRow / recordCheck.row\` 执行 \`await __e2e.clickAntdRowAction(page, targetRow, '查看')\`，随后等待 \`__e2e.waitForVisibleAntdModal(...)\` 并把容器传给 \`__e2e.readDetailField(...)\`。只有详情抽屉/详情页里仍然没有状态字段时，才允许抛出“状态证据缺失”错误。`);
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /状态证据缺失：列表行已命中，但无法从列表响应或详情(?:读取|获取)状态/.test(repair.executionError)
+  ) {
+    diagnosisHints.push(`这次不是列表行没命中，而是 \`businessId\` 为空时，脚本在命中 \`recordCheck.row\` 后只写了“有主键就跳详情、没有主键就直接报错”的坏分支。修复时不要继续保留 \`else if (shared.businessId) { await page.goto(...) } else { throw ... }\`；若当前链路已经有 \`detailEntry\`、已知“查看”动作或详情标题（如 \`商机详情\`），优先直接对 \`recordCheck.row\` 执行 \`await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')\`，随后等待 \`const detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000 })\` 或现成 \`detailReadyLocator\`，再用 \`__e2e.readDetailField(page, { label: '状态', scope: detailScope, titleIncludes: '商机详情', required: false })\` 读取状态。只有列表响应、详情抽屉、详情页三处都拿不到状态时，才允许抛出“状态证据缺失”错误。`);
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /Expected substring:\s*"新入库"/.test(repair.executionError) &&
+    /Received string:\s*"无意向 有意向/i.test(repair.executionError)
+  ) {
+    diagnosisHints.push(`这次不是详情状态真的变成了“无意向 / 有意向”，而是 \`readDetailField(page, { label: '状态' })\` 命中了详情里的意向标签/动作区。修复时不要继续直接对这串文本断言“新入库”；优先沿用结构化 \`detailEntry / detailSurface\` 链：先命中 \`targetRow\`，再写 \`await __e2e.clickAntdRowAction(page, targetRow, '查看')\`，随后等待 \`const detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000 })\`，并用 \`__e2e.readDetailField(page, { label: '状态', scope: detailScope, titleIncludes: '商机详情', required: false })\` 读取真实状态。若读到的仍是“无意向 / 有意向”这类意向标签，不要把它当业务状态；应优先回退到 \`matchedRecord\` 的状态字段，或继续在详情面找真实状态字段。`);
+  }
+  const shortUnexpectedStatusMatch = repair.executionError.match(/Received string:\s*"([^"\n]{1,12})"/);
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /Expected substring:\s*"新入库"/.test(repair.executionError) &&
+    /readDetailField\(page,\s*\{\s*label:\s*'状态'/.test(repair.previousCode) &&
+    /currentVisibleRow[\s\S]*response:\s*null/.test(repair.previousCode) &&
+    shortUnexpectedStatusMatch &&
+    !/(新入库|有意向|无意向|待|已|审|跟进|签约|成功|失败|关闭|丢|作废)/.test(shortUnexpectedStatusMatch[1])
+  ) {
+    diagnosisHints.push(`这次不是详情里的真实业务状态变成了「${shortUnexpectedStatusMatch[1]}」，而是脚本在 \`currentVisibleRow\` 已命中后把 \`recordCheck.response\` 留成了 \`null\`，随后又把 \`readDetailField(page, { label: '状态' })\` 读到的短枚举值误当状态。修复时不要继续直接断言这个短值；保留 \`currentVisibleRow\` 作为身份证据，但先补一跳只为拿结构化列表响应：\`const statusEvidenceRecordCheck = recordCheck.response ? recordCheck : currentVisibleRow ? await __e2e.resolvePrimaryRecord(page, { primaryValue, keywordInput, searchButton, listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts, maxLookupAttempts: 1, retryIntervalMs: 200, detailUrl }) : recordCheck;\`，再从 \`statusEvidenceRecordCheck.response -> __e2e.pickJsonRecord(...) -> __e2e.pickJsonValue(...状态 paths...)\` 读取状态。只有结构化列表响应仍拿不到状态时，才继续开详情；若详情字段再次返回这类短枚举值，也不要把它当业务状态。`);
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /Locator:\s*locator\('\.ant-table-body tbody > tr/.test(repair.executionError) &&
+    /\.nth\(\d+\)/.test(repair.executionError) &&
+    /await expect\((?:currentVisibleRow|recordCheck\.row|fallbackRecordCheck\.row)\)\.toContainText\((?:primaryValue|visiblePrimaryValue|leadMobile|businessId)\)/.test(
+      repair.previousCode
+    )
+  ) {
+    diagnosisHints.push(`这次不是列表没命中，而是 helper 已经命中了目标行后，你又立刻对同一条 row locator 重复写了 \`await expect(recordCheck.row).toContainText(primaryValue)\` / \`await expect(currentVisibleRow).toContainText(leadMobile)\` 这类主值断言，结果把本来已命中的记录重新打回 \`locator(...).nth(...)\` 行漂移。修复时删除这条重复身份断言，把 helper 命中本身当作身份证据；若还要读行内文本，只做一次 \`const rowText = await recordCheck.row.innerText().catch(() => '')\` 的保守读取。即使 \`rowText\` 为空，只要 \`recordCheck.response\` / \`matchedRecord\` / 详情字段还在，就继续沿这些结构化证据闭环，不要因为 stale row 直接失败。`);
+  }
+  if (
+    /(我创建的|我跟进的|归属|范围)/.test(repair.executionError) &&
+    /business\/businesslist|商机列表/.test(`${snapshot.url}\n${repair.previousCode}\n${description}`)
+  ) {
+    diagnosisHints.push('当前失败不是简单的 `toBeVisible()` 过严，而是商机列表“我创建的 / 我跟进的 / 归属 / 范围”视角控件定位不稳定。修复时不要再手写 `getByText(\'我创建的\')`、tab/radio 分支或 form-item 正则猜测；直接改用 `await __e2e.switchBusinessListOwnershipView(page, { label: \'我创建的\', listUrl: LIST_URL })`，让 helper 先尝试 tab/radio/segmented，再尝试顶部归属 dropdown，最后回退到筛选区 dropdown。');
+  }
+  if (
+    /waitForResponse: Timeout .*event "response"/i.test(repair.executionError) &&
+    /switchBusinessListOwnershipView/.test(repair.previousCode)
+  ) {
+    diagnosisHints.push('这次不是列表接口单纯变慢，而是脚本把 `waitForApiResponse` 无条件包在 `__e2e.switchBusinessListOwnershipView(...)` 外层了。helper 遇到当前已经是目标视角时会直接返回，不会再触发新的 GET。修复时默认只保留 `await __e2e.switchBusinessListOwnershipView(...)`，让 helper 自己完成 settle；只有脚本已先确认当前不是目标视角、且必须消费这次切换请求本身时，才允许在 helper 前注册 wait promise。更稳妥的是把后续搜索/回查接口响应当成列表刷新证据。');
+  }
+  if (
+    /switchBusinessListOwnershipView/.test(repair.previousCode) &&
+    /ant-tabs-tab-active|ant-radio-button-wrapper-checked|ant-select-selection-selected-value|getByText\('我创建的'/.test(
+      repair.previousCode
+    )
+  ) {
+    diagnosisHints.push('这次不是 `__e2e.switchBusinessListOwnershipView(...)` 没切成功，而是 helper 后又追加了脆弱的 active-locator 断言。修复时删除 `.ant-tabs-tab-active` / `.ant-radio-button-wrapper-checked` / `.ant-select-selection-selected-value` 或整页 `getByText(\'我创建的\')` 这类选中态断言；helper 成功本身就足够。若还需要辅助收敛，只允许检查当前 URL 已回列表、可见搜索框 / 列表 ready，然后直接进入后续搜索或 `resolvePrimaryRecord(...)` 回查。');
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /未命中目标记录：列表未命中，且没有可用的详情回退路径/.test(repair.executionError) &&
+    /switchBusinessListOwnershipView/.test(repair.previousCode) &&
+    /resolvePrimaryRecord/.test(repair.previousCode)
+  ) {
+    diagnosisHints.push('这次不是再多加几轮 `maxLookupAttempts` 就能解决，而是切到“我创建的”后当前列表本身可能已经刷新出目标记录，你又立刻填搜索框把结果搜空了。修复时不要在 `__e2e.switchBusinessListOwnershipView(...)` 返回后马上 `fill + 搜索`；先短超时写 `const currentVisibleRow = primaryValue ? await (async () => { try { return await __e2e.findAntdTableRow(page, { hasTexts: [primaryValue], timeoutMs: 1200 }); } catch { return null; } })() : null;` 检查当前可见列表。若 `currentVisibleRow` 已命中，就直接把它当作 `recordCheck.row` 的身份证据继续读列表响应 / 详情字段；只有当前可见列表未命中时，才调用 `__e2e.resolvePrimaryRecord(...)` 触发关键词搜索。');
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /getByText\('创建商机'\)\.first\(\)/.test(repair.executionError) &&
+    /本月创建商机|Received:\s*hidden|unexpected value "hidden"/i.test(repair.executionError)
+  ) {
+    diagnosisHints.push('当前不是没进入创建商机页，而是 `getByText(\'创建商机\').first()` 命中了隐藏统计文案（如“本月创建商机”）。修复时删除这条断言，改用 `await expect(page.getByRole(\'heading\', { name: \'商机联系人信息\' }).first()).toBeVisible(...)`、`await expect(page.getByText(\'请填写正确的商机联系人信息\').first()).toBeVisible(...)` 或 `await expect(page.locator(\'label[title="商机来源"]\').first()).toBeVisible(...)` 这类当前步骤专属且可见的锚点。');
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /请填写正确的商机联系人信息/.test(`${repair.executionError}\n${repair.previousCode}`) &&
+    (/toHaveCount\(expected\).*Expected:\s*0/i.test(repair.executionError) ||
+      /toHaveCount\(0\)|ant-form-item-explain-error|ant-form-explain/.test(repair.previousCode))
+  ) {
+    diagnosisHints.push('`请填写正确的商机联系人信息` 在创建商机第一页通常是静态步骤说明，不是提交后会自动消失的临时报错。修复时删除“该文案应该消失”或对 `.ant-form-item-explain-error` / `.ant-form-explain` 直接做 `toHaveCount(0)` 的负断言，只保留“下一步 heading 已出现 / 当前表单关键 label 可见”这类正向锚点。');
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /ant-message-notice|ant-notification-notice/.test(repair.executionError) &&
+    /提交成功|保存成功|创建成功/.test(repair.executionError)
+  ) {
+    diagnosisHints.push('创建商机第三页提交后，toast 不是主成功判定。若提交接口已经成功、URL 已回到 `#/business/businesslist`，或后续能在列表里检索到新建记录，就不要再把 `.ant-message-notice` / `.ant-notification-notice` 作为唯一断言；应优先等待列表页、检索结果和“新入库”状态。');
+  }
+  if (
+    /businessList_keywords|商机ID\/联系人名称\/电话\/企业名称/.test(`${repair.executionError}\n${repair.previousCode}`) &&
+    /unexpected value "hidden"|resolved to hidden|element\(s\) not found/i.test(repair.executionError) &&
+    /business\/businesslist|商机列表/.test(`${snapshot.url}\n${repair.previousCode}\n${description}`)
+  ) {
+    diagnosisHints.push('商机列表搜索框经常同时存在可见节点和隐藏克隆节点。修复时不要再对 `getByPlaceholder(\'商机ID/联系人名称/电话/企业名称\').first()` 做可见性断言；改用 `const keywordInput = page.locator(\'input#businessList_keywords:visible\').first()` 或其他明确可见的搜索框，再填值并继续搜索。');
+  }
+  if (
     /未找到行操作：/.test(repair.executionError) ||
     (/getByText\('操作'/.test(repair.executionError) && /ant-table/i.test(repair.executionError)) ||
     (/ant-table-wrapper/.test(repair.executionError) && /unexpected value "hidden"|Received:\s+hidden/i.test(repair.executionError))
@@ -1009,7 +2432,7 @@ export function buildRepairPrompt(
     diagnosisHints.push('当前需求没有要求回滚数据，脚本尾部自动“改回原值”只会增加额外失败面，还可能把已经完成的业务动作撤销。修复时删除自动恢复原值的 cleanup，只保留完成目标动作后的结果校验。');
   }
   if (/getByRole\('button', \{ name: \/搜\\s\*索\/ \}\)/.test(repair.executionError) && /sureOrderInfoDrawer|暂无信息|ant-spin-spinning/.test(repair.executionError)) {
-    diagnosisHints.push('当前不是“搜索按钮定位失败”，而是“确定订单信息”Drawer/加载遮罩仍未关闭，说明前面的成功断言误判了。不要再写 `page.getByText(/成功/i).first()`；点击 Drawer 内“确定”后，优先等待 `crmapi/business/createOrder` 响应成功，并显式等待“确定订单信息”Drawer 消失，再继续回到列表或做后续校验。');
+    diagnosisHints.push('当前不是“搜索按钮定位失败”，而是“确定订单信息”Drawer/加载遮罩仍未关闭，说明前面的成功断言误判了。不要再写 `page.getByText(/成功/i).first()`；点击 Drawer 内“确定”后，优先等待 `crmapi/business/createOrder` 响应成功，再接 `await __e2e.observeSubmitState(page, { submitButton: confirmButton, closeTitleIncludes: \'确定订单信息\' })` 这类提交后收敛观察，显式等待“确定订单信息”Drawer 消失后再继续回到列表或做后续校验。');
   }
   if (/locator\('tbody tr'\)\.filter\(\{ hasText:/.test(repair.executionError) && /createOrder|data-createOrder|生成订单/.test(`${repair.previousCode}\n${recentEventText}`)) {
     diagnosisHints.push('这次不是“生成订单失败”，而是生成订单成功后，原手机号对应的商机可能立即从当前商机列表移除。不要再强行 `expect(targetRow).toBeVisible()`；优先在下单前后比较“签约成功(n)”计数是否增加，或改到订单管理页检索并校验新订单。');
@@ -1025,7 +2448,7 @@ export function buildRepairPrompt(
     /expect\(received\)\.(?:toBeTruthy|not\.toBe\(expected\))/i.test(repair.executionError) &&
     /business\/businesslist|contactPhone|contactName|businessId/.test(`${snapshot.url}\n${repair.previousCode}`)
   ) {
-    diagnosisHints.push('这次失败不是“断言写法太严格”，而是联系人 / 手机号 / businessId 这些目标字段没有被稳定取到。不要继续把断言弱化成 `toBeTruthy()`、`not.toBe(\'\')` 或“任意非空单元格”；必须先定位到真实目标商机，再对明确字段做校验。若列表行文案会被省略、脱敏或异步补齐，优先改为用接口返回的 businessId 精确定位目标行，或打开该行“查看 / 详情”抽屉后再断言联系人、手机号和创建时间。');
+    diagnosisHints.push('这次失败不是“断言写法太严格”，而是联系人 / 手机号 / businessId 这些目标字段没有被稳定取到。不要继续把断言弱化成 `toBeTruthy()`、`not.toBe(\'\')` 或“任意非空单元格”；必须先定位到真实目标商机，再对明确字段做校验。若列表行文案会被省略、脱敏或异步补齐，优先改为用接口返回的 businessId 精确定位目标行，并把它传给 `__e2e.resolvePrimaryRecord(...)`，让 helper 先按主键检索列表；如果 businessId 为空，不要立刻写 `expect(businessId).toBeTruthy()`，而要先回到正确列表视角，再用手机号 + 联系人 + 状态这类稳定文本做 fallback。若列表未命中，再直接在详情页 / 详情抽屉用 `__e2e.readDetailField(...)` 逐项读取联系人、手机号和创建时间，不要对整个详情页/抽屉文本做大段 `toContain`。如果 \`recordCheck.response\` 仍在，优先再用 \`__e2e.readJsonResponse(recordCheck.response, { required: false })\` + \`__e2e.pickJsonRecord(...)\` 找到命中的列表记录，并用记录里的字段值给详情断言提供 expected value。若没有可直达 detailUrl，也可以打开该行“查看 / 详情”抽屉后再用 `readDetailField` 断言联系人、手机号和创建时间。');
   }
   if (
     /expect\(received\)\.(?:toBeTruthy|not\.toBe\(expected\))/i.test(repair.executionError) &&
@@ -1049,11 +2472,36 @@ export function buildRepairPrompt(
   ) {
     diagnosisHints.push('最近事件显示商机列表检索后页面自身抛出了 `Cannot read properties of null (reading \'id\')`，说明当前不是单纯 locator 问题，而是列表筛选 / 初始化尚未稳定就开始读取结果。修复时不要在搜索框一可见就立刻点“搜索”并读表格；先等待列表页筛选区和默认数据加载完成，再触发检索，并显式等待表格请求完成、loading 消失、目标结果稳定后再断言。必要时先从检索响应里提取目标 businessId，再用 businessId + 详情抽屉完成字段校验。');
   }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /未找到行操作：查看/.test(repair.executionError) &&
+    /statusEvidenceRecordCheck|pickJsonRecord|readDetailField|recordCheck\.row/.test(repair.previousCode) &&
+    !/createOrder|data-createOrder|生成订单/.test(`${repair.previousCode}\n${recentEventText}`)
+  ) {
+    diagnosisHints.push('这次不是普通的 Ant Table 固定列误判，而是脚本在“列表行已命中但列表响应还没给出状态”后，擅自把“查看”当成默认详情入口。修复时不要继续保留 `await __e2e.clickAntdRowAction(page, recordCheck.row, \'查看\')` 这条默认 fallback；只有当前链路已经明确给出 `detailEntry / actionLabel / 详情标题 / detailReadyLocator` 时，才允许点击“查看 / 详情”。如果 `shared.businessId` 非空，可优先走 `detailUrl`；若 `businessId` 为空且当前页面没有明确详情入口，就保留 `recordCheck.row` 作为身份证据，继续复用 `statusEvidenceRecordCheck.response -> __e2e.pickJsonRecord(...) -> __e2e.pickJsonValue(...)`。结构化列表响应仍拿不到状态时，直接抛出“状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口”，不要再臆造行操作。');
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口/.test(repair.executionError) &&
+    /currentVisibleRow|recordCheck\.row|rowText|pickJsonRecord|shared\.businessId|artifacts\.leadMobile/.test(
+      `${repair.previousCode}\n${recentEventText}`
+    )
+  ) {
+    diagnosisHints.push(
+      "这次不是继续给 `pickJsonRecord(...)` 补更多 path 就能顶掉当前头阻塞，而是 `businessId` 仍为空，row 已命中时也没有 `detailUrl` 可退。修复时只在 `currentVisibleRow` / `recordCheck.row` 已命中的分支里做一次保守回填：先 `const rowText = await recordCheck.row.innerText().catch(() => '')`，再写 `const derivedBusinessId = shared.businessId || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')`。这个回填只能用于“已命中目标行后解锁详情页回退”；不要在列表未命中前对整页文本猜 `businessId`，也不要继续把 `listResponse: { urlIncludes: '/business', method: 'GET' }` 当成唯一结构化状态来源。若 `expectedStatus` 仍为空但 `derivedBusinessId` 非空，优先 `await page.goto(`#/business/detail/${derivedBusinessId}`, { waitUntil: 'domcontentloaded' })` 再用 `__e2e.readDetailField(page, { label: '状态', required: false })` 读取状态；只有 `derivedBusinessId` 也为空时，才保留“状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口”这条错误收口。"
+    );
+  }
   if (/未找到行操作：查看/.test(repair.executionError) && /createOrder|data-createOrder|生成订单/.test(`${repair.previousCode}\n${recentEventText}`)) {
     diagnosisHints.push('“查看”这一步不是当前需求的核心成功条件。既然 `createOrder` 已成功，说明订单已创建；修复时应删除“必须重新找到该商机并点查看”的假设，改成在 `createOrder` 成功、Drawer 关闭后直接完成断言，或最多只校验“签约成功(n)”计数变化。');
   }
   if (/未能打开当前字段的下拉面板/.test(repair.executionError)) {
-    diagnosisHints.push('某些 Ant Design 远程搜索 Select（例如企业名称）在点击 wrapper 后不会立刻出现候选。修复时继续使用 `__e2e.selectAntdOption(...)`，并显式传入稳定的 `searchText` 关键词，让 helper 先聚焦并键入，再等待候选返回，不要退回手写 click + waitForTimeout。');
+    diagnosisHints.push('某些字段虽然看起来像“来源 / 性别 / 枚举值”，真实控件却不是 dropdown，而是当前 row 内的 radio / segmented / tab；另一些则是远程搜索 Select。修复时不要退回手写 `getByText(\'男\').click()`、`openAntdDropdown + waitForTimeout` 或硬猜控件形态；继续把 scope 收窄到当前字段 row / form-item，并优先使用 `__e2e.selectAntdOption(...)`。如果是远程搜索 Select，再显式补 `searchText` 关键词，让 helper 先尝试 row 内 inline enum，再处理真实 dropdown。');
+  }
+  if (
+    /疑难工商注销/.test(`${repair.executionError}\n${repair.previousCode}`) &&
+    /scrollIntoViewIfNeeded|locator\('\.ant-select-dropdown/i.test(repair.executionError)
+  ) {
+    diagnosisHints.push('这次不是“疑难工商注销”这个产品不存在，而是 repair 又退回成了手写 dropdown + `scrollIntoViewIfNeeded()`。修复时不要继续拼 `openAntdDropdown + productDropdown.locator(...)`；直接改回 `await __e2e.selectAntdOption(page, productRow, { label: \'疑难工商注销\', searchText: \'疑难工商注销\', tree: true })`，让 helper 负责可见 dropdown、搜索和滚动。');
   }
   if (/ant-select-(tree-node-content-wrapper|dropdown-menu-item|item-option-content)/i.test(repair.executionError) && /toBeVisible\(\) failed|waiting for locator|Timeout \d+ms exceeded/i.test(repair.executionError)) {
     diagnosisHints.push(
@@ -1063,14 +2511,22 @@ export function buildRepairPrompt(
 
   parts.push(`\n## 当前失败脚本\n\`\`\`javascript\n${repair.previousCode.trim()}\n\`\`\``);
   parts.push(`\n## 本次执行报错\n${repair.executionError.trim() || '未提供错误信息'}`);
+  parts.push(renderRepairStructuredInputSection(repair));
+  parts.push(renderRepairGraderDiagnosisSection(repair));
   if (recentEvents) {
-    parts.push(`\n## 最近执行事件\n${recentEvents}`);
+    parts.push(`\n## Latest Trace（最近执行轨迹）\n${recentEvents}`);
   }
   if (diagnosisHints.length > 0) {
     parts.push(`\n## 修复诊断提示\n${diagnosisHints.map((item, index) => `${index + 1}. ${item}`).join('\n')}`);
   }
   if (repair.repairMemoryHints?.length) {
     parts.push(`\n${renderIntentRepairMemoryHints(repair.repairMemoryHints)}`);
+  }
+  if (resolvedPlanning.verificationPlan?.intent === 'review') {
+    parts.push(`\n## 保守复核修复边界
+1. 这是保守复核场景下的自动修复，只允许在当前失败点收敛 helper、selector、等待顺序和断言，不要主动扩大业务链路。
+2. 不要为了通过删除关键断言，也不要把成功判定降级成 toast、整页模糊文本或宽泛 truthy。
+3. 如果现有入口、helper 或结构化回查链已经明显漂移，应明确暴露真实失败，而不是发明新的旁路成功路径。`);
   }
   parts.push(`\n## 修复要求
 1. 保持测试目标、步骤覆盖和关键断言不变，不要为了通过而删掉业务步骤。
@@ -1100,8 +2556,178 @@ function extractGeneratedCode(fullCode: string): string {
   if (!code.includes('test(') && !code.includes('test.describe(')) {
     throw new Error('生成的代码缺少 test() 或 test.describe()，请重试');
   }
+  if (code.includes('__PLAN_SLOT_')) {
+    throw new Error('生成的代码仍包含未实现的结构化 slot，占位符未被替换');
+  }
 
   return code;
+}
+
+function validateGeneratedCodeSyntax(code: string, contextLabel: string): void {
+  try {
+    new Script(code, { filename: `${contextLabel}.generated.js` });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error || '未知错误');
+    throw new Error(`${contextLabel} 合并后脚本存在语法错误: ${message}`);
+  }
+}
+
+function hasAllTargetSlotMarkers(code: string, slotUids: string[]): boolean {
+  return slotUids.every((slotUid) => hasIntentExecutionSlotMarkers(code, slotUid));
+}
+
+function resolveStructuredRepairBaseCode(
+  template: IntentCompiledExecutionTemplate,
+  repair: RepairTestContext
+): {
+  baseCode: string;
+  targetSlotUids: string[];
+  reusePreviousCode: boolean;
+  baseCodeSource: IntentExecutionBaseCodeSource;
+} {
+  const inferredTargetSlotUids = resolveIntentExecutionPatchTargetSlotUids(template, {
+    failedSlotUids: repair.failedSlotUids,
+    failedStepTitle: repair.failedStepTitle,
+  });
+  const previousCode = String(repair.previousCode || '').trim();
+  const canReusePreviousCode =
+    previousCode.length > 0 &&
+    hasIntentExecutionSlotMarkers(previousCode) &&
+    hasAllTargetSlotMarkers(previousCode, template.slots.map((slot) => slot.slotUid));
+
+  if (canReusePreviousCode) {
+    return {
+      baseCode: previousCode,
+      targetSlotUids: inferredTargetSlotUids,
+      reusePreviousCode: true,
+      baseCodeSource: 'previous_code',
+    };
+  }
+
+  return {
+    baseCode: template.code,
+    targetSlotUids: template.slots.map((slot) => slot.slotUid),
+    reusePreviousCode: false,
+    baseCodeSource: 'compiled_template',
+  };
+}
+
+async function* streamStructuredSlotPatchGeneration(
+  prompt: string,
+  baseCode: string,
+  targetSlotUids: string[],
+  options: {
+    reusePreviousCode: boolean;
+    baseCodeSource: IntentExecutionBaseCodeSource;
+  },
+  runtimeOverrides?: LLMRuntimeOverrides,
+  signal?: AbortSignal
+): AsyncGenerator<GenerateEvent> {
+  throwIfAborted(signal);
+
+  try {
+    const patch = await callLLMStructured<IntentExecutionSlotPatch>(
+      {
+        prompt,
+        systemPrompt: 'You are a senior Playwright E2E testing expert. Return strict JSON slot patches only.',
+        schemaName: 'intent_execution_slot_patch',
+        schema: buildIntentExecutionSlotPatchSchema(targetSlotUids),
+        temperature: 0.2,
+        maxOutputTokens: 3200,
+      },
+      runtimeOverrides,
+      signal
+    );
+
+    throwIfAborted(signal);
+    const normalizedPatch = normalizeIntentExecutionSlotPatch(patch, targetSlotUids);
+    const structuredPatch: IntentExecutionStructuredPatch = {
+      version: 1,
+      strategy: 'deterministic_slot_patch_v1',
+      targetSlotUids: [...targetSlotUids],
+      returnedSlotUids: normalizedPatch.slots.map((slot) => slot.slotUid),
+      reusedPreviousCode: options.reusePreviousCode,
+      baseCodeSource: options.baseCodeSource,
+      patch: normalizedPatch,
+    };
+    yield {
+      type: 'structured_patch',
+      content: `slot patch ready: ${structuredPatch.returnedSlotUids.join(' / ')}`,
+      structuredPatch,
+    };
+    const code = extractGeneratedCode(applyIntentExecutionSlotPatch(baseCode, normalizedPatch));
+    validateGeneratedCodeSyntax(code, 'slot patch');
+    yield { type: 'complete', content: code };
+  } catch (err: any) {
+    if (err?.name === 'AbortError') throw err;
+    yield { type: 'error', content: `LLM 结构化 slot patch 失败: ${err?.message || '未知错误'}` };
+  }
+}
+
+async function* streamStructuredRepairPatchGeneration(
+  prompt: string,
+  baseCode: string,
+  template: IntentCompiledExecutionTemplate,
+  planning: ResolvedPromptPlanningContext,
+  targetSlotUids: string[],
+  repair: RepairTestContext,
+  options: {
+    reusePreviousCode: boolean;
+    baseCodeSource: IntentExecutionBaseCodeSource;
+  },
+  runtimeOverrides?: LLMRuntimeOverrides,
+  signal?: AbortSignal
+): AsyncGenerator<GenerateEvent> {
+  throwIfAborted(signal);
+
+  try {
+    const repairOutputContext = buildStructuredRepairOutputContext(template, targetSlotUids, planning, repair);
+    const patch = await callLLMStructured<IntentExecutionRepairPatch>(
+      {
+        prompt,
+        systemPrompt: 'You are a senior Playwright E2E testing expert. Return strict JSON repair patches only.',
+        schemaName: 'intent_execution_repair_patch',
+        schema: buildIntentExecutionRepairPatchSchema({
+          targetSlotUids,
+          planStepUids: repairOutputContext.planStepUids,
+          checkUids: repairOutputContext.checkUids,
+          recipeSlugs: repairOutputContext.recipeSlugs,
+        }),
+        temperature: 0.2,
+        maxOutputTokens: 3600,
+      },
+      runtimeOverrides,
+      signal
+    );
+
+    throwIfAborted(signal);
+    const normalizedRepairPatch = normalizeIntentExecutionRepairPatch(patch, {
+      targetSlotUids,
+      planStepUids: repairOutputContext.planStepUids,
+      checkUids: repairOutputContext.checkUids,
+      recipeSlugs: repairOutputContext.recipeSlugs,
+    });
+    const repairOutput = buildStructuredRepairOutput(
+      normalizedRepairPatch,
+      template,
+      planning,
+      targetSlotUids,
+      options
+    );
+    const structuredPatch = buildStructuredPatchFromRepairOutput(repairOutput);
+    yield {
+      type: 'structured_patch',
+      content: `slot patch ready: ${structuredPatch.returnedSlotUids.join(' / ')}`,
+      structuredPatch,
+      repairOutput,
+    };
+    const code = extractGeneratedCode(applyIntentExecutionSlotPatch(baseCode, repairOutput.patch));
+    validateGeneratedCodeSyntax(code, 'repair patch');
+    yield { type: 'complete', content: code };
+  } catch (err: any) {
+    if (err?.name === 'AbortError') throw err;
+    yield { type: 'error', content: `LLM 结构化 repair patch 失败: ${err?.message || '未知错误'}` };
+  }
 }
 
 async function* streamCodeGeneration(
@@ -1143,9 +2769,10 @@ export async function* generateTest(
   const edgeCases = await loadEdgeCases(context?.scenarioEntryUrl || snapshot.url);
   yield { type: 'thinking', content: `找到 ${edgeCases.length} 个相关边缘案例` };
 
+  const resolvedPlanning = planning || resolveIntentPromptPlanningContext(snapshot, description, context, { auth });
   yield { type: 'thinking', content: '正在加载现有测试范例...' };
-  const existingExample = await loadExistingExample(snapshot, description, context);
-  const deterministicTemplate = resolveDeterministicTemplate(snapshot, description, existingExample, context);
+  const existingExample = await loadExistingExample(snapshot, description, context, resolvedPlanning);
+  const deterministicTemplate = resolveDeterministicTemplate(snapshot, description, existingExample, context, resolvedPlanning);
   if (deterministicTemplate) {
     yield { type: 'thinking', content: '命中已验证的专门模板，直接复用稳定脚本...' };
     yield { type: 'complete', content: deterministicTemplate };
@@ -1153,13 +2780,50 @@ export async function* generateTest(
   }
 
   yield { type: 'thinking', content: '正在匹配项目知识规则...' };
-  const resolvedPlanning = planning || resolveIntentPromptPlanningContext(snapshot, description, context);
   yield {
     type: 'thinking',
     content: formatPlanningKnowledgeHitMessage('', resolvedPlanning).trim(),
   };
+  const starterHelperMessage = formatPlanningStarterHelperMessage(resolvedPlanning);
+  if (starterHelperMessage) {
+    yield {
+      type: 'thinking',
+      content: starterHelperMessage,
+    };
+  }
 
-  yield { type: 'thinking', content: '正在构造 Prompt 并调用 LLM...' };
+  const compiledTemplate = compilePlanningExecutionTemplate(resolvedPlanning, auth, description);
+  if (compiledTemplate) {
+    yield { type: 'thinking', content: '已将 ExecutionPlan 编译成受控脚手架，正在生成 slot patch...' };
+    const targetSlotUids = compiledTemplate.slots.map((slot) => slot.slotUid);
+    const prompt = buildSlotPatchPrompt(
+      snapshot,
+      description,
+      auth,
+      edgeCases,
+      existingExample,
+      compiledTemplate,
+      targetSlotUids,
+      compiledTemplate.code,
+      context,
+      resolvedPlanning
+    );
+    yield* streamStructuredSlotPatchGeneration(
+      prompt,
+      compiledTemplate.code,
+      targetSlotUids,
+      {
+        reusePreviousCode: false,
+        baseCodeSource: 'compiled_template',
+      },
+      runtimeOverrides,
+      signal
+    );
+    return;
+  }
+
+  yield { type: 'thinking', content: buildLegacyCodeFallbackReason('generate', resolvedPlanning) };
+  yield { type: 'thinking', content: '正在构造自由代码 Prompt 并调用 LLM...' };
   const prompt = buildPrompt(snapshot, description, auth, edgeCases, existingExample, context, resolvedPlanning);
   yield* streamCodeGeneration(prompt, runtimeOverrides, signal);
 }
@@ -1179,9 +2843,10 @@ export async function* repairTest(
   const edgeCases = await loadEdgeCases(context?.scenarioEntryUrl || snapshot.url);
   yield { type: 'thinking', content: `已加载 ${edgeCases.length} 个相关边缘案例` };
 
+  const resolvedPlanning = planning || resolveIntentPromptPlanningContext(snapshot, description, context);
   yield { type: 'thinking', content: '正在加载现有测试范例...' };
-  const existingExample = await loadExistingExample(snapshot, description, context);
-  const deterministicTemplate = resolveDeterministicTemplate(snapshot, description, existingExample, context);
+  const existingExample = await loadExistingExample(snapshot, description, context, resolvedPlanning);
+  const deterministicTemplate = resolveDeterministicTemplate(snapshot, description, existingExample, context, resolvedPlanning);
   if (deterministicTemplate) {
     yield { type: 'thinking', content: '命中已验证的专门模板，直接回退到稳定脚本...' };
     yield { type: 'complete', content: deterministicTemplate };
@@ -1189,13 +2854,65 @@ export async function* repairTest(
   }
 
   yield { type: 'thinking', content: '正在匹配项目知识规则...' };
-  const resolvedPlanning = planning || resolveIntentPromptPlanningContext(snapshot, description, context);
   yield {
     type: 'thinking',
     content: formatPlanningKnowledgeHitMessage('repair ', resolvedPlanning),
   };
+  const starterHelperMessage = formatPlanningStarterHelperMessage(resolvedPlanning);
+  if (starterHelperMessage) {
+    yield {
+      type: 'thinking',
+      content: `repair ${starterHelperMessage}`,
+    };
+  }
 
-  yield { type: 'thinking', content: '正在构造修复 Prompt 并调用 LLM...' };
+  const compiledTemplate = compilePlanningExecutionTemplate(resolvedPlanning, auth, description);
+  if (compiledTemplate) {
+    const structuredRepair = resolveStructuredRepairBaseCode(compiledTemplate, repair);
+    const structuredRepairContext = enrichRepairContextWithStructuredInputs(
+      repair,
+      compiledTemplate,
+      structuredRepair.targetSlotUids,
+      resolvedPlanning
+    );
+    yield {
+      type: 'thinking',
+      content: structuredRepair.reusePreviousCode
+        ? `正在按失败 slot 定向修复：${structuredRepair.targetSlotUids.join(' / ')}`
+        : '上一轮脚本缺少 slot 标记，正在回退为全量 slot 重建...',
+    };
+    const prompt = buildSlotPatchPrompt(
+      snapshot,
+      description,
+      auth,
+      edgeCases,
+      existingExample,
+      compiledTemplate,
+      structuredRepair.targetSlotUids,
+      structuredRepair.baseCode,
+      context,
+      resolvedPlanning,
+      structuredRepairContext
+    );
+    yield* streamStructuredRepairPatchGeneration(
+      prompt,
+      structuredRepair.baseCode,
+      compiledTemplate,
+      resolvedPlanning,
+      structuredRepair.targetSlotUids,
+      structuredRepairContext,
+      {
+        reusePreviousCode: structuredRepair.reusePreviousCode,
+        baseCodeSource: structuredRepair.baseCodeSource,
+      },
+      runtimeOverrides,
+      signal
+    );
+    return;
+  }
+
+  yield { type: 'thinking', content: buildLegacyCodeFallbackReason('repair', resolvedPlanning) };
+  yield { type: 'thinking', content: '正在构造自由代码修复 Prompt 并调用 LLM...' };
   const prompt = buildRepairPrompt(snapshot, description, auth, edgeCases, existingExample, repair, context, resolvedPlanning);
   yield* streamCodeGeneration(prompt, runtimeOverrides, signal);
 }

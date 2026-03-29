@@ -17,13 +17,17 @@ describe('intent project knowledge draft route', () => {
   });
 
   it('returns a draft preview for GET requests', async () => {
-    const req = new NextRequest('http://localhost/api/intent-e2e/project-knowledge/draft?minSeenCount=3&maxCandidates=5');
+    const req = new NextRequest(
+      'http://localhost/api/intent-e2e/project-knowledge/draft?minSeenCount=3&maxCandidates=5&projectUid=proj_1&moduleUid=mod_1'
+    );
     const res = await GET(req);
 
     expect(generateIntentProjectKnowledgeDraft).toHaveBeenCalledWith({
       minSeenCount: 3,
       minResolvedCount: 1,
       maxCandidates: 5,
+      projectUid: 'proj_1',
+      moduleUid: 'mod_1',
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ draft: { version: 1, candidates: [], summary: {} } });
@@ -32,7 +36,7 @@ describe('intent project knowledge draft route', () => {
   it('writes the draft file when POST requests opt in', async () => {
     const req = new NextRequest('http://localhost/api/intent-e2e/project-knowledge/draft', {
       method: 'POST',
-      body: JSON.stringify({ write: true, minResolvedCount: 2 }),
+      body: JSON.stringify({ write: true, minResolvedCount: 2, projectUid: 'proj_1', moduleUid: 'mod_1' }),
       headers: { 'content-type': 'application/json' },
     });
     const res = await POST(req);
@@ -41,6 +45,8 @@ describe('intent project knowledge draft route', () => {
       minSeenCount: 2,
       minResolvedCount: 2,
       maxCandidates: 12,
+      projectUid: 'proj_1',
+      moduleUid: 'mod_1',
     });
     expect(writeIntentProjectKnowledgeDraft).toHaveBeenCalledTimes(1);
     expect(await res.json()).toEqual({

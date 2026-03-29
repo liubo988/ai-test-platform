@@ -406,6 +406,7 @@ export interface ProjectActivityLogRecord {
 export interface IntentE2ERunSnapshotInput {
   runId: string;
   projectUid?: string;
+  moduleUid?: string;
   status: IntentE2ERunSnapshotStatus;
   stage: string;
   requestInput: string;
@@ -421,6 +422,7 @@ export interface IntentE2ERunSnapshotInput {
 export interface IntentE2ERunSnapshotRecord {
   runId: string;
   projectUid: string;
+  moduleUid?: string;
   status: IntentE2ERunSnapshotStatus;
   stage: string;
   requestInput: string;
@@ -435,6 +437,7 @@ export interface IntentE2ERunSnapshotRecord {
 
 export interface ListIntentE2ERunSnapshotsParams {
   projectUid?: string;
+  moduleUid?: string;
   status?: IntentE2ERunSnapshotStatus | 'terminal' | 'all';
   limit?: number;
 }
@@ -828,6 +831,7 @@ async function ensureIntentE2ERunTables(): Promise<void> {
           id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
           run_id VARCHAR(128) NOT NULL,
           project_uid VARCHAR(64) NULL,
+          module_uid VARCHAR(64) NULL,
           status ENUM('created', 'running', 'passed', 'failed', 'canceled') NOT NULL,
           stage VARCHAR(32) NOT NULL,
           request_input TEXT NOT NULL,
@@ -841,11 +845,17 @@ async function ensureIntentE2ERunTables(): Promise<void> {
           PRIMARY KEY (id),
           UNIQUE KEY uk_intent_e2e_runs_run_id (run_id),
           KEY idx_intent_e2e_runs_project_updated (project_uid, updated_at),
+          KEY idx_intent_e2e_runs_module_updated (module_uid, updated_at),
           KEY idx_intent_e2e_runs_status_updated (status, updated_at),
           CONSTRAINT fk_intent_e2e_runs_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
             ON UPDATE CASCADE ON DELETE SET NULL
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
       `);
+      await addColumnIfMissing(
+        'intent_e2e_runs',
+        'module_uid',
+        `module_uid VARCHAR(64) NULL AFTER project_uid`
+      );
     })().catch((error) => {
       intentE2ERunTablesReady = null;
       throw error;
@@ -1193,6 +1203,7 @@ function normalizeIntentE2ERunSnapshotRow(row: RowDataPacket): IntentE2ERunSnaps
   return {
     runId: String(row.run_id),
     projectUid: row.project_uid ? String(row.project_uid) : '',
+    moduleUid: row.module_uid ? String(row.module_uid) : '',
     status: row.status as IntentE2ERunSnapshotStatus,
     stage: row.stage ? String(row.stage) : 'created',
     requestInput: row.request_input ? String(row.request_input) : '',
@@ -2975,10 +2986,11 @@ export async function upsertIntentE2ERunSnapshot(input: IntentE2ERunSnapshotInpu
 
   await pool.execute<ResultSetHeader>(
     `INSERT INTO intent_e2e_runs
-      (run_id, project_uid, status, stage, request_input, target_url, state_json, error_message, started_at, ended_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (run_id, project_uid, module_uid, status, stage, request_input, target_url, state_json, error_message, started_at, ended_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        project_uid = VALUES(project_uid),
+       module_uid = VALUES(module_uid),
        status = VALUES(status),
        stage = VALUES(stage),
        request_input = VALUES(request_input),
@@ -2992,6 +3004,7 @@ export async function upsertIntentE2ERunSnapshot(input: IntentE2ERunSnapshotInpu
     [
       input.runId,
       input.projectUid?.trim() || null,
+      input.moduleUid?.trim() || null,
       input.status,
       input.stage.trim() || 'created',
       input.requestInput.trim(),
@@ -3021,12 +3034,18 @@ export async function listIntentE2ERunSnapshots(params: ListIntentE2ERunSnapshot
   const where: string[] = [];
   const args: unknown[] = [];
   const projectUid = params.projectUid?.trim() || '';
+  const moduleUid = params.moduleUid?.trim() || '';
   const status = params.status || 'all';
   const limit = Math.max(1, Math.min(200, Math.floor(params.limit || 50)));
 
   if (projectUid) {
     where.push('project_uid = ?');
     args.push(projectUid);
+  }
+
+  if (moduleUid) {
+    where.push('module_uid = ?');
+    args.push(moduleUid);
   }
 
   if (status === 'terminal') {
@@ -3969,7 +3988,7 @@ export async function updateExecutionStatus(
 
 export async function insertExecutionEvent(
   executionUid: string,
-  eventType: 'frame' | 'log' | 'step' | 'artifact' | 'status',
+  eventType: 'frame' | 'log' | 'step' | 'artifact' | 'status' | 'capability_verification_observation',
   payload: unknown,
   projectUid?: string
 ): Promise<void> {

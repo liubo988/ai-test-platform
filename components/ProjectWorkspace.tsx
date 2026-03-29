@@ -31,6 +31,14 @@ import {
   type TaskMode,
 } from '@/lib/task-flow';
 import type { IntentImportStatus } from '@/lib/intent-e2e-import';
+import {
+  extractIntentStarterAssetPromotionReceiptFromActivityMeta,
+  type IntentStarterAssetPromotionReceiptItem,
+} from '@/lib/intent-starter-asset-promotion-receipt';
+import {
+  extractIntentSuccessfulRunKnowledgePromotionReceiptFromActivityMeta,
+  type IntentSuccessfulRunKnowledgePromotionReceipt,
+} from '@/lib/intent-successful-run-knowledge-promotion-receipt';
 
 type ProjectStatus = 'active' | 'archived';
 type ModuleStatus = 'active' | 'archived';
@@ -442,6 +450,20 @@ function compactRunId(runId: string): string {
   return `${runId.slice(0, 18)}...${runId.slice(-6)}`;
 }
 
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const items: string[] = [];
+
+  for (const raw of values) {
+    const value = typeof raw === 'string' ? raw.trim() : '';
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    items.push(value);
+  }
+
+  return items;
+}
+
 function intentImportTone(status?: IntentImportStatus | '' | string): string {
   return status === 'failed'
     ? 'bg-amber-50 text-amber-800 ring-amber-200'
@@ -663,6 +685,118 @@ function activityIntentImportedStatus(item: ActivityItem): IntentImportStatus | 
   if (item.actionType === 'plan_imported_failed' || item.actionType === 'execution_failed') return 'failed';
   if (item.actionType === 'plan_imported_passed' || item.actionType === 'execution_passed') return 'passed';
   return '';
+}
+
+function starterPromotionDecisionLabel(status: IntentStarterAssetPromotionReceiptItem['decisionStatus']): string {
+  switch (status) {
+    case 'promote_project_capability':
+      return '直接沉淀';
+    case 'review_project_capability':
+      return '人工复核';
+    default:
+      return '运行期保留';
+  }
+}
+
+function starterPromotionDecisionTone(status: IntentStarterAssetPromotionReceiptItem['decisionStatus']): string {
+  switch (status) {
+    case 'promote_project_capability':
+      return 'bg-emerald-50 text-emerald-700 ring-emerald-100';
+    case 'review_project_capability':
+      return 'bg-amber-50 text-amber-700 ring-amber-100';
+    default:
+      return 'bg-slate-100 text-slate-600 ring-slate-200';
+  }
+}
+
+function successfulRunKnowledgePromotionStatusLabel(
+  status: IntentSuccessfulRunKnowledgePromotionReceipt['items'][number]['status']
+): string {
+  switch (status) {
+    case 'merged':
+      return '已沉淀';
+    case 'covered':
+      return '已覆盖';
+    case 'missing':
+      return '已失效';
+    case 'skipped_rule':
+      return '重复规则';
+    default:
+      return '未落盘';
+  }
+}
+
+function successfulRunKnowledgePromotionStatusTone(
+  status: IntentSuccessfulRunKnowledgePromotionReceipt['items'][number]['status']
+): string {
+  switch (status) {
+    case 'merged':
+      return 'bg-emerald-50 text-emerald-700 ring-emerald-100';
+    case 'covered':
+      return 'bg-sky-50 text-sky-700 ring-sky-100';
+    case 'missing':
+      return 'bg-amber-50 text-amber-700 ring-amber-100';
+    case 'skipped_rule':
+      return 'bg-slate-100 text-slate-600 ring-slate-200';
+    default:
+      return 'bg-rose-50 text-rose-700 ring-rose-100';
+  }
+}
+
+function successfulRunKnowledgePromotionFeedbackLabel(
+  status: IntentSuccessfulRunKnowledgePromotionReceipt['items'][number]['feedbackStatus']
+): string {
+  switch (status) {
+    case 'preferred':
+      return '优先推荐';
+    case 'probationary':
+      return '观察期';
+    case 'deprioritized':
+      return '自动降权';
+    default:
+      return '常规候选';
+  }
+}
+
+function successfulRunKnowledgePromotionFeedbackTone(
+  status: IntentSuccessfulRunKnowledgePromotionReceipt['items'][number]['feedbackStatus']
+): string {
+  switch (status) {
+    case 'preferred':
+      return 'bg-emerald-50 text-emerald-700 ring-emerald-100';
+    case 'probationary':
+      return 'bg-amber-50 text-amber-700 ring-amber-100';
+    case 'deprioritized':
+      return 'bg-rose-50 text-rose-700 ring-rose-100';
+    default:
+      return 'bg-slate-100 text-slate-600 ring-slate-200';
+  }
+}
+
+function successfulRunKnowledgePromotionPolicyLabel(
+  policy: IntentSuccessfulRunKnowledgePromotionReceipt['items'][number]['lifecyclePolicy']
+): string {
+  switch (policy) {
+    case 'block_default_merge':
+      return '阻断默认合并';
+    case 'auto_promote_candidate':
+      return '自动晋升候选';
+    default:
+      return '继续观察';
+  }
+}
+
+function successfulRunKnowledgePromotionPolicyTone(
+  policy: IntentSuccessfulRunKnowledgePromotionReceipt['items'][number]['lifecyclePolicy']
+): string {
+  switch (policy) {
+    case 'block_default_merge':
+      return 'bg-rose-50 text-rose-700 ring-rose-100';
+    case 'auto_promote_candidate':
+      return 'bg-emerald-50 text-emerald-700 ring-emerald-100';
+    default:
+      return 'bg-slate-100 text-slate-600 ring-slate-200';
+  }
 }
 
 function memberRoleLabel(role: ProjectActorRole): string {
@@ -1272,6 +1406,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
         input: inputText,
         targetUrl: detail.targetUrl.trim() || detail.targetUrlHint.trim(),
         projectUid: detail.projectUid || projectUid,
+        moduleUid: detail.moduleUid || draft.moduleUid,
         attachments: detail.attachments.map((item) => ({
           name: item.name,
           dataUrl: item.dataUrl,
@@ -3411,6 +3546,17 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                   {activityLogs.map((item) => {
                     const intentRunId = activityIntentImportedRunId(item.meta);
                     const intentStatus = activityIntentImportedStatus(item);
+                    const starterAssetPromotionReceipt =
+                      item.actionType === 'starter_asset_promotion_recorded'
+                        ? extractIntentStarterAssetPromotionReceiptFromActivityMeta(item.meta)
+                        : null;
+                    const successfulRunKnowledgePromotionReceipt =
+                      item.actionType === 'intent_project_knowledge_merged' || item.actionType === 'intent_project_knowledge_merge_noop'
+                        ? extractIntentSuccessfulRunKnowledgePromotionReceiptFromActivityMeta(item.meta)
+                        : null;
+                    const successfulRunPromotionRunIds = successfulRunKnowledgePromotionReceipt
+                      ? uniqueStrings(successfulRunKnowledgePromotionReceipt.items.flatMap((receiptItem) => receiptItem.runIds)).slice(0, 3)
+                      : [];
 
                     return (
                       <div key={item.activityUid} className="flex gap-3 rounded-xl border border-slate-100 px-3 py-3">
@@ -3439,6 +3585,175 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                             )}
                           </div>
                           {item.detail && <p className="mt-1 text-xs leading-5 text-slate-500">{item.detail}</p>}
+                          {starterAssetPromotionReceipt && (
+                            <div className="mt-3 rounded-xl border border-sky-100 bg-sky-50/60 p-3">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-medium text-sky-700 ring-1 ring-sky-100">
+                                  已沉淀 {starterAssetPromotionReceipt.summary.savedCount}/{starterAssetPromotionReceipt.summary.requestedCount}
+                                </span>
+                                {starterAssetPromotionReceipt.summary.directPromotionCount > 0 && (
+                                  <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-100">
+                                    直接 {starterAssetPromotionReceipt.summary.directPromotionCount}
+                                  </span>
+                                )}
+                                {starterAssetPromotionReceipt.summary.manualReviewCount > 0 && (
+                                  <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-100">
+                                    复核 {starterAssetPromotionReceipt.summary.manualReviewCount}
+                                  </span>
+                                )}
+                                {starterAssetPromotionReceipt.summary.helperCount > 0 && (
+                                  <span className="rounded-full bg-white px-2 py-0.5 text-[10px] text-slate-500 ring-1 ring-slate-200">
+                                    helper {starterAssetPromotionReceipt.summary.helperCount}
+                                  </span>
+                                )}
+                                {starterAssetPromotionReceipt.sourceRunId && (
+                                  <span
+                                    className="rounded-full bg-white px-2 py-0.5 font-mono text-[10px] text-slate-500 ring-1 ring-slate-200"
+                                    title={starterAssetPromotionReceipt.sourceRunId}
+                                  >
+                                    {compactRunId(starterAssetPromotionReceipt.sourceRunId)}
+                                  </span>
+                                )}
+                                <span
+                                  className="rounded-full bg-white px-2 py-0.5 font-mono text-[10px] text-slate-500 ring-1 ring-slate-200"
+                                  title={starterAssetPromotionReceipt.receiptId}
+                                >
+                                  {compactRunId(starterAssetPromotionReceipt.receiptId)}
+                                </span>
+                              </div>
+                              {(starterAssetPromotionReceipt.moduleName || starterAssetPromotionReceipt.scenarioTitle) && (
+                                <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                                  {[starterAssetPromotionReceipt.moduleName, starterAssetPromotionReceipt.scenarioTitle]
+                                    .filter(Boolean)
+                                    .join(' · ')}
+                                </p>
+                              )}
+                              {starterAssetPromotionReceipt.items.length > 0 && (
+                                <div className="mt-2 space-y-1.5">
+                                  {starterAssetPromotionReceipt.items.slice(0, 3).map((receiptItem) => (
+                                    <div
+                                      key={`${starterAssetPromotionReceipt.receiptId}-${receiptItem.savedCapabilityUid}`}
+                                      className="flex flex-wrap items-center gap-2 text-[11px] text-slate-600"
+                                    >
+                                      <span
+                                        className={`rounded-full px-2 py-0.5 font-medium ring-1 ${starterPromotionDecisionTone(receiptItem.decisionStatus)}`}
+                                      >
+                                        {starterPromotionDecisionLabel(receiptItem.decisionStatus)}
+                                      </span>
+                                      <span className="font-medium text-slate-700">{receiptItem.savedCapabilityName}</span>
+                                      <span className="font-mono text-slate-500">{receiptItem.helper}</span>
+                                    </div>
+                                  ))}
+                                  {starterAssetPromotionReceipt.items.length > 3 && (
+                                    <p className="text-[11px] text-slate-400">
+                                      其余 {starterAssetPromotionReceipt.items.length - 3} 条能力映射已折叠。
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {successfulRunKnowledgePromotionReceipt && (
+                            <div className="mt-3 rounded-xl border border-cyan-100 bg-cyan-50/60 p-3">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-medium text-cyan-700 ring-1 ring-cyan-100">
+                                  新增规则 {successfulRunKnowledgePromotionReceipt.summary.mergedRuleCount}
+                                </span>
+                                {successfulRunKnowledgePromotionReceipt.summary.coveredCandidateCount > 0 && (
+                                  <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[10px] font-medium text-sky-700 ring-1 ring-sky-100">
+                                    已覆盖 {successfulRunKnowledgePromotionReceipt.summary.coveredCandidateCount}
+                                  </span>
+                                )}
+                                {successfulRunKnowledgePromotionReceipt.summary.runCount > 0 && (
+                                  <span className="rounded-full bg-white px-2 py-0.5 text-[10px] text-slate-500 ring-1 ring-slate-200">
+                                    通过运行 {successfulRunKnowledgePromotionReceipt.summary.runCount}
+                                  </span>
+                                )}
+                                {successfulRunKnowledgePromotionReceipt.summary.helperCount > 0 && (
+                                  <span className="rounded-full bg-white px-2 py-0.5 text-[10px] text-slate-500 ring-1 ring-slate-200">
+                                    helper {successfulRunKnowledgePromotionReceipt.summary.helperCount}
+                                  </span>
+                                )}
+                                {successfulRunKnowledgePromotionReceipt.requestedModuleUid && (
+                                  <span className="rounded-full bg-white px-2 py-0.5 text-[10px] text-slate-500 ring-1 ring-slate-200">
+                                    {successfulRunKnowledgePromotionReceipt.requestedModuleUid}
+                                  </span>
+                                )}
+                                <span
+                                  className="rounded-full bg-white px-2 py-0.5 font-mono text-[10px] text-slate-500 ring-1 ring-slate-200"
+                                  title={successfulRunKnowledgePromotionReceipt.receiptId}
+                                >
+                                  {compactRunId(successfulRunKnowledgePromotionReceipt.receiptId)}
+                                </span>
+                              </div>
+                              <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                                {successfulRunKnowledgePromotionReceipt.detail}
+                              </p>
+                              {successfulRunPromotionRunIds.length > 0 && (
+                                <div className="mt-2 flex flex-wrap items-center gap-2">
+                                  {successfulRunPromotionRunIds.map((runId) => (
+                                    <span
+                                      key={`${successfulRunKnowledgePromotionReceipt.receiptId}-${runId}`}
+                                      className="rounded-full bg-white px-2 py-0.5 font-mono text-[10px] text-slate-500 ring-1 ring-slate-200"
+                                      title={runId}
+                                    >
+                                      {compactRunId(runId)}
+                                    </span>
+                                  ))}
+                                  {successfulRunKnowledgePromotionReceipt.summary.runCount > successfulRunPromotionRunIds.length && (
+                                    <span className="text-[10px] text-slate-400">
+                                      其余 {successfulRunKnowledgePromotionReceipt.summary.runCount - successfulRunPromotionRunIds.length} 条运行已折叠。
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                              {successfulRunKnowledgePromotionReceipt.items.length > 0 && (
+                                <div className="mt-2 space-y-1.5">
+                                  {successfulRunKnowledgePromotionReceipt.items.slice(0, 3).map((receiptItem) => (
+                                    <div
+                                      key={`${successfulRunKnowledgePromotionReceipt.receiptId}-${receiptItem.candidateId}`}
+                                      className="rounded-lg border border-cyan-100/80 bg-white/70 px-2.5 py-2 text-[11px] text-slate-600"
+                                    >
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span
+                                          className={`rounded-full px-2 py-0.5 font-medium ring-1 ${successfulRunKnowledgePromotionStatusTone(receiptItem.status)}`}
+                                        >
+                                          {successfulRunKnowledgePromotionStatusLabel(receiptItem.status)}
+                                        </span>
+                                        {receiptItem.feedbackStatus && (
+                                          <span
+                                            className={`rounded-full px-2 py-0.5 font-medium ring-1 ${successfulRunKnowledgePromotionFeedbackTone(receiptItem.feedbackStatus)}`}
+                                          >
+                                            反馈 · {successfulRunKnowledgePromotionFeedbackLabel(receiptItem.feedbackStatus)}
+                                          </span>
+                                        )}
+                                        {receiptItem.lifecyclePolicy && (
+                                          <span
+                                            className={`rounded-full px-2 py-0.5 font-medium ring-1 ${successfulRunKnowledgePromotionPolicyTone(receiptItem.lifecyclePolicy)}`}
+                                          >
+                                            策略 · {successfulRunKnowledgePromotionPolicyLabel(receiptItem.lifecyclePolicy)}
+                                          </span>
+                                        )}
+                                        <span className="font-medium text-slate-700">{receiptItem.ruleTitle}</span>
+                                        <span className="font-mono text-slate-500">{receiptItem.ruleId}</span>
+                                      </div>
+                                      <p className="mt-1 text-[11px] text-slate-500">
+                                        通过运行 {receiptItem.runIds.length} 条
+                                        {receiptItem.successfulStrategies.length > 0
+                                          ? ` · helper ${receiptItem.successfulStrategies.slice(0, 3).join(' / ')}`
+                                          : ''}
+                                      </p>
+                                    </div>
+                                  ))}
+                                  {successfulRunKnowledgePromotionReceipt.items.length > 3 && (
+                                    <p className="text-[11px] text-slate-400">
+                                      其余 {successfulRunKnowledgePromotionReceipt.items.length - 3} 条 successful run 候选已折叠。
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
                           <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
                             <span>{formatRelativeMoment(item.createdAt)}</span>
                             <span>·</span>

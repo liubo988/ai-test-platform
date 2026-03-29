@@ -1,4 +1,4 @@
-import { describeCapabilityVerification } from './capability-verification';
+import { compareCapabilityVerificationOrder, describeCapabilityVerification } from './capability-verification';
 
 export type KnowledgeChunkCandidate = {
   heading: string;
@@ -552,7 +552,7 @@ export function draftRecipeFromRequirement(input: {
       };
     })
     .filter((item) => item.score > 0)
-    .sort((left, right) => right.score - left.score || right.verificationPriority - left.verificationPriority || left.sortOrder - right.sortOrder);
+    .sort((left, right) => right.score - left.score || compareCapabilityVerificationOrder(left, right));
 
   if (input.includeAuthCapability) {
     const authCapability = input.capabilities.find((item) => item.capabilityType === 'auth');

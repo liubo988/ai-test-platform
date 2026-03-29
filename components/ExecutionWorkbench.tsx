@@ -11,6 +11,10 @@ import {
   createIntentCapabilityLaunchToken,
   stashIntentCapabilityPreset,
 } from '@/lib/intent-capability-preset';
+import {
+  pickLatestCapabilityVerificationExecutionObservationFromEvents,
+  readCapabilityVerificationExecutionObservation,
+} from '@/lib/capability-verification-observation-cache';
 import { type FlowDefinition, type TaskMode } from '@/lib/task-flow';
 
 type ExecutionStatus = 'queued' | 'running' | 'passed' | 'failed' | 'canceled';
@@ -74,6 +78,13 @@ type ExecutionDetail = {
     name: string;
   } | null;
   planCases: Array<{ caseUid: string; tier: string; caseName: string; expectedResult: string }>;
+  capabilityVerification: {
+    capabilityUid: string;
+    chainCapabilityUids: string[];
+    intent: 'verify' | 'review';
+    targetName: string;
+    strategyLabel: string;
+  } | null;
   events: EventItem[];
   conversations: ConversationItem[];
   artifacts: ArtifactItem[];
@@ -129,9 +140,19 @@ function formatMoment(value: string): string {
   return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
+function summarizeTextList(values: string[], limit = 2): string {
+  const items = values.map((item) => item.trim()).filter(Boolean);
+  if (items.length === 0) return '';
+  if (items.length <= limit) return items.join(' / ');
+  return `${items.slice(0, limit).join(' / ')} 等 ${items.length} 项`;
+}
+
 export default function ExecutionWorkbench({ executionUid }: { executionUid: string }) {
   const router = useRouter();
   const [detail, setDetail] = useState<ExecutionDetail | null>(null);
+  const [capabilityExecutionObservation, setCapabilityExecutionObservation] = useState(
+    () => readCapabilityVerificationExecutionObservation(executionUid)
+  );
   const [events, setEvents] = useState<EventItem[]>([]);
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [error, setError] = useState('');
@@ -158,6 +179,10 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
 
   useEffect(() => {
     autoRepairFollowedRef.current = '';
+  }, [executionUid]);
+
+  useEffect(() => {
+    setCapabilityExecutionObservation(readCapabilityVerificationExecutionObservation(executionUid));
   }, [executionUid]);
 
   useEffect(() => {
@@ -219,6 +244,11 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
   }, [executionUid]);
 
   const frameCount = useMemo(() => events.filter((e) => e.eventType === 'frame').length, [events]);
+  const persistedCapabilityExecutionObservation = useMemo(
+    () => pickLatestCapabilityVerificationExecutionObservationFromEvents(events),
+    [events]
+  );
+  const effectiveCapabilityExecutionObservation = persistedCapabilityExecutionObservation || capabilityExecutionObservation;
   const autoRepairFollowUp = useMemo(() => {
     for (const event of [...events].reverse()) {
       if (event.eventType !== 'status') continue;
@@ -353,6 +383,24 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
             )}
           </div>
         )}
+        {detail.capabilityVerification && effectiveCapabilityExecutionObservation?.latestRepairObservationSummary ? (
+          <div className="mt-4 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900">
+            <p>
+              能力验证上下文：
+              {detail.capabilityVerification.targetName || detail.capabilityVerification.capabilityUid}
+              {detail.capabilityVerification.strategyLabel ? ` · ${detail.capabilityVerification.strategyLabel}` : ''}
+            </p>
+            <p className="mt-1 leading-5">
+              最近关联 verifier observation：{effectiveCapabilityExecutionObservation.latestRepairObservationSummary}
+              {effectiveCapabilityExecutionObservation.latestRepairObservationVerifierCheckUids.length > 0
+                ? ` · verifier ${summarizeTextList(effectiveCapabilityExecutionObservation.latestRepairObservationVerifierCheckUids, 2)}`
+                : ''}
+              {effectiveCapabilityExecutionObservation.latestRepairObservationAt
+                ? ` · ${formatMoment(effectiveCapabilityExecutionObservation.latestRepairObservationAt)}`
+                : ''}
+            </p>
+          </div>
+        ) : null}
       </section>
 
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">

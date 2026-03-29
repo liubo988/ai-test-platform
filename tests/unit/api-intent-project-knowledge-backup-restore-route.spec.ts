@@ -83,8 +83,15 @@ describe('intent project knowledge backup restore route', () => {
       comparison: auditEntry.comparison,
       profile: { version: 1, rules: [] },
     } as never);
-    vi.mocked(createIntentProjectKnowledgeAuditEntry).mockReturnValue(auditEntry as never);
-    vi.mocked(writeIntentProjectKnowledgeAuditEntry).mockResolvedValue(auditEntry as never);
+    vi.mocked(createIntentProjectKnowledgeAuditEntry).mockImplementation(
+      ((input: Record<string, unknown>) =>
+        ({
+          ...auditEntry,
+          ...input,
+          meta: input.meta || auditEntry.meta,
+        }) as typeof auditEntry) as never
+    );
+    vi.mocked(writeIntentProjectKnowledgeAuditEntry).mockImplementation(async (entry) => entry as never);
   });
 
   it('restores the requested backup file', async () => {
@@ -100,17 +107,58 @@ describe('intent project knowledge backup restore route', () => {
       expect.objectContaining({
         operation: 'restore',
         sourcePath: 'reports/intent-e2e.project-knowledge.backups/backup.json',
+        meta: expect.objectContaining({
+          restoredFrom: 'reports/intent-e2e.project-knowledge.backups/backup.json',
+          preflightSummary: expect.objectContaining({
+            itemCount: 1,
+          }),
+          mergeReceipts: [
+            expect.objectContaining({
+              kind: 'audit',
+              title: '回滚已完成',
+            }),
+          ],
+        }),
       })
     );
     expect(insertProjectActivityLog).not.toHaveBeenCalled();
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
+    expect(await res.json()).toMatchObject({
       restoredFrom: 'reports/intent-e2e.project-knowledge.backups/backup.json',
       writtenTo: 'intent-e2e.project-knowledge.json',
       backupCreated: 'reports/intent-e2e.project-knowledge.backups/current-before-restore.json',
       comparison: auditEntry.comparison,
       profile: { version: 1, rules: [] },
-      auditEntry,
+      preflightSummary: {
+        itemCount: 1,
+        items: [
+          expect.objectContaining({
+            kind: 'audit',
+            title: '准备回滚项目知识规则',
+          }),
+        ],
+      },
+      mergeReceipts: [
+        expect.objectContaining({
+          kind: 'audit',
+          level: 'info',
+          title: '回滚已完成',
+        }),
+      ],
+      auditEntry: {
+        operation: 'restore',
+        meta: {
+          restoredFrom: 'reports/intent-e2e.project-knowledge.backups/backup.json',
+          preflightSummary: {
+            itemCount: 1,
+          },
+          mergeReceipts: [
+            expect.objectContaining({
+              title: '回滚已完成',
+            }),
+          ],
+        },
+      },
     });
   });
 
@@ -139,6 +187,16 @@ describe('intent project knowledge backup restore route', () => {
         entityUid: 'intent_project_knowledge',
         actionType: 'intent_project_knowledge_restored',
         actorLabel: 'bobo',
+        meta: expect.objectContaining({
+          preflightSummary: expect.objectContaining({
+            itemCount: 1,
+          }),
+          mergeReceipts: [
+            expect.objectContaining({
+              title: '回滚已完成',
+            }),
+          ],
+        }),
       })
     );
     expect(applyActorCookie).toHaveBeenCalledTimes(1);

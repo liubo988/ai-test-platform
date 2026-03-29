@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import {
+  insertProjectActivityLog,
   listProjectCapabilities,
   upsertProjectCapabilities,
   type KnowledgeStatus,
   type ProjectCapabilityInput,
 } from '@/lib/db/repository';
+import {
+  createIntentStarterAssetPromotionReceipt,
+  normalizeIntentStarterAssetPromotionReceiptRequest,
+} from '@/lib/intent-starter-asset-promotion-receipt';
 import { type CapabilityType } from '@/lib/project-knowledge';
 import { applyActorCookie, requireProjectRole, toErrorResponse } from '@/lib/server/project-actor';
 
@@ -77,13 +82,58 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ projectUid
     const body = await req.json();
     const rawItems = Array.isArray(body?.items) ? body.items : [body];
     const inputs = rawItems.map(normalizeCapabilityInput);
+    const starterAssetPromotionReceiptRequest = normalizeIntentStarterAssetPromotionReceiptRequest(
+      body?.starterAssetPromotionReceipt
+    );
 
     if (inputs.length === 0) {
       return NextResponse.json({ error: '缺少能力配置' }, { status: 400 });
     }
 
     const items = await upsertProjectCapabilities(projectUid, inputs, { actorLabel: actor.displayName });
-    return applyActorCookie(NextResponse.json({ items }, { status: 201 }), actor.userUid);
+    let starterAssetPromotionReceipt = null;
+    let starterAssetPromotionReceiptWarning = '';
+
+    if (starterAssetPromotionReceiptRequest) {
+      starterAssetPromotionReceipt = createIntentStarterAssetPromotionReceipt({
+        projectUid,
+        actorLabel: actor.displayName,
+        request: starterAssetPromotionReceiptRequest,
+        savedCapabilities: items,
+      });
+
+      if (starterAssetPromotionReceipt.items.length > 0) {
+        try {
+          await insertProjectActivityLog({
+            projectUid,
+            entityType: 'project',
+            entityUid: projectUid,
+            actionType: 'starter_asset_promotion_recorded',
+            actorLabel: actor.displayName,
+            title: starterAssetPromotionReceipt.title,
+            detail: starterAssetPromotionReceipt.detail,
+            meta: {
+              starterAssetPromotionReceipt,
+            },
+          });
+        } catch (error: unknown) {
+          starterAssetPromotionReceiptWarning =
+            error instanceof Error ? error.message : '写入 Starter 资产沉淀回执失败';
+        }
+      }
+    }
+
+    return applyActorCookie(
+      NextResponse.json(
+        {
+          items,
+          starterAssetPromotionReceipt: starterAssetPromotionReceipt || undefined,
+          starterAssetPromotionReceiptWarning: starterAssetPromotionReceiptWarning || undefined,
+        },
+        { status: 201 }
+      ),
+      actor.userUid
+    );
   } catch (error: unknown) {
     return toErrorResponse(error, '写入项目能力失败');
   }

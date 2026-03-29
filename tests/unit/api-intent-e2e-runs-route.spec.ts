@@ -49,6 +49,7 @@ describe('POST /api/intent-e2e/runs', () => {
       request: {
         input: '登录后查看首页',
         projectUid: 'proj_1',
+        moduleUid: 'mod_1',
         llmConfig: {
           model: 'shared-model',
           apiStyle: 'responses',
@@ -90,6 +91,7 @@ describe('POST /api/intent-e2e/runs', () => {
       body: JSON.stringify({
         input: '登录后查看首页',
         projectUid: 'proj_1',
+        moduleUid: 'mod_1',
         llmConfig: {
           selfHealRetries: 3,
         },
@@ -112,6 +114,7 @@ describe('POST /api/intent-e2e/runs', () => {
       expect.objectContaining({
         input: '登录后查看首页',
         projectUid: 'proj_1',
+        moduleUid: 'mod_1',
         llmConfig: {
           model: 'shared-model',
           apiStyle: 'responses',

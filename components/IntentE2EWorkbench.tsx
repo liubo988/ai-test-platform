@@ -4,7 +4,47 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import BrowserView from '@/components/BrowserView';
+import type {
+  IntentProjectKnowledgeMergeCandidateSource as IntentProjectKnowledgeDraftCandidateSource,
+  IntentProjectKnowledgeMergeFeedbackStatus,
+  IntentProjectKnowledgeMergeLifecyclePolicy as IntentProjectKnowledgeDraftCandidateLifecyclePolicy,
+  IntentProjectKnowledgeMergeNotice as ProjectKnowledgeMergeNotice,
+  IntentProjectKnowledgeMergePreflightSummary as ProjectKnowledgeMergePreflightSummary,
+  IntentProjectKnowledgeMergeSelectionSummary as ProjectKnowledgeMergeSelectionSummary,
+} from '@/lib/intent-project-knowledge-merge-provenance';
+import {
+  buildIntentCapabilityWorkbenchHref,
+  createIntentCapabilityLaunchToken,
+  stashIntentCapabilityPreset,
+} from '@/lib/intent-capability-preset';
 import { defaultLlmConfigDraft, toLlmDraft, type LLMConfigDraft, type LLMConfigResponse } from '@/lib/llm-config-browser';
+import { buildIntentStarterCapabilityPreset } from '@/lib/intent-starter-capability-preset';
+import {
+  canPromoteIntentStarterAssetToProjectCapability,
+  intentStarterAssetScopeLabel,
+  type IntentResolvedStarterAsset,
+  type IntentStarterAssetScope,
+} from '@/lib/intent-starter-assets';
+import {
+  buildIntentStarterAssetPromotionDecision,
+  summarizeIntentStarterAssetPromotionDecisions,
+  type IntentStarterAssetPromotionDecision,
+} from '@/lib/intent-starter-asset-promotion';
+import {
+  isIntentProjectKnowledgeDraftCandidateDeferredByDefault,
+  isIntentProjectKnowledgeDraftCandidateDeprioritized,
+  isIntentProjectKnowledgeDraftCandidateMergeRecommended,
+  isIntentProjectKnowledgeDraftCandidateNegativeHistory,
+  isIntentProjectKnowledgeDraftCandidateProbationary,
+  isIntentProjectKnowledgeDraftCandidateSelectable,
+} from '@/lib/intent-project-knowledge-draft-merge-policy';
+import {
+  hasIntentVerificationFailurePressureViewHighFailure,
+  normalizeIntentVerificationFailurePressureViewSummary,
+  summarizeIntentVerificationFailurePressureViewSummaryFromItems,
+} from '@/lib/intent-verification-failure-pressure-view';
+import { buildIntentE2EPromotionCoverageSummary } from '@/lib/intent-e2e-promotion-coverage';
+import type { IntentSuccessfulRunKnowledgePromotionReceipt } from '@/lib/intent-successful-run-knowledge-promotion-receipt';
 
 type StepResult = {
   title: string;
@@ -67,10 +107,102 @@ type ScenarioCard = {
   notes: string[];
 };
 
-type AttemptEvent = {
-  type: 'thinking' | 'code' | 'complete' | 'error';
-  content: string;
+type ExecutionPlanStep = {
+  planStepUid: string;
+  scenarioStepUid: string;
+  stepType: ScenarioStep['stepType'];
+  title: string;
+  target: string;
+  goal: string;
+  allowedActions: string[];
+  preferredHelpers: string[];
+  requiredAssertions: string[];
+  extractVariable: string;
+  sharedVariables: string[];
+  dependsOnPlanStepUids: string[];
 };
+
+type ExecutionPlan = {
+  version: 1;
+  compiler: 'deterministic_dsl_v1';
+  mode: 'page' | 'scenario';
+  entryUrl: string;
+  summary: string;
+  expectedOutcome: string;
+  sharedVariables: string[];
+  globalRules: string[];
+  preferredPrimitives: string[];
+  outputContract: string[];
+  steps: ExecutionPlanStep[];
+};
+
+type VerificationPlanCheck = {
+  checkUid: string;
+  kind: 'url' | 'response' | 'ui_state' | 'table_row' | 'modal_state' | 'variable';
+  source: 'success_criteria' | 'step_expected_result' | 'step_extract_variable';
+  title: string;
+  instruction: string;
+  preferredHelpers: string[];
+  relatedPlanStepUids: string[];
+  required: boolean;
+};
+
+type VerificationPlan = {
+  version: 1;
+  strategy: 'deterministic_verification_v1';
+  expectedOutcome: string;
+  checks: VerificationPlanCheck[];
+  cleanupNotes: string;
+};
+
+type CompiledExecutionTemplateSlot = {
+  slotUid: string;
+  kind: 'plan_step' | 'verification';
+  title: string;
+  planStepUid?: string;
+  relatedCheckUids: string[];
+  preferredHelpers: string[];
+  instructions: string[];
+};
+
+type CompiledExecutionTemplate = {
+  version: 1;
+  compiler: ExecutionPlan['compiler'];
+  testTitle: string;
+  entryUrl: string;
+  sharedVariables: string[];
+  slots: CompiledExecutionTemplateSlot[];
+  code: string;
+};
+
+type IntentExecutionStructuredPatchSlot = {
+  slotUid: string;
+  code: string;
+};
+
+type IntentExecutionStructuredPatch = {
+  version: 1;
+  strategy: 'deterministic_slot_patch_v1';
+  targetSlotUids: string[];
+  returnedSlotUids: string[];
+  reusedPreviousCode: boolean;
+  baseCodeSource: 'compiled_template' | 'previous_code';
+  patch: {
+    version: 1;
+    slots: IntentExecutionStructuredPatchSlot[];
+  };
+};
+
+type AttemptEvent =
+  | {
+      type: 'thinking' | 'code' | 'complete' | 'error';
+      content: string;
+    }
+  | {
+      type: 'structured_patch';
+      content: string;
+      structuredPatch: IntentExecutionStructuredPatch;
+    };
 
 type AttemptLog = {
   level: string;
@@ -90,6 +222,7 @@ type IntentAttempt = {
     usedHelpers: string[];
     usedSuggestedHelpers: string[];
   };
+  structuredPatch?: IntentExecutionStructuredPatch;
   triage?: IntentFailureTriage | null;
   status?: 'running' | 'completed';
 };
@@ -101,10 +234,21 @@ type IntentKnowledgeSummary = {
   matchedRuleTitles: string[];
   capabilitySlugs: string[];
   suggestedHelpers: string[];
+  starterAssets?: IntentResolvedStarterAsset[];
+};
+
+type IntentResolvedUrls = {
+  targetUrl: string;
+  scenarioEntryUrl: string;
+  precheckUrl: string;
+  analyzeUrl: string;
 };
 
 type IntentRunResult = {
   scenarioCard: ScenarioCard;
+  executionPlan?: ExecutionPlan;
+  verificationPlan?: VerificationPlan;
+  compiledTemplate?: CompiledExecutionTemplate;
   llmMeta: {
     provider: string;
     model: string;
@@ -112,6 +256,7 @@ type IntentRunResult = {
     attachmentCount: number;
   };
   targetUrl: string;
+  resolvedUrls?: IntentResolvedUrls;
   description: string;
   knowledge?: IntentKnowledgeSummary | null;
   attempts: IntentAttempt[];
@@ -193,6 +338,9 @@ type IntentStreamEvent =
   | {
       type: 'description';
       targetUrl: string;
+      scenarioEntryUrl?: string;
+      precheckUrl?: string;
+      analyzeUrl?: string;
       description: string;
     }
   | {
@@ -268,11 +416,23 @@ type IntentProjectKnowledgeRule = {
   stepPatches: IntentProjectKnowledgeStepPatch[];
 };
 
+type IntentProjectKnowledgeDraftCandidateFeedback = {
+  status: IntentProjectKnowledgeMergeFeedbackStatus;
+  confidenceAdjustment: number;
+  reasons: string[];
+  supportingAuditIds: string[];
+  lifecyclePolicy?: IntentProjectKnowledgeDraftCandidateLifecyclePolicy;
+  lifecyclePolicyReason?: string;
+};
+
 type IntentProjectKnowledgeDraftCandidate = {
   candidateId: string;
+  source: IntentProjectKnowledgeDraftCandidateSource;
   confidence: number;
+  feedback?: IntentProjectKnowledgeDraftCandidateFeedback;
   category: string;
   clusterIds: string[];
+  runIds?: string[];
   seenCount: number;
   resolvedCount: number;
   successRate: number;
@@ -305,11 +465,16 @@ type IntentProjectKnowledgeDraft = {
     minSeenCount: number;
     minResolvedCount: number;
     maxCandidates: number;
+    projectUid?: string;
+    moduleUid?: string;
   };
   summary: {
     totalClusters: number;
     eligibleClusters: number;
+    totalPassedRuns: number;
     candidateGroups: number;
+    repairMemoryCandidateGroups: number;
+    successfulRunCandidateGroups: number;
     suggestedCandidates: number;
     alreadyCoveredCandidates: number;
     skippedItems: number;
@@ -326,6 +491,8 @@ type ProjectKnowledgeDraftRequestOptions = {
   minSeenCount: number;
   minResolvedCount: number;
   maxCandidates: number;
+  projectUid?: string;
+  moduleUid?: string;
 };
 
 type ProjectKnowledgeDraftResponse = {
@@ -366,10 +533,25 @@ type ProjectKnowledgeProfileComparison = {
 
 type ProjectKnowledgeAuditMeta = {
   requestedCandidateIds?: string[];
+  requestedModuleUid?: string;
+  selectedCandidateFeedbackStatuses?: string[];
+  selectedRiskyCandidateIds?: string[];
+  overrideCandidateIds?: string[];
+  appliedOverrideCandidateIds?: string[];
+  appliedOverrideCandidateFeedbackStatuses?: string[];
+  acknowledgedRiskCandidateIds?: string[];
+  appliedAcknowledgedRiskCandidateIds?: string[];
+  appliedAcknowledgedRiskCandidateFeedbackStatuses?: string[];
+  mergedCandidateSources?: string[];
+  mergedRunIds?: string[];
   mergedCandidateIds?: string[];
   coveredCandidateIds?: string[];
   missingCandidateIds?: string[];
   skippedRuleIds?: string[];
+  selectionSummary?: ProjectKnowledgeMergeSelectionSummary;
+  preflightSummary?: ProjectKnowledgeMergePreflightSummary;
+  mergeReceipts?: ProjectKnowledgeMergeNotice[];
+  successfulRunKnowledgePromotionReceipt?: IntentSuccessfulRunKnowledgePromotionReceipt | null;
   restoredFrom?: string;
   projectActivityLogged?: boolean;
   projectActivityError?: string;
@@ -403,8 +585,18 @@ type ProjectKnowledgeMergeResponse = {
   coveredCandidateIds: string[];
   missingCandidateIds: string[];
   auditEntry?: ProjectKnowledgeAuditItem;
+  selectionSummary?: ProjectKnowledgeMergeSelectionSummary;
+  preflightSummary?: ProjectKnowledgeMergePreflightSummary;
+  mergeReceipts?: ProjectKnowledgeMergeNotice[];
+  successfulRunKnowledgePromotionReceipt?: IntentSuccessfulRunKnowledgePromotionReceipt | null;
   auditWarning?: string;
+  overrideWarning?: string;
+  riskAcknowledgementWarning?: string;
   guardrailWarning?: string;
+  error?: string;
+};
+
+type ProjectKnowledgeMergeRouteResponse = Partial<ProjectKnowledgeMergeResponse> & {
   error?: string;
 };
 
@@ -433,11 +625,158 @@ type IntentE2EInsightsSummary = {
   passedRuns: number;
   failedRuns: number;
   canceledRuns: number;
+  firstPassPassedRuns: number;
+  firstPassPassRate: number;
+  repairedPassRuns: number;
+  repairedPassRate: number;
+  terminalPassRate: number;
   passRate: number;
   knowledgeHitRuns: number;
   knowledgeHitRate: number;
   suggestedHelperReuseRuns: number;
   suggestedHelperReuseRate: number;
+  authBlockRuns: number;
+  authBlockRate: number;
+  envBlockRuns: number;
+  envBlockRate: number;
+  assertionFailureRuns: number;
+  assertionFailureRate: number;
+};
+
+type IntentE2EScenarioFamily = 'page_task' | 'simple_scenario' | 'complex_enterprise_flow' | 'unknown';
+type IntentE2EInsightVerificationIntent = 'verify' | 'review' | 'unknown';
+
+type IntentE2EInsightScenarioFamilyStat = {
+  family: IntentE2EScenarioFamily;
+  label: string;
+  totalRuns: number;
+  passedRuns: number;
+  failedRuns: number;
+  canceledRuns: number;
+  firstPassPassedRuns: number;
+  firstPassPassRate: number;
+  repairedPassRuns: number;
+  repairedPassRate: number;
+  terminalPassRate: number;
+};
+
+type IntentE2EInsightScenarioFamilySloStatus = 'meeting' | 'at_risk' | 'off_track' | 'insufficient_data';
+
+type IntentE2EInsightScenarioFamilySloItem = {
+  family: IntentE2EScenarioFamily;
+  label: string;
+  totalRuns: number;
+  minRuns: number;
+  currentFirstPassRate: number;
+  currentTerminalPassRate: number;
+  targetFirstPassRate: number;
+  targetTerminalPassRate: number;
+  firstPassGap: number;
+  terminalGap: number;
+  status: IntentE2EInsightScenarioFamilySloStatus;
+  recommendation: string;
+};
+
+type IntentE2EInsightScenarioFamilySloOverview = {
+  generatedFromRuns: number;
+  trackedFamilyCount: number;
+  meetingCount: number;
+  atRiskCount: number;
+  offTrackCount: number;
+  insufficientDataCount: number;
+  items: IntentE2EInsightScenarioFamilySloItem[];
+};
+
+type IntentE2EInsightRegressionWatchlistSource = 'scenario_family_slo' | 'evaluation_baseline' | 'rollback_candidate';
+type IntentE2EInsightRegressionWatchlistSeverity = 'high' | 'medium';
+
+type IntentE2EInsightRegressionWatchlistItem = {
+  watchId: string;
+  source: IntentE2EInsightRegressionWatchlistSource;
+  severity: IntentE2EInsightRegressionWatchlistSeverity;
+  title: string;
+  summary: string;
+  recommendation: string;
+  latestObservedAt: string;
+  runCount: number;
+  currentFirstPassRate: number;
+  currentTerminalPassRate: number;
+  compareLabel: string;
+  compareFirstPassRate: number | null;
+  compareTerminalPassRate: number | null;
+  targetFirstPassRate: number | null;
+  targetTerminalPassRate: number | null;
+  sourceRef: string;
+  relatedRuleIds: string[];
+  failureClasses: string[];
+};
+
+type IntentE2EInsightRegressionWatchlistOverview = {
+  generatedFromRuns: number;
+  totalItems: number;
+  highSeverityCount: number;
+  mediumSeverityCount: number;
+  items: IntentE2EInsightRegressionWatchlistItem[];
+};
+
+type IntentE2EInsightRolloutStrategyStage = 'hold' | 'small_batch' | 'full_release';
+
+type IntentE2EInsightRolloutStrategyGateSource =
+  | 'scenario_family_slo'
+  | 'regression_watchlist'
+  | 'risk_lifecycle_rule'
+  | 'rollback_candidate';
+
+type IntentE2EInsightRolloutStrategyGateStatus = 'blocked' | 'warning' | 'ready';
+
+type IntentE2EInsightRolloutStrategyGate = {
+  gateId: string;
+  source: IntentE2EInsightRolloutStrategyGateSource;
+  status: IntentE2EInsightRolloutStrategyGateStatus;
+  title: string;
+  summary: string;
+  recommendation: string;
+  sourceRef: string;
+};
+
+type IntentE2EInsightRolloutStrategyOverview = {
+  generatedFromRuns: number;
+  recommendedStage: IntentE2EInsightRolloutStrategyStage;
+  summary: string;
+  recommendation: string;
+  blockedCount: number;
+  warningCount: number;
+  readyCount: number;
+  gates: IntentE2EInsightRolloutStrategyGate[];
+};
+
+type IntentE2EInsightVerificationIntentStat = {
+  intent: IntentE2EInsightVerificationIntent;
+  label: string;
+  totalRuns: number;
+  passedRuns: number;
+  failedRuns: number;
+  canceledRuns: number;
+  firstPassPassedRuns: number;
+  firstPassPassRate: number;
+  repairedPassRuns: number;
+  repairedPassRate: number;
+  terminalPassRate: number;
+  latestRepairObservationAt: string;
+  latestRepairObservationSummary: string;
+  latestRepairObservationVerifierCheckUids: string[];
+};
+
+type IntentE2EInsightCapabilityVerificationIntentStat = {
+  intent: Exclude<IntentE2EInsightVerificationIntent, 'unknown'>;
+  label: string;
+  totalExecutions: number;
+  passedExecutions: number;
+  failedExecutions: number;
+  passRate: number;
+  latestRepairObservationAt: string;
+  latestRepairObservationSummary: string;
+  latestRepairObservationVerifierCheckUids: string[];
 };
 
 type IntentE2EInsightRuleStat = {
@@ -456,40 +795,482 @@ type IntentE2EInsightHelperStat = {
   suggestedReuseRuns: number;
 };
 
+type IntentE2EInsightStarterHelper = {
+  helper: string;
+  runCount: number;
+  passedRuns: number;
+  passRate: number;
+  suggestedReuseRuns: number;
+  source: 'promoted' | 'stable';
+  supportingRuleIds: string[];
+  supportingRuleTitles: string[];
+  knowledgeChangeTier?: 'preferred' | 'watching';
+  knowledgeChangeWatchingKind?: 'recovering' | 'mixed';
+  knowledgeChangeSignal?: 'positive' | 'negative';
+  knowledgeChangeSignalReason?: string;
+  knowledgeChangeDecisionableRuleCount?: number;
+  knowledgeChangeSupportingAuditIds?: string[];
+  preferredPromotionStatus?: 'await_more_positive_rules' | 'blocked_by_mixed_evidence' | 'await_long_term_recovery';
+  preferredPromotionReason?: string;
+  preferredAutoPromotionCondition?: string;
+  preferredPromotionRequiredPositiveRuleCount?: number;
+  preferredPromotionPositiveRuleCount?: number;
+  preferredPromotionNegativeRuleCount?: number;
+  governanceReleaseStatus?: 'released_from_suppressed';
+  governanceReleaseReason?: string;
+  governanceReleaseCapabilityCount?: number;
+  governanceReleaseDirectVerifyPassedCapabilityCount?: number;
+  governanceReleaseLatestVerifyExecutionAt?: string;
+  recentFailedReviewCapabilityCount?: number;
+  recentFailedVerifyCapabilityCount?: number;
+  recentFailedReviewExecutionCount?: number;
+  recentFailedVerifyExecutionCount?: number;
+  recentFailureWindowDays?: number;
+  recordedPromotionReceiptCount?: number;
+  recordedPromotionCapabilityCount?: number;
+  lastPromotionRecordedAt?: string;
+  lastPromotionSourceRunId?: string;
+  lastPromotionModuleName?: string;
+  lastPromotionScenarioTitle?: string;
+  recommendation: string;
+};
+
+type IntentE2EInsightSuppressedStarterHelper = {
+  helper: string;
+  runCount: number;
+  passedRuns: number;
+  passRate: number;
+  suggestedReuseRuns: number;
+  source: 'promoted' | 'stable';
+  supportingRuleIds: string[];
+  supportingRuleTitles: string[];
+  knowledgeChangeSignal: 'negative';
+  knowledgeChangeSignalReason: string;
+  knowledgeChangeDecisionableRuleCount?: number;
+  knowledgeChangeSupportingAuditIds?: string[];
+  recentFailedReviewCapabilityCount?: number;
+  recentFailedVerifyCapabilityCount?: number;
+  recentFailedReviewExecutionCount?: number;
+  recentFailedVerifyExecutionCount?: number;
+  recentFailureWindowDays?: number;
+  recordedPromotionReceiptCount?: number;
+  recordedPromotionCapabilityCount?: number;
+  lastPromotionRecordedAt?: string;
+  lastPromotionSourceRunId?: string;
+  lastPromotionModuleName?: string;
+  lastPromotionScenarioTitle?: string;
+  governanceTargetCapabilityCount?: number;
+  recentGovernanceReviewExecutionCount?: number;
+  recentPassedGovernanceReviewExecutionCount?: number;
+  recentFailedGovernanceReviewExecutionCount?: number;
+  latestGovernanceReviewExecutionAt?: string;
+  recentGovernanceVerifyExecutionCount?: number;
+  recentPassedGovernanceVerifyExecutionCount?: number;
+  recentFailedGovernanceVerifyExecutionCount?: number;
+  latestGovernanceVerifyExecutionAt?: string;
+  recentGovernanceRepairExecutionCount?: number;
+  recentPassedGovernanceRepairExecutionCount?: number;
+  recentFailedGovernanceRepairExecutionCount?: number;
+  latestGovernanceRepairExecutionAt?: string;
+  governanceCapabilities?: IntentE2EInsightSuppressedStarterHelperGovernanceCapability[];
+  governanceRecommendationStatus?:
+    | 'await_governance_targets'
+    | 'blocked_by_recent_failures'
+    | 'await_direct_verify'
+    | 'await_more_capability_recovery';
+  governanceRecommendationReason?: string;
+  governanceAutoUnlockCondition?: string;
+  governanceRequiredPassedCapabilityCount?: number;
+  governancePassedCapabilityCount?: number;
+  governanceDirectVerifyPassedCapabilityCount?: number;
+  suppressionReason: string;
+};
+
+type IntentE2EInsightSuppressedStarterHelperGovernanceSummary = {
+  helperCount: number;
+  capabilityCount: number;
+  recentReviewExecutionCount: number;
+  recentPassedReviewExecutionCount: number;
+  recentFailedReviewExecutionCount: number;
+  latestReviewExecutionAt: string;
+  recentVerifyExecutionCount: number;
+  recentPassedVerifyExecutionCount: number;
+  recentFailedVerifyExecutionCount: number;
+  latestVerifyExecutionAt: string;
+  recentRepairExecutionCount: number;
+  recentPassedRepairExecutionCount: number;
+  recentFailedRepairExecutionCount: number;
+  latestRepairExecutionAt: string;
+};
+
+type IntentE2EInsightSuppressedStarterHelperGovernanceCapability = {
+  capabilityUid: string;
+  name: string;
+  slug: string;
+  latestExecutionStatus: 'passed' | 'failed' | '';
+  latestExecutionIntent: 'review' | 'verify' | '';
+  latestExecutionSource: 'direct' | 'repair' | '';
+  latestExecutionAt: string;
+  recentReviewExecutionCount: number;
+  recentVerifyExecutionCount: number;
+  recentRepairExecutionCount: number;
+};
+
 type IntentE2EInsightFailureClassStat = {
   failureClass: string;
   count: number;
+  latestRepairObservationAt: string;
+  latestRepairObservationSummary: string;
+  latestRepairObservationVerifierCheckUids: string[];
+};
+
+type IntentE2EInsightTraceAttemptOutcome = 'passed' | 'failed' | 'unknown';
+
+type IntentE2EInsightRecentTraceAttempt = {
+  attempt: number;
+  kind: 'generate' | 'repair' | 'unknown';
+  outcome: IntentE2EInsightTraceAttemptOutcome;
+  failureClass: string;
+  usedHelpers: string[];
+  usedSuggestedHelpers: string[];
+  keySignals: string[];
+  structuredPatchStrategy: string;
+  targetSlotUids: string[];
+  returnedSlotUids: string[];
+  reusedPreviousCode: boolean;
+  baseCodeSource: 'compiled_template' | 'previous_code' | 'unknown';
+  patchedRecipeSlugs: string[];
+  patchedVerifierCheckUids: string[];
+  repairObservationSummary: string;
+};
+
+type IntentE2EInsightRecentTraceResponseEvent = {
+  attempt: number;
+  kind: 'matched' | 'json_parsed';
+  url: string;
+  method: string;
+  status: number | null;
+  topLevelKeys: string[];
+};
+
+type IntentE2EInsightRecentTraceFinalGraderResult = {
+  status: 'passed' | 'failed' | 'canceled';
+  summary: string;
+  failureClass: string;
+  repairable: boolean | null;
+};
+
+type IntentE2EInsightRecentTraceVerifierCheckResult = {
+  checkUid: string;
+  title: string;
+  kind: string;
+  required: boolean;
+  preferredHelpers: string[];
+  relatedPlanStepUids: string[];
+};
+
+type IntentE2EInsightRecentTraceVerifierResult = {
+  expectedOutcome: string;
+  failingCheckCount: number;
+  failingChecks: IntentE2EInsightRecentTraceVerifierCheckResult[];
+};
+
+type IntentE2EInsightRecentTrace = {
+  traceVersion: 1;
+  runId: string;
+  projectUid: string;
+  status: 'passed' | 'failed' | 'canceled';
+  finishedAt: string;
+  requestInput: string;
+  targetUrl: string;
+  targetPath: string;
+  scenarioTitle: string;
+  scenarioFamily: IntentE2EScenarioFamily;
+  scenarioFamilyLabel: string;
+  verificationIntent: IntentE2EInsightVerificationIntent;
+  verificationIntentLabel: string;
+  taskMode: 'page' | 'scenario' | 'unknown';
+  stepCount: number;
+  stepTypes: string[];
+  snapshotSignature: string;
+  compiledSlotCount: number;
+  compiledSlotUids: string[];
+  attemptCount: number;
+  repairAttempted: boolean;
+  structuredPatchAttempted: boolean;
+  targetedRepairAttempted: boolean;
+  knowledgeHit: boolean;
+  matchedRecipeSlugs: string[];
+  matchedRuleIds: string[];
+  matchedRuleTitles: string[];
+  matchedStarterHelpers: string[];
+  suggestedHelpers: string[];
+  usedHelpers: string[];
+  usedSuggestedHelpers: string[];
+  firstPassSucceeded: boolean;
+  repairedSucceeded: boolean;
+  keySignals: string[];
+  responseEvents: IntentE2EInsightRecentTraceResponseEvent[];
+  verifierResult: IntentE2EInsightRecentTraceVerifierResult;
+  finalGraderResult: IntentE2EInsightRecentTraceFinalGraderResult;
+  patchedSlotUids: string[];
+  latestRepairObservationSummary: string;
+  latestRepairObservationRecipeSlugs: string[];
+  latestRepairObservationVerifierCheckUids: string[];
+  failureClass: string;
+  attempts: IntentE2EInsightRecentTraceAttempt[];
+};
+
+type IntentE2EInsightRecentCapabilityVerification = {
+  executionUid: string;
+  configUid: string;
+  configName: string;
+  capabilityUid: string;
+  chainCapabilityUids: string[];
+  status: 'passed' | 'failed';
+  intent: Exclude<IntentE2EInsightVerificationIntent, 'unknown'>;
+  intentLabel: string;
+  targetName: string;
+  strategyLabel: string;
+  summary: string;
+  errorMessage: string;
+  createdAt: string;
+};
+
+type IntentE2EEvaluationCandidatePriority = 'p0' | 'p1' | 'p2';
+
+type IntentE2EEvaluationBaselineCandidate = {
+  evalCaseId: string;
+  snapshotSignature: string;
+  scenarioFamily: IntentE2EScenarioFamily;
+  scenarioFamilyLabel: string;
+  taskMode: 'page' | 'scenario' | 'unknown';
+  targetPath: string;
+  stepTypes: string[];
+  stepCount: number;
+  runCount: number;
+  passedRuns: number;
+  failedRuns: number;
+  canceledRuns: number;
+  repairAttemptedRuns: number;
+  knowledgeHitRuns: number;
+  knowledgeHitRate: number;
+  latestFinishedAt: string;
+  representativeScenarioTitle: string;
+  representativeRequestInput: string;
+  representativeRunIds: string[];
+  matchedRecipeSlugs: string[];
+  matchedRuleIds: string[];
+  matchedRuleTitles: string[];
+  usedHelpers: string[];
+  keySignals: string[];
+  failureClasses: IntentE2EInsightFailureClassStat[];
+  priority: IntentE2EEvaluationCandidatePriority;
+  selectionReason: string;
+  firstPassPassedRuns: number;
+  firstPassPassRate: number;
+  repairedPassRuns: number;
+  repairedPassRate: number;
+  terminalPassRate: number;
+};
+
+type IntentE2EEvaluationBaseline = {
+  generatedFromRuns: number;
+  candidateClusters: number;
+  recommendedCount: number;
+  recommendedFamilies: IntentE2EScenarioFamily[];
+  selectionNote: string;
+  candidates: IntentE2EEvaluationBaselineCandidate[];
+};
+
+type IntentE2EInsightMergeProvenanceStat = {
+  key: string;
+  operations: Array<'merge' | 'restore'>;
+  stage: 'preflight' | 'receipt';
+  kind: ProjectKnowledgeMergeNotice['kind'];
+  level: ProjectKnowledgeMergeNotice['level'];
+  provenanceType: ProjectKnowledgeMergeNotice['provenanceType'];
+  title: string;
+  auditCount: number;
+  itemCount: number;
+  candidateCount: number;
+  ruleCount: number;
+  latestOccurredAt: string;
+  supportingAuditIds: string[];
 };
 
 type IntentE2EInsightRollbackCandidate = {
   auditId: string;
   occurredAt: string;
   projectUid: string;
+  requestedModuleUid?: string;
   title: string;
   backupPath: string | null;
   addedRuleIds: string[];
+  mergedCandidateSources: string[];
+  mergedRunIds: string[];
+  selectedCandidateFeedbackStatuses: string[];
+  selectedRiskyCandidateIds: string[];
+  appliedOverrideCandidateIds: string[];
+  appliedOverrideCandidateFeedbackStatuses: string[];
+  appliedAcknowledgedRiskCandidateIds: string[];
+  appliedAcknowledgedRiskCandidateFeedbackStatuses: string[];
   beforeRuns: number;
   beforePassRate: number;
+  beforeFirstPassRate: number;
   afterRuns: number;
   afterPassRate: number;
+  afterFirstPassRate: number;
   passRateDelta: number;
+  firstPassRateDelta: number;
+  impactStatus: 'improving' | 'neutral' | 'regressing';
   recommendation: string;
+};
+
+type IntentE2EInsightKnowledgeChangeGrader = {
+  auditId: string;
+  operation: 'merge' | 'restore';
+  occurredAt: string;
+  projectUid: string;
+  requestedModuleUid?: string;
+  title: string;
+  backupPath: string | null;
+  restoredFrom?: string;
+  affectedRuleIds: string[];
+  mergedCandidateSources: string[];
+  mergedRunIds: string[];
+  selectedCandidateFeedbackStatuses: string[];
+  selectedRiskyCandidateIds: string[];
+  appliedOverrideCandidateIds: string[];
+  appliedAcknowledgedRiskCandidateIds: string[];
+  beforeRuns: number;
+  beforePassRate: number;
+  beforeFirstPassRate: number;
+  afterRuns: number;
+  afterPassedRuns: number;
+  afterFailedRuns: number;
+  afterCanceledRuns: number;
+  afterPassRate: number;
+  afterFirstPassPassedRuns: number;
+  afterFirstPassRate: number;
+  passRateDelta: number;
+  firstPassRateDelta: number;
+  impactStatus: 'improving' | 'neutral' | 'regressing';
+  efficacyStatus: 'improving' | 'neutral' | 'regressing' | 'recovered' | 'watching' | 'still_abnormal';
+  evidenceLevel: 'early' | 'decisionable';
+  preflightNoticeCount: number;
+  receiptNoticeCount: number;
+  recommendation: string;
+};
+
+type IntentE2EInsightKnowledgeChangeRuleSummary = {
+  ruleId: string;
+  title: string;
+  auditCount: number;
+  mergeCount: number;
+  restoreCount: number;
+  improvingCount: number;
+  neutralCount: number;
+  regressingCount: number;
+  recoveredCount: number;
+  stillAbnormalCount: number;
+  watchingCount: number;
+  decisionableCount: number;
+  earlyCount: number;
+  latestOccurredAt: string;
+  latestOperation: 'merge' | 'restore';
+  latestEfficacyStatus: IntentE2EInsightKnowledgeChangeGrader['efficacyStatus'];
+  latestImpactStatus: IntentE2EInsightKnowledgeChangeGrader['impactStatus'];
+  netPassRateDelta: number;
+  netFirstPassRateDelta: number;
+  successfulRunPromotionReceiptCount: number;
+  successfulRunPromotionRunCount: number;
+  lastSuccessfulRunPromotionRecordedAt: string;
+  lastSuccessfulRunPromotionRequestedModuleUid: string;
+  lastSuccessfulRunPromotionRunIds: string[];
+  supportingAuditIds: string[];
+  recommendation: string;
+};
+
+type IntentE2EInsightMergeProvenanceKindCounts = {
+  autoPromoteCount: number;
+  observeCount: number;
+  blockDefaultMergeCount: number;
+  overrideCount: number;
+  riskAcknowledgementCount: number;
+  guardrailCount: number;
+  auditCount: number;
+};
+
+type IntentE2EInsightRiskLifecycleRuleMergeProvenance = {
+  preflightNoticeCount: number;
+  receiptNoticeCount: number;
+  preflight: IntentE2EInsightMergeProvenanceKindCounts;
+  receipt: IntentE2EInsightMergeProvenanceKindCounts;
+};
+
+type IntentE2EInsightRiskLifecycleRuleRecentMergeProvenance = {
+  auditWindowSize: number;
+  dayWindowSize: number;
+  consideredAuditCount: number;
+  windowMode: 'time_window' | 'audit_count_fallback';
+  windowLabel: string;
+  mergeProvenance: IntentE2EInsightRiskLifecycleRuleMergeProvenance;
+};
+
+type IntentE2EInsightRiskLifecycleRule = {
+  ruleId: string;
+  title: string;
+  mergedCandidateSources: string[];
+  selectedCandidateFeedbackStatuses: string[];
+  mergeAuditCount: number;
+  riskySelectionCount: number;
+  overrideAppliedCount: number;
+  riskAcknowledgementCount: number;
+  mergeProvenance: IntentE2EInsightRiskLifecycleRuleMergeProvenance;
+  recentMergeProvenance: IntentE2EInsightRiskLifecycleRuleRecentMergeProvenance;
+  promotedCount: number;
+  watchingCount: number;
+  degradedCount: number;
+  rollbackCandidateCount: number;
+  latestOccurredAt: string;
+  latestStatus: 'rollback_candidate' | 'degraded' | 'watching' | 'promoted';
+  latestImpactStatus?: 'improving' | 'neutral' | 'regressing';
+  latestBackupPath: string | null;
+  latestRecommendation: string;
+  policy: 'block_default_merge' | 'observe_guarded' | 'auto_promote_candidate' | 'observe';
+  policyReason: string;
+  supportingAuditIds: string[];
 };
 
 type IntentE2EInsightProbationRule = {
   auditId: string;
   occurredAt: string;
   projectUid: string;
+  requestedModuleUid?: string;
   title: string;
   backupPath: string | null;
   addedRuleIds: string[];
+  mergedCandidateSources: string[];
+  mergedRunIds: string[];
+  selectedCandidateFeedbackStatuses: string[];
+  selectedRiskyCandidateIds: string[];
+  appliedOverrideCandidateIds: string[];
+  appliedOverrideCandidateFeedbackStatuses: string[];
+  appliedAcknowledgedRiskCandidateIds: string[];
+  appliedAcknowledgedRiskCandidateFeedbackStatuses: string[];
   beforeRuns: number;
   beforePassRate: number;
+  beforeFirstPassRate: number;
   observedRuns: number;
   observedPassedRuns: number;
   observedFailedRuns: number;
   observedCanceledRuns: number;
   observedPassRate: number;
+  observedFirstPassPassedRuns: number;
+  observedFirstPassRate: number;
+  firstPassRateDelta: number;
+  impactStatus: 'improving' | 'neutral' | 'regressing';
   remainingRuns: number;
   status: 'watching' | 'promoted' | 'degraded';
   recommendation: string;
@@ -504,9 +1285,64 @@ type IntentE2EInsightsResponse = {
   summary: IntentE2EInsightsSummary;
   topRules: IntentE2EInsightRuleStat[];
   topHelpers: IntentE2EInsightHelperStat[];
+  starterHelpers: IntentE2EInsightStarterHelper[];
+  suppressedStarterHelpers: IntentE2EInsightSuppressedStarterHelper[];
+  scenarioFamilies: IntentE2EInsightScenarioFamilyStat[];
+  scenarioFamilySlo: IntentE2EInsightScenarioFamilySloOverview;
+  regressionWatchlist: IntentE2EInsightRegressionWatchlistOverview;
+  rolloutStrategy: IntentE2EInsightRolloutStrategyOverview;
+  verificationIntents: IntentE2EInsightVerificationIntentStat[];
+  capabilityVerificationIntents: IntentE2EInsightCapabilityVerificationIntentStat[];
   failureClasses: IntentE2EInsightFailureClassStat[];
+  mergeProvenanceStats: IntentE2EInsightMergeProvenanceStat[];
+  riskLifecycleRules: IntentE2EInsightRiskLifecycleRule[];
   probationRules: IntentE2EInsightProbationRule[];
   rollbackCandidates: IntentE2EInsightRollbackCandidate[];
+  knowledgeChangeGraders: IntentE2EInsightKnowledgeChangeGrader[];
+  knowledgeChangeRuleSummaries: IntentE2EInsightKnowledgeChangeRuleSummary[];
+  recentTraces: IntentE2EInsightRecentTrace[];
+  recentCapabilityVerifications: IntentE2EInsightRecentCapabilityVerification[];
+  evaluationBaseline: IntentE2EEvaluationBaseline;
+  failurePressureSummary?: {
+    recentFailedReviewCapabilityCount: number;
+    recentFailedVerifyCapabilityCount: number;
+    recentFailedReviewExecutionCount: number;
+    recentFailedVerifyExecutionCount: number;
+    recentFailureWindowDays: number;
+    highFailureCandidateCount: number;
+    highFailureRepairCount: number;
+    highFailureGovernanceCount: number;
+    latestRepairObservationAt: string;
+    latestRepairObservationSummary: string;
+    latestRepairObservationVerifierCheckUids: string[];
+  };
+  starterHelperFailurePressureSummary?: {
+    recentFailedReviewCapabilityCount: number;
+    recentFailedVerifyCapabilityCount: number;
+    recentFailedReviewExecutionCount: number;
+    recentFailedVerifyExecutionCount: number;
+    recentFailureWindowDays: number;
+    highFailureCandidateCount: number;
+    highFailureRepairCount: number;
+    highFailureGovernanceCount: number;
+    latestRepairObservationAt: string;
+    latestRepairObservationSummary: string;
+    latestRepairObservationVerifierCheckUids: string[];
+  };
+  suppressedStarterHelperFailurePressureSummary?: {
+    recentFailedReviewCapabilityCount: number;
+    recentFailedVerifyCapabilityCount: number;
+    recentFailedReviewExecutionCount: number;
+    recentFailedVerifyExecutionCount: number;
+    recentFailureWindowDays: number;
+    highFailureCandidateCount: number;
+    highFailureRepairCount: number;
+    highFailureGovernanceCount: number;
+    latestRepairObservationAt: string;
+    latestRepairObservationSummary: string;
+    latestRepairObservationVerifierCheckUids: string[];
+  };
+  suppressedStarterHelperGovernanceSummary?: IntentE2EInsightSuppressedStarterHelperGovernanceSummary;
   error?: string;
 };
 
@@ -515,6 +1351,8 @@ type ProjectKnowledgeRestoreResponse = {
   writtenTo: string;
   backupCreated?: string | null;
   comparison?: ProjectKnowledgeProfileComparison;
+  preflightSummary?: ProjectKnowledgeMergePreflightSummary;
+  mergeReceipts?: ProjectKnowledgeMergeNotice[];
   profile: {
     version: 1;
     rules: IntentProjectKnowledgeRule[];
@@ -566,6 +1404,29 @@ type WorkspacePersistItem = {
   importedStatus: 'passed' | 'failed';
   workspacePath: string;
   runPath: string;
+};
+
+type StarterAssetPromotionReceiptSummary = {
+  requestedCount: number;
+  savedCount: number;
+  helperCount: number;
+  autoSelectedCount: number;
+  manualReviewCount: number;
+  directPromotionCount: number;
+};
+
+type StarterAssetPromotionReceiptResponse = {
+  receiptId: string;
+  title: string;
+  detail: string;
+  summary: StarterAssetPromotionReceiptSummary;
+};
+
+type StarterCapabilityPersistResponse = {
+  items?: Array<{ capabilityUid?: string; name?: string }>;
+  starterAssetPromotionReceipt?: StarterAssetPromotionReceiptResponse | null;
+  starterAssetPromotionReceiptWarning?: string;
+  error?: string;
 };
 
 type WorkspaceProjectsResponse = {
@@ -631,6 +1492,7 @@ type StreamState = {
   scenarioCard: ScenarioCard | null;
   llmMeta: IntentRunResult['llmMeta'] | null;
   targetUrl: string;
+  resolvedUrls: IntentResolvedUrls | null;
   description: string;
   attempts: IntentAttempt[];
   finalResult: TestResult | null;
@@ -715,6 +1577,110 @@ function statusPillTone(success: boolean): string {
     : 'border-rose-200 bg-rose-50 text-rose-700';
 }
 
+function scenarioFamilySloTone(status: IntentE2EInsightScenarioFamilySloStatus): string {
+  switch (status) {
+    case 'meeting':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'at_risk':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    case 'insufficient_data':
+      return 'border-slate-200 bg-slate-100 text-slate-600';
+    default:
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+  }
+}
+
+function scenarioFamilySloLabel(status: IntentE2EInsightScenarioFamilySloStatus): string {
+  switch (status) {
+    case 'meeting':
+      return '达标';
+    case 'at_risk':
+      return '临界';
+    case 'insufficient_data':
+      return '样本不足';
+    default:
+      return '未达标';
+  }
+}
+
+function regressionWatchlistSeverityTone(severity: IntentE2EInsightRegressionWatchlistSeverity): string {
+  return severity === 'high'
+    ? 'border-rose-200 bg-rose-50 text-rose-700'
+    : 'border-amber-200 bg-amber-50 text-amber-700';
+}
+
+function regressionWatchlistSeverityLabel(severity: IntentE2EInsightRegressionWatchlistSeverity): string {
+  return severity === 'high' ? '高风险' : '观察';
+}
+
+function regressionWatchlistSourceLabel(source: IntentE2EInsightRegressionWatchlistSource): string {
+  switch (source) {
+    case 'rollback_candidate':
+      return '回滚信号';
+    case 'evaluation_baseline':
+      return '固定回归';
+    default:
+      return 'SLO';
+  }
+}
+
+function rolloutStrategyStageTone(stage: IntentE2EInsightRolloutStrategyStage): string {
+  switch (stage) {
+    case 'full_release':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'small_batch':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    default:
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+  }
+}
+
+function rolloutStrategyStageLabel(stage: IntentE2EInsightRolloutStrategyStage): string {
+  switch (stage) {
+    case 'full_release':
+      return '可默认放量';
+    case 'small_batch':
+      return '小流量灰度';
+    default:
+      return '暂停放量';
+  }
+}
+
+function rolloutStrategyGateTone(status: IntentE2EInsightRolloutStrategyGateStatus): string {
+  switch (status) {
+    case 'ready':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'warning':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    default:
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+  }
+}
+
+function rolloutStrategyGateLabel(status: IntentE2EInsightRolloutStrategyGateStatus): string {
+  switch (status) {
+    case 'ready':
+      return '通过';
+    case 'warning':
+      return '观察';
+    default:
+      return '阻断';
+  }
+}
+
+function rolloutStrategyGateSourceLabel(source: IntentE2EInsightRolloutStrategyGateSource): string {
+  switch (source) {
+    case 'scenario_family_slo':
+      return 'SLO';
+    case 'regression_watchlist':
+      return 'Watchlist';
+    case 'risk_lifecycle_rule':
+      return '规则治理';
+    default:
+      return '回滚';
+  }
+}
+
 function feedToneClass(tone: FeedItem['tone']): string {
   switch (tone) {
     case 'success':
@@ -797,6 +1763,16 @@ function formatRatePercent(value: number): string {
   return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}%`;
 }
 
+function formatKnowledgeDraftConfidence(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0%';
+  if (value <= 1) {
+    return formatPercent(value);
+  }
+
+  const rounded = Math.round(value * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}%`;
+}
+
 function formatDateTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
@@ -830,6 +1806,98 @@ function formatActorLabel(actorLabel: string): string {
   return actorLabel;
 }
 
+function intentRunStatusLabel(status: IntentRunStatus | IntentE2EInsightRecentTrace['status']): string {
+  switch (status) {
+    case 'passed':
+      return '已通过';
+    case 'failed':
+      return '已失败';
+    case 'canceled':
+      return '已取消';
+    case 'running':
+      return '执行中';
+    default:
+      return '已创建';
+  }
+}
+
+function intentRunStatusTone(status: IntentRunStatus | IntentE2EInsightRecentTrace['status']): string {
+  switch (status) {
+    case 'passed':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'failed':
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+    case 'canceled':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    case 'running':
+      return 'border-sky-200 bg-sky-50 text-sky-700';
+    default:
+      return 'border-slate-200 bg-slate-100 text-slate-600';
+  }
+}
+
+function insightVerificationIntentTone(intent: IntentE2EInsightVerificationIntent): string {
+  switch (intent) {
+    case 'review':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    case 'verify':
+      return 'border-blue-200 bg-blue-50 text-blue-700';
+    case 'unknown':
+    default:
+      return 'border-slate-200 bg-slate-100 text-slate-600';
+  }
+}
+
+function traceAttemptOutcomeLabel(outcome: IntentE2EInsightTraceAttemptOutcome): string {
+  switch (outcome) {
+    case 'passed':
+      return '通过';
+    case 'failed':
+      return '失败';
+    default:
+      return '未知';
+  }
+}
+
+function traceAttemptOutcomeTone(outcome: IntentE2EInsightTraceAttemptOutcome): string {
+  switch (outcome) {
+    case 'passed':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'failed':
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+    default:
+      return 'border-slate-200 bg-slate-100 text-slate-600';
+  }
+}
+
+function insightFailureClassLabel(failureClass: string): string {
+  if (!failureClass) return '—';
+  const label = intentFailureClassLabel(failureClass as IntentFailureTriage['failureClass']);
+  return label === '未分类' && failureClass !== 'unknown' ? failureClass : label;
+}
+
+function evalCandidatePriorityLabel(priority: IntentE2EEvaluationCandidatePriority): string {
+  switch (priority) {
+    case 'p0':
+      return 'P0 必测';
+    case 'p1':
+      return 'P1 建议';
+    default:
+      return 'P2 补充';
+  }
+}
+
+function evalCandidatePriorityTone(priority: IntentE2EEvaluationCandidatePriority): string {
+  switch (priority) {
+    case 'p0':
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+    case 'p1':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    default:
+      return 'border-sky-200 bg-sky-50 text-sky-700';
+  }
+}
+
 function probationStatusLabel(status: IntentE2EInsightProbationRule['status']): string {
   switch (status) {
     case 'degraded':
@@ -850,6 +1918,467 @@ function probationStatusTone(status: IntentE2EInsightProbationRule['status']): s
     default:
       return 'border-sky-200 bg-sky-50 text-sky-700';
   }
+}
+
+function mergeImpactStatusLabel(status: IntentE2EInsightProbationRule['impactStatus'] | IntentE2EInsightRollbackCandidate['impactStatus']): string {
+  switch (status) {
+    case 'improving':
+      return '收益中';
+    case 'regressing':
+      return '在回退';
+    default:
+      return '待观察';
+  }
+}
+
+function mergeImpactStatusTone(status: IntentE2EInsightProbationRule['impactStatus'] | IntentE2EInsightRollbackCandidate['impactStatus']): string {
+  switch (status) {
+    case 'improving':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'regressing':
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-600';
+  }
+}
+
+function knowledgeChangeEfficacyStatusLabel(status: IntentE2EInsightKnowledgeChangeGrader['efficacyStatus']): string {
+  switch (status) {
+    case 'improving':
+      return '合并后改善';
+    case 'neutral':
+      return '合并后平稳';
+    case 'regressing':
+      return '合并后恶化';
+    case 'recovered':
+      return '回滚后恢复';
+    case 'still_abnormal':
+      return '回滚后仍异常';
+    default:
+      return '继续观察';
+  }
+}
+
+function knowledgeChangeEfficacyStatusTone(status: IntentE2EInsightKnowledgeChangeGrader['efficacyStatus']): string {
+  switch (status) {
+    case 'improving':
+    case 'recovered':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'regressing':
+    case 'still_abnormal':
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+    case 'watching':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-600';
+  }
+}
+
+function knowledgeChangeEvidenceLevelLabel(level: IntentE2EInsightKnowledgeChangeGrader['evidenceLevel']): string {
+  return level === 'decisionable' ? '证据充分' : '早期样本';
+}
+
+function knowledgeChangeEvidenceLevelTone(level: IntentE2EInsightKnowledgeChangeGrader['evidenceLevel']): string {
+  return level === 'decisionable'
+    ? 'border-slate-200 bg-slate-50 text-slate-700'
+    : 'border-amber-200 bg-amber-50 text-amber-700';
+}
+
+function riskLifecycleStatusLabel(status: IntentE2EInsightRiskLifecycleRule['latestStatus']): string {
+  switch (status) {
+    case 'rollback_candidate':
+      return '回滚候选';
+    case 'degraded':
+      return '已降级';
+    case 'promoted':
+      return '已转正';
+    default:
+      return '观察中';
+  }
+}
+
+function riskLifecycleStatusTone(status: IntentE2EInsightRiskLifecycleRule['latestStatus']): string {
+  switch (status) {
+    case 'rollback_candidate':
+      return 'border-rose-300 bg-rose-100 text-rose-800';
+    case 'degraded':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    case 'promoted':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-600';
+  }
+}
+
+function riskLifecyclePolicyLabel(policy: IntentE2EInsightRiskLifecycleRule['policy']): string {
+  switch (policy) {
+    case 'block_default_merge':
+      return '阻断默认合并';
+    case 'observe_guarded':
+      return '谨慎观察';
+    case 'auto_promote_candidate':
+      return '自动晋升候选';
+    default:
+      return '继续观察';
+  }
+}
+
+function riskLifecyclePolicyTone(policy: IntentE2EInsightRiskLifecycleRule['policy']): string {
+  switch (policy) {
+    case 'block_default_merge':
+      return 'border-rose-300 bg-rose-100 text-rose-800';
+    case 'observe_guarded':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    case 'auto_promote_candidate':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-600';
+  }
+}
+
+function summarizeRiskLifecycleRuleProvenanceStage(
+  stage: 'preflight' | 'receipt',
+  counts: IntentE2EInsightMergeProvenanceKindCounts
+): string {
+  const parts =
+    stage === 'preflight'
+      ? [
+          counts.blockDefaultMergeCount > 0 ? `默认阻断 ${counts.blockDefaultMergeCount}` : '',
+          counts.overrideCount > 0 ? `override ${counts.overrideCount}` : '',
+          counts.riskAcknowledgementCount > 0 ? `风险确认 ${counts.riskAcknowledgementCount}` : '',
+          counts.observeCount > 0 ? `观察 ${counts.observeCount}` : '',
+          counts.autoPromoteCount > 0 ? `自动晋升 ${counts.autoPromoteCount}` : '',
+        ]
+      : [
+          counts.overrideCount > 0 ? `override ${counts.overrideCount}` : '',
+          counts.riskAcknowledgementCount > 0 ? `风险确认 ${counts.riskAcknowledgementCount}` : '',
+          counts.guardrailCount > 0 ? `护栏 ${counts.guardrailCount}` : '',
+          counts.auditCount > 0 ? `审计 ${counts.auditCount}` : '',
+        ];
+
+  const summary = parts.filter(Boolean);
+  return summary.length > 0 ? summary.join(' · ') : '—';
+}
+
+function projectKnowledgeMergeNoticeTone(notice: Pick<ProjectKnowledgeMergeNotice, 'kind'>): string {
+  switch (notice.kind) {
+    case 'auto_promote':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-800';
+    case 'observe':
+      return 'border-slate-200 bg-slate-50 text-slate-700';
+    case 'block_default_merge':
+    case 'override':
+      return 'border-rose-200 bg-rose-50 text-rose-800';
+    case 'risk_acknowledgement':
+    case 'audit':
+      return 'border-amber-200 bg-amber-50 text-amber-800';
+    case 'guardrail':
+      return 'border-violet-200 bg-violet-50 text-violet-800';
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-700';
+  }
+}
+
+function projectKnowledgeMergeNoticeProvenanceLabel(provenanceType: ProjectKnowledgeMergeNotice['provenanceType']): string {
+  switch (provenanceType) {
+    case 'recommended':
+      return '推荐';
+    case 'observe':
+      return '观察';
+    case 'override':
+      return 'override';
+    case 'risk_acknowledgement':
+      return '风险确认';
+    case 'guardrail':
+      return '护栏';
+    default:
+      return '审计';
+  }
+}
+
+function mergeProvenanceStageLabel(stage: IntentE2EInsightMergeProvenanceStat['stage']): string {
+  return stage === 'receipt' ? '回执' : '预检';
+}
+
+function starterHelperSourceLabel(source: IntentE2EInsightStarterHelper['source']): string {
+  return source === 'promoted' ? '转正规则' : '稳定规则';
+}
+
+function starterHelperSourceTone(source: IntentE2EInsightStarterHelper['source']): string {
+  return source === 'promoted'
+    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+    : 'border-sky-200 bg-sky-50 text-sky-700';
+}
+
+function starterHelperKnowledgeSignalLabel(signal: IntentE2EInsightStarterHelper['knowledgeChangeSignal']): string {
+  switch (signal) {
+    case 'positive':
+      return '长期正向';
+    case 'negative':
+      return '长期负向';
+    default:
+      return '';
+  }
+}
+
+function starterHelperKnowledgeSignalTone(signal: IntentE2EInsightStarterHelper['knowledgeChangeSignal']): string {
+  switch (signal) {
+    case 'positive':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'negative':
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-600';
+  }
+}
+
+function starterHelperKnowledgeTierLabel(
+  tier: IntentE2EInsightStarterHelper['knowledgeChangeTier'],
+  watchingKind: IntentE2EInsightStarterHelper['knowledgeChangeWatchingKind'] = undefined
+): string {
+  switch (tier) {
+    case 'preferred':
+      return '优先层';
+    case 'watching':
+      return watchingKind === 'mixed' ? '混合观察' : watchingKind === 'recovering' ? '恢复观察' : '观察中';
+    default:
+      return '';
+  }
+}
+
+function starterHelperKnowledgeTierTone(
+  tier: IntentE2EInsightStarterHelper['knowledgeChangeTier'],
+  watchingKind: IntentE2EInsightStarterHelper['knowledgeChangeWatchingKind'] = undefined
+): string {
+  switch (tier) {
+    case 'preferred':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'watching':
+      return watchingKind === 'recovering'
+        ? 'border-sky-200 bg-sky-50 text-sky-700'
+        : 'border-amber-200 bg-amber-50 text-amber-700';
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-600';
+  }
+}
+
+function starterHelperGovernanceReleaseLabel(status: IntentE2EInsightStarterHelper['governanceReleaseStatus']): string {
+  switch (status) {
+    case 'released_from_suppressed':
+      return '治理恢复释放';
+    default:
+      return '';
+  }
+}
+
+function starterHelperGovernanceReleaseTone(status: IntentE2EInsightStarterHelper['governanceReleaseStatus']): string {
+  switch (status) {
+    case 'released_from_suppressed':
+      return 'border-cyan-200 bg-cyan-50 text-cyan-700';
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-600';
+  }
+}
+
+function starterHelperPreferredPromotionLabel(
+  status: IntentE2EInsightStarterHelper['preferredPromotionStatus']
+): string {
+  switch (status) {
+    case 'await_more_positive_rules':
+      return '待补正向规则';
+    case 'blocked_by_mixed_evidence':
+      return '混合证据未清零';
+    case 'await_long_term_recovery':
+      return '等待长期转正';
+    default:
+      return '';
+  }
+}
+
+function starterHelperPreferredPromotionTone(
+  status: IntentE2EInsightStarterHelper['preferredPromotionStatus']
+): string {
+  switch (status) {
+    case 'await_more_positive_rules':
+      return 'border-blue-200 bg-blue-50 text-blue-700';
+    case 'blocked_by_mixed_evidence':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    case 'await_long_term_recovery':
+      return 'border-cyan-200 bg-cyan-50 text-cyan-700';
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-600';
+  }
+}
+
+function suppressedStarterHelperGovernanceRecommendationLabel(
+  status: IntentE2EInsightSuppressedStarterHelper['governanceRecommendationStatus']
+): string {
+  switch (status) {
+    case 'await_governance_targets':
+      return '待补治理目标';
+    case 'blocked_by_recent_failures':
+      return '失败窗口未清零';
+    case 'await_direct_verify':
+      return '等待直接验证';
+    case 'await_more_capability_recovery':
+      return '等待更多恢复';
+    default:
+      return '';
+  }
+}
+
+function suppressedStarterHelperGovernanceRecommendationTone(
+  status: IntentE2EInsightSuppressedStarterHelper['governanceRecommendationStatus']
+): string {
+  switch (status) {
+    case 'await_governance_targets':
+      return 'border-slate-200 bg-slate-50 text-slate-600';
+    case 'blocked_by_recent_failures':
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+    case 'await_direct_verify':
+      return 'border-blue-200 bg-blue-50 text-blue-700';
+    case 'await_more_capability_recovery':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-600';
+  }
+}
+
+function governanceCapabilityExecutionStatusLabel(status: IntentE2EInsightSuppressedStarterHelperGovernanceCapability['latestExecutionStatus']): string {
+  switch (status) {
+    case 'passed':
+      return '最近通过';
+    case 'failed':
+      return '最近失败';
+    default:
+      return '暂无执行';
+  }
+}
+
+function governanceCapabilityExecutionStatusTone(status: IntentE2EInsightSuppressedStarterHelperGovernanceCapability['latestExecutionStatus']): string {
+  switch (status) {
+    case 'passed':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'failed':
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-500';
+  }
+}
+
+function governanceCapabilityExecutionIntentLabel(intent: IntentE2EInsightSuppressedStarterHelperGovernanceCapability['latestExecutionIntent']): string {
+  switch (intent) {
+    case 'review':
+      return '保守复核';
+    case 'verify':
+      return '标准验证';
+    default:
+      return '未执行';
+  }
+}
+
+function governanceCapabilityExecutionIntentTone(intent: IntentE2EInsightSuppressedStarterHelperGovernanceCapability['latestExecutionIntent']): string {
+  switch (intent) {
+    case 'review':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    case 'verify':
+      return 'border-blue-200 bg-blue-50 text-blue-700';
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-500';
+  }
+}
+
+function governanceCapabilityExecutionSourceLabel(source: IntentE2EInsightSuppressedStarterHelperGovernanceCapability['latestExecutionSource']): string {
+  switch (source) {
+    case 'repair':
+      return 'AI repair';
+    case 'direct':
+      return '直接执行';
+    default:
+      return '无来源';
+  }
+}
+
+function governanceCapabilityExecutionSourceTone(source: IntentE2EInsightSuppressedStarterHelperGovernanceCapability['latestExecutionSource']): string {
+  switch (source) {
+    case 'repair':
+      return 'border-violet-200 bg-violet-50 text-violet-700';
+    case 'direct':
+      return 'border-sky-200 bg-sky-50 text-sky-700';
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-500';
+  }
+}
+
+function starterAssetScopeTone(scope: IntentStarterAssetScope): string {
+  return scope === 'project_capability'
+    ? 'border-amber-200 bg-amber-50 text-amber-700'
+    : 'border-slate-200 bg-slate-100 text-slate-600';
+}
+
+function starterAssetPromotionDecisionTone(status: IntentStarterAssetPromotionDecision['status']): string {
+  switch (status) {
+    case 'promote_project_capability':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'review_project_capability':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    case 'runtime_only':
+    default:
+      return 'border-slate-200 bg-slate-100 text-slate-600';
+  }
+}
+
+function baseCodeSourceLabel(
+  source: IntentExecutionStructuredPatch['baseCodeSource'] | IntentE2EInsightRecentTraceAttempt['baseCodeSource']
+): string {
+  switch (source) {
+    case 'compiled_template':
+      return '编译模板';
+    case 'previous_code':
+      return '上一轮代码';
+    default:
+      return '未知';
+  }
+}
+
+function normalizeTraceResponseEventUrl(url: string): string {
+  const raw = url.trim();
+  if (!raw) return '';
+
+  try {
+    const parsed = new URL(raw);
+    return parsed.pathname || raw;
+  } catch {
+    return raw;
+  }
+}
+
+function summarizeTraceResponseEvents(events: IntentE2EInsightRecentTraceResponseEvent[], limit = 2): string {
+  if (!events.length) return '—';
+
+  const picked = events.slice(0, Math.max(1, Math.floor(limit || 2))).map((event) => {
+    if (event.kind === 'json_parsed') {
+      const keys = event.topLevelKeys.length > 0 ? ` keys ${summarizeTextList(event.topLevelKeys, 3)}` : '';
+      return `#${event.attempt} JSON${keys}`;
+    }
+
+    const url = normalizeTraceResponseEventUrl(event.url);
+    const status = event.status !== null ? String(event.status) : '?';
+    const method = event.method || 'HTTP';
+    return `#${event.attempt} ${method} ${status}${url ? ` ${url}` : ''}`;
+  });
+
+  return `${picked.join(' · ')}${events.length > picked.length ? ` 等 ${events.length} 条` : ''}`;
+}
+
+function summarizeTraceVerifierChecks(result: IntentE2EInsightRecentTraceVerifierResult, limit = 2): string {
+  if (result.failingCheckCount <= 0) return '未定位到明确失败检查';
+
+  const labels = result.failingChecks
+    .map((check) => check.title.trim() || check.checkUid.trim())
+    .filter(Boolean);
+  const summary = summarizeTextList(labels, limit);
+  return `${result.failingCheckCount} 项失败检查${summary !== '—' ? ` · ${summary}` : ''}`;
 }
 
 function projectKnowledgeOperationLabel(operation: ProjectKnowledgeAuditItem['operation'] | 'merge' | 'restore'): string {
@@ -887,8 +2416,185 @@ function uniqueStrings(values: Array<string | null | undefined>): string[] {
   return items;
 }
 
+function knowledgeDraftFeedbackRank(status?: IntentProjectKnowledgeDraftCandidateFeedback['status']): number {
+  switch (status) {
+    case 'preferred':
+      return 0;
+    case 'neutral':
+      return 1;
+    case 'probationary':
+      return 2;
+    case 'deprioritized':
+      return 3;
+    default:
+      return 1;
+  }
+}
+
+function knowledgeDraftFeedbackLabel(status?: IntentProjectKnowledgeDraftCandidateFeedback['status']): string {
+  switch (status) {
+    case 'preferred':
+      return '优先推荐';
+    case 'probationary':
+      return '观察期';
+    case 'deprioritized':
+      return '自动降权';
+    default:
+      return '常规候选';
+  }
+}
+
+function knowledgeDraftFeedbackTone(status?: IntentProjectKnowledgeDraftCandidateFeedback['status']): string {
+  switch (status) {
+    case 'preferred':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'probationary':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    case 'deprioritized':
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-600';
+  }
+}
+
+function knowledgeDraftCandidateSourceLabel(source: IntentProjectKnowledgeDraftCandidateSource): string {
+  return source === 'successful_run' ? 'Successful Run' : 'Repair Memory';
+}
+
+function knowledgeDraftCandidateSourceTone(source: IntentProjectKnowledgeDraftCandidateSource): string {
+  return source === 'successful_run'
+    ? 'border-cyan-200 bg-cyan-50 text-cyan-700'
+    : 'border-violet-200 bg-violet-50 text-violet-700';
+}
+
+function successfulRunKnowledgePromotionReceiptStatusLabel(
+  status: IntentSuccessfulRunKnowledgePromotionReceipt['items'][number]['status']
+): string {
+  switch (status) {
+    case 'merged':
+      return '已沉淀';
+    case 'covered':
+      return '已覆盖';
+    case 'missing':
+      return '已失效';
+    case 'skipped_rule':
+      return '重复规则';
+    default:
+      return '未落盘';
+  }
+}
+
+function successfulRunKnowledgePromotionReceiptStatusTone(
+  status: IntentSuccessfulRunKnowledgePromotionReceipt['items'][number]['status']
+): string {
+  switch (status) {
+    case 'merged':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'covered':
+      return 'border-sky-200 bg-sky-50 text-sky-700';
+    case 'missing':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    case 'skipped_rule':
+      return 'border-slate-200 bg-slate-100 text-slate-600';
+    default:
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+  }
+}
+
+function summarizeSuccessfulRunKnowledgePromotionReceipt(
+  receipt?: IntentSuccessfulRunKnowledgePromotionReceipt | null
+): string {
+  if (!receipt) return '';
+
+  return [
+    `Successful Run 回执：新增规则 ${receipt.summary.mergedRuleCount} 条`,
+    receipt.requestedModuleUid ? `模块 ${receipt.requestedModuleUid}` : '',
+    receipt.summary.coveredCandidateCount > 0 ? `已覆盖 ${receipt.summary.coveredCandidateCount} 条` : '',
+    receipt.summary.skippedRuleCount > 0 ? `重复规则 ${receipt.summary.skippedRuleCount} 条` : '',
+    receipt.summary.missingCandidateCount > 0 ? `失效候选 ${receipt.summary.missingCandidateCount} 条` : '',
+    receipt.summary.runCount > 0 ? `关联通过运行 ${receipt.summary.runCount} 条` : '',
+    receipt.summary.helperCount > 0 ? `涉及 helper ${receipt.summary.helperCount} 个` : '',
+  ]
+    .filter(Boolean)
+    .join('，');
+}
+
+function sortKnowledgeDraftCandidates(candidates: IntentProjectKnowledgeDraftCandidate[]): IntentProjectKnowledgeDraftCandidate[] {
+  return [...candidates].sort(
+    (a, b) =>
+      knowledgeDraftFeedbackRank(a.feedback?.status) - knowledgeDraftFeedbackRank(b.feedback?.status) ||
+      b.confidence - a.confidence ||
+      b.resolvedCount - a.resolvedCount ||
+      b.seenCount - a.seenCount ||
+      a.rule.id.localeCompare(b.rule.id)
+  );
+}
+
 function defaultKnowledgeDraftCandidateIds(draft: IntentProjectKnowledgeDraft): string[] {
-  return draft.candidates.filter((candidate) => !candidate.alreadyCovered).map((candidate) => candidate.candidateId);
+  return sortKnowledgeDraftCandidates(draft.candidates)
+    .filter((candidate) => isIntentProjectKnowledgeDraftCandidateMergeRecommended(candidate))
+    .map((candidate) => candidate.candidateId);
+}
+
+function allMergeableKnowledgeDraftCandidateIds(draft: IntentProjectKnowledgeDraft): string[] {
+  return sortKnowledgeDraftCandidates(draft.candidates)
+    .filter((candidate) => isIntentProjectKnowledgeDraftCandidateSelectable(candidate))
+    .map((candidate) => candidate.candidateId);
+}
+
+function knowledgeDraftSelectionStateLabel(candidate: IntentProjectKnowledgeDraftCandidate, selected: boolean): string {
+  if (candidate.alreadyCovered) return '已覆盖';
+  if (isIntentProjectKnowledgeDraftCandidateDeferredByDefault(candidate)) {
+    return selected ? '人工强选' : '默认跳过';
+  }
+  return selected ? '待合并' : '未选中';
+}
+
+function knowledgeDraftSelectionTone(candidate: IntentProjectKnowledgeDraftCandidate, selected: boolean): string {
+  if (candidate.alreadyCovered) {
+    return 'border-amber-200 bg-amber-50 text-amber-700';
+  }
+  if (isIntentProjectKnowledgeDraftCandidateDeferredByDefault(candidate)) {
+    if (!selected) {
+      return isIntentProjectKnowledgeDraftCandidateDeprioritized(candidate)
+        ? 'border-rose-200 bg-rose-50 text-rose-700'
+        : 'border-amber-200 bg-amber-50 text-amber-700';
+    }
+
+    return isIntentProjectKnowledgeDraftCandidateDeprioritized(candidate)
+      ? 'border-rose-300 bg-rose-100 text-rose-800'
+      : 'border-amber-300 bg-amber-100 text-amber-800';
+  }
+  if (selected) {
+    return candidate.feedback?.status === 'preferred'
+      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+      : 'border-sky-200 bg-sky-50 text-sky-700';
+  }
+  return 'border-slate-200 bg-slate-50 text-slate-600';
+}
+
+function knowledgeDraftCandidateCardTone(candidate: IntentProjectKnowledgeDraftCandidate): string {
+  if (candidate.alreadyCovered) {
+    return 'border-amber-200 bg-amber-50/40';
+  }
+  switch (candidate.feedback?.status) {
+    case 'preferred':
+      return 'border-emerald-200 bg-emerald-50/30';
+    case 'probationary':
+      return 'border-amber-200 bg-amber-50/30';
+    case 'deprioritized':
+      return 'border-rose-200 bg-rose-50/30';
+    default:
+      return 'border-slate-200 bg-white';
+  }
+}
+
+function knowledgeDraftFeedbackEvidenceReasons(feedback: IntentProjectKnowledgeDraftCandidateFeedback): string[] {
+  if (!feedback.lifecyclePolicyReason) {
+    return feedback.reasons;
+  }
+
+  return feedback.reasons.filter((reason) => reason !== feedback.lifecyclePolicyReason);
 }
 
 function createDraftId(): string {
@@ -902,6 +2608,16 @@ function createFeedId(): string {
   return `feed-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+class ProjectKnowledgeMergeError extends Error {
+  response?: ProjectKnowledgeMergeRouteResponse;
+
+  constructor(message: string, response?: ProjectKnowledgeMergeRouteResponse) {
+    super(message);
+    this.name = 'ProjectKnowledgeMergeError';
+    this.response = response;
+  }
+}
+
 function createPendingResult(): TestResult {
   return {
     success: false,
@@ -911,10 +2627,97 @@ function createPendingResult(): TestResult {
   };
 }
 
+function normalizeCompiledTemplate(template?: CompiledExecutionTemplate | null): CompiledExecutionTemplate | undefined {
+  if (!template) return undefined;
+
+  return {
+    ...template,
+    sharedVariables: template.sharedVariables || [],
+    slots: (template.slots || []).map((slot) => ({
+      ...slot,
+      relatedCheckUids: slot.relatedCheckUids || [],
+      preferredHelpers: slot.preferredHelpers || [],
+      instructions: slot.instructions || [],
+    })),
+  };
+}
+
+function normalizeStructuredPatch(
+  structuredPatch?: IntentExecutionStructuredPatch | null
+): IntentExecutionStructuredPatch | undefined {
+  if (!structuredPatch) return undefined;
+
+  return {
+    ...structuredPatch,
+    targetSlotUids: structuredPatch.targetSlotUids || [],
+    returnedSlotUids: structuredPatch.returnedSlotUids || [],
+    patch: {
+      version: 1,
+      slots: (structuredPatch.patch?.slots || []).map((slot) => ({
+        slotUid: slot.slotUid,
+        code: slot.code,
+      })),
+    },
+  };
+}
+
+function normalizeAttemptEvent(event: AttemptEvent): AttemptEvent {
+  if (event.type !== 'structured_patch') {
+    return { ...event };
+  }
+
+  return {
+    ...event,
+    structuredPatch: normalizeStructuredPatch(event.structuredPatch) || event.structuredPatch,
+  };
+}
+
+function normalizeIntentAttempt(attempt: IntentAttempt, status: IntentAttempt['status'] = 'completed'): IntentAttempt {
+  return {
+    ...attempt,
+    events: (attempt.events || []).map((event) => normalizeAttemptEvent(event)),
+    logs: (attempt.logs || []).map((log) => ({ ...log })),
+    result: attempt.result
+      ? {
+          ...attempt.result,
+          steps: (attempt.result.steps || []).map((step) => ({ ...step })),
+        }
+      : null,
+    helperUsage: attempt.helperUsage
+      ? {
+          usedHelpers: attempt.helperUsage.usedHelpers || [],
+          usedSuggestedHelpers: attempt.helperUsage.usedSuggestedHelpers || [],
+        }
+      : undefined,
+    structuredPatch: normalizeStructuredPatch(attempt.structuredPatch),
+    triage: attempt.triage || null,
+    status,
+  };
+}
+
 function normalizeRunResult(result: IntentRunResult): IntentRunResult {
   return {
     ...result,
-    attempts: result.attempts.map((attempt) => ({ ...attempt, status: 'completed' })),
+    resolvedUrls: result.resolvedUrls
+      ? {
+          targetUrl: result.resolvedUrls.targetUrl || result.targetUrl,
+          scenarioEntryUrl: result.resolvedUrls.scenarioEntryUrl || result.targetUrl,
+          precheckUrl: result.resolvedUrls.precheckUrl || result.resolvedUrls.scenarioEntryUrl || result.targetUrl,
+          analyzeUrl: result.resolvedUrls.analyzeUrl || result.resolvedUrls.scenarioEntryUrl || result.targetUrl,
+        }
+      : undefined,
+    compiledTemplate: normalizeCompiledTemplate(result.compiledTemplate),
+    knowledge: result.knowledge
+      ? {
+          ...result.knowledge,
+          starterAssets: result.knowledge.starterAssets || [],
+        }
+      : result.knowledge,
+    attempts: result.attempts.map((attempt) => normalizeIntentAttempt(attempt, 'completed')),
+    finalResult: {
+      ...result.finalResult,
+      steps: (result.finalResult.steps || []).map((step) => ({ ...step })),
+    },
   };
 }
 
@@ -929,6 +2732,7 @@ function createEmptyStreamState(): StreamState {
     scenarioCard: null,
     llmMeta: null,
     targetUrl: '',
+    resolvedUrls: null,
     description: '',
     attempts: [],
     finalResult: null,
@@ -971,6 +2775,25 @@ function pushFeed(feed: FeedItem[], text: string, tone: FeedItem['tone'] = 'info
   return [...feed, { id: createFeedId(), tone, text: text.trim() }].slice(-10);
 }
 
+function buildDescriptionFeedText(event: Extract<IntentStreamEvent, { type: 'description' }>): string {
+  const targetUrl = event.targetUrl.trim();
+  const scenarioEntryUrl = event.scenarioEntryUrl?.trim() || '';
+  const precheckUrl = event.precheckUrl?.trim() || scenarioEntryUrl;
+  const analyzeUrl = event.analyzeUrl?.trim() || scenarioEntryUrl;
+
+  if (!targetUrl) {
+    return '执行目标已锁定：未生成 URL';
+  }
+
+  if (!scenarioEntryUrl || scenarioEntryUrl === targetUrl) {
+    return `执行目标已锁定：${targetUrl}`;
+  }
+
+  return `执行目标已锁定：目标页=${targetUrl}；入口页=${scenarioEntryUrl}；precheck=${precheckUrl || scenarioEntryUrl}；analyze=${
+    analyzeUrl || scenarioEntryUrl
+  }`;
+}
+
 function createAttempt(attempt: number, kind: IntentAttempt['kind']): IntentAttempt {
   return {
     attempt,
@@ -1006,8 +2829,9 @@ function hydrateStreamStateFromResult(result: IntentRunResult): StreamState {
     scenarioCard: result.scenarioCard,
     llmMeta: result.llmMeta,
     targetUrl: result.targetUrl,
+    resolvedUrls: result.resolvedUrls || null,
     description: result.description,
-    attempts: result.attempts.map((attempt) => ({ ...attempt, status: 'completed' })),
+    attempts: result.attempts.map((attempt) => normalizeIntentAttempt(attempt, 'completed')),
     finalResult: result.finalResult,
     finalFailureTriage: result.finalFailureTriage ?? null,
     feed: [
@@ -1049,8 +2873,14 @@ function applyIntentStreamEvent(state: StreamState, event: IntentStreamEvent): S
       return {
         ...state,
         targetUrl: event.targetUrl,
+        resolvedUrls: {
+          targetUrl: event.targetUrl,
+          scenarioEntryUrl: event.scenarioEntryUrl?.trim() || event.targetUrl,
+          precheckUrl: event.precheckUrl?.trim() || event.scenarioEntryUrl?.trim() || event.targetUrl,
+          analyzeUrl: event.analyzeUrl?.trim() || event.scenarioEntryUrl?.trim() || event.targetUrl,
+        },
         description: event.description,
-        feed: pushFeed(state.feed, `执行目标已锁定：${event.targetUrl || '未生成 URL'}`),
+        feed: pushFeed(state.feed, buildDescriptionFeedText(event)),
       };
     }
 
@@ -1082,25 +2912,33 @@ function applyIntentStreamEvent(state: StreamState, event: IntentStreamEvent): S
     }
 
     case 'attempt_event': {
+      const normalizedEvent = normalizeAttemptEvent(event.event);
       const nextAttempts = upsertAttempt(state.attempts, event.attempt, event.kind, (attempt) => ({
         ...attempt,
         kind: event.kind,
-        events: [...attempt.events, event.event],
+        events: [...attempt.events, normalizedEvent],
         code:
-          event.event.type === 'code'
-            ? `${attempt.code}${event.event.content}`
-            : event.event.type === 'complete'
-            ? event.event.content
+          normalizedEvent.type === 'code'
+            ? `${attempt.code}${normalizedEvent.content}`
+            : normalizedEvent.type === 'complete'
+            ? normalizedEvent.content
             : attempt.code,
+        structuredPatch:
+          normalizedEvent.type === 'structured_patch' ? normalizeStructuredPatch(normalizedEvent.structuredPatch) : attempt.structuredPatch,
         triage: attempt.triage || null,
         status: 'running',
       }));
 
       const nextFeed =
-        event.event.type === 'thinking' && event.event.content.trim()
-          ? pushFeed(state.feed, `#${event.attempt} 思考：${event.event.content.trim()}`)
-          : event.event.type === 'error' && event.event.content.trim()
-          ? pushFeed(state.feed, `#${event.attempt} 生成报错：${event.event.content.trim()}`, 'error')
+        normalizedEvent.type === 'thinking' && normalizedEvent.content.trim()
+          ? pushFeed(state.feed, `#${event.attempt} 思考：${normalizedEvent.content.trim()}`)
+          : normalizedEvent.type === 'structured_patch'
+          ? pushFeed(
+              state.feed,
+              `#${event.attempt} slot patch：${summarizeTextList(normalizedEvent.structuredPatch.returnedSlotUids, 3)}`
+            )
+          : normalizedEvent.type === 'error' && normalizedEvent.content.trim()
+          ? pushFeed(state.feed, `#${event.attempt} 生成报错：${normalizedEvent.content.trim()}`, 'error')
           : state.feed;
 
       return {
@@ -1152,9 +2990,14 @@ function applyIntentStreamEvent(state: StreamState, event: IntentStreamEvent): S
           kind: event.kind,
           sessionId: event.sessionId,
           code: event.code,
-          events: event.events,
-          logs: event.logs,
-          result: event.result,
+          events: event.events.map((item) => normalizeAttemptEvent(item)),
+          logs: event.logs.map((item) => ({ ...item })),
+          result: {
+            ...event.result,
+            steps: event.result.steps.map((step) => ({ ...step })),
+          },
+          helperUsage: event.helperUsage,
+          structuredPatch: normalizeStructuredPatch(event.structuredPatch),
           triage: event.triage,
           status: 'completed',
         })),
@@ -1179,8 +3022,9 @@ function applyIntentStreamEvent(state: StreamState, event: IntentStreamEvent): S
         scenarioCard: event.result.scenarioCard,
         llmMeta: event.result.llmMeta,
         targetUrl: event.result.targetUrl,
+        resolvedUrls: event.result.resolvedUrls || state.resolvedUrls,
         description: event.result.description,
-        attempts: event.result.attempts.map((attempt) => ({ ...attempt, status: 'completed' })),
+        attempts: event.result.attempts.map((attempt) => normalizeIntentAttempt(attempt, 'completed')),
         finalResult: event.result.finalResult,
         finalFailureTriage: event.result.finalFailureTriage ?? null,
         feed: pushFeed(
@@ -1284,6 +3128,7 @@ function hydrateStreamStateFromRunRecord(run: IntentRunRecord): StreamState {
       scenarioCard: normalizedResult.scenarioCard,
       llmMeta: normalizedResult.llmMeta,
       targetUrl: normalizedResult.targetUrl,
+      resolvedUrls: normalizedResult.resolvedUrls || state.resolvedUrls,
       description: normalizedResult.description,
       attempts: normalizedResult.attempts,
       finalResult: normalizedResult.finalResult,
@@ -1409,6 +3254,12 @@ async function fetchProjectKnowledgeDraftPreview(
     minResolvedCount: String(options.minResolvedCount),
     maxCandidates: String(options.maxCandidates),
   });
+  if (options.projectUid?.trim()) {
+    search.set('projectUid', options.projectUid.trim());
+  }
+  if (options.moduleUid?.trim()) {
+    search.set('moduleUid', options.moduleUid.trim());
+  }
   const res = await fetch(`/api/intent-e2e/project-knowledge/draft?${search.toString()}`, {
     cache: 'no-store',
   });
@@ -1442,20 +3293,26 @@ async function writeProjectKnowledgeDraftFromWorkbench(
 }
 
 async function mergeProjectKnowledgeFromWorkbench(
-  options: ProjectKnowledgeDraftRequestOptions & { candidateIds: string[]; projectUid?: string }
+  options: ProjectKnowledgeDraftRequestOptions & {
+    candidateIds: string[];
+    overrideCandidateIds?: string[];
+    acknowledgedRiskCandidateIds?: string[];
+    projectUid?: string;
+    moduleUid?: string;
+  }
 ): Promise<ProjectKnowledgeMergeResponse> {
   const res = await fetch('/api/intent-e2e/project-knowledge/merge', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(options),
   });
-  const json = (await res.json().catch(() => null)) as ProjectKnowledgeMergeResponse | null;
+  const json = (await res.json().catch(() => null)) as ProjectKnowledgeMergeRouteResponse | null;
 
   if (!res.ok || !json?.draft || !json?.mergedTo) {
-    throw new Error(json?.error || '合并项目知识规则失败');
+    throw new ProjectKnowledgeMergeError(json?.error || '合并项目知识规则失败', json || undefined);
   }
 
-  return json;
+  return json as ProjectKnowledgeMergeResponse;
 }
 
 async function fetchProjectKnowledgeBackups(limit = 12): Promise<ProjectKnowledgeBackupsResponse> {
@@ -1633,7 +3490,12 @@ export default function IntentE2EWorkbench({
   const [knowledgeDraftMergeDiffPreview, setKnowledgeDraftMergeDiffPreview] = useState('');
   const [knowledgeChangeOperation, setKnowledgeChangeOperation] = useState<'merge' | 'restore' | ''>('');
   const [knowledgeChangeComparison, setKnowledgeChangeComparison] = useState<ProjectKnowledgeProfileComparison | null>(null);
+  const [knowledgeMergeSelectionSummary, setKnowledgeMergeSelectionSummary] = useState<ProjectKnowledgeMergeSelectionSummary | null>(null);
+  const [knowledgeMergePreflightSummary, setKnowledgeMergePreflightSummary] = useState<ProjectKnowledgeMergePreflightSummary | null>(null);
+  const [knowledgeMergeReceipts, setKnowledgeMergeReceipts] = useState<ProjectKnowledgeMergeNotice[]>([]);
   const [knowledgeAuditWarning, setKnowledgeAuditWarning] = useState('');
+  const [knowledgeOverrideWarning, setKnowledgeOverrideWarning] = useState('');
+  const [knowledgeRiskAcknowledgementWarning, setKnowledgeRiskAcknowledgementWarning] = useState('');
   const [knowledgeGuardrailWarning, setKnowledgeGuardrailWarning] = useState('');
   const [knowledgeBackupsLoading, setKnowledgeBackupsLoading] = useState(false);
   const [knowledgeBackupRestoring, setKnowledgeBackupRestoring] = useState(false);
@@ -1662,6 +3524,10 @@ export default function IntentE2EWorkbench({
   const [workspaceLoadError, setWorkspaceLoadError] = useState('');
   const [workspaceSaveError, setWorkspaceSaveError] = useState('');
   const [workspaceSaveResult, setWorkspaceSaveResult] = useState<WorkspacePersistItem | null>(null);
+  const [starterCapabilitySelectedAssetSlugs, setStarterCapabilitySelectedAssetSlugs] = useState<string[]>([]);
+  const [starterCapabilitySaving, setStarterCapabilitySaving] = useState(false);
+  const [starterCapabilitySaveError, setStarterCapabilitySaveError] = useState('');
+  const [starterCapabilitySaveNotice, setStarterCapabilitySaveNotice] = useState('');
   const streamAbortRef = useRef<AbortController | null>(null);
   const workspaceTaskNamePrefillRunIdRef = useRef('');
   const launchFormHydratedRunIdRef = useRef('');
@@ -1669,6 +3535,9 @@ export default function IntentE2EWorkbench({
   const launchLlmOverrideRef = useRef<IntentLaunchLlmOverride | null>(null);
 
   const displayScenarioCard = result?.scenarioCard ?? streamState.scenarioCard;
+  const displayExecutionPlan = result?.executionPlan ?? null;
+  const displayVerificationPlan = result?.verificationPlan ?? null;
+  const displayCompiledTemplate = result?.compiledTemplate ?? null;
   const displayDescription = result?.description ?? streamState.description;
   const displayAttempts = result?.attempts ?? streamState.attempts;
   const displayFinalResult = result?.finalResult ?? streamState.finalResult;
@@ -1676,6 +3545,7 @@ export default function IntentE2EWorkbench({
   const displayLlmMeta = result?.llmMeta ?? streamState.llmMeta;
   const displayKnowledge = result?.knowledge ?? null;
   const displayTargetUrl = result?.targetUrl ?? streamState.targetUrl;
+  const displayResolvedUrls = result?.resolvedUrls ?? streamState.resolvedUrls;
   const browserAttempt = [...displayAttempts].reverse().find((attempt) => Boolean(attempt.sessionId)) || null;
   const browserSessionId = browserAttempt?.sessionId || '';
   const currentStageText = streamState.message || STAGE_COPY[streamState.stage];
@@ -1690,20 +3560,312 @@ export default function IntentE2EWorkbench({
     () => uniqueStrings(displayAttempts.flatMap((attempt) => attempt.helperUsage?.usedSuggestedHelpers || [])),
     [displayAttempts]
   );
+  const starterHelperFailureSummary = useMemo(
+    () =>
+      insights?.starterHelperFailurePressureSummary
+        ? normalizeIntentVerificationFailurePressureViewSummary(insights.starterHelperFailurePressureSummary)
+        : summarizeIntentVerificationFailurePressureViewSummaryFromItems(insights?.starterHelpers || [], {
+            itemKind: 'helper',
+          }),
+    [insights?.starterHelperFailurePressureSummary, insights?.starterHelpers]
+  );
+  const overallFailurePressureSummary = useMemo(
+    () =>
+      insights?.failurePressureSummary
+        ? normalizeIntentVerificationFailurePressureViewSummary(insights.failurePressureSummary)
+        : summarizeIntentVerificationFailurePressureViewSummaryFromItems(
+            [...(insights?.starterHelpers || []), ...(insights?.suppressedStarterHelpers || [])],
+            { itemKind: 'helper' }
+          ),
+    [insights?.failurePressureSummary, insights?.starterHelpers, insights?.suppressedStarterHelpers]
+  );
+  const suppressedStarterHelperFailureSummary = useMemo(
+    () =>
+      insights?.suppressedStarterHelperFailurePressureSummary
+        ? normalizeIntentVerificationFailurePressureViewSummary(insights.suppressedStarterHelperFailurePressureSummary)
+        : summarizeIntentVerificationFailurePressureViewSummaryFromItems(insights?.suppressedStarterHelpers || [], {
+            itemKind: 'helper',
+          }),
+    [insights?.suppressedStarterHelperFailurePressureSummary, insights?.suppressedStarterHelpers]
+  );
+  const promotionCoverageSummary = useMemo(
+    () =>
+      insights
+        ? buildIntentE2EPromotionCoverageSummary({
+            starterHelpers: insights.starterHelpers,
+            suppressedStarterHelpers: insights.suppressedStarterHelpers,
+            knowledgeChangeRuleSummaries: insights.knowledgeChangeRuleSummaries,
+          })
+        : null,
+    [insights]
+  );
+  const suppressedStarterHelperGovernanceSummary = useMemo(
+    () =>
+      insights?.suppressedStarterHelperGovernanceSummary || {
+        helperCount: (insights?.suppressedStarterHelpers || []).filter((item) => (item.governanceTargetCapabilityCount || 0) > 0).length,
+        capabilityCount: (insights?.suppressedStarterHelpers || []).reduce(
+          (sum, item) => sum + (item.governanceTargetCapabilityCount || 0),
+          0
+        ),
+        recentReviewExecutionCount: (insights?.suppressedStarterHelpers || []).reduce(
+          (sum, item) => sum + (item.recentGovernanceReviewExecutionCount || 0),
+          0
+        ),
+        recentPassedReviewExecutionCount: (insights?.suppressedStarterHelpers || []).reduce(
+          (sum, item) => sum + (item.recentPassedGovernanceReviewExecutionCount || 0),
+          0
+        ),
+        recentFailedReviewExecutionCount: (insights?.suppressedStarterHelpers || []).reduce(
+          (sum, item) => sum + (item.recentFailedGovernanceReviewExecutionCount || 0),
+          0
+        ),
+        latestReviewExecutionAt: '',
+        recentVerifyExecutionCount: (insights?.suppressedStarterHelpers || []).reduce(
+          (sum, item) => sum + (item.recentGovernanceVerifyExecutionCount || 0),
+          0
+        ),
+        recentPassedVerifyExecutionCount: (insights?.suppressedStarterHelpers || []).reduce(
+          (sum, item) => sum + (item.recentPassedGovernanceVerifyExecutionCount || 0),
+          0
+        ),
+        recentFailedVerifyExecutionCount: (insights?.suppressedStarterHelpers || []).reduce(
+          (sum, item) => sum + (item.recentFailedGovernanceVerifyExecutionCount || 0),
+          0
+        ),
+        latestVerifyExecutionAt: '',
+        recentRepairExecutionCount: (insights?.suppressedStarterHelpers || []).reduce(
+          (sum, item) => sum + (item.recentGovernanceRepairExecutionCount || 0),
+          0
+        ),
+        recentPassedRepairExecutionCount: (insights?.suppressedStarterHelpers || []).reduce(
+          (sum, item) => sum + (item.recentPassedGovernanceRepairExecutionCount || 0),
+          0
+        ),
+        recentFailedRepairExecutionCount: (insights?.suppressedStarterHelpers || []).reduce(
+          (sum, item) => sum + (item.recentFailedGovernanceRepairExecutionCount || 0),
+          0
+        ),
+        latestRepairExecutionAt: '',
+      },
+    [insights?.suppressedStarterHelperGovernanceSummary, insights?.suppressedStarterHelpers]
+  );
+  const starterCapabilitySelectedAssetSlugSet = useMemo(
+    () => new Set(starterCapabilitySelectedAssetSlugs),
+    [starterCapabilitySelectedAssetSlugs]
+  );
+  const starterCapabilityLaunches = useMemo(() => {
+    if (!displayFinalResult?.success || !displayKnowledge?.starterAssets?.length) return [];
+
+    return displayKnowledge.starterAssets.map((asset) => {
+      const promotable = canPromoteIntentStarterAssetToProjectCapability(asset);
+      const promotionDecision = buildIntentStarterAssetPromotionDecision(asset);
+      const preset = buildIntentStarterCapabilityPreset({
+        asset,
+        targetUrl: displayTargetUrl,
+        description: displayDescription,
+        scenario: displayScenarioCard
+          ? {
+              title: displayScenarioCard.title,
+              featureDescription: displayScenarioCard.featureDescription,
+              successCriteria: displayScenarioCard.successCriteria,
+              flowDefinition: displayScenarioCard.flowDefinition,
+            }
+          : null,
+      });
+      const token = promotable && workspaceProjectUid
+        ? createIntentCapabilityLaunchToken({
+            projectUid: workspaceProjectUid,
+            preset,
+          })
+        : '';
+
+      return {
+        asset,
+        promotable,
+        promotionDecision,
+        preset,
+        token,
+        href: promotable && workspaceProjectUid
+          ? buildIntentCapabilityWorkbenchHref({
+              projectUid: workspaceProjectUid,
+              moduleUid: workspaceModuleUid || undefined,
+              token,
+            })
+          : '',
+      };
+    });
+  }, [
+    displayDescription,
+    displayFinalResult?.success,
+    displayKnowledge?.starterAssets,
+    displayScenarioCard,
+    displayTargetUrl,
+    workspaceModuleUid,
+    workspaceProjectUid,
+  ]);
+  const selectedStarterCapabilityLaunches = useMemo(
+    () =>
+      starterCapabilityLaunches.filter(
+        (launch) => launch.promotable && starterCapabilitySelectedAssetSlugSet.has(launch.asset.assetSlug)
+      ),
+    [starterCapabilityLaunches, starterCapabilitySelectedAssetSlugSet]
+  );
+  const promotableStarterCapabilityLaunches = useMemo(
+    () => starterCapabilityLaunches.filter((launch) => canPromoteIntentStarterAssetToProjectCapability(launch.asset)),
+    [starterCapabilityLaunches]
+  );
+  const starterCapabilityPromotionSummary = useMemo(
+    () => summarizeIntentStarterAssetPromotionDecisions(starterCapabilityLaunches.map((launch) => launch.promotionDecision)),
+    [starterCapabilityLaunches]
+  );
   const providerIsImplemented = llmConfig.provider === 'openai' && llmConfig.providerImplemented;
-  const hasDisplayDetails = Boolean(displayScenarioCard || displayDescription || displayAttempts.length > 0);
+  const hasDisplayDetails = Boolean(displayScenarioCard || displayDescription || displayCompiledTemplate || displayAttempts.length > 0);
   const knowledgeDraftBusy = knowledgeDraftLoading || knowledgeDraftWriting || knowledgeDraftMerging || knowledgeBackupsLoading || knowledgeBackupRestoring;
+  const knowledgeDraftDisplayCandidates = useMemo(
+    () => (knowledgeDraftPreview ? sortKnowledgeDraftCandidates(knowledgeDraftPreview.candidates) : []),
+    [knowledgeDraftPreview]
+  );
   const knowledgeDraftSelectedCandidateIdSet = useMemo(() => new Set(knowledgeDraftSelectedCandidateIds), [knowledgeDraftSelectedCandidateIds]);
   const knowledgeDraftSelectedCount = useMemo(
     () =>
-      knowledgeDraftPreview
-        ? knowledgeDraftPreview.candidates.filter((candidate) => knowledgeDraftSelectedCandidateIdSet.has(candidate.candidateId)).length
+      knowledgeDraftDisplayCandidates.length > 0
+        ? knowledgeDraftDisplayCandidates.filter((candidate) => knowledgeDraftSelectedCandidateIdSet.has(candidate.candidateId)).length
         : 0,
-    [knowledgeDraftPreview, knowledgeDraftSelectedCandidateIdSet]
+    [knowledgeDraftDisplayCandidates, knowledgeDraftSelectedCandidateIdSet]
+  );
+  const knowledgeDraftMergeRecommendedCount = useMemo(
+    () => knowledgeDraftDisplayCandidates.filter((candidate) => isIntentProjectKnowledgeDraftCandidateMergeRecommended(candidate)).length,
+    [knowledgeDraftDisplayCandidates]
   );
   const knowledgeDraftSelectableCount = useMemo(
-    () => (knowledgeDraftPreview ? knowledgeDraftPreview.candidates.filter((candidate) => !candidate.alreadyCovered).length : 0),
-    [knowledgeDraftPreview]
+    () => knowledgeDraftDisplayCandidates.filter((candidate) => isIntentProjectKnowledgeDraftCandidateSelectable(candidate)).length,
+    [knowledgeDraftDisplayCandidates]
+  );
+  const knowledgeDraftDefaultDeferredCount = useMemo(
+    () => knowledgeDraftDisplayCandidates.filter((candidate) => isIntentProjectKnowledgeDraftCandidateDeferredByDefault(candidate)).length,
+    [knowledgeDraftDisplayCandidates]
+  );
+  const knowledgeDraftSelectedProbationaryCandidates = useMemo(
+    () =>
+      knowledgeDraftDisplayCandidates.filter(
+        (candidate) => knowledgeDraftSelectedCandidateIdSet.has(candidate.candidateId) && isIntentProjectKnowledgeDraftCandidateProbationary(candidate)
+      ),
+    [knowledgeDraftDisplayCandidates, knowledgeDraftSelectedCandidateIdSet]
+  );
+  const knowledgeDraftProbationaryDeferredCount = useMemo(
+    () =>
+      knowledgeDraftDisplayCandidates.filter(
+        (candidate) => !candidate.alreadyCovered && isIntentProjectKnowledgeDraftCandidateProbationary(candidate)
+      ).length,
+    [knowledgeDraftDisplayCandidates]
+  );
+  const knowledgeDraftSelectedProbationaryCount = knowledgeDraftSelectedProbationaryCandidates.length;
+  const knowledgeDraftSelectedProbationaryCandidateIds = useMemo(
+    () => knowledgeDraftSelectedProbationaryCandidates.map((candidate) => candidate.candidateId),
+    [knowledgeDraftSelectedProbationaryCandidates]
+  );
+  const knowledgeDraftSelectedAutoPromoteCount = useMemo(
+    () =>
+      knowledgeDraftDisplayCandidates.filter(
+        (candidate) =>
+          knowledgeDraftSelectedCandidateIdSet.has(candidate.candidateId) &&
+          candidate.feedback?.lifecyclePolicy === 'auto_promote_candidate'
+      ).length,
+    [knowledgeDraftDisplayCandidates, knowledgeDraftSelectedCandidateIdSet]
+  );
+  const knowledgeDraftSelectedObservePolicyCount = useMemo(
+    () =>
+      knowledgeDraftDisplayCandidates.filter(
+        (candidate) =>
+          knowledgeDraftSelectedCandidateIdSet.has(candidate.candidateId) && candidate.feedback?.lifecyclePolicy === 'observe'
+      ).length,
+    [knowledgeDraftDisplayCandidates, knowledgeDraftSelectedCandidateIdSet]
+  );
+  const knowledgeDraftSelectedBlockDefaultMergeCount = useMemo(
+    () =>
+      knowledgeDraftDisplayCandidates.filter(
+        (candidate) =>
+          knowledgeDraftSelectedCandidateIdSet.has(candidate.candidateId) &&
+          candidate.feedback?.lifecyclePolicy === 'block_default_merge'
+      ).length,
+    [knowledgeDraftDisplayCandidates, knowledgeDraftSelectedCandidateIdSet]
+  );
+  const knowledgeDraftManualReviewCount = useMemo(
+    () =>
+      knowledgeDraftDisplayCandidates.filter(
+        (candidate) => !candidate.alreadyCovered && isIntentProjectKnowledgeDraftCandidateDeprioritized(candidate)
+      ).length,
+    [knowledgeDraftDisplayCandidates]
+  );
+  const knowledgeDraftNegativeHistoryDeferredCount = useMemo(
+    () =>
+      knowledgeDraftDisplayCandidates.filter(
+        (candidate) =>
+          !candidate.alreadyCovered &&
+          isIntentProjectKnowledgeDraftCandidateNegativeHistory(candidate) &&
+          !isIntentProjectKnowledgeDraftCandidateProbationary(candidate) &&
+          !isIntentProjectKnowledgeDraftCandidateDeprioritized(candidate)
+      ).length,
+    [knowledgeDraftDisplayCandidates]
+  );
+  const knowledgeDraftSelectedManualReviewCount = useMemo(
+    () =>
+      knowledgeDraftDisplayCandidates.filter(
+        (candidate) =>
+          knowledgeDraftSelectedCandidateIdSet.has(candidate.candidateId) &&
+          isIntentProjectKnowledgeDraftCandidateDeprioritized(candidate)
+      ).length,
+    [knowledgeDraftDisplayCandidates, knowledgeDraftSelectedCandidateIdSet]
+  );
+  const knowledgeDraftSelectedNegativeHistoryDeferredCount = useMemo(
+    () =>
+      knowledgeDraftDisplayCandidates.filter(
+        (candidate) =>
+          knowledgeDraftSelectedCandidateIdSet.has(candidate.candidateId) &&
+          isIntentProjectKnowledgeDraftCandidateNegativeHistory(candidate) &&
+          !isIntentProjectKnowledgeDraftCandidateProbationary(candidate) &&
+          !isIntentProjectKnowledgeDraftCandidateDeprioritized(candidate)
+      ).length,
+    [knowledgeDraftDisplayCandidates, knowledgeDraftSelectedCandidateIdSet]
+  );
+  const knowledgeDraftSelectedOverrideCandidateIds = useMemo(
+    () =>
+      knowledgeDraftDisplayCandidates
+        .filter(
+          (candidate) =>
+            knowledgeDraftSelectedCandidateIdSet.has(candidate.candidateId) &&
+            isIntentProjectKnowledgeDraftCandidateDeprioritized(candidate)
+        )
+        .map((candidate) => candidate.candidateId),
+    [knowledgeDraftDisplayCandidates, knowledgeDraftSelectedCandidateIdSet]
+  );
+  const knowledgeDraftDeferredReasonSummary = useMemo(
+    () =>
+      [
+        knowledgeDraftNegativeHistoryDeferredCount > 0 ? `负向历史证据 ${knowledgeDraftNegativeHistoryDeferredCount} 条` : '',
+        knowledgeDraftProbationaryDeferredCount > 0 ? `观察期 ${knowledgeDraftProbationaryDeferredCount} 条` : '',
+        knowledgeDraftManualReviewCount > 0 ? `自动降权 ${knowledgeDraftManualReviewCount} 条` : '',
+      ]
+        .filter(Boolean)
+        .join('；'),
+    [knowledgeDraftManualReviewCount, knowledgeDraftNegativeHistoryDeferredCount, knowledgeDraftProbationaryDeferredCount]
+  );
+  const knowledgeDraftSelectedDeferredReasonSummary = useMemo(
+    () =>
+      [
+        knowledgeDraftSelectedNegativeHistoryDeferredCount > 0
+          ? `负向历史证据 ${knowledgeDraftSelectedNegativeHistoryDeferredCount} 条`
+          : '',
+        knowledgeDraftSelectedProbationaryCount > 0 ? `风险确认 ${knowledgeDraftSelectedProbationaryCount} 条` : '',
+        knowledgeDraftSelectedManualReviewCount > 0 ? `人工 override ${knowledgeDraftSelectedManualReviewCount} 条` : '',
+      ]
+        .filter(Boolean)
+        .join('；'),
+    [
+      knowledgeDraftSelectedManualReviewCount,
+      knowledgeDraftSelectedNegativeHistoryDeferredCount,
+      knowledgeDraftSelectedProbationaryCount,
+    ]
   );
   const workspaceSelectedTask = useMemo(
     () => workspaceTasks.find((item) => item.configUid === workspaceConfigUid) || null,
@@ -1752,6 +3914,7 @@ export default function IntentE2EWorkbench({
           purpose: item.purpose || '',
         }))
       );
+      setAuth(defaultAuth);
       setLlmConfig((current) => mergeIntentLaunchLlmOverride(current, llmOverride));
       if (notice) setRestoreNotice(notice);
       return true;
@@ -1860,6 +4023,16 @@ export default function IntentE2EWorkbench({
   }, [displayFinalResult, workspaceLoadingProjects, workspaceProjects.length]);
 
   useEffect(() => {
+    setStarterCapabilitySelectedAssetSlugs(
+      starterCapabilityLaunches
+        .filter((launch) => launch.promotable && launch.promotionDecision.autoSelected)
+        .map((launch) => launch.asset.assetSlug)
+    );
+    setStarterCapabilitySaveError('');
+    setStarterCapabilitySaveNotice('');
+  }, [activeRunId, starterCapabilityLaunches]);
+
+  useEffect(() => {
     if (workspaceProjects.length === 0) {
       if (workspaceProjectUid) {
         setWorkspaceProjectUid('');
@@ -1871,6 +4044,11 @@ export default function IntentE2EWorkbench({
       setWorkspaceProjectUid(workspaceProjects[0]?.projectUid || '');
     }
   }, [workspaceProjectUid, workspaceProjects]);
+
+  useEffect(() => {
+    setStarterCapabilitySaveError('');
+    setStarterCapabilitySaveNotice('');
+  }, [workspaceProjectUid]);
 
   useEffect(() => {
     if (!workspaceProjectUid) {
@@ -2026,6 +4204,9 @@ export default function IntentE2EWorkbench({
           purpose: item.purpose || '',
         }))
       );
+      if (draftDetail || searchWorkspaceProjectUid.trim()) {
+        setAuth(defaultAuth);
+      }
       setLlmConfig((current) => mergeIntentLaunchLlmOverride(current, llmOverride));
     },
     [searchIntentDraftUid, searchWorkspaceProjectUid]
@@ -2319,6 +4500,11 @@ export default function IntentE2EWorkbench({
     setKnowledgeDraftSelectedCandidateIds(defaultKnowledgeDraftCandidateIds(knowledgeDraftPreview));
   }
 
+  function selectAllMergeableKnowledgeDraftCandidates() {
+    if (!knowledgeDraftPreview) return;
+    setKnowledgeDraftSelectedCandidateIds(allMergeableKnowledgeDraftCandidateIds(knowledgeDraftPreview));
+  }
+
   function clearKnowledgeDraftSelection() {
     setKnowledgeDraftSelectedCandidateIds([]);
   }
@@ -2438,7 +4624,12 @@ export default function IntentE2EWorkbench({
 
     setKnowledgeBackupRestoring(true);
     setKnowledgeDraftError('');
+    setKnowledgeMergeSelectionSummary(null);
+    setKnowledgeMergePreflightSummary(null);
+    setKnowledgeMergeReceipts([]);
     setKnowledgeAuditWarning('');
+    setKnowledgeOverrideWarning('');
+    setKnowledgeRiskAcknowledgementWarning('');
     setKnowledgeGuardrailWarning('');
 
     try {
@@ -2447,6 +4638,8 @@ export default function IntentE2EWorkbench({
         minSeenCount: knowledgeDraftMinSeenCount,
         minResolvedCount: knowledgeDraftMinResolvedCount,
         maxCandidates: knowledgeDraftMaxCandidates,
+        projectUid: workspaceProjectUid || undefined,
+        moduleUid: workspaceModuleUid || undefined,
       });
 
       replaceKnowledgeDraftPreview(nextDraft);
@@ -2457,6 +4650,8 @@ export default function IntentE2EWorkbench({
       setKnowledgeDraftMergeDiffPreview('');
       setKnowledgeChangeOperation('restore');
       setKnowledgeChangeComparison(restored.comparison || null);
+      setKnowledgeMergePreflightSummary(restored.preflightSummary || null);
+      setKnowledgeMergeReceipts(restored.mergeReceipts || []);
       setKnowledgeAuditWarning(restored.auditWarning || '');
       upsertKnowledgeAuditEntry(restored.auditEntry);
       await refreshProjectKnowledgeBackups({ silent: true });
@@ -2469,7 +4664,11 @@ export default function IntentE2EWorkbench({
           [
             `项目知识已从备份 ${restored.restoredFrom} 回滚`,
             restored.backupCreated ? `回滚前当前版本已备份到 ${restored.backupCreated}` : '',
-            restored.auditWarning ? `审计提醒：${restored.auditWarning}` : '',
+            ...(restored.mergeReceipts || []).map((receipt) => `${receipt.title}：${receipt.message}`),
+            restored.auditWarning &&
+            !(restored.mergeReceipts || []).some((receipt) => receipt.kind === 'audit' && receipt.level === 'warning')
+              ? `审计提醒：${restored.auditWarning}`
+              : '',
           ]
             .filter(Boolean)
             .join('；'),
@@ -2499,7 +4698,12 @@ export default function IntentE2EWorkbench({
     setKnowledgeDraftMergeDiffPreview('');
     setKnowledgeChangeOperation('');
     setKnowledgeChangeComparison(null);
+    setKnowledgeMergeSelectionSummary(null);
+    setKnowledgeMergePreflightSummary(null);
+    setKnowledgeMergeReceipts([]);
     setKnowledgeAuditWarning('');
+    setKnowledgeOverrideWarning('');
+    setKnowledgeRiskAcknowledgementWarning('');
     setKnowledgeGuardrailWarning('');
     setKnowledgeRestoredFrom('');
     setKnowledgeRestoreBackupCreated('');
@@ -2509,6 +4713,8 @@ export default function IntentE2EWorkbench({
         minSeenCount: knowledgeDraftMinSeenCount,
         minResolvedCount: knowledgeDraftMinResolvedCount,
         maxCandidates: knowledgeDraftMaxCandidates,
+        projectUid: workspaceProjectUid || undefined,
+        moduleUid: workspaceModuleUid || undefined,
       });
 
       replaceKnowledgeDraftPreview(draft);
@@ -2518,7 +4724,11 @@ export default function IntentE2EWorkbench({
         feed: pushFeed(
           current.feed,
           draft.candidates.length > 0
-            ? `项目知识草稿预览已生成：建议新增 ${draft.summary.suggestedCandidates} 条，已覆盖 ${draft.summary.alreadyCoveredCandidates} 条。`
+            ? `项目知识草稿预览已生成：建议新增 ${draft.summary.suggestedCandidates} 条，已覆盖 ${draft.summary.alreadyCoveredCandidates} 条${
+                draft.candidates.filter((candidate) => isIntentProjectKnowledgeDraftCandidateDeferredByDefault(candidate)).length > 0
+                  ? `，其中 ${draft.candidates.filter((candidate) => isIntentProjectKnowledgeDraftCandidateDeferredByDefault(candidate)).length} 条默认为保守复核项`
+                  : ''
+              }。`
             : '项目知识草稿预览已生成：当前没有新的候选规则。',
           draft.candidates.length > 0 ? 'success' : 'info'
         ),
@@ -2545,7 +4755,12 @@ export default function IntentE2EWorkbench({
     setKnowledgeDraftMergeDiffPreview('');
     setKnowledgeChangeOperation('');
     setKnowledgeChangeComparison(null);
+    setKnowledgeMergeSelectionSummary(null);
+    setKnowledgeMergePreflightSummary(null);
+    setKnowledgeMergeReceipts([]);
     setKnowledgeAuditWarning('');
+    setKnowledgeOverrideWarning('');
+    setKnowledgeRiskAcknowledgementWarning('');
     setKnowledgeGuardrailWarning('');
     setKnowledgeRestoredFrom('');
     setKnowledgeRestoreBackupCreated('');
@@ -2555,6 +4770,8 @@ export default function IntentE2EWorkbench({
         minSeenCount: knowledgeDraftMinSeenCount,
         minResolvedCount: knowledgeDraftMinResolvedCount,
         maxCandidates: knowledgeDraftMaxCandidates,
+        projectUid: workspaceProjectUid || undefined,
+        moduleUid: workspaceModuleUid || undefined,
       });
 
       const outputPath = writtenTo || draft.outputPath;
@@ -2581,15 +4798,66 @@ export default function IntentE2EWorkbench({
     if (knowledgeDraftBusy) return;
 
     if (knowledgeDraftSelectedCandidateIds.length === 0) {
-      setKnowledgeDraftError('请先选择至少一条建议新增的候选规则');
+      setKnowledgeDraftError('请先选择至少一条待合并候选规则；观察期、负向历史证据和自动降权项默认不会勾选，需要你手工确认。');
       return;
+    }
+
+    const preflightWarnings: string[] = [];
+    if (knowledgeDraftSelectedBlockDefaultMergeCount > 0) {
+      preflightWarnings.push(
+        `本次选择包含 ${knowledgeDraftSelectedBlockDefaultMergeCount} 条“阻断默认合并”候选；提交后会以人工 override provenance 记录。`
+      );
+    } else if (knowledgeDraftSelectedManualReviewCount > 0) {
+      preflightWarnings.push(
+        `本次选择包含 ${knowledgeDraftSelectedManualReviewCount} 条自动降权候选；提交后会以人工 override provenance 记录。`
+      );
+    }
+    if (knowledgeDraftSelectedProbationaryCount > 0) {
+      preflightWarnings.push(
+        `本次选择包含 ${knowledgeDraftSelectedProbationaryCount} 条观察期候选；提交后会写入风险确认 provenance。`
+      );
+    }
+    if (knowledgeDraftSelectedNegativeHistoryDeferredCount > 0) {
+      preflightWarnings.push(
+        `本次选择包含 ${knowledgeDraftSelectedNegativeHistoryDeferredCount} 条存在负向历史证据的候选；虽然不会强制 override，但建议先复核对应 grader / rollback 记录。`
+      );
+    }
+    if (knowledgeDraftSelectedAutoPromoteCount > 0) {
+      preflightWarnings.push(`其中 ${knowledgeDraftSelectedAutoPromoteCount} 条属于“自动晋升候选”，会沿推荐路径直接纳入本次 merge。`);
+    }
+
+    if (preflightWarnings.length > 0) {
+      const selectedRuleSummary = knowledgeDraftDisplayCandidates
+        .filter((candidate) => knowledgeDraftSelectedCandidateIdSet.has(candidate.candidateId))
+        .slice(0, 3)
+        .map((candidate) => candidate.rule.id)
+        .join(' / ');
+      const confirmed = confirm(
+        [
+          '确认按当前预检结果继续合并吗？',
+          ...preflightWarnings,
+          selectedRuleSummary ? `候选规则：${selectedRuleSummary}${knowledgeDraftSelectedCount > 3 ? ' 等' : ''}` : '',
+          '建议先小范围验证，并持续观察首次通过率、修复率和回滚候选变化。',
+        ]
+          .filter(Boolean)
+          .join('\n')
+      );
+      if (!confirmed) {
+        setKnowledgeDraftError('已取消合并；请先确认本次 override / 风险确认范围后再提交。');
+        return;
+      }
     }
 
     setKnowledgeDraftMerging(true);
     setKnowledgeDraftError('');
     setKnowledgeRestoredFrom('');
     setKnowledgeRestoreBackupCreated('');
+    setKnowledgeMergeSelectionSummary(null);
+    setKnowledgeMergePreflightSummary(null);
+    setKnowledgeMergeReceipts([]);
     setKnowledgeAuditWarning('');
+    setKnowledgeOverrideWarning('');
+    setKnowledgeRiskAcknowledgementWarning('');
     setKnowledgeGuardrailWarning('');
 
     try {
@@ -2598,7 +4866,10 @@ export default function IntentE2EWorkbench({
         minResolvedCount: knowledgeDraftMinResolvedCount,
         maxCandidates: knowledgeDraftMaxCandidates,
         candidateIds: knowledgeDraftSelectedCandidateIds,
+        overrideCandidateIds: knowledgeDraftSelectedOverrideCandidateIds,
+        acknowledgedRiskCandidateIds: knowledgeDraftSelectedProbationaryCandidateIds,
         projectUid: workspaceProjectUid || undefined,
+        moduleUid: workspaceModuleUid || undefined,
       });
 
       replaceKnowledgeDraftPreview(merged.draft);
@@ -2607,7 +4878,12 @@ export default function IntentE2EWorkbench({
       setKnowledgeDraftMergeDiffPreview(merged.diffPreview || '');
       setKnowledgeChangeOperation('merge');
       setKnowledgeChangeComparison(merged.comparison || null);
+      setKnowledgeMergeSelectionSummary(merged.selectionSummary || null);
+      setKnowledgeMergePreflightSummary(merged.preflightSummary || null);
+      setKnowledgeMergeReceipts(merged.mergeReceipts || []);
       setKnowledgeAuditWarning(merged.auditWarning || '');
+      setKnowledgeOverrideWarning(merged.overrideWarning || '');
+      setKnowledgeRiskAcknowledgementWarning(merged.riskAcknowledgementWarning || '');
       setKnowledgeGuardrailWarning(merged.guardrailWarning || '');
       upsertKnowledgeAuditEntry(merged.auditEntry);
       await refreshProjectKnowledgeBackups({ silent: true });
@@ -2623,8 +4899,20 @@ export default function IntentE2EWorkbench({
             merged.coveredCandidateIds.length > 0 ? `已跳过 ${merged.coveredCandidateIds.length} 条已覆盖候选` : '',
             merged.skippedRuleIds.length > 0 ? `已跳过 ${merged.skippedRuleIds.length} 条重复规则` : '',
             merged.missingCandidateIds.length > 0 ? `有 ${merged.missingCandidateIds.length} 条候选已失效` : '',
-            merged.auditWarning ? `审计提醒：${merged.auditWarning}` : '',
-            merged.guardrailWarning ? `护栏提醒：${merged.guardrailWarning}` : '',
+            summarizeSuccessfulRunKnowledgePromotionReceipt(merged.successfulRunKnowledgePromotionReceipt),
+            ...(merged.mergeReceipts || []).map((receipt) => `${receipt.title}：${receipt.message}`),
+            merged.auditWarning && !(merged.mergeReceipts || []).some((receipt) => receipt.kind === 'audit')
+              ? `审计提醒：${merged.auditWarning}`
+              : '',
+            merged.overrideWarning && !(merged.mergeReceipts || []).some((receipt) => receipt.kind === 'override')
+              ? `Override 提醒：${merged.overrideWarning}`
+              : '',
+            merged.riskAcknowledgementWarning && !(merged.mergeReceipts || []).some((receipt) => receipt.kind === 'risk_acknowledgement')
+              ? `风险确认：${merged.riskAcknowledgementWarning}`
+              : '',
+            merged.guardrailWarning && !(merged.mergeReceipts || []).some((receipt) => receipt.kind === 'guardrail')
+              ? `护栏提醒：${merged.guardrailWarning}`
+              : '',
           ]
             .filter(Boolean)
             .join('；'),
@@ -2632,6 +4920,15 @@ export default function IntentE2EWorkbench({
         ),
       }));
     } catch (error: unknown) {
+      if (error instanceof ProjectKnowledgeMergeError && error.response) {
+        setKnowledgeMergeSelectionSummary(error.response.selectionSummary || null);
+        setKnowledgeMergePreflightSummary(error.response.preflightSummary || null);
+        setKnowledgeMergeReceipts(error.response.mergeReceipts || []);
+        setKnowledgeAuditWarning(error.response.auditWarning || '');
+        setKnowledgeOverrideWarning(error.response.overrideWarning || '');
+        setKnowledgeRiskAcknowledgementWarning(error.response.riskAcknowledgementWarning || '');
+        setKnowledgeGuardrailWarning(error.response.guardrailWarning || '');
+      }
       const message = error instanceof Error ? error.message : '合并项目知识规则失败';
       setKnowledgeDraftError(message);
       setStreamState((current) => ({
@@ -2712,6 +5009,156 @@ export default function IntentE2EWorkbench({
     }
   }
 
+  function setAllStarterCapabilitiesSelected(selected: boolean) {
+    setStarterCapabilitySelectedAssetSlugs(
+      selected ? promotableStarterCapabilityLaunches.map((launch) => launch.asset.assetSlug) : []
+    );
+    setStarterCapabilitySaveError('');
+    setStarterCapabilitySaveNotice('');
+  }
+
+  function toggleStarterCapabilitySelection(assetSlug: string) {
+    const launch = starterCapabilityLaunches.find((item) => item.asset.assetSlug === assetSlug);
+    if (!launch || !canPromoteIntentStarterAssetToProjectCapability(launch.asset)) {
+      setStarterCapabilitySaveError('全局 runtime heuristic 已内置到执行环境，无需再直接沉淀到项目能力库。');
+      setStarterCapabilitySaveNotice('');
+      return;
+    }
+
+    setStarterCapabilitySelectedAssetSlugs((current) => {
+      const next = new Set(current);
+      if (next.has(assetSlug)) {
+        next.delete(assetSlug);
+      } else {
+        next.add(assetSlug);
+      }
+      return promotableStarterCapabilityLaunches
+        .map((launch) => launch.asset.assetSlug)
+        .filter((item) => next.has(item));
+    });
+    setStarterCapabilitySaveError('');
+    setStarterCapabilitySaveNotice('');
+  }
+
+  async function persistStarterCapabilitiesToProject() {
+    if (!workspaceProjectUid) {
+      setStarterCapabilitySaveError('请先选择一个项目');
+      return;
+    }
+    if (selectedStarterCapabilityLaunches.length === 0) {
+      setStarterCapabilitySaveError('请至少选择一条 Starter 资产');
+      return;
+    }
+
+    setStarterCapabilitySaving(true);
+    setStarterCapabilitySaveError('');
+    setStarterCapabilitySaveNotice('');
+
+    try {
+      const persistableLaunches = selectedStarterCapabilityLaunches.filter((launch) => launch.promotable);
+      if (persistableLaunches.length === 0) {
+        throw new Error('当前没有可写入项目能力库的 Starter 资产');
+      }
+      const workspaceModuleName = workspaceModules.find((item) => item.moduleUid === workspaceModuleUid)?.name || '';
+      const res = await fetch(`/api/projects/${workspaceProjectUid}/capabilities`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: persistableLaunches.map((launch) => launch.preset),
+          starterAssetPromotionReceipt: {
+            sourceRunId: activeRunId,
+            moduleUid: workspaceModuleUid,
+            moduleName: workspaceModuleName,
+            scenarioTitle: displayScenarioCard?.title?.trim() || '',
+            targetUrl: (displayTargetUrl || '').trim(),
+            items: persistableLaunches.map((launch) => ({
+              assetSlug: launch.asset.assetSlug,
+              assetTitle: launch.asset.assetTitle,
+              helper: launch.asset.helper,
+              source: launch.asset.source,
+              scope: launch.asset.scope,
+              capabilitySlug: launch.preset.slug,
+              decisionStatus: launch.promotionDecision.status,
+              decisionReasonCode: launch.promotionDecision.reasonCode,
+              decisionReason: launch.promotionDecision.reason,
+              autoSelected: launch.promotionDecision.autoSelected,
+              recommendedAction: launch.promotionDecision.recommendedAction,
+              runCount: launch.asset.runCount,
+              passedRuns: launch.asset.passedRuns,
+              passRate: launch.asset.passRate,
+              suggestedReuseRuns: launch.asset.suggestedReuseRuns,
+              supportingRuleIds: launch.asset.supportingRuleIds,
+              supportingRuleTitles: launch.asset.supportingRuleTitles,
+              matchedStepUids: launch.asset.matchedStepUids,
+              knowledgeChangeSignal: launch.asset.knowledgeChangeSignal || '',
+              knowledgeChangeTier: launch.asset.knowledgeChangeTier || '',
+              knowledgeChangeWatchingKind: launch.asset.knowledgeChangeWatchingKind || '',
+              knowledgeChangeDecisionableRuleCount: launch.asset.knowledgeChangeDecisionableRuleCount || 0,
+              governanceReleaseStatus: launch.asset.governanceReleaseStatus || '',
+              recentFailedReviewCapabilityCount: launch.asset.recentFailedReviewCapabilityCount || 0,
+              recentFailedVerifyCapabilityCount: launch.asset.recentFailedVerifyCapabilityCount || 0,
+              recentFailedReviewExecutionCount: launch.asset.recentFailedReviewExecutionCount || 0,
+              recentFailedVerifyExecutionCount: launch.asset.recentFailedVerifyExecutionCount || 0,
+              recentFailureWindowDays: launch.asset.recentFailureWindowDays || 0,
+            })),
+          },
+        }),
+      });
+      const json = (await res.json()) as StarterCapabilityPersistResponse;
+      if (!res.ok) {
+        throw new Error(json.error || '批量保存 Starter 能力失败');
+      }
+
+      const savedItems = Array.isArray(json.items) ? json.items : [];
+      const savedCount = savedItems.length || persistableLaunches.length;
+      const receipt = json.starterAssetPromotionReceipt || null;
+      const savedNames = savedItems
+        .map((item) => String(item.name || '').trim())
+        .filter(Boolean)
+        .slice(0, 3);
+      const message = [
+        `已写入 ${savedCount} 条 Starter 能力草稿到项目 ${workspaceProjectUid}`,
+        savedNames.length > 0 ? `包括 ${savedNames.join('、')}` : '',
+        receipt
+          ? `回执：直接沉淀 ${receipt.summary.directPromotionCount} 条${
+              receipt.summary.manualReviewCount > 0 ? `，人工复核 ${receipt.summary.manualReviewCount} 条` : ''
+            }`
+          : '',
+        json.starterAssetPromotionReceiptWarning ? `审计提醒：${json.starterAssetPromotionReceiptWarning}` : '',
+      ]
+        .filter(Boolean)
+        .join('；');
+
+      setStarterCapabilitySaveNotice(message);
+      setStreamState((current) => ({
+        ...current,
+        feed: pushFeed(
+          current.feed,
+          [
+            `已将 ${savedCount} 条 Starter 资产沉淀到项目能力库：${persistableLaunches
+              .map((launch) => launch.asset.assetTitle)
+              .slice(0, 4)
+              .join('、')}`,
+            receipt ? `promotion receipt ${receipt.receiptId}` : '',
+            json.starterAssetPromotionReceiptWarning ? `审计提醒：${json.starterAssetPromotionReceiptWarning}` : '',
+          ]
+            .filter(Boolean)
+            .join('；'),
+          'success'
+        ),
+      }));
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : '批量保存 Starter 能力失败';
+      setStarterCapabilitySaveError(message);
+      setStreamState((current) => ({
+        ...current,
+        feed: pushFeed(current.feed, message, 'error'),
+      }));
+    } finally {
+      setStarterCapabilitySaving(false);
+    }
+  }
+
   async function stopIntentTest() {
     if (!running || !activeRunId || canceling) return;
 
@@ -2760,6 +5207,7 @@ export default function IntentE2EWorkbench({
       input: input.trim(),
       targetUrl: targetUrl.trim(),
       projectUid: defaultWorkspaceProjectUid || undefined,
+      moduleUid: workspaceModuleUid || undefined,
       attachments: attachments.map((item) => ({
         name: item.name,
         dataUrl: item.dataUrl,
@@ -3209,7 +5657,10 @@ export default function IntentE2EWorkbench({
                   >
                     {knowledgeDraftMerging ? '合并中…' : `合并选中规则（${knowledgeDraftSelectedCount}）`}
                   </button>
-                  <p className="text-xs leading-5 text-slate-500">这块不是让你改脚本，而是把历史修复经验自动沉淀成下一轮更稳的规则输入。</p>
+                  <p className="text-xs leading-5 text-slate-500">
+                    这块不是让你改脚本，而是把历史修复经验自动沉淀成下一轮更稳的规则输入。
+                    {knowledgeDraftDefaultDeferredCount > 0 ? ' 默认只勾选安全候选；存在历史负向证据、观察期或自动降权的规则需要你手工确认。' : ''}
+                  </p>
                 </div>
 
               {knowledgeDraftError && (
@@ -3310,16 +5761,146 @@ export default function IntentE2EWorkbench({
                 </div>
               )}
 
-              {knowledgeAuditWarning && (
-                <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                  审计提醒：{knowledgeAuditWarning}
+              {knowledgeMergeSelectionSummary && (
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-700">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="font-medium text-slate-900">本次合并范围</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">这里直接回放本次 route 最终接收到的候选选择、风险要求和策略分布。</p>
+                    </div>
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-600">
+                      选中 {knowledgeMergeSelectionSummary.selectedCandidateCount} / 实际 merge {knowledgeMergeSelectionSummary.mergeCandidateCount}
+                    </span>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                      <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">requested</p>
+                      <p className="mt-2 text-lg font-semibold text-slate-950">{knowledgeMergeSelectionSummary.requestedCandidateCount}</p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                      <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">risky</p>
+                      <p className="mt-2 text-lg font-semibold text-slate-950">{knowledgeMergeSelectionSummary.selectedRiskyCandidateIds.length}</p>
+                    </div>
+                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-emerald-700">
+                      <p className="text-[11px] uppercase tracking-[0.14em] text-emerald-500">auto promote</p>
+                      <p className="mt-2 text-lg font-semibold">{knowledgeMergeSelectionSummary.autoPromoteCandidateIds.length}</p>
+                    </div>
+                    <div className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-3 text-rose-700">
+                      <p className="text-[11px] uppercase tracking-[0.14em] text-rose-500">override required</p>
+                      <p className="mt-2 text-lg font-semibold">{knowledgeMergeSelectionSummary.overrideRequiredCandidateIds.length}</p>
+                    </div>
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3 text-amber-700">
+                      <p className="text-[11px] uppercase tracking-[0.14em] text-amber-500">risk ack required</p>
+                      <p className="mt-2 text-lg font-semibold">
+                        {knowledgeMergeSelectionSummary.riskAcknowledgementRequiredCandidateIds.length}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 text-xs leading-6 text-slate-600">
+                    <p>规则：{summarizeIdList(knowledgeMergeSelectionSummary.selectedRuleIds)}</p>
+                    <p className="mt-1">来源：{summarizeTextList(knowledgeMergeSelectionSummary.selectedSources, 3)}</p>
+                    <p className="mt-1">反馈状态：{summarizeTextList(knowledgeMergeSelectionSummary.selectedFeedbackStatuses, 4)}</p>
+                    <p className="mt-1">策略分布：{summarizeTextList(knowledgeMergeSelectionSummary.selectedLifecyclePolicies, 4)}</p>
+                  </div>
                 </div>
               )}
 
-              {knowledgeGuardrailWarning && (
-                <div className="mt-4 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm text-violet-800">
-                  护栏提醒：{knowledgeGuardrailWarning}
+              {knowledgeMergePreflightSummary && knowledgeMergePreflightSummary.items.length > 0 && (
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-700">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="font-medium text-slate-900">本次合并预检</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">这里展示服务端根据最终选择生成的结构化 preflight 判断，而不是拼接好的字符串提示。</p>
+                    </div>
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-600">
+                      {knowledgeMergePreflightSummary.itemCount} 项
+                    </span>
+                  </div>
+
+                  <div className="mt-4 space-y-3">
+                    {knowledgeMergePreflightSummary.items.map((item, index) => (
+                      <div key={`${item.kind}-${index}`} className={`rounded-2xl border px-4 py-3 text-sm ${projectKnowledgeMergeNoticeTone(item)}`}>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="rounded-full border border-current/20 bg-white/70 px-2.5 py-1 text-[10px] font-medium">
+                            {projectKnowledgeMergeNoticeProvenanceLabel(item.provenanceType)}
+                          </span>
+                          <p className="font-medium">{item.title}</p>
+                        </div>
+                        <p className="mt-2 leading-6">{item.message}</p>
+                        <div className="mt-2 text-xs leading-5 opacity-90">
+                          <p>规则：{summarizeIdList(item.ruleIds)}</p>
+                          {item.candidateIds.length > 0 && <p className="mt-1">候选：{summarizeIdList(item.candidateIds)}</p>}
+                          {item.feedbackStatuses.length > 0 && (
+                            <p className="mt-1">反馈：{summarizeTextList(item.feedbackStatuses, 4)}</p>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
+              )}
+
+              {knowledgeMergeReceipts.length > 0 ? (
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-700">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="font-medium text-slate-900">本次合并回执</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">这里记录本次 merge 最终真正写入的 override / 风险确认 / 护栏 / 审计回执。</p>
+                    </div>
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-600">
+                      {knowledgeMergeReceipts.length} 条
+                    </span>
+                  </div>
+
+                  <div className="mt-4 space-y-3">
+                    {knowledgeMergeReceipts.map((item, index) => (
+                      <div key={`${item.kind}-${item.title}-${index}`} className={`rounded-2xl border px-4 py-3 text-sm ${projectKnowledgeMergeNoticeTone(item)}`}>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="rounded-full border border-current/20 bg-white/70 px-2.5 py-1 text-[10px] font-medium">
+                            {projectKnowledgeMergeNoticeProvenanceLabel(item.provenanceType)}
+                          </span>
+                          <p className="font-medium">{item.title}</p>
+                        </div>
+                        <p className="mt-2 leading-6">{item.message}</p>
+                        <div className="mt-2 text-xs leading-5 opacity-90">
+                          {item.ruleIds.length > 0 && <p>规则：{summarizeIdList(item.ruleIds)}</p>}
+                          {item.candidateIds.length > 0 && <p className="mt-1">候选：{summarizeIdList(item.candidateIds)}</p>}
+                          {item.feedbackStatuses.length > 0 && (
+                            <p className="mt-1">反馈：{summarizeTextList(item.feedbackStatuses, 4)}</p>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {knowledgeAuditWarning && (
+                    <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                      审计提醒：{knowledgeAuditWarning}
+                    </div>
+                  )}
+
+                  {knowledgeOverrideWarning && (
+                    <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                      Override 回执：{knowledgeOverrideWarning}
+                    </div>
+                  )}
+
+                  {knowledgeRiskAcknowledgementWarning && (
+                    <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                      风险确认回执：{knowledgeRiskAcknowledgementWarning}
+                    </div>
+                  )}
+
+                  {knowledgeGuardrailWarning && (
+                    <div className="mt-4 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm text-violet-800">
+                      护栏提醒：{knowledgeGuardrailWarning}
+                    </div>
+                  )}
+                </>
               )}
 
               <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-700">
@@ -3353,7 +5934,11 @@ export default function IntentE2EWorkbench({
                       并结合最近 {insights.scope.auditLimit} 条项目知识审计生成趋势。
                     </p>
 
-                    <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <div
+                      className={`mt-4 grid gap-3 sm:grid-cols-2 ${
+                        promotionCoverageSummary?.coveredAssetCount ? 'xl:grid-cols-7' : 'xl:grid-cols-6'
+                      }`}
+                    >
                       <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
                         <p className="text-xs uppercase tracking-[0.14em] text-slate-400">runs</p>
                         <p className="mt-2 text-2xl font-semibold text-slate-950">{insights.summary.totalRuns}</p>
@@ -3366,6 +5951,16 @@ export default function IntentE2EWorkbench({
                         <p className="mt-2 text-2xl font-semibold text-emerald-900">{formatRatePercent(insights.summary.passRate)}</p>
                         <p className="mt-1 text-[11px] text-emerald-700">最近成功率，先看这项是否稳定抬升。</p>
                       </div>
+                      <div className="rounded-2xl border border-teal-200 bg-teal-50 px-4 py-3">
+                        <p className="text-xs uppercase tracking-[0.14em] text-teal-600">first pass</p>
+                        <p className="mt-2 text-2xl font-semibold text-teal-900">{formatRatePercent(insights.summary.firstPassPassRate)}</p>
+                        <p className="mt-1 text-[11px] text-teal-700">首轮直接通过 {insights.summary.firstPassPassedRuns} 次。</p>
+                      </div>
+                      <div className="rounded-2xl border border-cyan-200 bg-cyan-50 px-4 py-3">
+                        <p className="text-xs uppercase tracking-[0.14em] text-cyan-600">repair pass</p>
+                        <p className="mt-2 text-2xl font-semibold text-cyan-900">{formatRatePercent(insights.summary.repairedPassRate)}</p>
+                        <p className="mt-1 text-[11px] text-cyan-700">经过修复后通过 {insights.summary.repairedPassRuns} 次。</p>
+                      </div>
                       <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3">
                         <p className="text-xs uppercase tracking-[0.14em] text-sky-600">knowledge hit</p>
                         <p className="mt-2 text-2xl font-semibold text-sky-900">{formatRatePercent(insights.summary.knowledgeHitRate)}</p>
@@ -3376,7 +5971,953 @@ export default function IntentE2EWorkbench({
                         <p className="mt-2 text-2xl font-semibold text-violet-900">{formatRatePercent(insights.summary.suggestedHelperReuseRate)}</p>
                         <p className="mt-1 text-[11px] text-violet-700">实际复用了推荐 helper 的运行占比。</p>
                       </div>
+                      {promotionCoverageSummary?.coveredAssetCount ? (
+                        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
+                          <p className="text-xs uppercase tracking-[0.14em] text-amber-700">promotion coverage</p>
+                          <p className="mt-2 text-2xl font-semibold text-amber-950">
+                            {promotionCoverageSummary.coveredAssetCount}
+                          </p>
+                          <p className="mt-1 text-[11px] text-amber-800">
+                            Starter helper {promotionCoverageSummary.starterHelperCount} 个
+                            {promotionCoverageSummary.starterCapabilityCount > 0
+                              ? ` · 能力 ${promotionCoverageSummary.starterCapabilityCount} 条`
+                              : ''}
+                            {promotionCoverageSummary.successfulRunRuleCount > 0
+                              ? ` · Successful Run 规则 ${promotionCoverageSummary.successfulRunRuleCount} 条`
+                              : ''}
+                            {promotionCoverageSummary.lastRecordedAt
+                              ? ` · 最近 ${formatDateTime(promotionCoverageSummary.lastRecordedAt)}`
+                              : ''}
+                          </p>
+                          {(promotionCoverageSummary.latestStarterHelper ||
+                            promotionCoverageSummary.latestSuccessfulRunRuleId) && (
+                            <div className="mt-2 space-y-1 text-[11px] text-amber-900">
+                              {promotionCoverageSummary.latestStarterHelper ? (
+                                <p>
+                                  最新 Starter：
+                                  {promotionCoverageSummary.latestStarterHelper}
+                                  {promotionCoverageSummary.latestStarterModuleName
+                                    ? ` · ${promotionCoverageSummary.latestStarterModuleName}`
+                                    : ''}
+                                  {promotionCoverageSummary.latestStarterScenarioTitle
+                                    ? ` / ${promotionCoverageSummary.latestStarterScenarioTitle}`
+                                    : ''}
+                                </p>
+                              ) : null}
+                              {promotionCoverageSummary.latestSuccessfulRunRuleId ? (
+                                <p>
+                                  最新 Successful Run：
+                                  {promotionCoverageSummary.latestSuccessfulRunRuleTitle || promotionCoverageSummary.latestSuccessfulRunRuleId}
+                                  {promotionCoverageSummary.latestSuccessfulRunRequestedModuleUid
+                                    ? ` · ${promotionCoverageSummary.latestSuccessfulRunRequestedModuleUid}`
+                                    : ''}
+                                </p>
+                              ) : null}
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
                     </div>
+
+                    {insights.verificationIntents.some((item) => item.intent !== 'unknown') && (
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium text-slate-900">验证意图分桶</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                              把普通验证和保守复核拆开看 through rate，避免 `review` 继续并入 `verify` 后看不见真实稳定性差异。
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
+                            {insights.verificationIntents
+                              .filter((item) => item.intent !== 'unknown')
+                              .reduce((sum, item) => sum + item.totalRuns, 0)} 条能力验证
+                          </span>
+                        </div>
+
+                        <div className="mt-4 grid gap-3 xl:grid-cols-3">
+                          {insights.verificationIntents
+                            .filter((item) => item.totalRuns > 0)
+                            .map((item) => (
+                              <div key={item.intent} className="rounded-2xl border border-white/80 bg-white px-4 py-4">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <p className="font-medium text-slate-900">{item.label}</p>
+                                  <span
+                                    className={`rounded-full border px-3 py-1 text-[11px] font-medium ${insightVerificationIntentTone(item.intent)}`}
+                                  >
+                                    {item.totalRuns} runs
+                                  </span>
+                                </div>
+                                <p className="mt-2 text-xs leading-5 text-slate-500">
+                                  通过 {item.passedRuns} · 失败 {item.failedRuns} · 取消 {item.canceledRuns}
+                                </p>
+                                {item.latestRepairObservationSummary ? (
+                                  <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                                    {item.latestRepairObservationSummary}
+                                    {item.latestRepairObservationVerifierCheckUids.length > 0
+                                      ? ` · verifier ${summarizeTextList(item.latestRepairObservationVerifierCheckUids, 2)}`
+                                      : ''}
+                                  </p>
+                                ) : null}
+                                <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                    <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">terminal</p>
+                                    <p className="mt-2 text-lg font-semibold text-slate-950">{formatRatePercent(item.terminalPassRate)}</p>
+                                  </div>
+                                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                    <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">first</p>
+                                    <p className="mt-2 text-lg font-semibold text-slate-950">{formatRatePercent(item.firstPassPassRate)}</p>
+                                  </div>
+                                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                    <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">repair</p>
+                                    <p className="mt-2 text-lg font-semibold text-slate-950">{formatRatePercent(item.repairedPassRate)}</p>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {(insights.capabilityVerificationIntents.length > 0 || insights.recentCapabilityVerifications.length > 0) && (
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium text-slate-900">能力验证执行趋势</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                              这组数据直接来自 capability verification execution 的 activity log，专门看 `review / verify` 在实际能力验证链路上的通过情况。
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
+                            {insights.capabilityVerificationIntents.reduce((sum, item) => sum + item.totalExecutions, 0)} 条执行
+                          </span>
+                        </div>
+
+                        {insights.capabilityVerificationIntents.length > 0 && (
+                          <div className="mt-4 grid gap-3 xl:grid-cols-3">
+                            {insights.capabilityVerificationIntents.map((item) => (
+                              <div key={item.intent} className="rounded-2xl border border-white/80 bg-white px-4 py-4">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <p className="font-medium text-slate-900">{item.label}</p>
+                                  <span
+                                    className={`rounded-full border px-3 py-1 text-[11px] font-medium ${insightVerificationIntentTone(item.intent)}`}
+                                  >
+                                    {item.totalExecutions} 次
+                                  </span>
+                                </div>
+                                <p className="mt-2 text-xs leading-5 text-slate-500">
+                                  通过 {item.passedExecutions} · 失败 {item.failedExecutions}
+                                </p>
+                                {item.latestRepairObservationSummary ? (
+                                  <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                                    {item.latestRepairObservationSummary}
+                                    {item.latestRepairObservationVerifierCheckUids.length > 0
+                                      ? ` · verifier ${summarizeTextList(item.latestRepairObservationVerifierCheckUids, 2)}`
+                                      : ''}
+                                  </p>
+                                ) : null}
+                                <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">pass</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{formatRatePercent(item.passRate)}</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {insights.recentCapabilityVerifications.length > 0 && (
+                          <div className="mt-4 space-y-3">
+                            {insights.recentCapabilityVerifications.map((item) => (
+                              <div key={item.executionUid} className="rounded-2xl border border-white/80 bg-white px-4 py-4">
+                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <p className="text-sm font-medium text-slate-900">{item.targetName || item.configName || item.capabilityUid}</p>
+                                      <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${intentRunStatusTone(item.status)}`}>
+                                        {intentRunStatusLabel(item.status)}
+                                      </span>
+                                      <span
+                                        className={`rounded-full border px-3 py-1 text-[11px] font-medium ${insightVerificationIntentTone(item.intent)}`}
+                                      >
+                                        {item.intentLabel}
+                                      </span>
+                                    </div>
+                                    <p className="mt-2 text-xs leading-5 text-slate-500">
+                                      {formatDateTime(item.createdAt)} · {item.strategyLabel || '未标注策略'}
+                                      {item.configName ? ` · ${item.configName}` : ''}
+                                    </p>
+                                    <p className="mt-1 break-all font-mono text-[11px] leading-5 text-slate-400">{item.executionUid}</p>
+                                  </div>
+                                  <div className="text-right text-[11px] text-slate-500">
+                                    <p>{item.capabilityUid}</p>
+                                    <p className="mt-1">{item.chainCapabilityUids.length > 0 ? `${item.chainCapabilityUids.length} 条链路能力` : '单能力执行'}</p>
+                                  </div>
+                                </div>
+                                <p className="mt-3 text-xs leading-6 text-slate-600">{item.summary || item.errorMessage || '—'}</p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {insights.scenarioFamilySlo.items.length > 0 && (
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium text-slate-900">场景族 SLO</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                              把当前场景族基线映射成固定 first / terminal 目标，用于后续灰度、回归 watchlist 和发布治理。
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
+                            达标 {insights.scenarioFamilySlo.meetingCount} · 临界 {insights.scenarioFamilySlo.atRiskCount} · 未达标 {insights.scenarioFamilySlo.offTrackCount}
+                          </span>
+                        </div>
+
+                        <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                          当前 SLO 来自最近 {insights.scenarioFamilySlo.generatedFromRuns} 次终态运行；样本不足会单独标记，不直接判定达标或退化。
+                        </p>
+
+                        <div className="mt-4 grid gap-3 xl:grid-cols-2">
+                          {insights.scenarioFamilySlo.items.map((item) => (
+                            <div key={`slo_${item.family}`} className="rounded-2xl border border-white/80 bg-white px-4 py-4">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <p className="font-medium text-slate-900">{item.label}</p>
+                                  <p className="mt-1 text-xs leading-5 text-slate-500">
+                                    {item.totalRuns} runs · 最低判定样本 {item.minRuns}
+                                  </p>
+                                </div>
+                                <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${scenarioFamilySloTone(item.status)}`}>
+                                  {scenarioFamilySloLabel(item.status)}
+                                </span>
+                              </div>
+
+                              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">first</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{formatRatePercent(item.currentFirstPassRate)}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    目标 {formatRatePercent(item.targetFirstPassRate)} · 差距 {formatRatePercent(item.firstPassGap)}
+                                  </p>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">terminal</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{formatRatePercent(item.currentTerminalPassRate)}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    目标 {formatRatePercent(item.targetTerminalPassRate)} · 差距 {formatRatePercent(item.terminalGap)}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <p className="mt-3 text-xs leading-6 text-slate-600">{item.recommendation}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {insights.regressionWatchlist.items.length > 0 && (
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium text-slate-900">Regression Watchlist</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                              把当前最需要盯的回归信号收口成单独 watchlist，先统一看 SLO 未达标项、固定回归高风险簇和明确 rollback 信号。
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
+                            高风险 {insights.regressionWatchlist.highSeverityCount} · 观察 {insights.regressionWatchlist.mediumSeverityCount}
+                          </span>
+                        </div>
+
+                        <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                          当前 watchlist 来自最近 {insights.regressionWatchlist.generatedFromRuns} 次终态运行。
+                        </p>
+
+                        <div className="mt-4 grid gap-3 xl:grid-cols-2">
+                          {insights.regressionWatchlist.items.map((item) => (
+                            <div key={item.watchId} className="rounded-2xl border border-white/80 bg-white px-4 py-4">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="text-sm font-medium text-slate-900">{item.title}</p>
+                                    <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${regressionWatchlistSeverityTone(item.severity)}`}>
+                                      {regressionWatchlistSeverityLabel(item.severity)}
+                                    </span>
+                                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-600">
+                                      {regressionWatchlistSourceLabel(item.source)}
+                                    </span>
+                                  </div>
+                                  <p className="mt-2 text-xs leading-5 text-slate-500">{item.summary}</p>
+                                </div>
+                                <div className="text-right">
+                                  <p className="break-all font-mono text-[11px] text-slate-500">{item.sourceRef}</p>
+                                  <p className="mt-1 text-[11px] text-slate-400">
+                                    {item.latestObservedAt ? formatDateTime(item.latestObservedAt) : `${item.runCount} runs`}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">terminal</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{formatRatePercent(item.currentTerminalPassRate)}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    {item.targetTerminalPassRate !== null
+                                      ? `目标 ${formatRatePercent(item.targetTerminalPassRate)}`
+                                      : item.compareTerminalPassRate !== null
+                                        ? `${item.compareLabel} ${formatRatePercent(item.compareTerminalPassRate)}`
+                                        : `${item.runCount} runs`}
+                                  </p>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">first</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{formatRatePercent(item.currentFirstPassRate)}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    {item.targetFirstPassRate !== null
+                                      ? `目标 ${formatRatePercent(item.targetFirstPassRate)}`
+                                      : item.compareFirstPassRate !== null
+                                        ? `${item.compareLabel} ${formatRatePercent(item.compareFirstPassRate)}`
+                                        : `${item.runCount} runs`}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <p className="mt-3 text-xs leading-6 text-slate-600">{item.recommendation}</p>
+                              {item.failureClasses.length > 0 || item.relatedRuleIds.length > 0 ? (
+                                <p className="mt-2 break-all text-[11px] leading-5 text-slate-500">
+                                  {[
+                                    item.failureClasses.length > 0 ? `失败类 ${summarizeTextList(item.failureClasses, 2)}` : '',
+                                    item.relatedRuleIds.length > 0 ? `规则 ${summarizeTextList(item.relatedRuleIds, 3)}` : '',
+                                  ]
+                                    .filter(Boolean)
+                                    .join(' · ')}
+                                </p>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {insights.rolloutStrategy.gates.length > 0 && (
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium text-slate-900">上线灰度策略</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                              把当前 SLO、watchlist、规则治理和回滚信号收口成统一放量建议，避免再凭感觉决定是否扩大 AI 生成覆盖面。
+                            </p>
+                          </div>
+                          <span
+                            className={`rounded-full border px-3 py-1 text-[11px] font-medium ${rolloutStrategyStageTone(
+                              insights.rolloutStrategy.recommendedStage
+                            )}`}
+                          >
+                            {rolloutStrategyStageLabel(insights.rolloutStrategy.recommendedStage)}
+                          </span>
+                        </div>
+
+                        <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                          当前灰度建议来自最近 {insights.rolloutStrategy.generatedFromRuns} 次终态运行。阻断 {insights.rolloutStrategy.blockedCount}
+                          · 观察 {insights.rolloutStrategy.warningCount} · 通过 {insights.rolloutStrategy.readyCount}
+                        </p>
+
+                        <div className="mt-3 rounded-2xl border border-white/80 bg-white px-4 py-4">
+                          <p className="text-sm font-medium text-slate-900">{insights.rolloutStrategy.summary}</p>
+                          <p className="mt-2 text-xs leading-6 text-slate-600">{insights.rolloutStrategy.recommendation}</p>
+                        </div>
+
+                        <div className="mt-4 grid gap-3 xl:grid-cols-2">
+                          {insights.rolloutStrategy.gates.map((gate) => (
+                            <div key={gate.gateId} className="rounded-2xl border border-white/80 bg-white px-4 py-4">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="text-sm font-medium text-slate-900">{gate.title}</p>
+                                    <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${rolloutStrategyGateTone(gate.status)}`}>
+                                      {rolloutStrategyGateLabel(gate.status)}
+                                    </span>
+                                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-600">
+                                      {rolloutStrategyGateSourceLabel(gate.source)}
+                                    </span>
+                                  </div>
+                                  <p className="mt-2 text-xs leading-5 text-slate-500">{gate.summary}</p>
+                                </div>
+                                <div className="text-right">
+                                  <p className="break-all font-mono text-[11px] text-slate-500">{gate.sourceRef || '—'}</p>
+                                </div>
+                              </div>
+
+                              <p className="mt-3 text-xs leading-6 text-slate-600">{gate.recommendation}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {insights.scenarioFamilies.length > 0 && (
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium text-slate-900">场景族基线</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                              先按 page task / simple scenario / complex enterprise flow 分层看 through rate，避免只看全局平均值。
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
+                            {insights.scenarioFamilies.length} 个场景族
+                          </span>
+                        </div>
+
+                        <div className="mt-4 grid gap-3 xl:grid-cols-3">
+                          {insights.scenarioFamilies.map((item) => (
+                            <div key={item.family} className="rounded-2xl border border-white/80 bg-white px-4 py-4">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <p className="font-medium text-slate-900">{item.label}</p>
+                                <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-600">
+                                  {item.totalRuns} runs
+                                </span>
+                              </div>
+                              <p className="mt-2 text-xs leading-5 text-slate-500">
+                                通过 {item.passedRuns} · 失败 {item.failedRuns} · 取消 {item.canceledRuns}
+                              </p>
+                              <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">terminal</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{formatRatePercent(item.terminalPassRate)}</p>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">first</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{formatRatePercent(item.firstPassPassRate)}</p>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">repair</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{formatRatePercent(item.repairedPassRate)}</p>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {insights.evaluationBaseline.candidates.length > 0 && (
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium text-slate-900">固定评测候选集</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                              基于 `snapshotSignature` 把真实运行聚类成稳定评测候选，优先覆盖高频、复杂、失败或依赖 repair 的业务流，后面做 first-pass 对比就直接用这组基线。
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
+                            {insights.evaluationBaseline.recommendedCount} / {insights.evaluationBaseline.candidateClusters} clusters
+                          </span>
+                        </div>
+
+                        <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                          {insights.evaluationBaseline.selectionNote} 当前基线来自最近 {insights.evaluationBaseline.generatedFromRuns} 次终态运行。
+                        </p>
+
+                        <div className="mt-4 grid gap-3 xl:grid-cols-2">
+                          {insights.evaluationBaseline.candidates.map((item) => (
+                            <div key={item.evalCaseId} className="rounded-2xl border border-white/80 bg-white px-4 py-4">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="text-sm font-medium text-slate-900">{item.representativeScenarioTitle || item.representativeRequestInput}</p>
+                                    <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${evalCandidatePriorityTone(item.priority)}`}>
+                                      {evalCandidatePriorityLabel(item.priority)}
+                                    </span>
+                                  </div>
+                                  <p className="mt-2 text-xs leading-5 text-slate-500">
+                                    {item.scenarioFamilyLabel} · {item.runCount} runs · {formatDateTime(item.latestFinishedAt)}
+                                  </p>
+                                  <p className="mt-1 break-all font-mono text-[11px] leading-5 text-slate-400">{item.snapshotSignature}</p>
+                                </div>
+                                <div className="text-right">
+                                  <p className="break-all font-mono text-[11px] text-slate-500">{item.evalCaseId}</p>
+                                  <p className="mt-1 break-all text-[11px] text-slate-400">{item.targetPath || '—'}</p>
+                                </div>
+                              </div>
+
+                              <p className="mt-3 text-xs leading-6 text-slate-600">{item.selectionReason}</p>
+
+                              <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">terminal</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{formatRatePercent(item.terminalPassRate)}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    通过 {item.passedRuns} · 失败 {item.failedRuns}
+                                  </p>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">first</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{formatRatePercent(item.firstPassPassRate)}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">首轮通过 {item.firstPassPassedRuns} 次</p>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">repair</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{formatRatePercent(item.repairedPassRate)}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    repair 通过 {item.repairedPassRuns} 次 · 尝试 {item.repairAttemptedRuns} 次
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="mt-3 space-y-1 text-[11px] text-slate-500">
+                                <p>代表运行：{summarizeIdList(item.representativeRunIds)}</p>
+                                <p>规则：{summarizeTextList(item.matchedRuleTitles.length > 0 ? item.matchedRuleTitles : item.matchedRuleIds, 3)}</p>
+                                <p>Helpers：{summarizeTextList(item.usedHelpers, 3)}</p>
+                                <p>Signals：{summarizeTextList(item.keySignals, 3)}</p>
+                                <p>
+                                  失败类：
+                                  {item.failureClasses.length > 0
+                                    ? item.failureClasses.map((failure) => `${insightFailureClassLabel(failure.failureClass)} ${failure.count}`).join(' · ')
+                                    : '—'}
+                                </p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {insights.recentTraces.length > 0 && (
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium text-slate-900">最近 Trace 摘要</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                              直接把最近终态运行的 run 上下文、attempt 结果链、knowledge/helper 命中和关键 signal 摘出来，后面做 grader、固定评测集和 recipe 提炼时都复用这层结构。
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
+                            {insights.recentTraces.length} 条 trace
+                          </span>
+                        </div>
+
+                        <div className="mt-4 space-y-3">
+                          {insights.recentTraces.map((item) => (
+                            <div key={item.runId} className="rounded-2xl border border-white/80 bg-white px-4 py-4">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="text-sm font-medium text-slate-900">{item.scenarioTitle || item.requestInput || item.runId}</p>
+                                    <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${intentRunStatusTone(item.status)}`}>
+                                      {intentRunStatusLabel(item.status)}
+                                    </span>
+                                    {item.verificationIntent !== 'unknown' && (
+                                      <span
+                                        className={`rounded-full border px-3 py-1 text-[11px] font-medium ${insightVerificationIntentTone(
+                                          item.verificationIntent
+                                        )}`}
+                                      >
+                                        {item.verificationIntentLabel}
+                                      </span>
+                                    )}
+                                    {item.firstPassSucceeded && (
+                                      <span className="rounded-full border border-teal-200 bg-teal-50 px-3 py-1 text-[11px] font-medium text-teal-700">
+                                        首轮通过
+                                      </span>
+                                    )}
+                                    {!item.firstPassSucceeded && item.repairedSucceeded && (
+                                      <span className="rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1 text-[11px] font-medium text-cyan-700">
+                                        修复通过
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="mt-2 text-xs leading-5 text-slate-500">
+                                    {formatDateTime(item.finishedAt)} · {item.scenarioFamilyLabel} · {item.stepCount} steps · {item.attemptCount} attempts
+                                    {item.projectUid && !workspaceProjectUid ? ` · ${item.projectUid}` : ''}
+                                  </p>
+                                  <p className="mt-1 break-all font-mono text-[11px] leading-5 text-slate-400">{item.snapshotSignature}</p>
+                                </div>
+                                <div className="text-right">
+                                  <p className="break-all font-mono text-[11px] text-slate-500">{item.runId}</p>
+                                  <p className="mt-1 break-all text-[11px] text-slate-400">{item.targetPath || item.targetUrl || '—'}</p>
+                                </div>
+                              </div>
+
+                              <div className="mt-3 grid gap-3 xl:grid-cols-5">
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">knowledge</p>
+                                  <p className="mt-2 text-xs leading-5 text-slate-700">
+                                    {item.knowledgeHit
+                                      ? summarizeTextList(item.matchedRuleTitles.length > 0 ? item.matchedRuleTitles : item.matchedRuleIds, 2)
+                                      : '未命中'}
+                                  </p>
+                                  <p className="mt-1 text-[11px] text-slate-500">规则 {item.matchedRuleIds.length} 条</p>
+                                  <p className="mt-1 break-all text-[11px] text-slate-500">
+                                    Starter：{summarizeTextList(item.matchedStarterHelpers, 2)}
+                                  </p>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">helpers</p>
+                                  <p className="mt-2 break-all text-xs leading-5 text-slate-700">{summarizeTextList(item.usedHelpers, 2)}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    推荐复用 {item.usedSuggestedHelpers.length} 次 / 建议 {item.suggestedHelpers.length} 个
+                                  </p>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">signals</p>
+                                  <p className="mt-2 break-all text-xs leading-5 text-slate-700">{summarizeTextList(item.keySignals, 3)}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    taskMode {item.taskMode} · stepTypes {summarizeTextList(item.stepTypes, 3)}
+                                  </p>
+                                  <p className="mt-1 break-all text-[11px] text-slate-500">
+                                    响应：{summarizeTraceResponseEvents(item.responseEvents, 2)}
+                                  </p>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">template</p>
+                                  <p className="mt-2 break-all text-xs leading-5 text-slate-700">
+                                    {item.compiledSlotCount > 0 ? summarizeTextList(item.compiledSlotUids, 3) : '未记录 compiled template'}
+                                  </p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    compiled {item.compiledSlotCount} slots · patch {item.structuredPatchAttempted ? '已尝试' : '未尝试'}
+                                  </p>
+                                  <p className="mt-1 break-all text-[11px] text-slate-500">
+                                    recipe：{summarizeTextList(item.matchedRecipeSlugs, 2)}
+                                  </p>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">result</p>
+                                  <p className="mt-2 text-xs leading-5 text-slate-700">
+                                    {item.status === 'passed' ? '终态通过' : insightFailureClassLabel(item.failureClass)}
+                                  </p>
+                                  <p className="mt-1 break-all text-[11px] text-slate-500">
+                                    grader：{item.finalGraderResult.summary}
+                                  </p>
+                                  {item.verifierResult.failingCheckCount > 0 ? (
+                                    <p className="mt-1 break-all text-[11px] text-slate-500">
+                                      verifier：{summarizeTraceVerifierChecks(item.verifierResult, 2)}
+                                    </p>
+                                  ) : null}
+                                  {item.verifierResult.expectedOutcome ? (
+                                    <p className="mt-1 break-all text-[11px] text-slate-500">
+                                      期望：{item.verifierResult.expectedOutcome}
+                                    </p>
+                                  ) : null}
+                                  {item.status !== 'passed' && item.finalGraderResult.repairable !== null ? (
+                                    <p className="mt-1 text-[11px] text-slate-500">
+                                      repair：{item.finalGraderResult.repairable ? '可修复' : '不继续修复'}
+                                    </p>
+                                  ) : null}
+                                  <p className="mt-1 text-[11px] text-slate-500">{item.repairAttempted ? '包含 repair attempt' : '仅首轮 attempt'}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    {item.targetedRepairAttempted ? 'repair 为定向 slot 修补' : 'repair 未进入定向 slot 修补'}
+                                  </p>
+                                  <p className="mt-1 break-all text-[11px] text-slate-500">patched：{summarizeTextList(item.patchedSlotUids, 3)}</p>
+                                  {item.latestRepairObservationSummary ? (
+                                    <p className="mt-1 break-all text-[11px] text-slate-500">{item.latestRepairObservationSummary}</p>
+                                  ) : null}
+                                  {item.latestRepairObservationRecipeSlugs.length > 0 ||
+                                  item.latestRepairObservationVerifierCheckUids.length > 0 ? (
+                                    <p className="mt-1 break-all text-[11px] text-slate-500">
+                                      scope：
+                                      {[
+                                        item.latestRepairObservationRecipeSlugs.length > 0
+                                          ? ` recipe ${summarizeTextList(item.latestRepairObservationRecipeSlugs, 2)}`
+                                          : '',
+                                        item.latestRepairObservationVerifierCheckUids.length > 0
+                                          ? ` verifier ${summarizeTextList(item.latestRepairObservationVerifierCheckUids, 2)}`
+                                          : '',
+                                      ]
+                                        .filter(Boolean)
+                                        .join(' · ')}
+                                    </p>
+                                  ) : null}
+                                </div>
+                              </div>
+
+                              {item.attempts.length > 0 && (
+                                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                  {item.attempts.map((attempt) => (
+                                    <div
+                                      key={`${item.runId}-${attempt.attempt}`}
+                                      className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3"
+                                    >
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${traceAttemptOutcomeTone(attempt.outcome)}`}>
+                                          #{attempt.attempt} {attempt.kind} · {traceAttemptOutcomeLabel(attempt.outcome)}
+                                        </span>
+                                        {attempt.failureClass && (
+                                          <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
+                                            {insightFailureClassLabel(attempt.failureClass)}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="mt-2 space-y-1 text-[11px] leading-5 text-slate-500">
+                                        <p>Helpers：{summarizeTextList(attempt.usedHelpers, 3)}</p>
+                                        <p>Signals：{summarizeTextList(attempt.keySignals, 2)}</p>
+                                        <p>Patch：{attempt.structuredPatchStrategy || '—'}</p>
+                                        <p>Target：{summarizeTextList(attempt.targetSlotUids, 3)}</p>
+                                        <p>Returned：{summarizeTextList(attempt.returnedSlotUids, 3)}</p>
+                                        {attempt.repairObservationSummary ? <p>{attempt.repairObservationSummary}</p> : null}
+                                        {attempt.patchedRecipeSlugs.length > 0 || attempt.patchedVerifierCheckUids.length > 0 ? (
+                                          <p>
+                                            Scope：
+                                            {[
+                                              attempt.patchedRecipeSlugs.length > 0
+                                                ? `recipe ${summarizeTextList(attempt.patchedRecipeSlugs, 2)}`
+                                                : '',
+                                              attempt.patchedVerifierCheckUids.length > 0
+                                                ? `verifier ${summarizeTextList(attempt.patchedVerifierCheckUids, 2)}`
+                                                : '',
+                                            ]
+                                              .filter(Boolean)
+                                              .join(' · ')}
+                                          </p>
+                                        ) : null}
+                                        <p>
+                                          Base：{baseCodeSourceLabel(attempt.baseCodeSource)} ·
+                                          {attempt.reusedPreviousCode ? ' 复用上一轮代码' : ' 未复用上一轮代码'}
+                                        </p>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {insights.knowledgeChangeGraders.length > 0 && (
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium text-slate-900">变更效果 Grader</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                              这里把 merge / restore 的结构化 provenance 与后续真实 run 结果直接接起来，给出第一版操作级效果证据，避免只看预检 / 回执，不看后续表现。
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
+                            {insights.knowledgeChangeGraders.length} 条证据
+                          </span>
+                        </div>
+
+                        <div className="mt-4 space-y-3">
+                          {insights.knowledgeChangeGraders.map((item) => (
+                            <div key={item.auditId} className="rounded-2xl border border-white/80 bg-white px-4 py-4">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="font-medium text-slate-900">{item.title}</p>
+                                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-700">
+                                      {projectKnowledgeOperationLabel(item.operation)}
+                                    </span>
+                                    <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${knowledgeChangeEfficacyStatusTone(item.efficacyStatus)}`}>
+                                      {knowledgeChangeEfficacyStatusLabel(item.efficacyStatus)}
+                                    </span>
+                                    <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${mergeImpactStatusTone(item.impactStatus)}`}>
+                                      {mergeImpactStatusLabel(item.impactStatus)}
+                                    </span>
+                                    <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${knowledgeChangeEvidenceLevelTone(item.evidenceLevel)}`}>
+                                      {knowledgeChangeEvidenceLevelLabel(item.evidenceLevel)}
+                                    </span>
+                                    {item.mergedCandidateSources.includes('successful_run') && (
+                                      <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-[11px] font-medium text-violet-700">
+                                        successful_run
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="mt-2 text-xs leading-5 text-slate-500">
+                                    {formatDateTime(item.occurredAt)}
+                                    {item.projectUid ? ` · ${item.projectUid}` : ''}
+                                    {item.requestedModuleUid ? ` · 模块 ${item.requestedModuleUid}` : ''}
+                                  </p>
+                                  {item.restoredFrom && (
+                                    <p className="mt-1 break-all text-[11px] text-slate-500">
+                                      恢复来源：<span className="font-mono">{item.restoredFrom}</span>
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="mt-3 grid gap-3 sm:grid-cols-4">
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">after</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{item.afterRuns}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    通过 {item.afterPassedRuns} · 失败 {item.afterFailedRuns} · 取消 {item.afterCanceledRuns}
+                                  </p>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">terminal pass</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{formatRatePercent(item.afterPassRate)}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    {item.beforeRuns > 0 ? `基线 ${formatRatePercent(item.beforePassRate)}` : '暂无稳定基线'}
+                                  </p>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">first pass</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{formatRatePercent(item.afterFirstPassRate)}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    {item.beforeRuns > 0 ? `基线 ${formatRatePercent(item.beforeFirstPassRate)}` : '暂无首轮基线'}
+                                  </p>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">provenance</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">
+                                    {item.preflightNoticeCount + item.receiptNoticeCount}
+                                  </p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    预检 {item.preflightNoticeCount} · 回执 {item.receiptNoticeCount}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <p className="mt-3 text-xs leading-6 text-slate-600">{item.recommendation}</p>
+                              <div className="mt-2 space-y-1 text-[11px] text-slate-500">
+                                <p>影响规则：{summarizeIdList(item.affectedRuleIds)}</p>
+                                <p>
+                                  变化幅度：终态 {formatRatePercent(item.passRateDelta)} · 首次 {formatRatePercent(item.firstPassRateDelta)}
+                                </p>
+                                {item.mergedRunIds.length > 0 && <p>关联通过运行：{summarizeIdList(item.mergedRunIds)}</p>}
+                                {item.selectedCandidateFeedbackStatuses.length > 0 && (
+                                  <p>候选反馈：{item.selectedCandidateFeedbackStatuses.join(' / ')}</p>
+                                )}
+                                {item.selectedRiskyCandidateIds.length > 0 && (
+                                  <p>风险候选：{summarizeIdList(item.selectedRiskyCandidateIds)}</p>
+                                )}
+                                {item.appliedOverrideCandidateIds.length > 0 && (
+                                  <p>人工 override：{summarizeIdList(item.appliedOverrideCandidateIds)}</p>
+                                )}
+                                {item.appliedAcknowledgedRiskCandidateIds.length > 0 && (
+                                  <p>风险确认：{summarizeIdList(item.appliedAcknowledgedRiskCandidateIds)}</p>
+                                )}
+                                {item.backupPath && (
+                                  <p className="break-all">
+                                    关联备份：<span className="font-mono">{item.backupPath}</span>
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {insights.knowledgeChangeRuleSummaries.length > 0 && (
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium text-slate-900">规则效果汇总</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                              把多次 knowledge change grader 聚合到规则层，先看哪些规则长期改善、哪些规则持续恶化，再决定后续 safer merge、回滚和资产提升优先级。
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
+                            {insights.knowledgeChangeRuleSummaries.length} 条规则
+                          </span>
+                        </div>
+
+                        <div className="mt-4 space-y-3">
+                          {insights.knowledgeChangeRuleSummaries.map((item) => {
+                            const positiveEvidenceCount = item.improvingCount + item.recoveredCount;
+                            const negativeEvidenceCount = item.regressingCount + item.stillAbnormalCount;
+
+                            return (
+                              <div key={item.ruleId} className="rounded-2xl border border-white/80 bg-white px-4 py-4">
+                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                  <div>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <p className="font-medium text-slate-900">{item.title}</p>
+                                      <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-700">
+                                        {projectKnowledgeOperationLabel(item.latestOperation)}
+                                      </span>
+                                      <span
+                                        className={`rounded-full border px-3 py-1 text-[11px] font-medium ${knowledgeChangeEfficacyStatusTone(item.latestEfficacyStatus)}`}
+                                      >
+                                        {knowledgeChangeEfficacyStatusLabel(item.latestEfficacyStatus)}
+                                      </span>
+                                      <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${mergeImpactStatusTone(item.latestImpactStatus)}`}>
+                                        {mergeImpactStatusLabel(item.latestImpactStatus)}
+                                      </span>
+                                    </div>
+                                    {item.title !== item.ruleId && (
+                                      <p className="mt-1 break-all text-[11px] text-slate-500">
+                                        规则 ID：<span className="font-mono">{item.ruleId}</span>
+                                      </p>
+                                    )}
+                                    <p className="mt-2 text-xs leading-5 text-slate-500">{formatDateTime(item.latestOccurredAt)}</p>
+                                  </div>
+                                </div>
+
+                                <div className="mt-3 grid gap-3 sm:grid-cols-4">
+                                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                    <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">audits</p>
+                                    <p className="mt-2 text-lg font-semibold text-slate-950">{item.auditCount}</p>
+                                    <p className="mt-1 text-[11px] text-slate-500">
+                                      merge {item.mergeCount} · restore {item.restoreCount}
+                                    </p>
+                                  </div>
+                                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                    <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">positive</p>
+                                    <p className="mt-2 text-lg font-semibold text-slate-950">{positiveEvidenceCount}</p>
+                                    <p className="mt-1 text-[11px] text-slate-500">
+                                      改善 {item.improvingCount} · 恢复 {item.recoveredCount}
+                                    </p>
+                                  </div>
+                                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                    <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">negative</p>
+                                    <p className="mt-2 text-lg font-semibold text-slate-950">{negativeEvidenceCount}</p>
+                                    <p className="mt-1 text-[11px] text-slate-500">
+                                      恶化 {item.regressingCount} · 仍异常 {item.stillAbnormalCount}
+                                    </p>
+                                  </div>
+                                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                    <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">evidence</p>
+                                    <p className="mt-2 text-lg font-semibold text-slate-950">{item.decisionableCount}</p>
+                                    <p className="mt-1 text-[11px] text-slate-500">
+                                      充分 {item.decisionableCount} · 早期 {item.earlyCount}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                <p className="mt-3 text-xs leading-6 text-slate-600">{item.recommendation}</p>
+                                <div className="mt-2 space-y-1 text-[11px] text-slate-500">
+                                  <p>
+                                    净变化：终态 {formatRatePercent(item.netPassRateDelta)} · 首次 {formatRatePercent(item.netFirstPassRateDelta)}
+                                  </p>
+                                  <p>
+                                    平稳 {item.neutralCount} · 观察中 {item.watchingCount}
+                                  </p>
+                                  {item.successfulRunPromotionReceiptCount > 0 && (
+                                    <p>
+                                      Successful Run 沉淀：回执 {item.successfulRunPromotionReceiptCount} 次 · 关联通过运行{' '}
+                                      {item.successfulRunPromotionRunCount} 条
+                                      {item.lastSuccessfulRunPromotionRecordedAt
+                                        ? ` · 最近 ${formatDateTime(item.lastSuccessfulRunPromotionRecordedAt)}`
+                                        : ''}
+                                    </p>
+                                  )}
+                                  {(item.lastSuccessfulRunPromotionRequestedModuleUid ||
+                                    item.lastSuccessfulRunPromotionRunIds.length > 0) && (
+                                    <p>
+                                      最近来源：
+                                      {item.lastSuccessfulRunPromotionRequestedModuleUid
+                                        ? ` 模块 ${item.lastSuccessfulRunPromotionRequestedModuleUid}`
+                                        : ' 模块未记录'}
+                                      {item.lastSuccessfulRunPromotionRunIds.length > 0
+                                        ? ` · 运行 ${summarizeIdList(item.lastSuccessfulRunPromotionRunIds)}`
+                                        : ''}
+                                    </p>
+                                  )}
+                                  {item.supportingAuditIds.length > 0 && <p>关联审计：{summarizeIdList(item.supportingAuditIds)}</p>}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
 
                     {insights.probationRules.length > 0 && (
                       <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
@@ -3402,12 +6943,39 @@ export default function IntentE2EWorkbench({
                                     <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${probationStatusTone(item.status)}`}>
                                       {probationStatusLabel(item.status)}
                                     </span>
+                                    <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${mergeImpactStatusTone(item.impactStatus)}`}>
+                                      {mergeImpactStatusLabel(item.impactStatus)}
+                                    </span>
+                                    {item.mergedCandidateSources.includes('successful_run') && (
+                                      <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-[11px] font-medium text-violet-700">
+                                        successful_run
+                                      </span>
+                                    )}
+                                    {item.selectedRiskyCandidateIds.length > 0 && (
+                                      <span className="rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-[11px] font-medium text-rose-700">
+                                        风险候选 {item.selectedRiskyCandidateIds.length}
+                                      </span>
+                                    )}
+                                    {item.appliedOverrideCandidateIds.length > 0 && (
+                                      <span className="rounded-full border border-rose-300 bg-rose-100 px-3 py-1 text-[11px] font-medium text-rose-800">
+                                        override {item.appliedOverrideCandidateIds.length}
+                                      </span>
+                                    )}
+                                    {item.appliedAcknowledgedRiskCandidateIds.length > 0 && (
+                                      <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-medium text-amber-700">
+                                        风险确认 {item.appliedAcknowledgedRiskCandidateIds.length}
+                                      </span>
+                                    )}
                                   </div>
                                   <p className="mt-2 text-xs leading-5 text-slate-500">
                                     {formatDateTime(item.occurredAt)}
                                     {item.projectUid ? ` · ${item.projectUid}` : ''}
+                                    {item.requestedModuleUid ? ` · 模块 ${item.requestedModuleUid}` : ''}
                                     {item.beforeRuns > 0 ? ` · 基线 ${formatRatePercent(item.beforePassRate)}` : ''}
                                   </p>
+                                  {(item.mergedRunIds || []).length > 0 && (
+                                    <p className="mt-1 text-[11px] text-slate-500">关联通过运行 {item.mergedRunIds.length} 条</p>
+                                  )}
                                 </div>
                                 {item.status === 'degraded' && item.backupPath && (
                                   <button
@@ -3421,7 +6989,7 @@ export default function IntentE2EWorkbench({
                                 )}
                               </div>
 
-                              <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                              <div className="mt-3 grid gap-3 sm:grid-cols-4">
                                 <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
                                   <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">observed</p>
                                   <p className="mt-2 text-lg font-semibold text-slate-950">{item.observedRuns}</p>
@@ -3430,10 +6998,17 @@ export default function IntentE2EWorkbench({
                                   </p>
                                 </div>
                                 <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
-                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">pass rate</p>
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">terminal pass</p>
                                   <p className="mt-2 text-lg font-semibold text-slate-950">{formatRatePercent(item.observedPassRate)}</p>
                                   <p className="mt-1 text-[11px] text-slate-500">
                                     {item.beforeRuns > 0 ? `基线 ${formatRatePercent(item.beforePassRate)}` : '暂无稳定基线'}
+                                  </p>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">first pass</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{formatRatePercent(item.observedFirstPassRate)}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    {item.beforeRuns > 0 ? `基线 ${formatRatePercent(item.beforeFirstPassRate)}` : '暂无首轮基线'}
                                   </p>
                                 </div>
                                 <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
@@ -3448,6 +7023,31 @@ export default function IntentE2EWorkbench({
                               <p className="mt-3 text-xs leading-6 text-slate-600">{item.recommendation}</p>
                               <div className="mt-2 space-y-1 text-[11px] text-slate-500">
                                 <p>观察规则：{summarizeIdList(item.addedRuleIds)}</p>
+                                <p>
+                                  首次通过率变化：{formatRatePercent(item.beforeFirstPassRate)} → {formatRatePercent(item.observedFirstPassRate)}
+                                </p>
+                                {item.selectedCandidateFeedbackStatuses.length > 0 && (
+                                  <p>候选反馈：{item.selectedCandidateFeedbackStatuses.join(' / ')}</p>
+                                )}
+                                {item.selectedRiskyCandidateIds.length > 0 && (
+                                  <p>风险候选：{summarizeIdList(item.selectedRiskyCandidateIds)}</p>
+                                )}
+                                {item.appliedOverrideCandidateIds.length > 0 && (
+                                  <p>
+                                    人工 override：{summarizeIdList(item.appliedOverrideCandidateIds)}
+                                    {item.appliedOverrideCandidateFeedbackStatuses.length > 0
+                                      ? ` · ${item.appliedOverrideCandidateFeedbackStatuses.join(' / ')}`
+                                      : ''}
+                                  </p>
+                                )}
+                                {item.appliedAcknowledgedRiskCandidateIds.length > 0 && (
+                                  <p>
+                                    风险确认：{summarizeIdList(item.appliedAcknowledgedRiskCandidateIds)}
+                                    {item.appliedAcknowledgedRiskCandidateFeedbackStatuses.length > 0
+                                      ? ` · ${item.appliedAcknowledgedRiskCandidateFeedbackStatuses.join(' / ')}`
+                                      : ''}
+                                  </p>
+                                )}
                                 {item.backupPath && (
                                   <p className="break-all">
                                     关联备份：<span className="font-mono">{item.backupPath}</span>
@@ -3468,17 +7068,47 @@ export default function IntentE2EWorkbench({
                               <div>
                                 <p className="font-medium">{candidate.title}</p>
                                 <p className="mt-1 text-xs leading-5 text-amber-800">
-                                  {formatDateTime(candidate.occurredAt)} · 通过率 {formatRatePercent(candidate.beforePassRate)} →{' '}
-                                  {formatRatePercent(candidate.afterPassRate)} · 下滑 {formatRatePercent(candidate.passRateDelta)}
+                                  {formatDateTime(candidate.occurredAt)} · 终态通过率 {formatRatePercent(candidate.beforePassRate)} →{' '}
+                                  {formatRatePercent(candidate.afterPassRate)} · 首次通过率 {formatRatePercent(candidate.beforeFirstPassRate)} →{' '}
+                                  {formatRatePercent(candidate.afterFirstPassRate)}
                                 </p>
                                 {candidate.projectUid && !workspaceProjectUid && (
                                   <p className="mt-1 text-[11px] text-amber-700">项目：{candidate.projectUid}</p>
+                                )}
+                                {(candidate.requestedModuleUid || candidate.mergedRunIds.length > 0) && (
+                                  <p className="mt-1 text-[11px] text-amber-700">
+                                    {candidate.requestedModuleUid ? `模块：${candidate.requestedModuleUid}` : '全项目作用域'}
+                                    {candidate.mergedRunIds.length > 0 ? ` · 关联通过运行 ${candidate.mergedRunIds.length} 条` : ''}
+                                  </p>
                                 )}
                               </div>
                               <div className="flex flex-wrap items-center gap-2">
                                 <span className="rounded-full border border-amber-300 bg-white px-3 py-1 text-[11px] font-medium text-amber-800">
                                   可疑回滚候选
                                 </span>
+                                <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${mergeImpactStatusTone(candidate.impactStatus)}`}>
+                                  {mergeImpactStatusLabel(candidate.impactStatus)}
+                                </span>
+                                {candidate.mergedCandidateSources.includes('successful_run') && (
+                                  <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-[11px] font-medium text-violet-700">
+                                    successful_run
+                                  </span>
+                                )}
+                                {candidate.selectedRiskyCandidateIds.length > 0 && (
+                                  <span className="rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-[11px] font-medium text-rose-700">
+                                    风险候选 {candidate.selectedRiskyCandidateIds.length}
+                                  </span>
+                                )}
+                                {candidate.appliedOverrideCandidateIds.length > 0 && (
+                                  <span className="rounded-full border border-rose-300 bg-white px-3 py-1 text-[11px] font-medium text-rose-800">
+                                    override {candidate.appliedOverrideCandidateIds.length}
+                                  </span>
+                                )}
+                                {candidate.appliedAcknowledgedRiskCandidateIds.length > 0 && (
+                                  <span className="rounded-full border border-amber-300 bg-white px-3 py-1 text-[11px] font-medium text-amber-800">
+                                    风险确认 {candidate.appliedAcknowledgedRiskCandidateIds.length}
+                                  </span>
+                                )}
                                 {candidate.backupPath && (
                                   <button
                                     type="button"
@@ -3497,6 +7127,31 @@ export default function IntentE2EWorkbench({
                               <p>
                                 观察窗口：前 {candidate.beforeRuns} 次 / 后 {candidate.afterRuns} 次
                               </p>
+                              <p>
+                                下滑幅度：终态 {formatRatePercent(candidate.passRateDelta)} · 首次 {formatRatePercent(candidate.firstPassRateDelta)}
+                              </p>
+                              {candidate.selectedCandidateFeedbackStatuses.length > 0 && (
+                                <p>候选反馈：{candidate.selectedCandidateFeedbackStatuses.join(' / ')}</p>
+                              )}
+                              {candidate.selectedRiskyCandidateIds.length > 0 && (
+                                <p>风险候选：{summarizeIdList(candidate.selectedRiskyCandidateIds)}</p>
+                              )}
+                              {candidate.appliedOverrideCandidateIds.length > 0 && (
+                                <p>
+                                  人工 override：{summarizeIdList(candidate.appliedOverrideCandidateIds)}
+                                  {candidate.appliedOverrideCandidateFeedbackStatuses.length > 0
+                                    ? ` · ${candidate.appliedOverrideCandidateFeedbackStatuses.join(' / ')}`
+                                    : ''}
+                                </p>
+                              )}
+                              {candidate.appliedAcknowledgedRiskCandidateIds.length > 0 && (
+                                <p>
+                                  风险确认：{summarizeIdList(candidate.appliedAcknowledgedRiskCandidateIds)}
+                                  {candidate.appliedAcknowledgedRiskCandidateFeedbackStatuses.length > 0
+                                    ? ` · ${candidate.appliedAcknowledgedRiskCandidateFeedbackStatuses.join(' / ')}`
+                                    : ''}
+                                </p>
+                              )}
                               {candidate.backupPath && (
                                 <p className="break-all">
                                   建议回滚备份：<span className="font-mono">{candidate.backupPath}</span>
@@ -3509,6 +7164,716 @@ export default function IntentE2EWorkbench({
                     ) : (
                       <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs leading-5 text-emerald-800">
                         暂未发现明显需要优先回滚的规则合并；继续积累运行样本后，这里会自动提示。
+                      </div>
+                    )}
+
+                    {insights.mergeProvenanceStats.length > 0 && (
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium text-slate-900">Provenance 趋势</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                              这里直接统计 merge / restore 的结构化 preflight / receipt notice，观察最近审计里到底多少次出现默认阻断、override、风险确认、护栏和回滚审计，而不是再从旧 warning 文本里反推。
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
+                            {insights.mergeProvenanceStats.length} 类 provenance
+                          </span>
+                        </div>
+
+                        <div className="mt-4 grid gap-3 xl:grid-cols-2">
+                          {insights.mergeProvenanceStats.map((item) => (
+                            <div key={item.key} className={`rounded-2xl border px-4 py-4 ${projectKnowledgeMergeNoticeTone(item)}`}>
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="font-medium">{item.title}</p>
+                                    <span className="rounded-full border border-current/20 bg-white/70 px-3 py-1 text-[11px] font-medium">
+                                      {mergeProvenanceStageLabel(item.stage)}
+                                    </span>
+                                    <span className="rounded-full border border-current/20 bg-white/70 px-3 py-1 text-[11px] font-medium">
+                                      {projectKnowledgeMergeNoticeProvenanceLabel(item.provenanceType)}
+                                    </span>
+                                  </div>
+                                  <p className="mt-2 text-xs leading-5 opacity-80">
+                                    {item.latestOccurredAt ? `最近 ${formatDateTime(item.latestOccurredAt)}` : '尚无时间戳'}
+                                    {item.operations.length > 0
+                                      ? ` · 来源 ${item.operations.map((operation) => projectKnowledgeOperationLabel(operation)).join(' / ')}`
+                                      : ''}
+                                  </p>
+                                </div>
+                                <div className="rounded-2xl border border-current/20 bg-white/70 px-3 py-2 text-right text-[11px] opacity-80">
+                                  <p className="font-medium">{item.auditCount} 次审计</p>
+                                  <p className="mt-1">共 {item.itemCount} 条结构化记录</p>
+                                </div>
+                              </div>
+
+                              <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                                <div className="rounded-2xl border border-current/15 bg-white/60 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] opacity-60">audits</p>
+                                  <p className="mt-2 text-lg font-semibold">{item.auditCount}</p>
+                                  <p className="mt-1 text-[11px] opacity-75">命中审计数</p>
+                                </div>
+                                <div className="rounded-2xl border border-current/15 bg-white/60 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] opacity-60">candidates</p>
+                                  <p className="mt-2 text-lg font-semibold">{item.candidateCount}</p>
+                                  <p className="mt-1 text-[11px] opacity-75">关联候选数</p>
+                                </div>
+                                <div className="rounded-2xl border border-current/15 bg-white/60 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] opacity-60">rules</p>
+                                  <p className="mt-2 text-lg font-semibold">{item.ruleCount}</p>
+                                  <p className="mt-1 text-[11px] opacity-75">关联规则数</p>
+                                </div>
+                              </div>
+
+                              <div className="mt-3 space-y-1 text-[11px] opacity-80">
+                                <p>Kind：{item.kind}</p>
+                                <p>支持审计：{summarizeIdList(item.supportingAuditIds)}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {insights.riskLifecycleRules.length > 0 && (
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium text-slate-900">风险生命周期规则</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                              这里按规则汇总结构化 merge provenance、人工风险操作，以及后续转正、降级和回滚候选结果，便于判断哪些规则值得继续自动放量。
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
+                            {insights.riskLifecycleRules.length} 条规则
+                          </span>
+                        </div>
+
+                        <div className="mt-4 space-y-3">
+                          {insights.riskLifecycleRules.map((item) => (
+                            <div key={item.ruleId} className="rounded-2xl border border-white/80 bg-white px-4 py-4">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="font-medium text-slate-900">{item.title}</p>
+                                    <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${riskLifecycleStatusTone(item.latestStatus)}`}>
+                                      {riskLifecycleStatusLabel(item.latestStatus)}
+                                    </span>
+                                    <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${riskLifecyclePolicyTone(item.policy)}`}>
+                                      {riskLifecyclePolicyLabel(item.policy)}
+                                    </span>
+                                    {item.latestImpactStatus && (
+                                      <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${mergeImpactStatusTone(item.latestImpactStatus)}`}>
+                                        {mergeImpactStatusLabel(item.latestImpactStatus)}
+                                      </span>
+                                    )}
+                                    {item.mergedCandidateSources.includes('successful_run') && (
+                                      <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-[11px] font-medium text-violet-700">
+                                        successful_run
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="mt-2 text-xs leading-5 text-slate-500">
+                                    <span className="font-mono">{item.ruleId}</span>
+                                    {item.latestOccurredAt ? ` · 最近 ${formatDateTime(item.latestOccurredAt)}` : ''}
+                                  </p>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-right text-[11px] text-slate-500">
+                                  <p className="font-medium text-slate-900">
+                                    override {item.overrideAppliedCount} · 风险确认 {item.riskAcknowledgementCount}
+                                  </p>
+                                  <p className="mt-1">
+                                    {item.recentMergeProvenance.windowLabel}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="mt-3 grid gap-3 sm:grid-cols-4">
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">merge</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{item.mergeAuditCount}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">风险候选 {item.riskySelectionCount} 次</p>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">probation</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{item.promotedCount + item.watchingCount + item.degradedCount}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    转正 {item.promotedCount} · 观察 {item.watchingCount} · 降级 {item.degradedCount}
+                                  </p>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">rollback</p>
+                                  <p className="mt-2 text-lg font-semibold text-slate-950">{item.rollbackCandidateCount}</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">出现回滚候选次数</p>
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">feedback</p>
+                                  <p className="mt-2 text-sm font-semibold text-slate-950">
+                                    {item.selectedCandidateFeedbackStatuses.length > 0
+                                      ? item.selectedCandidateFeedbackStatuses.join(' / ')
+                                      : '未标记'}
+                                  </p>
+                                  <p className="mt-1 text-[11px] text-slate-500">历史候选初始状态</p>
+                                </div>
+                              </div>
+
+                              {item.policyReason && <p className="mt-3 text-xs leading-6 text-slate-700">策略建议：{item.policyReason}</p>}
+                              {item.latestRecommendation && <p className="mt-2 text-xs leading-6 text-slate-600">{item.latestRecommendation}</p>}
+                              <div className="mt-2 space-y-1 text-[11px] text-slate-500">
+                                <p>来源：{item.mergedCandidateSources.join(' / ') || '未标记'}</p>
+                                <p>
+                                  近期窗口：{item.recentMergeProvenance.windowLabel}
+                                  {item.recentMergeProvenance.consideredAuditCount > 0
+                                    ? ` · 预检 ${item.recentMergeProvenance.mergeProvenance.preflightNoticeCount} 条 · 回执 ${item.recentMergeProvenance.mergeProvenance.receiptNoticeCount} 条`
+                                    : ''}
+                                </p>
+                                <p>
+                                  近期预检：
+                                  {item.recentMergeProvenance.consideredAuditCount > 0
+                                    ? ` ${summarizeRiskLifecycleRuleProvenanceStage('preflight', item.recentMergeProvenance.mergeProvenance.preflight)}`
+                                    : ' —'}
+                                </p>
+                                <p>
+                                  近期回执：
+                                  {item.recentMergeProvenance.consideredAuditCount > 0
+                                    ? ` ${summarizeRiskLifecycleRuleProvenanceStage('receipt', item.recentMergeProvenance.mergeProvenance.receipt)}`
+                                    : ' —'}
+                                </p>
+                                <p>
+                                  结构化预检：{item.mergeProvenance.preflightNoticeCount} 条
+                                  {item.mergeProvenance.preflightNoticeCount > 0
+                                    ? ` · ${summarizeRiskLifecycleRuleProvenanceStage('preflight', item.mergeProvenance.preflight)}`
+                                    : ''}
+                                </p>
+                                <p>
+                                  结构化回执：{item.mergeProvenance.receiptNoticeCount} 条
+                                  {item.mergeProvenance.receiptNoticeCount > 0
+                                    ? ` · ${summarizeRiskLifecycleRuleProvenanceStage('receipt', item.mergeProvenance.receipt)}`
+                                    : ''}
+                                </p>
+                                <p>支持审计：{summarizeIdList(item.supportingAuditIds)}</p>
+                                {item.latestBackupPath && (
+                                  <p className="break-all">
+                                    最近备份：<span className="font-mono">{item.latestBackupPath}</span>
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {insights.starterHelpers.length > 0 && (
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium text-slate-900">Starter Helper 建议</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                              从已转正或稳定高通过率规则里抽出更适合首轮生成直接复用的 helper，优先减少手写脆弱脚本；若最近已有 review / verify 失败，这里也会直接显示并压制首轮下发。
+                            </p>
+                            {overallFailurePressureSummary.latestRepairObservationSummary ? (
+                              <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                                最近 verifier repair observation：{overallFailurePressureSummary.latestRepairObservationSummary}
+                                {(overallFailurePressureSummary.latestRepairObservationVerifierCheckUids || []).length > 0
+                                  ? ` · verifier ${summarizeTextList(overallFailurePressureSummary.latestRepairObservationVerifierCheckUids || [], 2)}`
+                                  : ''}
+                                {overallFailurePressureSummary.latestRepairObservationAt
+                                  ? ` · ${formatDateTime(overallFailurePressureSummary.latestRepairObservationAt)}`
+                                  : ''}
+                              </p>
+                            ) : null}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
+                              {insights.starterHelpers.length} 个 helper
+                            </span>
+                            {starterHelperFailureSummary.highFailureCandidateCount > 0 && (
+                              <span className="rounded-full border border-rose-200 bg-white px-3 py-1 text-[11px] font-medium text-rose-700">
+                                高频失败 {starterHelperFailureSummary.highFailureCandidateCount}
+                              </span>
+                            )}
+                            {starterHelperFailureSummary.recentFailedReviewCapabilityCount > 0 && (
+                              <span className="rounded-full border border-amber-200 bg-white px-3 py-1 text-[11px] font-medium text-amber-700">
+                                复核失败 {starterHelperFailureSummary.recentFailedReviewCapabilityCount}
+                              </span>
+                            )}
+                            {starterHelperFailureSummary.recentFailedVerifyCapabilityCount > 0 && (
+                              <span className="rounded-full border border-rose-200 bg-white px-3 py-1 text-[11px] font-medium text-rose-700">
+                                验证失败 {starterHelperFailureSummary.recentFailedVerifyCapabilityCount}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="mt-4 space-y-3">
+                          {insights.starterHelpers.map((item) => (
+                            <div key={item.helper} className="rounded-2xl border border-white/80 bg-white px-4 py-4">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="break-all font-mono text-xs text-slate-900">{item.helper}</p>
+                                    <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${starterHelperSourceTone(item.source)}`}>
+                                      {starterHelperSourceLabel(item.source)}
+                                    </span>
+                                    {item.knowledgeChangeSignal ? (
+                                      <span
+                                        className={`rounded-full border px-3 py-1 text-[11px] font-medium ${starterHelperKnowledgeSignalTone(item.knowledgeChangeSignal)}`}
+                                      >
+                                        {starterHelperKnowledgeSignalLabel(item.knowledgeChangeSignal)}
+                                      </span>
+                                    ) : item.knowledgeChangeTier ? (
+                                      <span
+                                        className={`rounded-full border px-3 py-1 text-[11px] font-medium ${starterHelperKnowledgeTierTone(
+                                          item.knowledgeChangeTier,
+                                          item.knowledgeChangeWatchingKind
+                                        )}`}
+                                      >
+                                        {starterHelperKnowledgeTierLabel(item.knowledgeChangeTier, item.knowledgeChangeWatchingKind)}
+                                      </span>
+                                    ) : null}
+                                    {item.governanceReleaseStatus ? (
+                                      <span
+                                        className={`rounded-full border px-3 py-1 text-[11px] font-medium ${starterHelperGovernanceReleaseTone(
+                                          item.governanceReleaseStatus
+                                        )}`}
+                                      >
+                                        {starterHelperGovernanceReleaseLabel(item.governanceReleaseStatus)}
+                                      </span>
+                                    ) : null}
+                                    {item.preferredPromotionStatus ? (
+                                      <span
+                                        className={`rounded-full border px-3 py-1 text-[11px] font-medium ${starterHelperPreferredPromotionTone(
+                                          item.preferredPromotionStatus
+                                        )}`}
+                                      >
+                                        {starterHelperPreferredPromotionLabel(item.preferredPromotionStatus)}
+                                      </span>
+                                    ) : null}
+                                    {hasIntentVerificationFailurePressureViewHighFailure(item) && (
+                                      <span className="rounded-full border border-rose-200 px-3 py-1 text-[11px] font-medium text-rose-700">
+                                        高频失败
+                                      </span>
+                                    )}
+                                    {(item.recentFailedReviewCapabilityCount || 0) > 0 && (
+                                      <span className="rounded-full border border-amber-200 px-3 py-1 text-[11px] font-medium text-amber-700">
+                                        复核失败 {item.recentFailedReviewCapabilityCount}
+                                      </span>
+                                    )}
+                                    {(item.recentFailedVerifyCapabilityCount || 0) > 0 && (
+                                      <span className="rounded-full border border-rose-200 px-3 py-1 text-[11px] font-medium text-rose-700">
+                                        验证失败 {item.recentFailedVerifyCapabilityCount}
+                                      </span>
+                                    )}
+                                    {(item.recordedPromotionReceiptCount || 0) > 0 && (
+                                      <span className="rounded-full border border-sky-200 px-3 py-1 text-[11px] font-medium text-sky-700">
+                                        沉淀回执 {item.recordedPromotionReceiptCount}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="mt-2 text-xs leading-5 text-slate-500">
+                                    复用 {item.runCount} 次 · 通过 {item.passedRuns} 次 · 通过率 {formatRatePercent(item.passRate)}
+                                    {item.suggestedReuseRuns > 0 ? ` · 命中推荐 ${item.suggestedReuseRuns} 次` : ''}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <p className="mt-3 text-xs leading-6 text-slate-600">{item.recommendation}</p>
+                              <div className="mt-2 space-y-1 text-[11px] text-slate-500">
+                                <p>支持规则：{summarizeIdList(item.supportingRuleTitles.length > 0 ? item.supportingRuleTitles : item.supportingRuleIds)}</p>
+                                <p>规则 ID：{summarizeIdList(item.supportingRuleIds)}</p>
+                                {item.knowledgeChangeSignalReason && (
+                                  <p>
+                                    {item.knowledgeChangeTier === 'watching' && !item.knowledgeChangeSignal ? '观察依据：' : '长期依据：'}
+                                    {item.knowledgeChangeSignalReason}
+                                    {item.knowledgeChangeDecisionableRuleCount
+                                      ? `（${item.knowledgeChangeDecisionableRuleCount} 条已判定规则）`
+                                      : ''}
+                                  </p>
+                                )}
+                                {item.governanceReleaseStatus && item.governanceReleaseReason ? (
+                                  <p>
+                                    治理释放：
+                                    {item.governanceReleaseReason}
+                                    {item.governanceReleaseCapabilityCount
+                                      ? `（治理目标 ${item.governanceReleaseCapabilityCount} 条`
+                                      : '（'}
+                                    {item.governanceReleaseDirectVerifyPassedCapabilityCount
+                                      ? `，直接验证通过 ${item.governanceReleaseDirectVerifyPassedCapabilityCount} 条`
+                                      : ''}
+                                    {item.governanceReleaseLatestVerifyExecutionAt
+                                      ? `，最近验证 ${formatDateTime(item.governanceReleaseLatestVerifyExecutionAt)}`
+                                      : ''}
+                                    ）
+                                  </p>
+                                ) : null}
+                                {item.preferredPromotionReason ? <p>提级建议：{item.preferredPromotionReason}</p> : null}
+                                {item.preferredAutoPromotionCondition ? <p>自动提级条件：{item.preferredAutoPromotionCondition}</p> : null}
+                                {((item.preferredPromotionRequiredPositiveRuleCount || 0) > 0 ||
+                                  (item.preferredPromotionPositiveRuleCount || 0) > 0 ||
+                                  (item.preferredPromotionNegativeRuleCount || 0) > 0) && (
+                                  <p>
+                                    提级进度：
+                                    {` 长期正向 ${item.preferredPromotionPositiveRuleCount || 0}/${item.preferredPromotionRequiredPositiveRuleCount || 0} 条`}
+                                    {(item.preferredPromotionNegativeRuleCount || 0) > 0
+                                      ? `，负向/混合 ${item.preferredPromotionNegativeRuleCount || 0} 条`
+                                      : ''}
+                                  </p>
+                                )}
+                                {(item.recentFailedReviewCapabilityCount || 0) > 0 || (item.recentFailedVerifyCapabilityCount || 0) > 0 ? (
+                                  <p>
+                                    最近能力反馈：
+                                    {(item.recentFailedReviewCapabilityCount || 0) > 0
+                                      ? ` 保守复核失败 ${item.recentFailedReviewCapabilityCount} 条`
+                                      : ''}
+                                    {(item.recentFailedReviewCapabilityCount || 0) > 0 &&
+                                    (item.recentFailedVerifyCapabilityCount || 0) > 0
+                                      ? ' ·'
+                                      : ''}
+                                    {(item.recentFailedVerifyCapabilityCount || 0) > 0
+                                      ? ` 标准验证失败 ${item.recentFailedVerifyCapabilityCount} 条`
+                                      : ''}
+                                  </p>
+                                ) : null}
+                                {(item.recentFailedReviewExecutionCount || 0) > 0 || (item.recentFailedVerifyExecutionCount || 0) > 0 ? (
+                                  <p>
+                                    近 {item.recentFailureWindowDays || 14} 天执行失败：
+                                    {(item.recentFailedReviewExecutionCount || 0) > 0
+                                      ? ` 复核 ${item.recentFailedReviewExecutionCount} 次`
+                                      : ''}
+                                    {(item.recentFailedReviewExecutionCount || 0) > 0 &&
+                                    (item.recentFailedVerifyExecutionCount || 0) > 0
+                                      ? ' ·'
+                                      : ''}
+                                    {(item.recentFailedVerifyExecutionCount || 0) > 0
+                                      ? ` 验证 ${item.recentFailedVerifyExecutionCount} 次`
+                                      : ''}
+                                  </p>
+                                ) : null}
+                                {(item.recordedPromotionReceiptCount || 0) > 0 ? (
+                                  <p>
+                                    沉淀记录：
+                                    {` 已写回执 ${item.recordedPromotionReceiptCount || 0} 次`}
+                                    {(item.recordedPromotionCapabilityCount || 0) > 0
+                                      ? ` · 能力 ${item.recordedPromotionCapabilityCount || 0} 条`
+                                      : ''}
+                                    {item.lastPromotionRecordedAt ? ` · 最近 ${formatDateTime(item.lastPromotionRecordedAt)}` : ''}
+                                  </p>
+                                ) : null}
+                                {(item.lastPromotionModuleName || item.lastPromotionScenarioTitle || item.lastPromotionSourceRunId) && (
+                                  <p>
+                                    最近来源：
+                                    {[item.lastPromotionModuleName, item.lastPromotionScenarioTitle].filter(Boolean).join(' / ') || '未命名场景'}
+                                    {item.lastPromotionSourceRunId ? ` · run ${summarizeIdList([item.lastPromotionSourceRunId])}` : ''}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {insights.suppressedStarterHelpers.length > 0 && (
+                      <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50/70 px-4 py-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium text-rose-900">已过滤的 Starter Helper</p>
+                            <p className="mt-1 text-xs leading-5 text-rose-700">
+                              这些 helper 虽然复用频率和通过率已达到 starter 基线，但因多条 supporting rules 的长期 evidence 仍偏负向，当前不会继续下发到首轮生成。这里会优先汇总高频失败 helper 的治理摘要；若某个 helper 已进入恢复观察评估，也会在卡片内补充治理轨迹。
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="rounded-full border border-rose-200 bg-white px-3 py-1 text-[11px] font-medium text-rose-700">
+                              {insights.suppressedStarterHelpers.length} 个 helper
+                            </span>
+                            {suppressedStarterHelperGovernanceSummary.helperCount > 0 && (
+                              <span className="rounded-full border border-amber-200 bg-white px-3 py-1 text-[11px] font-medium text-amber-700">
+                                治理 helper {suppressedStarterHelperGovernanceSummary.helperCount}
+                              </span>
+                            )}
+                            {suppressedStarterHelperGovernanceSummary.capabilityCount > 0 && (
+                              <span className="rounded-full border border-amber-200 bg-white px-3 py-1 text-[11px] font-medium text-amber-700">
+                                待复核能力 {suppressedStarterHelperGovernanceSummary.capabilityCount}
+                              </span>
+                            )}
+                            {suppressedStarterHelperGovernanceSummary.recentReviewExecutionCount > 0 && (
+                              <span className="rounded-full border border-sky-200 bg-white px-3 py-1 text-[11px] font-medium text-sky-700">
+                                近期治理复核 {suppressedStarterHelperGovernanceSummary.recentReviewExecutionCount}
+                              </span>
+                            )}
+                            {suppressedStarterHelperGovernanceSummary.recentVerifyExecutionCount > 0 && (
+                              <span className="rounded-full border border-blue-200 bg-white px-3 py-1 text-[11px] font-medium text-blue-700">
+                                标准验证 {suppressedStarterHelperGovernanceSummary.recentVerifyExecutionCount}
+                              </span>
+                            )}
+                            {suppressedStarterHelperGovernanceSummary.recentRepairExecutionCount > 0 && (
+                              <span className="rounded-full border border-violet-200 bg-white px-3 py-1 text-[11px] font-medium text-violet-700">
+                                repair 重跑 {suppressedStarterHelperGovernanceSummary.recentRepairExecutionCount}
+                              </span>
+                            )}
+                            {suppressedStarterHelperFailureSummary.highFailureCandidateCount > 0 && (
+                              <span className="rounded-full border border-rose-200 bg-white px-3 py-1 text-[11px] font-medium text-rose-700">
+                                高频失败 {suppressedStarterHelperFailureSummary.highFailureCandidateCount}
+                              </span>
+                            )}
+                            {suppressedStarterHelperFailureSummary.recentFailedReviewCapabilityCount > 0 && (
+                              <span className="rounded-full border border-amber-200 bg-white px-3 py-1 text-[11px] font-medium text-amber-700">
+                                复核失败 {suppressedStarterHelperFailureSummary.recentFailedReviewCapabilityCount}
+                              </span>
+                            )}
+                            {suppressedStarterHelperFailureSummary.recentFailedVerifyCapabilityCount > 0 && (
+                              <span className="rounded-full border border-rose-200 bg-white px-3 py-1 text-[11px] font-medium text-rose-700">
+                                验证失败 {suppressedStarterHelperFailureSummary.recentFailedVerifyCapabilityCount}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="mt-4 space-y-3">
+                          {insights.suppressedStarterHelpers.map((item) => (
+                            <div key={item.helper} className="rounded-2xl border border-white/80 bg-white px-4 py-4">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="break-all font-mono text-xs text-slate-900">{item.helper}</p>
+                                    <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${starterHelperSourceTone(item.source)}`}>
+                                      {starterHelperSourceLabel(item.source)}
+                                    </span>
+                                    <span
+                                      className={`rounded-full border px-3 py-1 text-[11px] font-medium ${starterHelperKnowledgeSignalTone(item.knowledgeChangeSignal)}`}
+                                    >
+                                      {starterHelperKnowledgeSignalLabel(item.knowledgeChangeSignal)}
+                                    </span>
+                                    {hasIntentVerificationFailurePressureViewHighFailure(item) && (
+                                      <span className="rounded-full border border-rose-200 px-3 py-1 text-[11px] font-medium text-rose-700">
+                                        高频失败
+                                      </span>
+                                    )}
+                                    {(item.recentFailedReviewCapabilityCount || 0) > 0 && (
+                                      <span className="rounded-full border border-amber-200 px-3 py-1 text-[11px] font-medium text-amber-700">
+                                        复核失败 {item.recentFailedReviewCapabilityCount}
+                                      </span>
+                                    )}
+                                    {(item.recentFailedVerifyCapabilityCount || 0) > 0 && (
+                                      <span className="rounded-full border border-rose-200 px-3 py-1 text-[11px] font-medium text-rose-700">
+                                        验证失败 {item.recentFailedVerifyCapabilityCount}
+                                      </span>
+                                    )}
+                                    {(item.governanceTargetCapabilityCount || 0) > 0 && (
+                                      <span className="rounded-full border border-amber-200 px-3 py-1 text-[11px] font-medium text-amber-700">
+                                        治理目标 {item.governanceTargetCapabilityCount}
+                                      </span>
+                                    )}
+                                    {item.governanceRecommendationStatus && (
+                                      <span
+                                        className={`rounded-full border px-3 py-1 text-[11px] font-medium ${suppressedStarterHelperGovernanceRecommendationTone(
+                                          item.governanceRecommendationStatus
+                                        )}`}
+                                      >
+                                        {suppressedStarterHelperGovernanceRecommendationLabel(item.governanceRecommendationStatus)}
+                                      </span>
+                                    )}
+                                    {(item.recentGovernanceReviewExecutionCount || 0) > 0 && (
+                                      <span className="rounded-full border border-sky-200 px-3 py-1 text-[11px] font-medium text-sky-700">
+                                        近期复核 {item.recentGovernanceReviewExecutionCount}
+                                      </span>
+                                    )}
+                                    {(item.recentGovernanceVerifyExecutionCount || 0) > 0 && (
+                                      <span className="rounded-full border border-blue-200 px-3 py-1 text-[11px] font-medium text-blue-700">
+                                        标准验证 {item.recentGovernanceVerifyExecutionCount}
+                                      </span>
+                                    )}
+                                    {(item.recentGovernanceRepairExecutionCount || 0) > 0 && (
+                                      <span className="rounded-full border border-violet-200 px-3 py-1 text-[11px] font-medium text-violet-700">
+                                        repair 重跑 {item.recentGovernanceRepairExecutionCount}
+                                      </span>
+                                    )}
+                                    {(item.recordedPromotionReceiptCount || 0) > 0 && (
+                                      <span className="rounded-full border border-sky-200 px-3 py-1 text-[11px] font-medium text-sky-700">
+                                        沉淀回执 {item.recordedPromotionReceiptCount}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="mt-2 text-xs leading-5 text-slate-500">
+                                    复用 {item.runCount} 次 · 通过 {item.passedRuns} 次 · 通过率 {formatRatePercent(item.passRate)}
+                                    {item.suggestedReuseRuns > 0 ? ` · 命中推荐 ${item.suggestedReuseRuns} 次` : ''}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <p className="mt-3 text-xs leading-6 text-rose-800">{item.suppressionReason}</p>
+                              <div className="mt-2 space-y-1 text-[11px] text-slate-500">
+                                <p>支持规则：{summarizeIdList(item.supportingRuleTitles.length > 0 ? item.supportingRuleTitles : item.supportingRuleIds)}</p>
+                                {item.knowledgeChangeDecisionableRuleCount ? (
+                                  <p>已判定规则：{item.knowledgeChangeDecisionableRuleCount} 条</p>
+                                ) : null}
+                                {item.knowledgeChangeSupportingAuditIds?.length ? (
+                                  <p>支持审计：{summarizeIdList(item.knowledgeChangeSupportingAuditIds)}</p>
+                                ) : null}
+                                {(item.recentFailedReviewCapabilityCount || 0) > 0 || (item.recentFailedVerifyCapabilityCount || 0) > 0 ? (
+                                  <p>
+                                    最近能力反馈：
+                                    {(item.recentFailedReviewCapabilityCount || 0) > 0
+                                      ? ` 保守复核失败 ${item.recentFailedReviewCapabilityCount} 条`
+                                      : ''}
+                                    {(item.recentFailedReviewCapabilityCount || 0) > 0 &&
+                                    (item.recentFailedVerifyCapabilityCount || 0) > 0
+                                      ? ' ·'
+                                      : ''}
+                                    {(item.recentFailedVerifyCapabilityCount || 0) > 0
+                                      ? ` 标准验证失败 ${item.recentFailedVerifyCapabilityCount} 条`
+                                      : ''}
+                                  </p>
+                                ) : null}
+                                {(item.recentFailedReviewExecutionCount || 0) > 0 || (item.recentFailedVerifyExecutionCount || 0) > 0 ? (
+                                  <p>
+                                    近 {item.recentFailureWindowDays || 14} 天执行失败：
+                                    {(item.recentFailedReviewExecutionCount || 0) > 0
+                                      ? ` 复核 ${item.recentFailedReviewExecutionCount} 次`
+                                      : ''}
+                                    {(item.recentFailedReviewExecutionCount || 0) > 0 &&
+                                    (item.recentFailedVerifyExecutionCount || 0) > 0
+                                      ? ' ·'
+                                      : ''}
+                                    {(item.recentFailedVerifyExecutionCount || 0) > 0
+                                      ? ` 验证 ${item.recentFailedVerifyExecutionCount} 次`
+                                      : ''}
+                                  </p>
+                                ) : null}
+                                {item.governanceRecommendationReason ? <p>治理建议：{item.governanceRecommendationReason}</p> : null}
+                                {item.governanceAutoUnlockCondition ? <p>自动解封条件：{item.governanceAutoUnlockCondition}</p> : null}
+                                {((item.governanceTargetCapabilityCount || 0) > 0 ||
+                                  (item.governancePassedCapabilityCount || 0) > 0 ||
+                                  (item.governanceDirectVerifyPassedCapabilityCount || 0) > 0) && (
+                                  <p>
+                                    当前恢复进度：
+                                    {` 治理目标通过 ${item.governancePassedCapabilityCount || 0}/${item.governanceTargetCapabilityCount || 0} 条`}
+                                    {(item.governanceRequiredPassedCapabilityCount || 0) > 0
+                                      ? `，解封门槛 ${item.governanceRequiredPassedCapabilityCount} 条`
+                                      : ''}
+                                    {`，直接验证通过 ${item.governanceDirectVerifyPassedCapabilityCount || 0} 条`}
+                                  </p>
+                                )}
+                                {(item.governanceTargetCapabilityCount || 0) > 0 ? (
+                                  <p>
+                                    独立治理回执：
+                                    {' '}
+                                    待复核能力 {item.governanceTargetCapabilityCount || 0} 条
+                                    {` · 最近复核 ${item.recentGovernanceReviewExecutionCount || 0} 次`}
+                                    {`（通过 ${item.recentPassedGovernanceReviewExecutionCount || 0} / 失败 ${
+                                      item.recentFailedGovernanceReviewExecutionCount || 0
+                                    }）`}
+                                    {item.latestGovernanceReviewExecutionAt
+                                      ? ` · 最近 ${formatDateTime(item.latestGovernanceReviewExecutionAt)}`
+                                      : ''}
+                                  </p>
+                                ) : null}
+                                {(item.recordedPromotionReceiptCount || 0) > 0 ? (
+                                  <p>
+                                    沉淀记录：
+                                    {` 已写回执 ${item.recordedPromotionReceiptCount || 0} 次`}
+                                    {(item.recordedPromotionCapabilityCount || 0) > 0
+                                      ? ` · 能力 ${item.recordedPromotionCapabilityCount || 0} 条`
+                                      : ''}
+                                    {item.lastPromotionRecordedAt ? ` · 最近 ${formatDateTime(item.lastPromotionRecordedAt)}` : ''}
+                                  </p>
+                                ) : null}
+                                {(item.lastPromotionModuleName || item.lastPromotionScenarioTitle || item.lastPromotionSourceRunId) && (
+                                  <p>
+                                    最近来源：
+                                    {[item.lastPromotionModuleName, item.lastPromotionScenarioTitle].filter(Boolean).join(' / ') || '未命名场景'}
+                                    {item.lastPromotionSourceRunId ? ` · run ${summarizeIdList([item.lastPromotionSourceRunId])}` : ''}
+                                  </p>
+                                )}
+                                {(item.recentGovernanceVerifyExecutionCount || 0) > 0 ? (
+                                  <p>
+                                    标准验证轨迹：
+                                    {` 最近验证 ${item.recentGovernanceVerifyExecutionCount || 0} 次`}
+                                    {`（通过 ${item.recentPassedGovernanceVerifyExecutionCount || 0} / 失败 ${
+                                      item.recentFailedGovernanceVerifyExecutionCount || 0
+                                    }）`}
+                                    {item.latestGovernanceVerifyExecutionAt
+                                      ? ` · 最近 ${formatDateTime(item.latestGovernanceVerifyExecutionAt)}`
+                                      : ''}
+                                  </p>
+                                ) : null}
+                                {(item.recentGovernanceRepairExecutionCount || 0) > 0 ? (
+                                  <p>
+                                    AI repair 轨迹：
+                                    {` 重跑 ${item.recentGovernanceRepairExecutionCount || 0} 次`}
+                                    {`（通过 ${item.recentPassedGovernanceRepairExecutionCount || 0} / 失败 ${
+                                      item.recentFailedGovernanceRepairExecutionCount || 0
+                                    }）`}
+                                    {item.latestGovernanceRepairExecutionAt
+                                      ? ` · 最近 ${formatDateTime(item.latestGovernanceRepairExecutionAt)}`
+                                      : ''}
+                                  </p>
+                                ) : null}
+                              </div>
+
+                              {item.governanceCapabilities?.length ? (
+                                <div className="mt-4 rounded-2xl border border-amber-200/80 bg-amber-50/60 px-3 py-3">
+                                  <div className="flex flex-wrap items-start justify-between gap-2">
+                                    <div>
+                                      <p className="text-xs font-medium text-amber-900">治理能力时间线</p>
+                                      <p className="mt-1 text-[11px] leading-5 text-amber-700">
+                                        展示该 helper 当前治理目标里的最近 5 条能力执行轨迹；高频失败 helper 会优先进入上方治理汇总。
+                                      </p>
+                                    </div>
+                                    <span className="rounded-full border border-amber-200 bg-white px-3 py-1 text-[11px] font-medium text-amber-700">
+                                      {item.governanceCapabilities.length} 条能力
+                                    </span>
+                                  </div>
+
+                                  <div className="mt-3 space-y-2">
+                                    {item.governanceCapabilities.map((capability) => (
+                                      <div
+                                        key={capability.capabilityUid}
+                                        className="rounded-2xl border border-white/90 bg-white/90 px-3 py-3"
+                                      >
+                                        <div className="flex flex-wrap items-start justify-between gap-2">
+                                          <div>
+                                            <p className="text-sm font-medium text-slate-900">{capability.name}</p>
+                                            <p className="mt-1 break-all font-mono text-[11px] leading-5 text-slate-500">
+                                              {capability.slug}
+                                            </p>
+                                          </div>
+                                          <div className="flex flex-wrap items-center gap-2">
+                                            <span
+                                              className={`rounded-full border px-3 py-1 text-[11px] font-medium ${governanceCapabilityExecutionStatusTone(capability.latestExecutionStatus)}`}
+                                            >
+                                              {governanceCapabilityExecutionStatusLabel(capability.latestExecutionStatus)}
+                                            </span>
+                                            <span
+                                              className={`rounded-full border px-3 py-1 text-[11px] font-medium ${governanceCapabilityExecutionIntentTone(capability.latestExecutionIntent)}`}
+                                            >
+                                              {governanceCapabilityExecutionIntentLabel(capability.latestExecutionIntent)}
+                                            </span>
+                                            <span
+                                              className={`rounded-full border px-3 py-1 text-[11px] font-medium ${governanceCapabilityExecutionSourceTone(capability.latestExecutionSource)}`}
+                                            >
+                                              {governanceCapabilityExecutionSourceLabel(capability.latestExecutionSource)}
+                                            </span>
+                                          </div>
+                                        </div>
+                                        <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                                          {capability.latestExecutionAt
+                                            ? `最近执行 ${formatDateTime(capability.latestExecutionAt)}`
+                                            : '最近执行记录不足'}
+                                          {` · 复核 ${capability.recentReviewExecutionCount} 次`}
+                                          {` · 验证 ${capability.recentVerifyExecutionCount} 次`}
+                                          {` · repair ${capability.recentRepairExecutionCount} 次`}
+                                        </p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
 
@@ -3563,6 +7928,14 @@ export default function IntentE2EWorkbench({
                                     {intentFailureClassLabel(item.failureClass as IntentFailureTriage['failureClass'])}
                                   </p>
                                   <p className="mt-1 text-[11px] text-slate-500">{item.failureClass}</p>
+                                  {item.latestRepairObservationSummary ? (
+                                    <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                                      {item.latestRepairObservationSummary}
+                                      {item.latestRepairObservationVerifierCheckUids.length > 0
+                                        ? ` · verifier ${summarizeTextList(item.latestRepairObservationVerifierCheckUids, 2)}`
+                                        : ''}
+                                    </p>
+                                  ) : null}
                                 </div>
                                 <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-700">
                                   {item.count} 次
@@ -3609,75 +7982,352 @@ export default function IntentE2EWorkbench({
                   </div>
                 ) : (
                   <div className="mt-4 space-y-3">
-                    {knowledgeAudits.map((item) => (
-                      <div key={item.auditId} className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-4">
-                        <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span
-                                className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-medium ${
-                                  item.operation === 'restore'
-                                    ? 'border border-emerald-200 bg-emerald-50 text-emerald-700'
-                                    : 'border border-sky-200 bg-sky-50 text-sky-700'
-                                }`}
-                              >
-                                {projectKnowledgeOperationLabel(item.operation)}
-                              </span>
-                              <p className="font-medium text-slate-900">{item.title}</p>
+                    {knowledgeAudits.map((item) => {
+                      const selectedRiskyCandidateCount = item.meta.selectedRiskyCandidateIds?.length || 0;
+                      const appliedOverrideCount = item.meta.appliedOverrideCandidateIds?.length || 0;
+                      const appliedRiskAcknowledgementCount = item.meta.appliedAcknowledgedRiskCandidateIds?.length || 0;
+                      const selectedFeedbackStatuses = item.meta.selectedCandidateFeedbackStatuses || [];
+                      const selectionSummary = item.meta.selectionSummary || null;
+                      const preflightSummary = item.meta.preflightSummary || null;
+                      const mergeReceipts = item.meta.mergeReceipts || [];
+                      const successfulRunKnowledgePromotionReceipt = item.meta.successfulRunKnowledgePromotionReceipt || null;
+                      const successfulRunKnowledgePromotionRunIds = successfulRunKnowledgePromotionReceipt
+                        ? uniqueStrings(successfulRunKnowledgePromotionReceipt.items.flatMap((receiptItem) => receiptItem.runIds))
+                        : [];
+                      const autoPromoteCount = selectionSummary?.autoPromoteCandidateIds.length || 0;
+                      const blockDefaultMergeCount = selectionSummary?.blockDefaultMergeCandidateIds.length || 0;
+                      const hasRiskDrilldown =
+                        selectedRiskyCandidateCount > 0 || appliedOverrideCount > 0 || appliedRiskAcknowledgementCount > 0;
+
+                      return (
+                        <div key={item.auditId} className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-4">
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span
+                                  className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                                    item.operation === 'restore'
+                                      ? 'border border-emerald-200 bg-emerald-50 text-emerald-700'
+                                      : 'border border-sky-200 bg-sky-50 text-sky-700'
+                                  }`}
+                                >
+                                  {projectKnowledgeOperationLabel(item.operation)}
+                                </span>
+                                <p className="font-medium text-slate-900">{item.title}</p>
+                              </div>
+                              <p className="mt-2 text-xs text-slate-500">
+                                {formatDateTime(item.occurredAt)} · {formatActorLabel(item.actorLabel)}
+                                {item.projectUid ? ` · ${item.projectUid}` : ''}
+                              </p>
+                              {(item.meta.requestedModuleUid || (item.meta.mergedCandidateSources || []).length > 0) && (
+                                <p className="mt-1 text-[11px] text-slate-500">
+                                  {item.meta.requestedModuleUid ? `模块 ${item.meta.requestedModuleUid}` : '全项目作用域'}
+                                  {(item.meta.mergedCandidateSources || []).length > 0
+                                    ? ` · 来源 ${item.meta.mergedCandidateSources?.join(' / ')}`
+                                    : ''}
+                                </p>
+                              )}
+                              {(selectedRiskyCandidateCount > 0 ||
+                                appliedOverrideCount > 0 ||
+                                appliedRiskAcknowledgementCount > 0 ||
+                                selectedFeedbackStatuses.length > 0) && (
+                                <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+                                  {selectedRiskyCandidateCount > 0 && (
+                                    <span className="inline-flex rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-rose-700">
+                                      风险候选 {selectedRiskyCandidateCount}
+                                    </span>
+                                  )}
+                                  {appliedOverrideCount > 0 && (
+                                    <span className="inline-flex rounded-full border border-rose-300 bg-rose-100 px-2.5 py-1 text-rose-800">
+                                      override {appliedOverrideCount}
+                                    </span>
+                                  )}
+                                  {appliedRiskAcknowledgementCount > 0 && (
+                                    <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-amber-700">
+                                      风险确认 {appliedRiskAcknowledgementCount}
+                                    </span>
+                                  )}
+                                  {selectedFeedbackStatuses.length > 0 && (
+                                    <span className="inline-flex rounded-full border border-slate-200 bg-white px-2.5 py-1 text-slate-600">
+                                      状态 {selectedFeedbackStatuses.join(' / ')}
+                                    </span>
+                                  )}
+                                  {autoPromoteCount > 0 && (
+                                    <span className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-emerald-700">
+                                      自动晋升 {autoPromoteCount}
+                                    </span>
+                                  )}
+                                  {blockDefaultMergeCount > 0 && (
+                                    <span className="inline-flex rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-rose-700">
+                                      默认阻断 {blockDefaultMergeCount}
+                                    </span>
+                                  )}
+                                  {preflightSummary && preflightSummary.itemCount > 0 && (
+                                    <span className="inline-flex rounded-full border border-slate-200 bg-white px-2.5 py-1 text-slate-600">
+                                      预检 {preflightSummary.itemCount}
+                                    </span>
+                                  )}
+                                  {mergeReceipts.length > 0 && (
+                                    <span className="inline-flex rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-violet-700">
+                                      回执 {mergeReceipts.length}
+                                    </span>
+                                  )}
+                                  {successfulRunKnowledgePromotionReceipt && (
+                                    <span className="inline-flex rounded-full border border-cyan-200 bg-cyan-50 px-2.5 py-1 text-cyan-700">
+                                      Successful Run 回执
+                                    </span>
+                                  )}
+                                </div>
+                              )}
                             </div>
-                            <p className="mt-2 text-xs text-slate-500">
-                              {formatDateTime(item.occurredAt)} · {formatActorLabel(item.actorLabel)}
-                              {item.projectUid ? ` · ${item.projectUid}` : ''}
-                            </p>
-                          </div>
-                          <div className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-right text-[11px] text-slate-500">
-                            <p className="font-medium text-slate-900">
-                              {item.comparison.before.ruleCount} <span className="text-slate-400">→</span> {item.comparison.after.ruleCount}
-                            </p>
-                            <p className="mt-1">规则总数</p>
-                          </div>
-                        </div>
-
-                        {item.detail && <p className="mt-3 text-xs leading-6 text-slate-600">{item.detail}</p>}
-
-                        {(item.sourcePath || item.backupPath) && (
-                          <div className="mt-3 space-y-1 text-[11px] text-slate-500">
-                            {item.sourcePath && (
-                              <p className="break-all">
-                                来源：<span className="font-mono">{item.sourcePath}</span>
+                            <div className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-right text-[11px] text-slate-500">
+                              <p className="font-medium text-slate-900">
+                                {item.comparison.before.ruleCount} <span className="text-slate-400">→</span> {item.comparison.after.ruleCount}
                               </p>
-                            )}
-                            {item.backupPath && (
-                              <p className="break-all">
-                                备份：<span className="font-mono">{item.backupPath}</span>
-                              </p>
-                            )}
+                              <p className="mt-1">规则总数</p>
+                            </div>
                           </div>
-                        )}
 
-                        <div className="mt-3 grid gap-2 md:grid-cols-3 text-[11px] text-slate-500">
-                          <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                            <p className="font-medium text-slate-900">新增</p>
-                            <p className="mt-1">{summarizeIdList(item.comparison.addedRuleIds)}</p>
+                          {item.detail && <p className="mt-3 text-xs leading-6 text-slate-600">{item.detail}</p>}
+
+                          {selectionSummary && (
+                            <div className="mt-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs leading-6 text-slate-600">
+                              <p className="font-medium text-slate-900">结构化合并范围</p>
+                              <div className="mt-2 grid gap-2 md:grid-cols-4">
+                                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                                  <p className="text-[10px] uppercase tracking-[0.14em] text-slate-400">selected</p>
+                                  <p className="mt-1 text-sm font-semibold text-slate-900">{selectionSummary.selectedCandidateCount}</p>
+                                </div>
+                                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                                  <p className="text-[10px] uppercase tracking-[0.14em] text-slate-400">merged</p>
+                                  <p className="mt-1 text-sm font-semibold text-slate-900">{selectionSummary.mergeCandidateCount}</p>
+                                </div>
+                                <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-rose-700">
+                                  <p className="text-[10px] uppercase tracking-[0.14em] text-rose-500">override required</p>
+                                  <p className="mt-1 text-sm font-semibold">{selectionSummary.overrideRequiredCandidateIds.length}</p>
+                                </div>
+                                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-amber-700">
+                                  <p className="text-[10px] uppercase tracking-[0.14em] text-amber-500">risk ack required</p>
+                                  <p className="mt-1 text-sm font-semibold">{selectionSummary.riskAcknowledgementRequiredCandidateIds.length}</p>
+                                </div>
+                              </div>
+                              <p className="mt-2">规则：{summarizeIdList(selectionSummary.selectedRuleIds)}</p>
+                              <p className="mt-1">来源：{summarizeTextList(selectionSummary.selectedSources, 3)}</p>
+                              <p className="mt-1">策略：{summarizeTextList(selectionSummary.selectedLifecyclePolicies, 4)}</p>
+                            </div>
+                          )}
+
+                          {hasRiskDrilldown && (
+                            <div className="mt-3 grid gap-2 text-[11px] text-slate-600 md:grid-cols-3">
+                              <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2">
+                                <p className="font-medium text-rose-900">风险候选</p>
+                                <p className="mt-1">{summarizeIdList(item.meta.selectedRiskyCandidateIds || [])}</p>
+                                {selectedFeedbackStatuses.length > 0 && (
+                                  <p className="mt-1 text-rose-700">状态：{selectedFeedbackStatuses.join(' / ')}</p>
+                                )}
+                              </div>
+                              {appliedOverrideCount > 0 && (
+                                <div className="rounded-xl border border-rose-300 bg-rose-100 px-3 py-2">
+                                  <p className="font-medium text-rose-900">人工 Override</p>
+                                  <p className="mt-1">{summarizeIdList(item.meta.appliedOverrideCandidateIds || [])}</p>
+                                  {(item.meta.appliedOverrideCandidateFeedbackStatuses || []).length > 0 && (
+                                    <p className="mt-1 text-rose-700">
+                                      状态：{item.meta.appliedOverrideCandidateFeedbackStatuses?.join(' / ')}
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+                              {appliedRiskAcknowledgementCount > 0 && (
+                                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
+                                  <p className="font-medium text-amber-900">风险确认</p>
+                                  <p className="mt-1">{summarizeIdList(item.meta.appliedAcknowledgedRiskCandidateIds || [])}</p>
+                                  {(item.meta.appliedAcknowledgedRiskCandidateFeedbackStatuses || []).length > 0 && (
+                                    <p className="mt-1 text-amber-700">
+                                      状态：{item.meta.appliedAcknowledgedRiskCandidateFeedbackStatuses?.join(' / ')}
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {preflightSummary && preflightSummary.items.length > 0 && (
+                            <div className="mt-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-600">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <p className="font-medium text-slate-900">结构化预检</p>
+                                <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] text-slate-600">
+                                  {preflightSummary.itemCount} 项
+                                </span>
+                              </div>
+                              <div className="mt-3 space-y-2">
+                                {preflightSummary.items.map((notice, index) => (
+                                  <div key={`${item.auditId}-preflight-${index}`} className={`rounded-xl border px-3 py-2 ${projectKnowledgeMergeNoticeTone(notice)}`}>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className="rounded-full border border-current/20 bg-white/70 px-2 py-0.5 text-[10px] font-medium">
+                                        {projectKnowledgeMergeNoticeProvenanceLabel(notice.provenanceType)}
+                                      </span>
+                                      <p className="font-medium">{notice.title}</p>
+                                    </div>
+                                    <p className="mt-1 leading-5">{notice.message}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {mergeReceipts.length > 0 && (
+                            <div className="mt-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-600">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <p className="font-medium text-slate-900">结构化回执</p>
+                                <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] text-slate-600">
+                                  {mergeReceipts.length} 条
+                                </span>
+                              </div>
+                              <div className="mt-3 space-y-2">
+                                {mergeReceipts.map((receipt, index) => (
+                                  <div key={`${item.auditId}-receipt-${index}`} className={`rounded-xl border px-3 py-2 ${projectKnowledgeMergeNoticeTone(receipt)}`}>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className="rounded-full border border-current/20 bg-white/70 px-2 py-0.5 text-[10px] font-medium">
+                                        {projectKnowledgeMergeNoticeProvenanceLabel(receipt.provenanceType)}
+                                      </span>
+                                      <p className="font-medium">{receipt.title}</p>
+                                    </div>
+                                    <p className="mt-1 leading-5">{receipt.message}</p>
+                                    {receipt.ruleIds.length > 0 && <p className="mt-1 text-[11px] opacity-90">规则：{summarizeIdList(receipt.ruleIds)}</p>}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {successfulRunKnowledgePromotionReceipt && (
+                            <div className="mt-3 rounded-2xl border border-cyan-200 bg-cyan-50/60 px-4 py-3 text-xs text-cyan-900">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                  <p className="font-medium text-cyan-950">{successfulRunKnowledgePromotionReceipt.title}</p>
+                                  <p className="mt-1 leading-5 text-cyan-800">{successfulRunKnowledgePromotionReceipt.detail}</p>
+                                  <p className="mt-2 text-[11px] leading-5 text-cyan-800">
+                                    回执：{successfulRunKnowledgePromotionReceipt.receiptId}
+                                    {successfulRunKnowledgePromotionReceipt.requestedModuleUid
+                                      ? ` · 模块 ${successfulRunKnowledgePromotionReceipt.requestedModuleUid}`
+                                      : ''}
+                                    {successfulRunKnowledgePromotionRunIds.length > 0
+                                      ? ` · 运行 ${summarizeIdList(successfulRunKnowledgePromotionRunIds)}`
+                                      : ''}
+                                  </p>
+                                </div>
+                                <span className="rounded-full border border-cyan-200 bg-white px-2.5 py-1 text-[10px] font-medium text-cyan-700">
+                                  {successfulRunKnowledgePromotionReceipt.summary.mergedRuleCount} 条规则
+                                </span>
+                              </div>
+                              <div className="mt-3 grid gap-2 md:grid-cols-4">
+                                <div className="rounded-xl border border-cyan-100 bg-white px-3 py-2">
+                                  <p className="text-[10px] uppercase tracking-[0.14em] text-cyan-500">requested</p>
+                                  <p className="mt-1 text-sm font-semibold text-cyan-950">
+                                    {successfulRunKnowledgePromotionReceipt.summary.requestedCandidateCount}
+                                  </p>
+                                </div>
+                                <div className="rounded-xl border border-emerald-100 bg-white px-3 py-2 text-emerald-700">
+                                  <p className="text-[10px] uppercase tracking-[0.14em] text-emerald-500">merged</p>
+                                  <p className="mt-1 text-sm font-semibold">
+                                    {successfulRunKnowledgePromotionReceipt.summary.mergedRuleCount}
+                                  </p>
+                                </div>
+                                <div className="rounded-xl border border-sky-100 bg-white px-3 py-2 text-sky-700">
+                                  <p className="text-[10px] uppercase tracking-[0.14em] text-sky-500">runs</p>
+                                  <p className="mt-1 text-sm font-semibold">
+                                    {successfulRunKnowledgePromotionReceipt.summary.runCount}
+                                  </p>
+                                </div>
+                                <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-slate-700">
+                                  <p className="text-[10px] uppercase tracking-[0.14em] text-slate-400">helpers</p>
+                                  <p className="mt-1 text-sm font-semibold">
+                                    {successfulRunKnowledgePromotionReceipt.summary.helperCount}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="mt-3 space-y-2">
+                                {successfulRunKnowledgePromotionReceipt.items.slice(0, 3).map((receiptItem) => (
+                                  <div key={`${item.auditId}-${receiptItem.candidateId}`} className="rounded-xl border border-cyan-100 bg-white px-3 py-2">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span
+                                        className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${successfulRunKnowledgePromotionReceiptStatusTone(receiptItem.status)}`}
+                                      >
+                                        {successfulRunKnowledgePromotionReceiptStatusLabel(receiptItem.status)}
+                                      </span>
+                                      {receiptItem.feedbackStatus && (
+                                        <span
+                                          className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${knowledgeDraftFeedbackTone(receiptItem.feedbackStatus)}`}
+                                        >
+                                          反馈 · {knowledgeDraftFeedbackLabel(receiptItem.feedbackStatus)}
+                                        </span>
+                                      )}
+                                      {receiptItem.lifecyclePolicy && (
+                                        <span
+                                          className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${riskLifecyclePolicyTone(receiptItem.lifecyclePolicy)}`}
+                                        >
+                                          策略 · {riskLifecyclePolicyLabel(receiptItem.lifecyclePolicy)}
+                                        </span>
+                                      )}
+                                      <p className="font-medium text-slate-900">{receiptItem.ruleTitle}</p>
+                                    </div>
+                                    <p className="mt-1 font-mono text-[11px] text-slate-500">{receiptItem.ruleId}</p>
+                                    <p className="mt-1 text-[11px] text-slate-600">
+                                      通过运行 {receiptItem.runIds.length} 条
+                                      {receiptItem.successfulStrategies.length > 0
+                                        ? ` · helper ${summarizeTextList(receiptItem.successfulStrategies, 3)}`
+                                        : ''}
+                                    </p>
+                                  </div>
+                                ))}
+                                {successfulRunKnowledgePromotionReceipt.items.length > 3 && (
+                                  <p className="text-[11px] text-cyan-800">
+                                    其余 {successfulRunKnowledgePromotionReceipt.items.length - 3} 条 successful run 候选已折叠。
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          {(item.sourcePath || item.backupPath) && (
+                            <div className="mt-3 space-y-1 text-[11px] text-slate-500">
+                              {item.sourcePath && (
+                                <p className="break-all">
+                                  来源：<span className="font-mono">{item.sourcePath}</span>
+                                </p>
+                              )}
+                              {item.backupPath && (
+                                <p className="break-all">
+                                  备份：<span className="font-mono">{item.backupPath}</span>
+                                </p>
+                              )}
+                            </div>
+                          )}
+
+                          <div className="mt-3 grid gap-2 text-[11px] text-slate-500 md:grid-cols-3">
+                            <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                              <p className="font-medium text-slate-900">新增</p>
+                              <p className="mt-1">{summarizeIdList(item.comparison.addedRuleIds)}</p>
+                            </div>
+                            <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                              <p className="font-medium text-slate-900">移除</p>
+                              <p className="mt-1">{summarizeIdList(item.comparison.removedRuleIds)}</p>
+                            </div>
+                            <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                              <p className="font-medium text-slate-900">更新</p>
+                              <p className="mt-1">{summarizeIdList(item.comparison.updatedRuleIds)}</p>
+                            </div>
                           </div>
-                          <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                            <p className="font-medium text-slate-900">移除</p>
-                            <p className="mt-1">{summarizeIdList(item.comparison.removedRuleIds)}</p>
-                          </div>
-                          <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                            <p className="font-medium text-slate-900">更新</p>
-                            <p className="mt-1">{summarizeIdList(item.comparison.updatedRuleIds)}</p>
-                          </div>
+
+                          {item.meta.projectActivityLogged && (
+                            <p className="mt-3 text-[11px] text-emerald-600">已同步写入项目活动记录。</p>
+                          )}
+                          {item.meta.projectActivityError && (
+                            <p className="mt-3 text-[11px] text-amber-600">项目活动未写入：{item.meta.projectActivityError}</p>
+                          )}
                         </div>
-
-                        {item.meta.projectActivityLogged && (
-                          <p className="mt-3 text-[11px] text-emerald-600">已同步写入项目活动记录。</p>
-                        )}
-                        {item.meta.projectActivityError && (
-                          <p className="mt-3 text-[11px] text-amber-600">项目活动未写入：{item.meta.projectActivityError}</p>
-                        )}
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -3746,6 +8396,10 @@ export default function IntentE2EWorkbench({
                       <p className="text-xs uppercase tracking-[0.14em] text-slate-400">candidate groups</p>
                       <p className="mt-2 text-2xl font-semibold text-slate-950">{knowledgeDraftPreview.summary.candidateGroups}</p>
                     </div>
+                    <div className="rounded-2xl border border-cyan-200 bg-cyan-50 px-4 py-3 text-cyan-700">
+                      <p className="text-xs uppercase tracking-[0.14em] text-cyan-500">passed runs</p>
+                      <p className="mt-2 text-2xl font-semibold">{knowledgeDraftPreview.summary.totalPassedRuns}</p>
+                    </div>
                     <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-emerald-700">
                       <p className="text-xs uppercase tracking-[0.14em] text-emerald-500">suggested</p>
                       <p className="mt-2 text-2xl font-semibold">{knowledgeDraftPreview.summary.suggestedCandidates}</p>
@@ -3766,6 +8420,15 @@ export default function IntentE2EWorkbench({
                     <p className="mt-1">
                       阈值：seen ≥ {knowledgeDraftPreview.thresholds.minSeenCount} · resolved ≥ {knowledgeDraftPreview.thresholds.minResolvedCount} · top {knowledgeDraftPreview.thresholds.maxCandidates}
                     </p>
+                    <p className="mt-1">
+                      候选来源：repair memory {knowledgeDraftPreview.summary.repairMemoryCandidateGroups} 组 · successful run {knowledgeDraftPreview.summary.successfulRunCandidateGroups} 组
+                    </p>
+                    {(knowledgeDraftPreview.thresholds.projectUid || knowledgeDraftPreview.thresholds.moduleUid) && (
+                      <p className="mt-1">
+                        作用域：{knowledgeDraftPreview.thresholds.projectUid || '当前项目'}
+                        {knowledgeDraftPreview.thresholds.moduleUid ? ` / ${knowledgeDraftPreview.thresholds.moduleUid}` : ' / 全项目'}
+                      </p>
+                    )}
                     <p className="mt-1 break-all">
                       repair memory：<span className="font-mono">{knowledgeDraftPreview.sourceMemoryPath}</span>
                     </p>
@@ -3784,18 +8447,64 @@ export default function IntentE2EWorkbench({
                   ) : (
                     <div className="space-y-4">
                       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-600">
-                        <p>
-                          当前已选 {knowledgeDraftSelectedCount} / {knowledgeDraftSelectableCount} 条建议新增规则；合并后会直接写回项目知识文件。
-                        </p>
+                        <div className="space-y-1">
+                          <p>
+                            当前已选 {knowledgeDraftSelectedCount} 条；默认推荐 {knowledgeDraftMergeRecommendedCount} / {knowledgeDraftSelectableCount} 条安全候选。
+                          </p>
+                          {knowledgeDraftDefaultDeferredCount > 0 && (
+                            <p className="text-[11px] text-amber-700">
+                              其中 {knowledgeDraftDeferredReasonSummary} 默认不会合并；如需继续纳入，请手工勾选并先小范围验证。
+                              {knowledgeDraftSelectedDeferredReasonSummary ? ` 当前已手工纳入 ${knowledgeDraftSelectedDeferredReasonSummary}。` : ''}
+                            </p>
+                          )}
+                          {(knowledgeDraftSelectedAutoPromoteCount > 0 ||
+                            knowledgeDraftSelectedObservePolicyCount > 0 ||
+                            knowledgeDraftSelectedBlockDefaultMergeCount > 0 ||
+                            knowledgeDraftSelectedProbationaryCount > 0 ||
+                            knowledgeDraftSelectedNegativeHistoryDeferredCount > 0 ||
+                            knowledgeDraftSelectedManualReviewCount > 0) && (
+                            <p className="text-[11px] text-slate-600">
+                              本次选择预检：
+                              {knowledgeDraftSelectedAutoPromoteCount > 0 ? ` 自动晋升 ${knowledgeDraftSelectedAutoPromoteCount} 条；` : ''}
+                              {knowledgeDraftSelectedObservePolicyCount > 0 ? ` 继续观察 ${knowledgeDraftSelectedObservePolicyCount} 条；` : ''}
+                              {knowledgeDraftSelectedNegativeHistoryDeferredCount > 0
+                                ? ` 负向历史证据 ${knowledgeDraftSelectedNegativeHistoryDeferredCount} 条（建议复核）；`
+                                : ''}
+                              {knowledgeDraftSelectedBlockDefaultMergeCount > 0
+                                ? ` 默认阻断 ${knowledgeDraftSelectedBlockDefaultMergeCount} 条（将写入 override provenance）；`
+                                : knowledgeDraftSelectedManualReviewCount > 0
+                                  ? ` 人工 override ${knowledgeDraftSelectedManualReviewCount} 条；`
+                                  : ''}
+                              {knowledgeDraftSelectedProbationaryCount > 0
+                                ? ` 风险确认 ${knowledgeDraftSelectedProbationaryCount} 条（提交时会一并确认）；`
+                                : ''}
+                            </p>
+                          )}
+                          {knowledgeDraftSelectedProbationaryCount > 0 && (
+                            <p className="text-[11px] text-amber-700">
+                              当前包含 {knowledgeDraftSelectedProbationaryCount} 条观察期候选；提交时会要求显式确认风险，并建议先小范围验证。
+                            </p>
+                          )}
+                        </div>
                         <div className="flex flex-wrap gap-2">
                           <button
                             type="button"
                             onClick={selectAllKnowledgeDraftCandidates}
-                            disabled={knowledgeDraftBusy || knowledgeDraftSelectableCount === 0}
+                            disabled={knowledgeDraftBusy || knowledgeDraftMergeRecommendedCount === 0}
                             className="inline-flex h-9 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 px-3 text-xs text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
                           >
-                            全选建议项
+                            全选推荐项
                           </button>
+                          {knowledgeDraftDefaultDeferredCount > 0 && (
+                            <button
+                              type="button"
+                              onClick={selectAllMergeableKnowledgeDraftCandidates}
+                              disabled={knowledgeDraftBusy || knowledgeDraftSelectableCount === 0}
+                              className="inline-flex h-9 items-center justify-center rounded-2xl border border-amber-200 bg-amber-50 px-3 text-xs text-amber-700 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              包含保守项全选
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={clearKnowledgeDraftSelection}
@@ -3807,24 +8516,21 @@ export default function IntentE2EWorkbench({
                         </div>
                       </div>
 
-                      {knowledgeDraftPreview.candidates.map((candidate) => {
+                      {knowledgeDraftDisplayCandidates.map((candidate) => {
                         const isSelected = knowledgeDraftSelectedCandidateIdSet.has(candidate.candidateId);
+                        const selectionLabel = knowledgeDraftSelectionStateLabel(candidate, isSelected);
+                        const supportsSuccessfulRuns = candidate.source === 'successful_run';
+                        const feedbackEvidenceReasons = candidate.feedback ? knowledgeDraftFeedbackEvidenceReasons(candidate.feedback) : [];
 
                         return (
                           <article
                             key={candidate.candidateId}
-                            className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-[0_10px_24px_rgba(15,23,42,0.04)]"
+                            className={`rounded-[24px] border p-4 shadow-[0_10px_24px_rgba(15,23,42,0.04)] ${knowledgeDraftCandidateCardTone(candidate)}`}
                           >
                             <div className="flex flex-wrap items-start justify-between gap-3">
                               <div className="flex items-start gap-3">
                                 <label
-                                  className={`inline-flex min-h-10 items-center gap-2 rounded-2xl border px-3 py-2 text-xs ${
-                                    candidate.alreadyCovered
-                                      ? 'border-amber-200 bg-amber-50 text-amber-700'
-                                      : isSelected
-                                        ? 'border-sky-200 bg-sky-50 text-sky-700'
-                                        : 'border-slate-200 bg-slate-50 text-slate-600'
-                                  }`}
+                                  className={`inline-flex min-h-10 items-center gap-2 rounded-2xl border px-3 py-2 text-xs ${knowledgeDraftSelectionTone(candidate, isSelected)}`}
                                 >
                                   <input
                                     type="checkbox"
@@ -3833,7 +8539,7 @@ export default function IntentE2EWorkbench({
                                     onChange={() => toggleKnowledgeDraftCandidate(candidate.candidateId)}
                                     className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-400 disabled:cursor-not-allowed"
                                   />
-                                  <span>{candidate.alreadyCovered ? '已覆盖' : isSelected ? '待合并' : '未选中'}</span>
+                                  <span>{selectionLabel}</span>
                                 </label>
                                 <div>
                                   <p className="text-sm font-medium text-slate-900">{candidate.rule.title}</p>
@@ -3842,54 +8548,112 @@ export default function IntentE2EWorkbench({
                               </div>
                               <div className="flex flex-wrap gap-2">
                                 <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-[11px] text-sky-700">
-                                  置信度 {formatPercent(candidate.confidence)}
+                                  置信度 {formatKnowledgeDraftConfidence(candidate.confidence)}
                                 </span>
+                                <span className={`rounded-full border px-3 py-1 text-[11px] ${knowledgeDraftCandidateSourceTone(candidate.source)}`}>
+                                  {knowledgeDraftCandidateSourceLabel(candidate.source)}
+                                </span>
+                                <span className={`rounded-full border px-3 py-1 text-[11px] ${knowledgeDraftFeedbackTone(candidate.feedback?.status)}`}>
+                                  {knowledgeDraftFeedbackLabel(candidate.feedback?.status)}
+                                </span>
+                                {candidate.feedback?.lifecyclePolicy && (
+                                  <span
+                                    className={`rounded-full border px-3 py-1 text-[11px] ${riskLifecyclePolicyTone(candidate.feedback.lifecyclePolicy)}`}
+                                  >
+                                    {riskLifecyclePolicyLabel(candidate.feedback.lifecyclePolicy)}
+                                  </span>
+                                )}
                                 <span
                                   className={`rounded-full border px-3 py-1 text-[11px] ${
                                     candidate.alreadyCovered
                                       ? 'border-amber-200 bg-amber-50 text-amber-700'
-                                      : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                      : isIntentProjectKnowledgeDraftCandidateDeprioritized(candidate)
+                                        ? 'border-slate-200 bg-white text-slate-600'
+                                        : isIntentProjectKnowledgeDraftCandidateDeferredByDefault(candidate)
+                                          ? 'border-amber-200 bg-amber-50 text-amber-700'
+                                          : 'border-emerald-200 bg-emerald-50 text-emerald-700'
                                   }`}
                                 >
-                                  {candidate.alreadyCovered ? '已被现有规则覆盖' : '建议新增'}
+                                  {candidate.alreadyCovered
+                                    ? '已被现有规则覆盖'
+                                    : isIntentProjectKnowledgeDraftCandidateDeprioritized(candidate)
+                                      ? '默认不合并'
+                                      : isIntentProjectKnowledgeDraftCandidateDeferredByDefault(candidate)
+                                        ? '建议复核'
+                                        : '建议新增'}
                                 </span>
                               </div>
                             </div>
 
                             <div className="mt-4 grid gap-3 sm:grid-cols-4">
-                            <div className="rounded-2xl border border-slate-200 bg-slate-50/75 px-3 py-3">
-                              <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">seen</p>
-                              <p className="mt-2 text-lg font-semibold text-slate-950">{candidate.seenCount}</p>
+                              <div className="rounded-2xl border border-slate-200 bg-slate-50/75 px-3 py-3">
+                                <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">seen</p>
+                                <p className="mt-2 text-lg font-semibold text-slate-950">{candidate.seenCount}</p>
+                              </div>
+                              <div className="rounded-2xl border border-slate-200 bg-slate-50/75 px-3 py-3">
+                                <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">resolved</p>
+                                <p className="mt-2 text-lg font-semibold text-slate-950">{candidate.resolvedCount}</p>
+                              </div>
+                              <div className="rounded-2xl border border-slate-200 bg-slate-50/75 px-3 py-3">
+                                <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">success rate</p>
+                                <p className="mt-2 text-lg font-semibold text-slate-950">{formatKnowledgeDraftConfidence(candidate.successRate)}</p>
+                              </div>
+                              <div className="rounded-2xl border border-slate-200 bg-slate-50/75 px-3 py-3">
+                                <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">
+                                  {supportsSuccessfulRuns ? 'passed runs' : 'clusters'}
+                                </p>
+                                <p className="mt-2 text-lg font-semibold text-slate-950">
+                                  {supportsSuccessfulRuns ? candidate.runIds?.length || 0 : candidate.clusterIds.length}
+                                </p>
+                              </div>
                             </div>
-                            <div className="rounded-2xl border border-slate-200 bg-slate-50/75 px-3 py-3">
-                              <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">resolved</p>
-                              <p className="mt-2 text-lg font-semibold text-slate-950">{candidate.resolvedCount}</p>
-                            </div>
-                            <div className="rounded-2xl border border-slate-200 bg-slate-50/75 px-3 py-3">
-                              <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">success rate</p>
-                              <p className="mt-2 text-lg font-semibold text-slate-950">{formatPercent(candidate.successRate)}</p>
-                            </div>
-                            <div className="rounded-2xl border border-slate-200 bg-slate-50/75 px-3 py-3">
-                              <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">clusters</p>
-                              <p className="mt-2 text-lg font-semibold text-slate-950">{candidate.clusterIds.length}</p>
-                            </div>
-                          </div>
 
-                          <div className="mt-4 grid gap-3 md:grid-cols-2">
-                            <div className="rounded-2xl border border-slate-200 bg-slate-50/75 px-3 py-3 text-xs leading-5 text-slate-600">
-                              <p className="font-medium text-slate-900">样本范围</p>
-                              <p className="mt-2">分类：{candidate.category}</p>
-                              <p className="mt-1 break-all">URL：{summarizeTextList(candidate.sampleUrls, 2)}</p>
-                              <p className="mt-1">标题：{summarizeTextList(candidate.sampleTitles, 2)}</p>
-                              <p className="mt-1">描述：{summarizeTextList(candidate.sampleDescriptions, 2)}</p>
+                            <div className="mt-4 grid gap-3 md:grid-cols-2">
+                              <div className="rounded-2xl border border-slate-200 bg-slate-50/75 px-3 py-3 text-xs leading-5 text-slate-600">
+                                <p className="font-medium text-slate-900">样本范围</p>
+                                <p className="mt-2">来源：{knowledgeDraftCandidateSourceLabel(candidate.source)}</p>
+                                <p className="mt-1">分类：{candidate.category}</p>
+                                {supportsSuccessfulRuns && (
+                                  <p className="mt-1">关联通过运行：{candidate.runIds?.length || 0} 条</p>
+                                )}
+                                <p className="mt-1 break-all">URL：{summarizeTextList(candidate.sampleUrls, 2)}</p>
+                                <p className="mt-1">标题：{summarizeTextList(candidate.sampleTitles, 2)}</p>
+                                <p className="mt-1">描述：{summarizeTextList(candidate.sampleDescriptions, 2)}</p>
+                              </div>
+                              <div className="rounded-2xl border border-slate-200 bg-slate-50/75 px-3 py-3 text-xs leading-5 text-slate-600">
+                                <p className="font-medium text-slate-900">策略沉淀</p>
+                                <p className="mt-2">成功修法：{summarizeTextList(candidate.successfulStrategies, 3)}</p>
+                                <p className="mt-1">常见误区：{summarizeTextList(candidate.antiPatterns, 3)}</p>
+                                <p className="mt-1">代表错误：{summarizeTextList(candidate.representativeErrors, 2)}</p>
+                              </div>
                             </div>
-                            <div className="rounded-2xl border border-slate-200 bg-slate-50/75 px-3 py-3 text-xs leading-5 text-slate-600">
-                              <p className="font-medium text-slate-900">策略沉淀</p>
-                              <p className="mt-2">成功修法：{summarizeTextList(candidate.successfulStrategies, 3)}</p>
-                              <p className="mt-1">常见误区：{summarizeTextList(candidate.antiPatterns, 3)}</p>
-                              <p className="mt-1">代表错误：{summarizeTextList(candidate.representativeErrors, 2)}</p>
-                            </div>
-                          </div>
+
+                            {candidate.feedback && (
+                              <div className={`mt-4 rounded-2xl border px-3 py-3 text-xs leading-5 ${knowledgeDraftFeedbackTone(candidate.feedback.status)}`}>
+                                <p className="font-medium">
+                                  历史反馈 · {knowledgeDraftFeedbackLabel(candidate.feedback.status)} · 调整 {candidate.feedback.confidenceAdjustment >= 0 ? '+' : ''}
+                                  {candidate.feedback.confidenceAdjustment}
+                                </p>
+                                {candidate.feedback.lifecyclePolicy && (
+                                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                                    <span
+                                      className={`rounded-full border px-2.5 py-1 text-[10px] font-medium ${riskLifecyclePolicyTone(candidate.feedback.lifecyclePolicy)}`}
+                                    >
+                                      {riskLifecyclePolicyLabel(candidate.feedback.lifecyclePolicy)}
+                                    </span>
+                                    <span className="text-slate-600">
+                                      策略建议：{candidate.feedback.lifecyclePolicyReason || '—'}
+                                    </span>
+                                  </div>
+                                )}
+                                {feedbackEvidenceReasons.length > 0 && (
+                                  <p className="mt-2">历史依据：{summarizeTextList(feedbackEvidenceReasons, 2)}</p>
+                                )}
+                                {candidate.feedback.supportingAuditIds.length > 0 && (
+                                  <p className="mt-1">支持审计：{summarizeIdList(candidate.feedback.supportingAuditIds)}</p>
+                                )}
+                              </div>
+                            )}
 
                             <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50/75 px-3 py-3 text-xs leading-5 text-slate-600">
                               <p className="font-medium text-slate-900">规则预览</p>
@@ -3900,6 +8664,16 @@ export default function IntentE2EWorkbench({
                               {candidate.alreadyCovered && (
                                 <p className="mt-2 text-amber-700">已被规则 {candidate.coveredByRuleIds.join('、')} 覆盖，可优先人工合并或忽略。</p>
                               )}
+                              {!candidate.alreadyCovered && isIntentProjectKnowledgeDraftCandidateDeprioritized(candidate) && (
+                                <p className="mt-2 text-rose-700">该候选已被历史效果评估自动降权，默认不会进入本次 merge；如仍要纳入，请手工勾选并先小范围验证。</p>
+                              )}
+                              {!candidate.alreadyCovered &&
+                                !isIntentProjectKnowledgeDraftCandidateDeprioritized(candidate) &&
+                                isIntentProjectKnowledgeDraftCandidateDeferredByDefault(candidate) && (
+                                  <p className="mt-2 text-amber-700">
+                                    该候选目前属于保守复核项，默认不会进入本次 merge；如仍要纳入，请手工勾选并复核对应的历史证据与最近 grader 结果。
+                                  </p>
+                                )}
                             </div>
                           </article>
                         );
@@ -4081,16 +8855,17 @@ export default function IntentE2EWorkbench({
                     </div>
                   </div>
 
-                  <div className="mt-3 space-y-2 text-[11px] leading-5 text-slate-500">
-                    <p className="break-all">
-                      规则文件：<span className="font-mono">{displayKnowledge.profilePath}</span>
-                    </p>
-                    <p>能力标签：{summarizeTextList(displayKnowledge.capabilitySlugs, 4)}</p>
-                    <p>推荐 helper：{summarizeTextList(displayKnowledge.suggestedHelpers, 4)}</p>
-                    <p>本次实际 helper：{summarizeTextList(displayUsedHelpers, 4)}</p>
-                    {finalAttempt?.helperUsage && (
-                      <p>最终尝试 helper：{summarizeTextList(finalAttempt.helperUsage.usedHelpers, 4)}</p>
-                    )}
+                    <div className="mt-3 space-y-2 text-[11px] leading-5 text-slate-500">
+                      <p className="break-all">
+                        规则文件：<span className="font-mono">{displayKnowledge.profilePath}</span>
+                      </p>
+                      <p>能力标签：{summarizeTextList(displayKnowledge.capabilitySlugs, 4)}</p>
+                      <p>Starter 资产：{summarizeTextList((displayKnowledge.starterAssets || []).map((item) => item.assetTitle), 3)}</p>
+                      <p>推荐 helper：{summarizeTextList(displayKnowledge.suggestedHelpers, 4)}</p>
+                      <p>本次实际 helper：{summarizeTextList(displayUsedHelpers, 4)}</p>
+                      {finalAttempt?.helperUsage && (
+                        <p>最终尝试 helper：{summarizeTextList(finalAttempt.helperUsage.usedHelpers, 4)}</p>
+                      )}
                   </div>
                 </div>
               )}
@@ -4304,6 +9079,197 @@ export default function IntentE2EWorkbench({
                           </div>
                         )}
 
+                        {displayFinalResult.success && starterCapabilityLaunches.length > 0 && (
+                          <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-3 py-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="text-xs font-medium text-slate-900">Starter 资产沉淀</p>
+                                <p className="mt-1 text-[11px] leading-5 text-slate-500">
+                                  当前已按 trace / 长期 evidence / 治理恢复状态做一层 promotion 判定。默认只自动勾选可直接沉淀的项目级 Starter 资产，其余保留人工复核。
+                                </p>
+                                <p className="mt-1 text-[11px] leading-5 text-slate-500">
+                                  其中“全局 runtime heuristic”已内置到执行环境；只有“项目级 capability”会参与一键沉淀。
+                                </p>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-[10px] font-medium text-sky-700">
+                                  {starterCapabilityLaunches.length} 个命中
+                                </span>
+                                <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[10px] font-medium text-amber-700">
+                                  可沉淀 {promotableStarterCapabilityLaunches.length} 个
+                                </span>
+                                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[10px] font-medium text-emerald-700">
+                                  默认勾选 {starterCapabilityPromotionSummary.autoSelectedCount} 个
+                                </span>
+                                <span className="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-[10px] font-medium text-sky-700">
+                                  待复核 {starterCapabilityPromotionSummary.reviewCount} 个
+                                </span>
+                                <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[10px] text-slate-500">
+                                  已选 {selectedStarterCapabilityLaunches.length} 个
+                                </span>
+                              </div>
+                            </div>
+
+                            {starterCapabilitySaveError && (
+                              <div className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] leading-5 text-rose-700">
+                                {starterCapabilitySaveError}
+                              </div>
+                            )}
+
+                            {starterCapabilitySaveNotice && (
+                              <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] leading-5 text-emerald-700">
+                                {starterCapabilitySaveNotice}
+                              </div>
+                            )}
+
+                            {!workspaceProjectUid && (
+                              <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">
+                                先选择目标项目，才能批量保存或把 starter asset 打开为能力草稿。
+                              </div>
+                            )}
+
+                            <div className="mt-3 flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setAllStarterCapabilitiesSelected(true)}
+                                disabled={starterCapabilitySaving || promotableStarterCapabilityLaunches.length === 0}
+                                className="inline-flex h-8 items-center justify-center rounded-xl border border-slate-200 bg-white px-3 text-[11px] text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                全选
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setAllStarterCapabilitiesSelected(false)}
+                                disabled={starterCapabilitySaving}
+                                className="inline-flex h-8 items-center justify-center rounded-xl border border-slate-200 bg-white px-3 text-[11px] text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                清空
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void persistStarterCapabilitiesToProject()}
+                                disabled={!workspaceProjectUid || selectedStarterCapabilityLaunches.length === 0 || starterCapabilitySaving}
+                                className="inline-flex h-8 items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50 px-3 text-[11px] font-medium text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {starterCapabilitySaving
+                                  ? '保存中…'
+                                  : `一键保存 ${selectedStarterCapabilityLaunches.length || 0} 条能力`}
+                              </button>
+                            </div>
+
+                            <div className="mt-3 space-y-2">
+                              {starterCapabilityLaunches.map((launch) => {
+                                return (
+                                  <div key={launch.asset.assetSlug} className="rounded-2xl border border-slate-200 bg-white px-3 py-3 text-xs text-slate-600">
+                                    <div className="flex flex-wrap items-start justify-between gap-3">
+                                      <label className="flex items-start gap-3">
+                                        <input
+                                          type="checkbox"
+                                          checked={starterCapabilitySelectedAssetSlugSet.has(launch.asset.assetSlug)}
+                                          onChange={() => toggleStarterCapabilitySelection(launch.asset.assetSlug)}
+                                          disabled={starterCapabilitySaving || !launch.promotable}
+                                          className="mt-0.5 h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-400 disabled:cursor-not-allowed"
+                                        />
+                                        <div>
+                                          <p className="font-medium text-slate-900">{launch.asset.assetTitle}</p>
+                                          <p className="mt-1 font-mono text-[11px] text-slate-500">{launch.asset.helper}</p>
+                                        </div>
+                                      </label>
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className={`rounded-full border px-2.5 py-1 text-[10px] font-medium ${starterAssetScopeTone(launch.asset.scope)}`}>
+                                          {intentStarterAssetScopeLabel(launch.asset.scope)}
+                                        </span>
+                                        <span className={`rounded-full border px-2.5 py-1 text-[10px] font-medium ${starterHelperSourceTone(launch.asset.source)}`}>
+                                          {starterHelperSourceLabel(launch.asset.source)}
+                                        </span>
+                                        <span
+                                          className={`rounded-full border px-2.5 py-1 text-[10px] font-medium ${starterAssetPromotionDecisionTone(
+                                            launch.promotionDecision.status
+                                          )}`}
+                                        >
+                                          {launch.promotionDecision.statusLabel}
+                                        </span>
+                                        {launch.asset.knowledgeChangeSignal ? (
+                                          <span
+                                            className={`rounded-full border px-2.5 py-1 text-[10px] font-medium ${starterHelperKnowledgeSignalTone(launch.asset.knowledgeChangeSignal)}`}
+                                          >
+                                            {starterHelperKnowledgeSignalLabel(launch.asset.knowledgeChangeSignal)}
+                                          </span>
+                                        ) : launch.asset.knowledgeChangeTier ? (
+                                          <span
+                                            className={`rounded-full border px-2.5 py-1 text-[10px] font-medium ${starterHelperKnowledgeTierTone(
+                                              launch.asset.knowledgeChangeTier,
+                                              launch.asset.knowledgeChangeWatchingKind
+                                            )}`}
+                                          >
+                                            {starterHelperKnowledgeTierLabel(
+                                              launch.asset.knowledgeChangeTier,
+                                              launch.asset.knowledgeChangeWatchingKind
+                                            )}
+                                          </span>
+                                        ) : null}
+                                        <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] text-slate-500">
+                                          通过率 {formatRatePercent(launch.asset.passRate)}
+                                        </span>
+                                      </div>
+                                    </div>
+
+                                    <p className="mt-2 leading-5 text-slate-600">{launch.asset.matchSummary}</p>
+                                    {!launch.promotable && (
+                                      <p className="mt-2 leading-5 text-slate-500">
+                                        这条能力更适合作为跨系统复用的全局 runtime heuristic，默认不参与项目能力库沉淀，也不再单独打开项目草稿精修。
+                                      </p>
+                                    )}
+                                    <p className="mt-2 leading-5 text-slate-500">
+                                      Promotion 判定：{launch.promotionDecision.reason}
+                                    </p>
+                                    <p className="mt-2 leading-5 text-slate-500">
+                                      支持规则：{summarizeTextList(launch.asset.supportingRuleTitles, 3)}
+                                    </p>
+                                    <p className="mt-1 leading-5 text-slate-500">
+                                      复用 {launch.asset.runCount} 次 · 建议命中 {launch.asset.suggestedReuseRuns} 次 · 覆盖步骤 {launch.asset.matchedStepUids.length} 个
+                                    </p>
+                                    {launch.asset.knowledgeChangeSignalReason && (
+                                      <p className="mt-1 leading-5 text-slate-500">
+                                        {launch.asset.knowledgeChangeTier === 'watching' && !launch.asset.knowledgeChangeSignal ? '观察依据：' : '长期依据：'}
+                                        {launch.asset.knowledgeChangeSignalReason}
+                                        {launch.asset.knowledgeChangeDecisionableRuleCount
+                                          ? `（${launch.asset.knowledgeChangeDecisionableRuleCount} 条已判定规则）`
+                                          : ''}
+                                      </p>
+                                    )}
+
+                                    <div className="mt-3 flex flex-wrap gap-2">
+                                      {launch.href ? (
+                                        <Link
+                                          href={launch.href}
+                                          onClick={() => {
+                                            stashIntentCapabilityPreset(launch.token, launch.preset);
+                                          }}
+                                          className="inline-flex h-8 items-center justify-center rounded-xl border border-blue-200 bg-blue-50 px-3 text-[11px] font-medium text-blue-700 transition hover:bg-blue-100"
+                                        >
+                                          打开草稿精修
+                                        </Link>
+                                      ) : launch.promotable ? (
+                                        <span className="inline-flex h-8 items-center justify-center rounded-xl border border-slate-200 bg-slate-100 px-3 text-[11px] text-slate-500">
+                                          选择项目后可预填能力草稿
+                                        </span>
+                                      ) : (
+                                        <span className="inline-flex h-8 items-center justify-center rounded-xl border border-slate-200 bg-slate-100 px-3 text-[11px] text-slate-500">
+                                          全局 heuristic 已内置，无需草稿精修
+                                        </span>
+                                      )}
+                                      <span className="inline-flex h-8 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 px-3 text-[11px] text-slate-500">
+                                        slug {launch.preset.slug}
+                                      </span>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
                         <button
                           type="button"
                           onClick={() => void persistRunToWorkspace()}
@@ -4394,6 +9360,23 @@ export default function IntentE2EWorkbench({
                       <p className="mt-2 text-sm text-slate-800">{displayScenarioCard.flowDefinition.expectedOutcome || '未填写'}</p>
                     </div>
                   </div>
+
+                  {displayResolvedUrls && displayResolvedUrls.scenarioEntryUrl && displayResolvedUrls.scenarioEntryUrl !== displayResolvedUrls.targetUrl ? (
+                    <div className="mt-4 grid gap-4 md:grid-cols-3">
+                      <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4">
+                        <p className="text-xs uppercase tracking-[0.14em] text-amber-600">Scenario Entry</p>
+                        <p className="mt-2 break-all text-sm text-slate-800">{displayResolvedUrls.scenarioEntryUrl}</p>
+                      </div>
+                      <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4">
+                        <p className="text-xs uppercase tracking-[0.14em] text-amber-600">Precheck URL</p>
+                        <p className="mt-2 break-all text-sm text-slate-800">{displayResolvedUrls.precheckUrl || displayResolvedUrls.scenarioEntryUrl}</p>
+                      </div>
+                      <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4">
+                        <p className="text-xs uppercase tracking-[0.14em] text-amber-600">Analyze URL</p>
+                        <p className="mt-2 break-all text-sm text-slate-800">{displayResolvedUrls.analyzeUrl || displayResolvedUrls.scenarioEntryUrl}</p>
+                      </div>
+                    </div>
+                  ) : null}
 
                   <div className="mt-5 grid gap-5 md:grid-cols-2">
                     <div>
@@ -4487,7 +9470,142 @@ export default function IntentE2EWorkbench({
 
               <section className="rounded-[28px] border border-white/60 bg-white/72 p-5 shadow-[0_16px_48px_rgba(15,23,42,0.08)] backdrop-blur-xl md:p-6">
                 <p className="text-sm font-medium text-slate-900">编译后的生成说明</p>
-                <p className="mt-2 text-xs leading-5 text-slate-500">这是传给现有 Playwright 生成器的自然语言说明，可以帮助你理解 AI 最终是如何收敛意图的。</p>
+                <p className="mt-2 text-xs leading-5 text-slate-500">这里会同时展示现有生成器还在消费的自然语言说明，以及新接入的结构化 ExecutionPlan / CompiledTemplate / VerificationPlan。</p>
+
+                {(displayExecutionPlan || displayCompiledTemplate || displayVerificationPlan) && (
+                  <div className="mt-4 grid gap-4">
+                    {displayExecutionPlan && (
+                      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-medium text-slate-900">ExecutionPlan</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                              {displayExecutionPlan.compiler} · {displayExecutionPlan.mode} · {displayExecutionPlan.steps.length} steps
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-600">
+                            {displayExecutionPlan.entryUrl || '无入口 URL'}
+                          </span>
+                        </div>
+
+                        <div className="mt-3 space-y-3">
+                          {displayExecutionPlan.steps.map((step, index) => (
+                            <div key={step.planStepUid} className="rounded-2xl border border-slate-200 bg-slate-50/80 px-3 py-3">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">
+                                  {step.stepType}
+                                </span>
+                                <p className="text-sm font-medium text-slate-900">
+                                  {index + 1}. {step.title || '未命名步骤'}
+                                </p>
+                              </div>
+                              <div className="mt-2 space-y-1 text-[11px] leading-5 text-slate-600">
+                                <p>目标：{step.target || '—'}</p>
+                                <p>Goal：{step.goal || '—'}</p>
+                                <p>Actions：{summarizeTextList(step.allowedActions, 5)}</p>
+                                <p>Helpers：{summarizeTextList(step.preferredHelpers, 4)}</p>
+                                <p>Assertions：{summarizeTextList(step.requiredAssertions, 3)}</p>
+                                {step.extractVariable && <p>变量：{step.extractVariable}</p>}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {displayCompiledTemplate && (
+                      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-medium text-slate-900">CompiledTemplate</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                              {displayCompiledTemplate.compiler} · {displayCompiledTemplate.slots.length} slots
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-600">
+                            {displayCompiledTemplate.testTitle || '未命名测试'}
+                          </span>
+                        </div>
+
+                        <div className="mt-3 grid gap-3 xl:grid-cols-3">
+                          <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-3 py-3">
+                            <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">entry</p>
+                            <p className="mt-2 break-all text-xs leading-5 text-slate-700">{displayCompiledTemplate.entryUrl || '—'}</p>
+                            <p className="mt-1 text-[11px] text-slate-500">
+                              shared：{summarizeTextList(displayCompiledTemplate.sharedVariables, 4)}
+                            </p>
+                          </div>
+                          <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-3 py-3 xl:col-span-2">
+                            <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">slots</p>
+                            <div className="mt-2 space-y-2">
+                              {displayCompiledTemplate.slots.map((slot) => (
+                                <div key={slot.slotUid} className="rounded-2xl border border-slate-200 bg-white px-3 py-3 text-xs leading-5 text-slate-600">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">
+                                      {slot.kind}
+                                    </span>
+                                    <p className="font-medium text-slate-900">{slot.slotUid}</p>
+                                    <p className="text-slate-500">{slot.title || '未命名 slot'}</p>
+                                  </div>
+                                  <div className="mt-2 space-y-1">
+                                    <p>关联 checks：{summarizeTextList(slot.relatedCheckUids, 3)}</p>
+                                    <p>Helpers：{summarizeTextList(slot.preferredHelpers, 4)}</p>
+                                    <p>指令：{summarizeTextList(slot.instructions, 2)}</p>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        <details className="mt-3 rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+                          <summary className="cursor-pointer list-none text-sm font-medium text-slate-900">查看编译模板代码</summary>
+                          <pre className="mt-3 max-h-[320px] overflow-auto rounded-2xl bg-slate-950/96 p-4 text-xs leading-6 text-slate-100 whitespace-pre-wrap">
+                            {displayCompiledTemplate.code}
+                          </pre>
+                        </details>
+                      </div>
+                    )}
+
+                    {displayVerificationPlan && (
+                      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-medium text-slate-900">VerificationPlan</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                              {displayVerificationPlan.strategy} · {displayVerificationPlan.checks.length} checks
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-600">
+                            {displayVerificationPlan.expectedOutcome || '无 expectedOutcome'}
+                          </span>
+                        </div>
+
+                        <div className="mt-3 space-y-3">
+                          {displayVerificationPlan.checks.slice(0, 8).map((check, index) => (
+                            <div key={check.checkUid} className="rounded-2xl border border-slate-200 bg-slate-50/80 px-3 py-3">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">
+                                  {check.kind}
+                                </span>
+                                <p className="text-sm font-medium text-slate-900">
+                                  {index + 1}. {check.title}
+                                </p>
+                              </div>
+                              <div className="mt-2 space-y-1 text-[11px] leading-5 text-slate-600">
+                                <p>来源：{check.source}</p>
+                                <p>规则：{check.instruction}</p>
+                                <p>Helpers：{summarizeTextList(check.preferredHelpers, 4)}</p>
+                                <p>关联步骤：{summarizeTextList(check.relatedPlanStepUids, 3)}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {displayDescription ? (
                   <pre className="mt-4 max-h-[560px] overflow-auto rounded-2xl border border-slate-200 bg-slate-950/96 p-4 text-xs leading-6 text-slate-100 whitespace-pre-wrap">
                     {displayDescription}
@@ -4549,6 +9667,17 @@ export default function IntentE2EWorkbench({
                                 : ''}
                             </p>
                           )}
+                          {attempt.structuredPatch && (
+                            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-xs leading-5 text-slate-600">
+                              <p className="font-medium text-slate-900">结构化 slot patch</p>
+                              <p className="mt-1">
+                                {attempt.structuredPatch.strategy} · base {baseCodeSourceLabel(attempt.structuredPatch.baseCodeSource)} ·
+                                {attempt.structuredPatch.reusedPreviousCode ? ' 复用上一轮代码' : ' 不复用上一轮代码'}
+                              </p>
+                              <p className="mt-1">target：{summarizeTextList(attempt.structuredPatch.targetSlotUids, 4)}</p>
+                              <p className="mt-1">returned：{summarizeTextList(attempt.structuredPatch.returnedSlotUids, 4)}</p>
+                            </div>
+                          )}
                           {attempt.sessionId && <p className="text-xs text-slate-400">浏览器会话：{attempt.sessionId}</p>}
                           {attempt.triage && (
                             <div className={`inline-flex max-w-full flex-wrap items-center gap-2 rounded-2xl border px-3 py-2 text-xs ${intentFailureTone(attempt.triage)}`}>
@@ -4583,7 +9712,7 @@ export default function IntentE2EWorkbench({
                         </pre>
                       )}
 
-                      <div className="mt-4 grid gap-4 xl:grid-cols-3">
+                      <div className="mt-4 grid gap-4 xl:grid-cols-4">
                         <details className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 xl:col-span-1">
                           <summary className="cursor-pointer list-none text-sm font-medium text-slate-900">查看事件</summary>
                           <div className="mt-3 max-h-[260px] space-y-2 overflow-auto pr-1 text-xs leading-5 text-slate-600">
@@ -4612,6 +9741,27 @@ export default function IntentE2EWorkbench({
                               ))
                             ) : (
                               <p className="text-slate-400">没有额外日志。</p>
+                            )}
+                          </div>
+                        </details>
+
+                        <details className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 xl:col-span-1">
+                          <summary className="cursor-pointer list-none text-sm font-medium text-slate-900">查看结构化 patch</summary>
+                          <div className="mt-3 max-h-[260px] overflow-auto pr-1 text-xs leading-5 text-slate-600">
+                            {attempt.structuredPatch ? (
+                              <>
+                                <div className="rounded-xl border border-slate-200 bg-white px-3 py-3">
+                                  <p className="font-medium text-slate-900">{attempt.structuredPatch.strategy}</p>
+                                  <p className="mt-1">base：{baseCodeSourceLabel(attempt.structuredPatch.baseCodeSource)}</p>
+                                  <p className="mt-1">target：{summarizeTextList(attempt.structuredPatch.targetSlotUids, 4)}</p>
+                                  <p className="mt-1">returned：{summarizeTextList(attempt.structuredPatch.returnedSlotUids, 4)}</p>
+                                </div>
+                                <pre className="mt-3 max-h-[220px] overflow-auto rounded-2xl bg-slate-950/96 p-4 text-xs leading-6 text-slate-100 whitespace-pre-wrap">
+                                  {JSON.stringify(attempt.structuredPatch, null, 2)}
+                                </pre>
+                              </>
+                            ) : (
+                              <p className="text-slate-400">本次尝试没有结构化 patch。</p>
                             )}
                           </div>
                         </details>

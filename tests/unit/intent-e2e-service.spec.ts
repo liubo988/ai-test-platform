@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { runIntentDrivenE2EStream, type IntentE2EStreamEvent } from '@/lib/ai/intent-e2e-service';
-import { getIntentE2ERulePerformanceMap } from '@/lib/ai/intent-e2e-insights';
+import { getIntentE2ERecipePerformanceMap, getIntentE2ERulePerformanceMap, getIntentE2EStarterHelpers } from '@/lib/ai/intent-e2e-insights';
 import { analyzePage, precheckPageAccess } from '@/lib/page-analyzer';
 import { executeTest } from '@/lib/test-executor';
 import { generateTest, repairTest, resolveIntentPromptPlanningContext, type GenerateEvent } from '@/lib/test-generator';
@@ -14,7 +14,9 @@ vi.mock('@/lib/page-analyzer', () => ({
 }));
 
 vi.mock('@/lib/ai/intent-e2e-insights', () => ({
+  getIntentE2ERecipePerformanceMap: vi.fn(),
   getIntentE2ERulePerformanceMap: vi.fn(),
+  getIntentE2EStarterHelpers: vi.fn(),
 }));
 
 vi.mock('@/lib/test-executor', () => ({
@@ -97,6 +99,16 @@ const recordedFailureHint = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(getIntentE2ERecipePerformanceMap).mockResolvedValue({
+    'auth.unified-login': {
+      runCount: 8,
+      passedRuns: 7,
+      failedRuns: 1,
+      canceledRuns: 0,
+      successRate: 87.5,
+      lastVerifiedAt: '2026-03-25T09:00:00.000Z',
+    },
+  } as never);
   vi.mocked(getIntentE2ERulePerformanceMap).mockResolvedValue({
     'checkout.submit': {
       ruleId: 'checkout.submit',
@@ -109,6 +121,19 @@ beforeEach(() => {
       rollbackCandidateCount: 0,
     },
   } as never);
+  vi.mocked(getIntentE2EStarterHelpers).mockResolvedValue([
+    {
+      helper: '__e2e.waitForApiResponse',
+      runCount: 4,
+      passedRuns: 4,
+      passRate: 100,
+      suggestedReuseRuns: 4,
+      source: 'promoted',
+      supportingRuleIds: ['checkout.submit'],
+      supportingRuleTitles: ['结算提交页'],
+      recommendation: '适合作为首轮生成时优先复用的 starter helper。',
+    },
+  ] as never);
 
   vi.mocked(generateScenarioCard).mockResolvedValue({
     card: scenarioCard,
@@ -166,6 +191,71 @@ beforeEach(() => {
       outputContract: [],
       steps: [],
     },
+    executionPlan: {
+      version: 1,
+      compiler: 'deterministic_dsl_v1',
+      mode: 'scenario',
+      entryUrl: 'https://example.com/checkout',
+      summary: '打开结算页并提交',
+      expectedOutcome: '看到成功页面',
+      sharedVariables: ['orderId'],
+      globalRules: [],
+      preferredPrimitives: [],
+      outputContract: [],
+      steps: [
+        {
+          planStepUid: 'plan_step_1',
+          scenarioStepUid: 'step_checkout',
+          stepType: 'ui',
+          title: '打开结算页',
+          target: 'https://example.com/checkout',
+          goal: '进入结算页并等待页面就绪',
+          allowedActions: ['navigate', 'wait_for_response'],
+          preferredHelpers: ['__e2e.waitForApiResponse'],
+          requiredAssertions: ['成功页出现“提交成功”'],
+          extractVariable: 'orderId',
+          sharedVariables: ['orderId'],
+          dependsOnPlanStepUids: [],
+        },
+      ],
+    },
+    verificationPlan: {
+      version: 1,
+      strategy: 'deterministic_verification_v1',
+      expectedOutcome: '看到成功页面',
+      cleanupNotes: '',
+      checks: [
+        {
+          checkUid: 'verify_success_1',
+          kind: 'response',
+          source: 'success_criteria',
+          title: '成功标准 1',
+          instruction: '成功页出现“提交成功”',
+          preferredHelpers: ['__e2e.waitForApiResponse'],
+          relatedPlanStepUids: ['plan_step_1'],
+          required: true,
+        },
+      ],
+    },
+    starterHelpers: [
+      {
+        helper: '__e2e.waitForApiResponse',
+        assetSlug: 'starter.assert.wait-for-api-response',
+        capabilitySlug: 'assert.wait-for-api-response',
+        assetTitle: '关键接口成功响应',
+        matchSummary: '步骤允许等待关键接口响应并以业务请求成功作为主断言。',
+        scope: 'global_runtime',
+        matchedStepUids: [],
+        runCount: 4,
+        passedRuns: 4,
+        passRate: 100,
+        suggestedReuseRuns: 4,
+        source: 'promoted',
+        supportingRuleIds: ['checkout.submit'],
+        supportingRuleTitles: ['结算提交页'],
+        recommendation: '适合作为首轮生成时优先复用的 starter helper。',
+      },
+    ],
     knowledge: {
       version: 1,
       profilePath: 'intent-e2e.project-knowledge.json',
@@ -198,6 +288,31 @@ describe('intent-e2e-service stream', () => {
     vi.mocked(generateTest).mockReturnValue(
       toAsyncGenerator([
         { type: 'thinking', content: '先搭建稳定的页面进入逻辑。' },
+        {
+          type: 'structured_patch',
+          content: 'slot patch ready: plan_step_1 / verification',
+          structuredPatch: {
+            version: 1,
+            strategy: 'deterministic_slot_patch_v1',
+            targetSlotUids: ['plan_step_1', 'verification'],
+            returnedSlotUids: ['plan_step_1', 'verification'],
+            reusedPreviousCode: false,
+            baseCodeSource: 'compiled_template',
+            patch: {
+              version: 1,
+              slots: [
+                {
+                  slotUid: 'plan_step_1',
+                  code: "await __e2e.waitForApiResponse(page, { urlIncludes: '/checkout' });\nawait page.goto('https://example.com/checkout');",
+                },
+                {
+                  slotUid: 'verification',
+                  code: "await expect(page.getByText('提交成功')).toBeVisible();",
+                },
+              ],
+            },
+          },
+        },
         { type: 'code', content: "test('checkout', async ({ page }) => {\n  await __e2e.waitForApiResponse(page, { urlIncludes: '/checkout' });\n" },
         { type: 'complete', content: "test('checkout', async ({ page }) => {\n  await __e2e.waitForApiResponse(page, { urlIncludes: '/checkout' });\n  await page.goto('https://example.com/checkout');\n});" },
       ])
@@ -245,6 +360,23 @@ describe('intent-e2e-service stream', () => {
     expect(result.attempts).toHaveLength(1);
     expect(result.attempts[0].sessionId).toMatch(/^intent-/);
     expect(result.attempts[0].code).toContain('page.goto');
+    expect(result.executionPlan).toMatchObject({
+      compiler: 'deterministic_dsl_v1',
+      mode: 'scenario',
+      steps: [expect.objectContaining({ preferredHelpers: ['__e2e.waitForApiResponse'] })],
+    });
+    expect(result.compiledTemplate).toMatchObject({
+      compiler: 'deterministic_dsl_v1',
+      entryUrl: 'https://example.com/checkout',
+      slots: [
+        expect.objectContaining({ slotUid: 'plan_step_1', kind: 'plan_step' }),
+        expect.objectContaining({ slotUid: 'verification', kind: 'verification' }),
+      ],
+    });
+    expect(result.verificationPlan).toMatchObject({
+      strategy: 'deterministic_verification_v1',
+      checks: [expect.objectContaining({ kind: 'response' })],
+    });
     expect(result.knowledge).toEqual({
       profilePath: 'intent-e2e.project-knowledge.json',
       matchCount: 1,
@@ -252,10 +384,50 @@ describe('intent-e2e-service stream', () => {
       matchedRuleTitles: ['结算提交页'],
       capabilitySlugs: ['assert.wait-for-api-response'],
       suggestedHelpers: ['__e2e.waitForApiResponse'],
+      starterAssets: [
+        {
+          helper: '__e2e.waitForApiResponse',
+          assetSlug: 'starter.assert.wait-for-api-response',
+          capabilitySlug: 'assert.wait-for-api-response',
+          assetTitle: '关键接口成功响应',
+          matchSummary: '步骤允许等待关键接口响应并以业务请求成功作为主断言。',
+          scope: 'global_runtime',
+          matchedStepUids: [],
+          runCount: 4,
+          passedRuns: 4,
+          passRate: 100,
+          suggestedReuseRuns: 4,
+          source: 'promoted',
+          supportingRuleIds: ['checkout.submit'],
+          supportingRuleTitles: ['结算提交页'],
+          recommendation: '适合作为首轮生成时优先复用的 starter helper。',
+        },
+      ],
     });
     expect(result.attempts[0].helperUsage).toEqual({
       usedHelpers: ['__e2e.waitForApiResponse'],
       usedSuggestedHelpers: ['__e2e.waitForApiResponse'],
+    });
+    expect(result.attempts[0].structuredPatch).toEqual({
+      version: 1,
+      strategy: 'deterministic_slot_patch_v1',
+      targetSlotUids: ['plan_step_1', 'verification'],
+      returnedSlotUids: ['plan_step_1', 'verification'],
+      reusedPreviousCode: false,
+      baseCodeSource: 'compiled_template',
+      patch: {
+        version: 1,
+        slots: [
+          {
+            slotUid: 'plan_step_1',
+            code: "await __e2e.waitForApiResponse(page, { urlIncludes: '/checkout' });\nawait page.goto('https://example.com/checkout');",
+          },
+          {
+            slotUid: 'verification',
+            code: "await expect(page.getByText('提交成功')).toBeVisible();",
+          },
+        ],
+      },
     });
     expect(vi.mocked(repairTest)).not.toHaveBeenCalled();
     expect(vi.mocked(listRelevantIntentRepairHints)).not.toHaveBeenCalled();
@@ -263,6 +435,17 @@ describe('intent-e2e-service stream', () => {
     expect(vi.mocked(recordIntentRepairResolution)).not.toHaveBeenCalled();
     expect(vi.mocked(resolveIntentPromptPlanningContext)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(resolveIntentPromptPlanningContext).mock.calls[0]?.[3]).toEqual({
+      auth: undefined,
+      recipePerformanceBySlug: {
+        'auth.unified-login': {
+          runCount: 8,
+          passedRuns: 7,
+          failedRuns: 1,
+          canceledRuns: 0,
+          successRate: 87.5,
+          lastVerifiedAt: '2026-03-25T09:00:00.000Z',
+        },
+      },
       rulePerformanceById: {
         'checkout.submit': {
           ruleId: 'checkout.submit',
@@ -275,8 +458,33 @@ describe('intent-e2e-service stream', () => {
           rollbackCandidateCount: 0,
         },
       },
+      starterHelpers: [
+        {
+          helper: '__e2e.waitForApiResponse',
+          runCount: 4,
+          passedRuns: 4,
+          passRate: 100,
+          suggestedReuseRuns: 4,
+          source: 'promoted',
+          supportingRuleIds: ['checkout.submit'],
+          supportingRuleTitles: ['结算提交页'],
+          recommendation: '适合作为首轮生成时优先复用的 starter helper。',
+        },
+      ],
     });
     expect(vi.mocked(generateTest).mock.calls[0]?.[6]).toMatchObject({
+      executionPlan: expect.objectContaining({
+        compiler: 'deterministic_dsl_v1',
+      }),
+      verificationPlan: expect.objectContaining({
+        strategy: 'deterministic_verification_v1',
+      }),
+      starterHelpers: [
+        expect.objectContaining({
+          helper: '__e2e.waitForApiResponse',
+          source: 'promoted',
+        }),
+      ],
       knowledge: expect.objectContaining({
         matches: [
           expect.objectContaining({
@@ -296,11 +504,604 @@ describe('intent-e2e-service stream', () => {
     });
     expect(events.some((event) => event.type === 'attempt_started' && event.attempt === 1)).toBe(true);
     expect(events.some((event) => event.type === 'attempt_event' && event.event.type === 'thinking')).toBe(true);
+    expect(events.some((event) => event.type === 'attempt_event' && event.event.type === 'structured_patch')).toBe(true);
     expect(events.some((event) => event.type === 'attempt_execution_started' && event.sessionId.startsWith('intent-'))).toBe(true);
     expect(events.some((event) => event.type === 'attempt_step' && event.step.title === '打开结算页')).toBe(true);
     expect(events.some((event) => event.type === 'attempt_log' && event.log.message === 'page loaded')).toBe(true);
     expect(events.some((event) => event.type === 'attempt_result' && event.result.success)).toBe(true);
     expect(events.at(-1)?.type).toBe('final_result');
+  });
+
+  it('uses scenario entry url for precheck and initial analysis when it differs from business target url', async () => {
+    vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 0 } as any);
+    vi.mocked(generateScenarioCard).mockResolvedValue({
+      card: {
+        ...scenarioCard,
+        title: '从商机列表进入创建页并保存',
+        targetUrl: 'https://example.com/#/business/createbusiness',
+        featureDescription: '从商机列表进入创建页并完成保存。',
+        flowDefinition: {
+          ...scenarioCard.flowDefinition,
+          entryUrl: 'https://example.com/#/business/businesslist',
+          expectedOutcome: '创建成功',
+          steps: [
+            {
+              stepUid: 'step_1',
+              stepType: 'ui',
+              title: '进入创建页',
+              target: 'https://example.com/#/business/businesslist',
+              instruction: '从商机列表点击新建商机进入创建页。',
+              expectedResult: '进入创建页',
+              extractVariable: '',
+            },
+            {
+              stepUid: 'step_2',
+              stepType: 'ui',
+              title: '保存新建商机',
+              target: '创建页底部操作区',
+              instruction: '填写必填项并点击保存。',
+              expectedResult: '保存成功',
+              extractVariable: 'businessId',
+            },
+          ],
+        },
+        successCriteria: ['创建成功', '保存成功'],
+        visualAnchors: ['商机列表', '创建商机'],
+        notes: ['先从列表进入创建页'],
+      },
+      llmMeta: {
+        provider: 'openai',
+        model: 'chat-gpt5.4',
+        visionEnabled: true,
+        attachmentCount: 1,
+      },
+    });
+    vi.mocked(buildGenerateInputFromScenarioCard).mockReturnValue({
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      description: '从商机列表进入创建页并完成保存。',
+      context: {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://example.com/#/business/businesslist',
+        scenarioSummary: '商机列表 -> 新建商机 -> 保存',
+        expectedOutcome: '创建成功',
+        successCriteria: ['创建成功'],
+        sharedVariables: ['businessId'],
+        cleanupNotes: '',
+      },
+    });
+    vi.mocked(precheckPageAccess).mockResolvedValue({
+      url: 'https://example.com/#/business/businesslist',
+      finalUrl: 'https://example.com/#/business/businesslist',
+      title: 'Business List',
+      storageState: { cookies: [], origins: [] },
+    } as any);
+    vi.mocked(analyzePage).mockResolvedValue({
+      url: 'https://example.com/#/business/businesslist',
+      title: 'Business List',
+      bodyTextExcerpt: '商机列表页面',
+      buttons: [],
+      links: [],
+      forms: [],
+      images: [],
+      frames: [],
+    } as any);
+    vi.mocked(generateTest).mockReturnValue(
+      toAsyncGenerator([
+        {
+          type: 'complete',
+          content:
+            "test('business-create', async ({ page }) => { await page.goto('https://example.com/#/business/businesslist'); });",
+        },
+      ])
+    );
+    vi.mocked(executeTest).mockResolvedValue({
+      success: true,
+      duration: 420,
+      steps: [
+        {
+          title: '打开商机列表',
+          status: 'passed',
+          duration: 220,
+          at: '2026-03-27T12:00:00.000Z',
+        },
+      ],
+      error: null,
+    } as never);
+
+    const events: IntentE2EStreamEvent[] = [];
+    const result = await runIntentDrivenE2EStream({
+      input: '从商机列表进入创建页并保存',
+    }, (event) => {
+      events.push(event);
+    });
+
+    expect(result.finalResult.success).toBe(true);
+    expect(result.targetUrl).toBe('https://example.com/#/business/createbusiness');
+    expect(result.resolvedUrls).toEqual({
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      scenarioEntryUrl: 'https://example.com/#/business/businesslist',
+      precheckUrl: 'https://example.com/#/business/businesslist',
+      analyzeUrl: 'https://example.com/#/business/businesslist',
+    });
+    expect(vi.mocked(precheckPageAccess)).toHaveBeenCalledWith('https://example.com/#/business/businesslist', undefined, {
+      ignoreFailureClasses: ['data_missing'],
+    });
+    expect(vi.mocked(analyzePage)).toHaveBeenCalledWith('https://example.com/#/business/businesslist', undefined, {
+      storageState: { cookies: [], origins: [] },
+    });
+    expect(vi.mocked(generateTest).mock.calls[0]?.[0]).toMatchObject({
+      url: 'https://example.com/#/business/businesslist',
+      title: 'Business List',
+    });
+    expect(vi.mocked(generateTest).mock.calls[0]?.[3]).toMatchObject({
+      scenarioEntryUrl: 'https://example.com/#/business/businesslist',
+    });
+    expect(events).toContainEqual({
+      type: 'description',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      scenarioEntryUrl: 'https://example.com/#/business/businesslist',
+      precheckUrl: 'https://example.com/#/business/businesslist',
+      analyzeUrl: 'https://example.com/#/business/businesslist',
+      description: '从商机列表进入创建页并完成保存。',
+    });
+  });
+
+  it('builds structured success knowledge candidates from successful verification checks', async () => {
+    vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 0 } as any);
+    vi.mocked(resolveIntentPromptPlanningContext).mockReturnValueOnce({
+      dsl: {
+        version: 1,
+        taskMode: 'scenario',
+        targetUrl: 'https://example.com/customer/list',
+        summary: '客户列表回查',
+        globalRules: [],
+        preferredPrimitives: [],
+        outputContract: [],
+        steps: [],
+      },
+      executionPlan: {
+        version: 1,
+        compiler: 'deterministic_dsl_v1',
+        mode: 'scenario',
+        entryUrl: 'https://example.com/customer/list',
+        summary: '客户列表回查',
+        expectedOutcome: '列表或详情中能找到目标 customerCode',
+        sharedVariables: ['customerCode'],
+        globalRules: [],
+        preferredPrimitives: [],
+        outputContract: [],
+        steps: [
+          {
+            planStepUid: 'plan_step_1',
+            scenarioStepUid: 'step_customer',
+            stepType: 'assert',
+            title: '列表回查',
+            target: 'https://example.com/customer/list',
+            goal: '按 customerCode 回查并在详情页核对状态',
+            allowedActions: ['find_table_row', 'resolve_primary_record', 'click_row_action'],
+            preferredHelpers: ['__e2e.findAntdTableRow', '__e2e.resolvePrimaryRecord', '__e2e.readDetailField'],
+            requiredAssertions: ['列表检索到目标 customerCode，必要时打开详情核对状态'],
+            extractVariable: '',
+            sharedVariables: ['customerCode'],
+            dependsOnPlanStepUids: [],
+          },
+        ],
+      },
+      verificationPlan: {
+        version: 1,
+        strategy: 'deterministic_verification_v1',
+        expectedOutcome: '列表或详情中能找到目标 customerCode',
+        cleanupNotes: '',
+        checks: [
+          {
+            checkUid: 'verify_customer_lookup',
+            kind: 'table_row',
+            source: 'success_criteria',
+            title: '成功标准 1',
+            instruction: '列表检索到目标 customerCode，必要时打开详情核对状态',
+            stableIdentifiers: ['customerCode'],
+            expectedFields: ['状态', 'customerCode'],
+            fieldPathHints: [],
+            fieldSpecs: [
+              {
+                label: '状态',
+                expectedSource: 'list_record',
+                preferredPaths: ['status', 'statusName'],
+                scopeHints: ['详情页'],
+              },
+              {
+                label: 'customerCode',
+                expectedSource: 'shared_variable',
+                preferredPaths: ['customerCode', 'recordCode'],
+                scopeHints: ['详情页'],
+              },
+            ],
+            recordLookup: {
+              listResponse: { urlIncludes: '/customer/search', method: 'POST' },
+              detailUrl: '/customer/profile/{{primaryValue}}',
+              rowHasTexts: ['customerCode', '签约中'],
+              detailReadyLocator: { textIncludes: '客户详情' },
+              detailEntry: {
+                trigger: 'row_action',
+                actionLabel: '查看',
+                target: 'drawer_or_modal',
+              },
+            },
+            detailSurface: {
+              titleIncludes: '客户详情',
+              scopeHints: ['详情页'],
+            },
+            preferredHelpers: ['__e2e.findAntdTableRow'],
+            relatedPlanStepUids: ['plan_step_1'],
+            required: true,
+          },
+        ],
+      },
+      starterHelpers: [],
+      knowledge: {
+        version: 1,
+        profilePath: 'intent-e2e.project-knowledge.json',
+        matches: [
+          {
+            ruleId: 'customer.lookup-hints',
+            title: '客户列表回查参数',
+            reasons: ['URL命中'],
+            promptNotes: [],
+            capabilitySlugs: ['assert.resolve-primary-record'],
+            addGlobalRules: [],
+            addPreferredPrimitives: [],
+            addOutputContract: [],
+            stepPatches: [],
+            score: 9,
+          },
+        ],
+        deprioritizedMatches: [],
+        capabilitySlugs: ['assert.resolve-primary-record'],
+      },
+    } as any);
+
+    vi.mocked(generateTest).mockReturnValue(
+      toAsyncGenerator([
+        { type: 'code', content: "test('customer lookup', async ({ page }) => {\n" },
+        { type: 'complete', content: "test('customer lookup', async ({ page }) => {\n  await page.goto('https://example.com/customer/list');\n});" },
+      ])
+    );
+
+    vi.mocked(executeTest).mockResolvedValue({
+      success: true,
+      duration: 620,
+      steps: [
+        {
+          title: '列表回查',
+          status: 'passed',
+          duration: 220,
+          at: '2026-03-16T09:30:00.000Z',
+        },
+      ],
+      error: null,
+    } as never);
+
+    const result = await runIntentDrivenE2EStream({
+      input: '按 customerCode 回查并在必要时打开详情核对状态',
+    });
+
+    expect(result.finalResult.success).toBe(true);
+    expect(result.knowledgeCandidates).toHaveLength(1);
+    expect(result.knowledgeCandidates?.[0]).toMatchObject({
+      checkUid: 'verify_customer_lookup',
+      stableIdentifiers: ['customerCode'],
+      matchedRuleIds: ['customer.lookup-hints'],
+    });
+    expect(result.knowledgeCandidates?.[0]?.preferredHelpers).toEqual(
+      expect.arrayContaining([
+        '__e2e.findAntdTableRow',
+        '__e2e.resolvePrimaryRecord',
+        '__e2e.clickAntdRowAction',
+        '__e2e.readDetailField',
+      ])
+    );
+    expect(result.knowledgeCandidates?.[0]?.rule.recordLookupHints?.[0]?.detailEntry).toEqual({
+      trigger: 'row_action',
+      actionLabel: '查看',
+      target: 'drawer_or_modal',
+    });
+    expect(result.knowledgeCandidates?.[0]?.rule.detailSurfaceHints?.[0]).toEqual({
+      stableIdentifiers: ['customerCode'],
+      whenStepTypes: ['assert'],
+      stepTextIncludes: ['customerCode', '列表', '详情', '查看'],
+      titleIncludes: '客户详情',
+      scopeHints: ['详情页'],
+    });
+    expect(result.knowledgeCandidates?.[0]?.rule.stepPatches[0]?.addPreferredHelpers).toEqual(
+      expect.arrayContaining(['__e2e.resolvePrimaryRecord', '__e2e.clickAntdRowAction', '__e2e.readDetailField'])
+    );
+  });
+
+  it('propagates repair observation artifact into successful run knowledge candidates', async () => {
+    vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 1 } as any);
+    vi.mocked(buildGenerateInputFromScenarioCard).mockReturnValue({
+      targetUrl: 'https://example.com/customer/list',
+      description: '按 customerCode 回查并在必要时打开详情核对状态。',
+      context: {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://example.com/customer/list',
+        scenarioSummary: '客户列表回查',
+        expectedOutcome: '列表或详情中能找到目标 customerCode',
+        sharedVariables: ['customerCode'],
+        cleanupNotes: '',
+      },
+    });
+    vi.mocked(precheckPageAccess).mockResolvedValue({
+      url: 'https://example.com/customer/list',
+      finalUrl: 'https://example.com/customer/list',
+      title: 'Customer List',
+      storageState: { cookies: [], origins: [] },
+    } as any);
+    vi.mocked(analyzePage)
+      .mockResolvedValueOnce({
+        url: 'https://example.com/customer/list',
+        title: 'Customer List',
+        bodyTextExcerpt: '客户列表加载完成',
+        buttons: [],
+        links: [],
+        forms: [],
+        images: [],
+        frames: [],
+      } as any)
+      .mockResolvedValueOnce({
+        url: 'https://example.com/customer/list',
+        title: 'Customer List Refreshed',
+        bodyTextExcerpt: '最新观察：客户列表仍可见',
+        buttons: [
+          {
+            text: '搜索',
+            id: 'search-btn',
+            type: 'button',
+            ariaLabel: '',
+            title: '',
+            className: 'ant-btn',
+            isIconOnly: false,
+          },
+        ],
+        links: [],
+        forms: [],
+        images: [],
+        frames: [],
+      } as any);
+    vi.mocked(resolveIntentPromptPlanningContext).mockReturnValue({
+      dsl: {
+        version: 1,
+        taskMode: 'scenario',
+        targetUrl: 'https://example.com/customer/list',
+        summary: '客户列表回查',
+        globalRules: [],
+        preferredPrimitives: [],
+        outputContract: [],
+        steps: [],
+      },
+      executionPlan: {
+        version: 1,
+        compiler: 'deterministic_dsl_v1',
+        mode: 'scenario',
+        entryUrl: 'https://example.com/customer/list',
+        summary: '客户列表回查',
+        expectedOutcome: '列表或详情中能找到目标 customerCode',
+        sharedVariables: ['customerCode'],
+        globalRules: [],
+        preferredPrimitives: [],
+        outputContract: [],
+        steps: [
+          {
+            planStepUid: 'plan_step_1',
+            scenarioStepUid: 'step_customer',
+            stepType: 'assert',
+            title: '列表回查',
+            target: 'https://example.com/customer/list',
+            goal: '按 customerCode 回查并在详情页核对状态',
+            allowedActions: ['find_table_row', 'resolve_primary_record', 'click_row_action'],
+            preferredHelpers: ['__e2e.findAntdTableRow', '__e2e.resolvePrimaryRecord', '__e2e.readDetailField'],
+            requiredAssertions: ['列表检索到目标 customerCode，必要时打开详情核对状态'],
+            extractVariable: '',
+            sharedVariables: ['customerCode'],
+            dependsOnPlanStepUids: [],
+          },
+        ],
+      },
+      verificationPlan: {
+        version: 1,
+        strategy: 'deterministic_verification_v1',
+        expectedOutcome: '列表或详情中能找到目标 customerCode',
+        cleanupNotes: '',
+        checks: [
+          {
+            checkUid: 'verify_customer_lookup',
+            kind: 'table_row',
+            source: 'success_criteria',
+            title: '成功标准 1',
+            instruction: '列表检索到目标 customerCode，必要时打开详情核对状态',
+            stableIdentifiers: ['customerCode'],
+            expectedFields: ['状态', 'customerCode'],
+            fieldPathHints: [],
+            fieldSpecs: [
+              {
+                label: '状态',
+                expectedSource: 'list_record',
+                preferredPaths: ['status', 'statusName'],
+                scopeHints: ['详情页'],
+              },
+              {
+                label: 'customerCode',
+                expectedSource: 'shared_variable',
+                preferredPaths: ['customerCode', 'recordCode'],
+                scopeHints: ['详情页'],
+              },
+            ],
+            recordLookup: {
+              listResponse: { urlIncludes: '/customer/search', method: 'POST' },
+              detailUrl: '/customer/profile/{{primaryValue}}',
+              rowHasTexts: ['customerCode', '签约中'],
+              detailReadyLocator: { textIncludes: '客户详情' },
+              detailEntry: {
+                trigger: 'row_action',
+                actionLabel: '查看',
+                target: 'drawer_or_modal',
+              },
+            },
+            detailSurface: {
+              titleIncludes: '客户详情',
+              scopeHints: ['详情页'],
+            },
+            preferredHelpers: ['__e2e.findAntdTableRow'],
+            relatedPlanStepUids: ['plan_step_1'],
+            required: true,
+          },
+        ],
+      },
+      starterHelpers: [],
+      knowledge: {
+        version: 1,
+        profilePath: 'intent-e2e.project-knowledge.json',
+        matches: [
+          {
+            ruleId: 'customer.lookup-hints',
+            title: '客户列表回查参数',
+            reasons: ['URL命中'],
+            promptNotes: [],
+            capabilitySlugs: ['assert.resolve-primary-record'],
+            addGlobalRules: [],
+            addPreferredPrimitives: [],
+            addOutputContract: [],
+            stepPatches: [],
+            score: 9,
+          },
+        ],
+        deprioritizedMatches: [],
+        capabilitySlugs: ['assert.resolve-primary-record'],
+      },
+    } as any);
+    vi.mocked(generateTest).mockReturnValue(
+      toAsyncGenerator([
+        {
+          type: 'complete',
+          content: "test('customer lookup initial', async ({ page }) => {\n  await page.goto('https://example.com/customer/list');\n});",
+        },
+      ])
+    );
+    vi.mocked(repairTest).mockReturnValue(
+      toAsyncGenerator([
+        {
+          type: 'structured_patch',
+          content: 'slot patch ready: plan_step_1',
+          structuredPatch: {
+            version: 1,
+            strategy: 'deterministic_slot_patch_v1',
+            targetSlotUids: ['plan_step_1'],
+            returnedSlotUids: ['plan_step_1'],
+            reusedPreviousCode: true,
+            baseCodeSource: 'previous_code',
+            patch: {
+              version: 1,
+              slots: [
+                {
+                  slotUid: 'plan_step_1',
+                  code: "await __e2e.findAntdTableRow(page, { hasTexts: ['customerCode'] });",
+                },
+              ],
+            },
+          },
+          repairOutput: {
+            version: 1,
+            strategy: 'deterministic_repair_patch_v1',
+            targetSlotUids: ['plan_step_1'],
+            returnedSlotUids: ['plan_step_1'],
+            reusedPreviousCode: true,
+            baseCodeSource: 'previous_code',
+            patch: {
+              version: 1,
+              slots: [
+                {
+                  slotUid: 'plan_step_1',
+                  code: "await __e2e.findAntdTableRow(page, { hasTexts: ['customerCode'] });",
+                },
+              ],
+            },
+            patchedPlan: {
+              planStepUids: ['plan_step_1'],
+              steps: [
+                {
+                  planStepUid: 'plan_step_1',
+                  title: '列表回查',
+                  preferredHelpers: ['__e2e.findAntdTableRow'],
+                },
+              ],
+            },
+            patchedVerifier: {
+              checkUids: ['verify_customer_lookup'],
+              checks: [
+                {
+                  checkUid: 'verify_customer_lookup',
+                  title: '成功标准 1',
+                  preferredHelpers: ['__e2e.findAntdTableRow', '__e2e.readDetailField'],
+                  relatedPlanStepUids: ['plan_step_1'],
+                  required: true,
+                },
+              ],
+            },
+            patchedRecipeSelection: {
+              recipeSlugs: [],
+              recipes: [],
+            },
+          },
+        },
+        {
+          type: 'complete',
+          content: "test('customer lookup repaired', async ({ page }) => {\n  await page.goto('https://example.com/customer/list');\n});",
+        },
+      ])
+    );
+    vi.mocked(executeTest)
+      .mockResolvedValueOnce({
+        success: false,
+        duration: 420,
+        steps: [
+          {
+            title: '列表回查',
+            status: 'failed',
+            duration: 420,
+            error: 'locator not found',
+            at: '2026-03-16T09:40:00.000Z',
+          },
+        ],
+        error: 'locator not found',
+      } as never)
+      .mockResolvedValueOnce({
+        success: true,
+        duration: 360,
+        steps: [
+          {
+            title: '列表回查',
+            status: 'passed',
+            duration: 360,
+            at: '2026-03-16T09:41:00.000Z',
+          },
+        ],
+        error: null,
+      } as never);
+
+    const result = await runIntentDrivenE2EStream({
+      input: '按 customerCode 回查并在必要时打开详情核对状态',
+    });
+
+    expect(result.finalResult.success).toBe(true);
+    expect(result.attempts[1].repairOutput).toMatchObject({
+      observationTags: expect.arrayContaining(['obs-page-surface']),
+      observationSummary: expect.stringContaining('page_surface=observed'),
+    });
+    expect(result.knowledgeCandidates?.[0]).toMatchObject({
+      checkUid: 'verify_customer_lookup',
+      observationTags: expect.arrayContaining(['obs-page-surface']),
+      observationSummary: expect.stringContaining('page_surface=observed'),
+    });
   });
 
   it('stops early when the run signal is already aborted', async () => {
@@ -352,6 +1153,12 @@ describe('intent-e2e-service stream', () => {
       }),
     ]);
     expect(result.attempts).toHaveLength(0);
+    expect(result.resolvedUrls).toEqual({
+      targetUrl: 'https://example.com/checkout',
+      scenarioEntryUrl: 'https://example.com/checkout',
+      precheckUrl: 'https://example.com/checkout',
+      analyzeUrl: 'https://example.com/checkout',
+    });
     expect(result.finalFailureTriage).toMatchObject({
       failureClass: 'auth_failed',
       repairable: false,
@@ -428,8 +1235,74 @@ describe('intent-e2e-service stream', () => {
     });
   });
 
+  it('fails fast when page analysis exceeds the bounded timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(analyzePage).mockImplementationOnce(
+        () =>
+          new Promise(() => {
+            // Intentionally never resolves to simulate a hung analysis stage.
+          }) as never
+      );
+
+      const events: IntentE2EStreamEvent[] = [];
+      const runPromise = runIntentDrivenE2EStream(
+        {
+          input: '访问结算页并提交，最终看到成功页',
+        },
+        (event) => {
+          events.push(event);
+        }
+      );
+      const rejection = expect(runPromise).rejects.toThrow(
+        '页面分析超时 (60000ms)，请检查目标页面 iframe / loading 状态或稍后重试'
+      );
+
+      await vi.advanceTimersByTimeAsync(60_001);
+
+      await rejection;
+      expect(events.some((event) => event.type === 'stage' && event.stage === 'prechecking')).toBe(true);
+      expect(events.some((event) => event.type === 'stage' && event.stage === 'analyzing')).toBe(true);
+      expect(events.some((event) => event.type === 'attempt_started')).toBe(false);
+      expect(vi.mocked(generateTest)).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('continues with repair flow after a failed execution', async () => {
     vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 1 } as any);
+    vi.mocked(analyzePage)
+      .mockResolvedValueOnce({
+        url: 'https://example.com/checkout',
+        title: 'Checkout',
+        bodyTextExcerpt: '提交成功',
+        buttons: [],
+        links: [],
+        forms: [],
+        frames: [],
+        screenshot: '',
+      } as any)
+      .mockResolvedValueOnce({
+        url: 'https://example.com/checkout',
+        title: 'Checkout Refreshed',
+        bodyTextExcerpt: '最新观察：立即提交按钮可见',
+        buttons: [
+          {
+            text: '立即提交',
+            id: 'submit-btn',
+            type: 'button',
+            ariaLabel: '',
+            title: '',
+            className: 'ant-btn',
+            isIconOnly: false,
+          },
+        ],
+        links: [],
+        forms: [],
+        frames: [],
+        screenshot: '',
+      } as any);
     vi.mocked(generateTest).mockReturnValue(
       toAsyncGenerator([
         { type: 'complete', content: "test('checkout-first', async ({ page }) => { await page.goto('https://example.com/checkout'); });" },
@@ -438,6 +1311,70 @@ describe('intent-e2e-service stream', () => {
     vi.mocked(repairTest).mockReturnValue(
       toAsyncGenerator([
         { type: 'thinking', content: '替换不稳定的定位器并补等待。' },
+        {
+          type: 'structured_patch',
+          content: 'slot patch ready: plan_step_1',
+          structuredPatch: {
+            version: 1,
+            strategy: 'deterministic_slot_patch_v1',
+            targetSlotUids: ['plan_step_1'],
+            returnedSlotUids: ['plan_step_1'],
+            reusedPreviousCode: true,
+            baseCodeSource: 'previous_code',
+            patch: {
+              version: 1,
+              slots: [
+                {
+                  slotUid: 'plan_step_1',
+                  code: "await page.getByRole('button', { name: '提交订单' }).click();",
+                },
+              ],
+            },
+          },
+          repairOutput: {
+            version: 1,
+            strategy: 'deterministic_repair_patch_v1',
+            targetSlotUids: ['plan_step_1'],
+            returnedSlotUids: ['plan_step_1'],
+            reusedPreviousCode: true,
+            baseCodeSource: 'previous_code',
+            patch: {
+              version: 1,
+              slots: [
+                {
+                  slotUid: 'plan_step_1',
+                  code: "await page.getByRole('button', { name: '提交订单' }).click();",
+                },
+              ],
+            },
+            patchedPlan: {
+              planStepUids: ['plan_step_1'],
+              steps: [
+                {
+                  planStepUid: 'plan_step_1',
+                  title: '点击提交按钮',
+                  preferredHelpers: ['__e2e.waitForApiResponse'],
+                },
+              ],
+            },
+            patchedVerifier: {
+              checkUids: ['verify_success_1'],
+              checks: [
+                {
+                  checkUid: 'verify_success_1',
+                  title: '成功标准 1',
+                  preferredHelpers: ['__e2e.waitForApiResponse'],
+                  relatedPlanStepUids: ['plan_step_1'],
+                  required: true,
+                },
+              ],
+            },
+            patchedRecipeSelection: {
+              recipeSlugs: [],
+              recipes: [],
+            },
+          },
+        },
         { type: 'complete', content: "test('checkout-fixed', async ({ page }) => { await page.goto('https://example.com/checkout'); });" },
       ])
     );
@@ -494,20 +1431,72 @@ describe('intent-e2e-service stream', () => {
     expect(result.attempts).toHaveLength(2);
     expect(result.attempts[0].result.success).toBe(false);
     expect(result.attempts[1].result.success).toBe(true);
+    expect(result.attempts[1].repairOutput).toMatchObject({
+      strategy: 'deterministic_repair_patch_v1',
+      observationTags: expect.arrayContaining(['obs-page-surface']),
+      observationSummary: expect.stringContaining('page_surface=observed'),
+      patchedPlan: {
+        planStepUids: ['plan_step_1'],
+      },
+      patchedVerifier: {
+        checkUids: ['verify_success_1'],
+      },
+    });
+    expect(result.attempts[1].repairObservationReport).toMatchObject({
+      pageTitle: 'Checkout Refreshed',
+      probes: expect.arrayContaining([
+        expect.objectContaining({
+          probeUid: 'page_surface',
+          status: 'observed',
+        }),
+      ]),
+    });
     expect(result.attempts[0].triage).toMatchObject({
       failureClass: 'selector_drift',
       repairable: true,
     });
     expect(result.finalFailureTriage).toBeNull();
     expect(vi.mocked(repairTest)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(analyzePage)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(analyzePage).mock.calls[1]).toEqual([
+      'https://example.com/checkout',
+      undefined,
+      {
+        storageState: { cookies: [], origins: [] },
+      },
+    ]);
     expect(vi.mocked(repairTest).mock.calls[0]?.[2]).toMatchObject({
       executionError: 'locator not found',
+      latestTrace: expect.any(Array),
       repairMemoryHints: [repairMemoryHint],
+      graderDiagnosis: expect.objectContaining({
+        failureClass: 'selector_drift',
+        failedStepTitle: '点击提交按钮',
+      }),
+    });
+    expect(vi.mocked(repairTest).mock.calls[0]?.[4]).toMatchObject({
+      repairObservationSnapshot: expect.objectContaining({
+        title: 'Checkout Refreshed',
+        bodyTextExcerpt: '最新观察：立即提交按钮可见',
+      }),
+      repairObservationReport: expect.objectContaining({
+        pageTitle: 'Checkout Refreshed',
+        probes: expect.arrayContaining([
+          expect.objectContaining({
+            probeUid: 'page_surface',
+            status: 'observed',
+          }),
+          expect.objectContaining({
+            probeUid: 'anchor_presence',
+          }),
+        ]),
+      }),
     });
     expect(vi.mocked(listRelevantIntentRepairHints)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(listRelevantIntentRepairHints).mock.calls[0]?.[0]).toMatchObject({
       targetUrl: 'https://example.com/checkout',
       executionError: 'locator not found',
+      observationTags: expect.arrayContaining(['obs-page-surface']),
     });
     expect(vi.mocked(recordIntentRepairFailure)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(recordIntentRepairResolution)).toHaveBeenCalledWith(
@@ -581,5 +1570,55 @@ describe('intent-e2e-service stream', () => {
     expect(vi.mocked(recordIntentRepairFailure)).not.toHaveBeenCalled();
     expect(events.some((event) => event.type === 'stage' && event.stage === 'repairing')).toBe(false);
     expect(events.some((event) => event.type === 'attempt_log' && event.log.message.includes('环境阻塞'))).toBe(true);
+  });
+
+  it('stops self-heal early when repeated repairs stagnate on the same failure signature', async () => {
+    vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 5 } as any);
+    vi.mocked(generateTest).mockReturnValue(
+      toAsyncGenerator([
+        { type: 'complete', content: "test('checkout-stagnated', async ({ page }) => { await page.goto('https://example.com/checkout'); });" },
+      ])
+    );
+    vi.mocked(repairTest).mockImplementation(() =>
+      toAsyncGenerator([
+        { type: 'complete', content: "test('checkout-stagnated-repair', async ({ page }) => { await page.goto('https://example.com/checkout'); });" },
+      ])
+    );
+
+    vi.mocked(executeTest).mockImplementation(async () => ({
+      success: false,
+      duration: 900,
+      steps: [
+        {
+          title: '点击提交按钮',
+          status: 'failed',
+          duration: 900,
+          error: 'locator not found',
+          at: '2026-03-16T09:20:00.000Z',
+        },
+      ],
+      error: 'locator not found',
+    }));
+
+    const events: IntentE2EStreamEvent[] = [];
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(false);
+    expect(result.attempts).toHaveLength(3);
+    expect(result.finalFailureTriage).toMatchObject({
+      failureClass: 'repair_stagnated',
+      repairable: false,
+    });
+    expect(result.finalResult.error).toContain('修复停滞');
+    expect(vi.mocked(repairTest)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(recordIntentRepairFailure)).toHaveBeenCalledTimes(3);
+    expect(events.some((event) => event.type === 'attempt_log' && event.log.message.includes('修复停滞'))).toBe(true);
   });
 });

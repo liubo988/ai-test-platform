@@ -205,6 +205,75 @@ describe('test-plan-service', () => {
     });
   });
 
+  it('exposes capability verification review context on execution details', async () => {
+    vi.mocked(getExecution).mockResolvedValue({
+      executionUid: 'exec_review_1',
+      planUid: 'plan_review_1',
+      configUid: 'cfg_review_1',
+      projectUid: 'proj_review_1',
+      status: 'passed',
+      startedAt: '2026-03-24T16:00:00.000Z',
+      endedAt: '2026-03-24T16:01:00.000Z',
+      durationMs: 60000,
+      resultSummary: '执行成功（步骤通过 1，跳过 0）',
+      errorMessage: '',
+      workerSessionId: 'ws_review_1',
+      createdAt: '2026-03-24T16:00:00.000Z',
+    } as never);
+    vi.mocked(listExecutionEvents).mockResolvedValue([] as never);
+    vi.mocked(listLlmConversations).mockResolvedValue([] as never);
+    vi.mocked(listExecutionArtifacts).mockResolvedValue([{ artifactType: 'generated_spec', storagePath: 'generated/review.spec.ts', meta: {}, createdAt: '2026-03-24T16:01:00.000Z' }] as never);
+    vi.mocked(getPlanByUid).mockResolvedValue({
+      planUid: 'plan_review_1',
+      projectUid: 'proj_review_1',
+      configUid: 'cfg_review_1',
+      planTitle: '复核能力：搜企业',
+      planVersion: 1,
+      planSummary: 'summary',
+      planCode: 'test()',
+      generatedFiles: [],
+      createdAt: '2026-03-24T16:00:00.000Z',
+    } as never);
+    vi.mocked(listPlanCases).mockResolvedValue([] as never);
+    vi.mocked(getTestConfigByUid).mockResolvedValue({
+      configUid: 'cfg_review_1',
+      projectUid: 'proj_review_1',
+      moduleUid: 'mod_review_1',
+      name: '复核能力：搜企业',
+      moduleName: '线索',
+      targetUrl: 'https://example.com/#/company/search',
+      featureDescription: [
+        '能力验证UID：cap_review_1',
+        '能力验证链路UID：cap_auth_1,cap_review_1',
+        '能力验证意图：review',
+        '验证目标：搜企业',
+        '验证策略：保守复核',
+      ].join('\n'),
+      taskMode: 'scenario',
+      flowDefinition: null,
+      authSource: 'project',
+      loginDescription: '',
+      loginPasswordPlain: '',
+    } as never);
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_review_1',
+      name: '项目',
+      authRequired: false,
+      loginDescription: '',
+      loginPasswordPlain: '',
+    } as never);
+
+    const detail = await getExecutionDetail('exec_review_1');
+
+    expect(detail?.capabilityVerification).toEqual({
+      capabilityUid: 'cap_review_1',
+      chainCapabilityUids: ['cap_auth_1', 'cap_review_1'],
+      intent: 'review',
+      targetName: '搜企业',
+      strategyLabel: '保守复核',
+    });
+  });
+
   it('treats skipped executions as failed outcomes', () => {
     const outcome = classifyExecutionResult({
       success: false,
@@ -244,7 +313,13 @@ describe('test-plan-service', () => {
       name: '商机列表按手机号校验',
       moduleName: '商机管理',
       targetUrl: 'https://uat.example.com/#/business/businesslist',
-      featureDescription: '按手机号检索并校验商机列表',
+      featureDescription: [
+        '能力验证UID：cap_skip_1',
+        '能力验证链路UID：cap_skip_1',
+        '能力验证意图：review',
+        '验证目标：商机列表按手机号校验',
+        '验证策略：保守复核',
+      ].join('\n'),
       taskMode: 'scenario',
       flowDefinition: null,
       authSource: 'project',
@@ -313,9 +388,30 @@ describe('test-plan-service', () => {
         executionUid: 'exec_skip_1',
         projectUid: 'proj_skip_1',
         artifactType: 'generated_spec',
-        meta: expect.objectContaining({ success: false }),
+        meta: expect.objectContaining({
+          success: false,
+          capabilityVerification: expect.objectContaining({
+            capabilityUid: 'cap_skip_1',
+            intent: 'review',
+            strategyLabel: '保守复核',
+          }),
+        }),
       })
     );
+    expect(
+      vi.mocked(insertProjectActivityLog).mock.calls.some(
+        ([input]) =>
+          input.actionType === 'execution_started' &&
+          (input.meta as { capabilityVerification?: { intent?: string } } | undefined)?.capabilityVerification?.intent === 'review'
+      )
+    ).toBe(true);
+    expect(
+      vi.mocked(insertProjectActivityLog).mock.calls.some(
+        ([input]) =>
+          input.actionType === 'execution_failed' &&
+          (input.meta as { capabilityVerification?: { capabilityUid?: string } } | undefined)?.capabilityVerification?.capabilityUid === 'cap_skip_1'
+      )
+    ).toBe(true);
     expect(finalizeCapabilityVerification).toHaveBeenCalledWith(
       expect.objectContaining({
         executionUid: 'exec_skip_1',
@@ -485,6 +581,21 @@ describe('test-plan-service', () => {
       }),
       'proj_auto_1'
     );
+    expect(
+      vi.mocked(insertProjectActivityLog).mock.calls.some(
+        ([input]) =>
+          input.actionType === 'plan_repaired' &&
+          (input.meta as { repairTriggerKind?: string } | undefined)?.repairTriggerKind === 'auto'
+      )
+    ).toBe(true);
+    expect(
+      vi.mocked(insertProjectActivityLog).mock.calls.some(
+        ([input]) =>
+          input.actionType === 'execution_started' &&
+          input.entityUid === 'exec_auto_2' &&
+          (input.meta as { repairTriggerKind?: string } | undefined)?.repairTriggerKind === 'auto'
+      )
+    ).toBe(true);
     expect(updateExecutionStatus).toHaveBeenCalledWith(
       'exec_auto_2',
       'passed',
@@ -494,6 +605,170 @@ describe('test-plan-service', () => {
       }),
       'proj_auto_1'
     );
+    expect(
+      vi.mocked(insertProjectActivityLog).mock.calls.some(
+        ([input]) =>
+          input.actionType === 'execution_passed' &&
+          input.entityUid === 'exec_auto_2' &&
+          (input.meta as { repairTriggerKind?: string } | undefined)?.repairTriggerKind === 'auto'
+      )
+    ).toBe(true);
+  });
+
+  it('marks manual AI repair activity logs with manual repairTriggerKind', async () => {
+    vi.mocked(getPlanByUid).mockImplementation(async (planUid: string) => {
+      if (planUid === 'plan_manual_1') {
+        return {
+          planUid: 'plan_manual_1',
+          configUid: 'cfg_manual_1',
+          projectUid: 'proj_manual_1',
+          planTitle: '创建合同脚本',
+          planVersion: 1,
+          planSummary: 'first plan',
+          planCode: "test('first', async () => {});",
+        } as never;
+      }
+      if (planUid === 'plan_manual_2') {
+        return {
+          planUid: 'plan_manual_2',
+          configUid: 'cfg_manual_1',
+          projectUid: 'proj_manual_1',
+          planTitle: '创建合同脚本 - AI纠错计划',
+          planVersion: 2,
+          planSummary: 'repair plan',
+          planCode: "test('repaired', async () => {});",
+        } as never;
+      }
+      return null as never;
+    });
+    vi.mocked(getExecution).mockResolvedValue({
+      executionUid: 'exec_manual_1',
+      planUid: 'plan_manual_1',
+      configUid: 'cfg_manual_1',
+      projectUid: 'proj_manual_1',
+      status: 'failed',
+      startedAt: '2026-03-17T06:00:00.000Z',
+      endedAt: '2026-03-17T06:00:02.000Z',
+      durationMs: 2000,
+      resultSummary: '执行失败（失败步骤 1）',
+      errorMessage: 'dialog did not close',
+      workerSessionId: 'ws_manual_1',
+      createdAt: '2026-03-17T06:00:00.000Z',
+    } as never);
+    vi.mocked(getTestConfigByUid).mockResolvedValue({
+      configUid: 'cfg_manual_1',
+      projectUid: 'proj_manual_1',
+      moduleUid: 'mod_manual_1',
+      name: '创建合同',
+      moduleName: '合同管理',
+      targetUrl: 'https://uat.example.com/#/contract/create',
+      featureDescription: '创建合同并校验结果',
+      taskMode: 'page',
+      flowDefinition: null,
+      authSource: 'project',
+      loginDescription: '短信登录',
+      loginPasswordPlain: 'secret',
+    } as never);
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_manual_1',
+      name: '项目',
+      authRequired: true,
+      loginUrl: 'https://uat.example.com/#/',
+      loginUsername: 'tester',
+      loginDescription: '短信登录',
+      loginPasswordPlain: 'secret',
+    } as never);
+    vi.mocked(createExecution).mockResolvedValue('exec_manual_2' as never);
+    vi.mocked(executeTest).mockResolvedValue({
+      success: true,
+      duration: 1100,
+      error: null,
+      steps: [
+        {
+          title: '创建合同',
+          status: 'passed',
+          duration: 1100,
+          at: '2026-03-17T06:00:03.000Z',
+        },
+      ],
+    } as never);
+    vi.mocked(listExecutionEvents).mockResolvedValue([
+      {
+        eventType: 'step',
+        payload: {
+          title: '创建合同',
+          status: 'failed',
+          error: 'dialog did not close',
+        },
+        createdAt: '2026-03-17T06:00:02.000Z',
+      },
+    ] as never);
+    vi.mocked(analyzePage).mockResolvedValue({
+      url: 'https://uat.example.com/#/contract/create',
+      title: '创建合同',
+      forms: [],
+      buttons: [],
+      tooltipElements: [],
+      links: [],
+      headings: [],
+      screenshot: '',
+      frames: [],
+    } as never);
+    vi.mocked(repairTest).mockImplementation(
+      (async function* () {
+        yield { type: 'thinking', content: '正在修复' };
+        yield { type: 'complete', content: "test('repaired', async () => {});" };
+      }) as never
+    );
+    vi.mocked(createTestPlan).mockResolvedValue({
+      planUid: 'plan_manual_2',
+      configUid: 'cfg_manual_1',
+      projectUid: 'proj_manual_1',
+      planTitle: '创建合同脚本 - AI纠错计划',
+      planVersion: 2,
+      planSummary: 'repair plan',
+      planCode: "test('repaired', async () => {});",
+      generatedFiles: [],
+      createdAt: '2026-03-17T06:00:02.500Z',
+    } as never);
+    vi.mocked(getLatestPlanByConfigUid).mockResolvedValue(null as never);
+
+    const result = await repairExecution('exec_manual_1', {
+      actorLabel: 'Owner',
+      repairTriggerKind: 'manual',
+    });
+
+    expect(result).toEqual({
+      planUid: 'plan_manual_2',
+      planVersion: 2,
+      executionUid: 'exec_manual_2',
+    });
+
+    await flushAsyncWork();
+
+    expect(
+      vi.mocked(insertProjectActivityLog).mock.calls.some(
+        ([input]) =>
+          input.actionType === 'plan_repaired' &&
+          (input.meta as { repairTriggerKind?: string } | undefined)?.repairTriggerKind === 'manual'
+      )
+    ).toBe(true);
+    expect(
+      vi.mocked(insertProjectActivityLog).mock.calls.some(
+        ([input]) =>
+          input.actionType === 'execution_started' &&
+          input.entityUid === 'exec_manual_2' &&
+          (input.meta as { repairTriggerKind?: string } | undefined)?.repairTriggerKind === 'manual'
+      )
+    ).toBe(true);
+    expect(
+      vi.mocked(insertProjectActivityLog).mock.calls.some(
+        ([input]) =>
+          input.actionType === 'execution_passed' &&
+          input.entityUid === 'exec_manual_2' &&
+          (input.meta as { repairTriggerKind?: string } | undefined)?.repairTriggerKind === 'manual'
+      )
+    ).toBe(true);
   });
 
   it('blocks plan generation when a scenario task dropped requirement clauses during drafting', async () => {

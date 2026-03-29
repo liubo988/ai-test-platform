@@ -1,0 +1,8 @@
+export type {
+  IntentVerificationFailurePressureSummary as IntentVerificationFailurePressureViewSummary,
+} from './intent-verification-failure-pressure-summary';
+export {
+  hasIntentVerificationFailurePressureSummaryHighFailure as hasIntentVerificationFailurePressureViewHighFailure,
+  normalizeIntentVerificationFailurePressureSummary as normalizeIntentVerificationFailurePressureViewSummary,
+  summarizeIntentVerificationFailurePressureSummaryFromItems as summarizeIntentVerificationFailurePressureViewSummaryFromItems,
+} from './intent-verification-failure-pressure-summary';

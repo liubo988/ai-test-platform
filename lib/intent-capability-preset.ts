@@ -2,7 +2,7 @@ import { normalizeFlowDefinition, type FlowDefinition, type TaskMode } from '@/l
 
 export type IntentCapabilityType = 'auth' | 'navigation' | 'action' | 'assertion' | 'query' | 'composite';
 
-export type IntentCapabilityMeta = {
+export type IntentCapabilityMeta = Record<string, unknown> & {
   sourceTaskMode?: TaskMode;
   flowDefinition?: FlowDefinition | null;
 };
@@ -169,6 +169,27 @@ function buildMeta(input: IntentCapabilityPresetInput, flow: FlowDefinition): In
   };
 }
 
+function normalizeIntentCapabilityMeta(meta: unknown, fallbackEntryUrl = ''): IntentCapabilityMeta | null {
+  const rawMeta = toRecord(meta);
+  if (!rawMeta) return null;
+
+  const next: Record<string, unknown> = { ...rawMeta };
+  const flowDefinition = getIntentCapabilityFlowDefinition(rawMeta, fallbackEntryUrl);
+  if (flowDefinition) {
+    next.flowDefinition = flowDefinition;
+  } else {
+    delete next.flowDefinition;
+  }
+
+  if (rawMeta.sourceTaskMode === 'scenario') {
+    next.sourceTaskMode = 'scenario';
+  } else {
+    delete next.sourceTaskMode;
+  }
+
+  return Object.keys(next).length > 0 ? (next as IntentCapabilityMeta) : null;
+}
+
 export function getIntentCapabilityFlowDefinition(meta: unknown, fallbackEntryUrl = ''): FlowDefinition | null {
   const value = toRecord(meta);
   if (!value?.flowDefinition) return null;
@@ -225,17 +246,7 @@ export function parseIntentCapabilityPreset(input: string | null | undefined): I
       dependsOn: Array.isArray(value.dependsOn) ? uniq(value.dependsOn.map((item) => String(item))) : [],
       sortOrder: Number.isFinite(Number(value.sortOrder)) ? Number(value.sortOrder) : 100,
       sourceDocumentUid: String(value.sourceDocumentUid || '').trim(),
-      meta: (() => {
-        const rawMeta = toRecord(value.meta);
-        if (!rawMeta) return null;
-        const flowDefinition = getIntentCapabilityFlowDefinition(rawMeta, entryUrl);
-        const sourceTaskMode = rawMeta.sourceTaskMode === 'scenario' ? 'scenario' : undefined;
-        if (!flowDefinition && !sourceTaskMode) return null;
-        return {
-          sourceTaskMode,
-          flowDefinition,
-        };
-      })(),
+      meta: normalizeIntentCapabilityMeta(value.meta, entryUrl),
     };
   } catch {
     return null;

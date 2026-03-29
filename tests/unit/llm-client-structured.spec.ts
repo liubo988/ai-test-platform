@@ -56,4 +56,48 @@ describe('llm-client structured', () => {
     expect(Array.isArray(payload.input)).toBe(true);
     expect(payload.input[0].content[1].type).toBe('input_image');
   });
+
+  it('retries once when structured JSON parsing fails before succeeding', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ output_text: '{"title":"broken","passed":tru' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ output_text: '{"title":"recovered","passed":true}' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { callLLMStructured } = await import('@/lib/llm-client');
+    const result = await callLLMStructured<{ title: string; passed: boolean }>({
+      prompt: '返回严格 JSON',
+      schemaName: 'retry_demo',
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['title', 'passed'],
+        properties: {
+          title: { type: 'string' },
+          passed: { type: 'boolean' },
+        },
+      },
+    });
+
+    expect(result).toEqual({ title: 'recovered', passed: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    const [, firstInit] = fetchMock.mock.calls[0];
+    const [, secondInit] = fetchMock.mock.calls[1];
+    const firstPayload = JSON.parse(String(firstInit?.body || '{}'));
+    const secondPayload = JSON.parse(String(secondInit?.body || '{}'));
+
+    expect(secondPayload.max_output_tokens).toBeGreaterThan(firstPayload.max_output_tokens);
+  });
 });

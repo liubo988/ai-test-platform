@@ -2,6 +2,11 @@ import { analyzePage, type AuthConfig, type PageSnapshot } from '@/lib/page-anal
 import { getLLMRuntimeConfig, type LLMRuntimeOverrides } from '@/lib/llm/provider-config';
 import { getWorkspaceLLMRuntimeOverrides, mergeLLMRuntimeOverrides } from '@/lib/llm/workspace-config';
 import { finalizeCapabilityVerification } from '@/lib/capability-verification-service';
+import {
+  parseCapabilityVerificationChainMarker,
+  parseCapabilityVerificationIntent,
+  parseCapabilityVerificationMarker,
+} from '@/lib/capability-verification';
 import { generateTest, repairTest, type GenerateEvent, type GenerateTestContext } from '@/lib/test-generator';
 import { executeTest, type TestResult } from '@/lib/test-executor';
 import { buildExecutionRepairBlockedMessage } from '@/lib/execution-outcome';
@@ -60,6 +65,7 @@ function buildAuthContext(
 }
 
 type TestConfigWithSecrets = NonNullable<Awaited<ReturnType<typeof getTestConfigByUid>>>;
+type RepairTriggerKind = 'auto' | 'manual';
 
 export interface PlanGenerationTaskSpec {
   projectUid: string;
@@ -78,6 +84,66 @@ export interface GeneratedPlanDraft {
   generationPrompt: string;
   generatedFiles: Array<{ name: string; content: string; language: string }>;
   tiers: { simple: number; medium: number; complex: number };
+}
+
+type CapabilityVerificationExecutionContext = {
+  capabilityUid: string;
+  chainCapabilityUids: string[];
+  intent: 'verify' | 'review';
+  targetName: string;
+  strategyLabel: string;
+};
+
+function parseCapabilityVerificationLine(featureDescription: string, label: string): string {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = featureDescription.match(new RegExp(`(?:^|\\n)${escaped}：([^\\n]+)`));
+  return match?.[1]?.trim() || '';
+}
+
+function resolveCapabilityVerificationExecutionContext(featureDescription: string): CapabilityVerificationExecutionContext | null {
+  const capabilityUid = parseCapabilityVerificationMarker(featureDescription || '');
+  if (!capabilityUid) return null;
+
+  const intent = parseCapabilityVerificationIntent(featureDescription || '');
+  return {
+    capabilityUid,
+    chainCapabilityUids: parseCapabilityVerificationChainMarker(featureDescription || ''),
+    intent,
+    targetName: parseCapabilityVerificationLine(featureDescription || '', '验证目标'),
+    strategyLabel:
+      parseCapabilityVerificationLine(featureDescription || '', '验证策略') || (intent === 'review' ? '保守复核' : '标准验证'),
+  };
+}
+
+function buildCapabilityVerificationAuditMeta(
+  featureDescription: string
+): { capabilityVerification?: CapabilityVerificationExecutionContext } {
+  const capabilityVerification = resolveCapabilityVerificationExecutionContext(featureDescription);
+  return capabilityVerification ? { capabilityVerification } : {};
+}
+
+function extractCapabilityVerificationFromArtifactMeta(
+  artifacts: Array<{ artifactType: string; storagePath: string; meta: unknown; createdAt: string }>
+): CapabilityVerificationExecutionContext | null {
+  for (const artifact of artifacts) {
+    if (!artifact.meta || typeof artifact.meta !== 'object' || Array.isArray(artifact.meta)) continue;
+    const value = (artifact.meta as { capabilityVerification?: unknown }).capabilityVerification;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+
+    const capabilityVerification = value as Partial<CapabilityVerificationExecutionContext>;
+    if (!capabilityVerification.capabilityUid) continue;
+    return {
+      capabilityUid: String(capabilityVerification.capabilityUid),
+      chainCapabilityUids: Array.isArray(capabilityVerification.chainCapabilityUids)
+        ? capabilityVerification.chainCapabilityUids.map((item) => String(item)).filter(Boolean)
+        : [],
+      intent: capabilityVerification.intent === 'review' ? 'review' : 'verify',
+      targetName: String(capabilityVerification.targetName || ''),
+      strategyLabel: String(capabilityVerification.strategyLabel || ''),
+    };
+  }
+
+  return null;
 }
 
 function extractRecipeRequirement(featureDescription: string): string {
@@ -236,7 +302,7 @@ async function buildGenerationInput(config: TestConfigWithSecrets, auth?: AuthCo
 }
 
 function toConversationMessageType(eventType: GenerateEvent['type']): 'thinking' | 'code' | 'status' | 'error' {
-  if (eventType === 'complete') return 'status';
+  if (eventType === 'complete' || eventType === 'structured_patch') return 'status';
   return eventType;
 }
 
@@ -391,6 +457,7 @@ export async function generatePlanFromConfig(
   const auth = buildAuthContext(project, config);
   const llmConfig = mergeLLMRuntimeOverrides(await getWorkspaceLLMRuntimeOverrides(), options?.llmConfig);
   const runtimeConfig = getLLMRuntimeConfig(llmConfig);
+  const capabilityVerificationMeta = buildCapabilityVerificationAuditMeta(config.featureDescription || '');
   const { snapshot, promptDescription, promptContext } = await buildGenerationInput(config, auth);
   await insertLlmConversation({
     projectUid: config.projectUid,
@@ -473,6 +540,7 @@ export async function generatePlanFromConfig(
       planVersion: plan.planVersion,
       generationModel: runtimeConfig.model,
       tiers: { simple: 1, medium: 1, complex: 1 },
+      ...capabilityVerificationMeta,
     },
   });
 
@@ -502,6 +570,7 @@ export async function restoreHistoricalPlanAsLatest(
   if (!project) throw new Error('计划关联项目不存在');
 
   const latestPlan = await getLatestPlanByConfigUid(config.configUid);
+  const capabilityVerificationMeta = buildCapabilityVerificationAuditMeta(config.featureDescription || '');
   if (latestPlan?.planUid === sourcePlan.planUid) {
     return {
       planUid: sourcePlan.planUid,
@@ -568,6 +637,7 @@ export async function restoreHistoricalPlanAsLatest(
       previousPlanVersion: latestPlan?.planVersion || 0,
       restoredPlanUid: restoredPlan.planUid,
       restoredPlanVersion: restoredPlan.planVersion,
+      ...capabilityVerificationMeta,
     },
   });
 
@@ -582,7 +652,12 @@ export async function restoreHistoricalPlanAsLatest(
 
 export async function repairExecution(
   executionUid: string,
-  options?: { actorLabel?: string; llmConfig?: LLMRuntimeOverrides; autoRepairRemaining?: number }
+  options?: {
+    actorLabel?: string;
+    llmConfig?: LLMRuntimeOverrides;
+    autoRepairRemaining?: number;
+    repairTriggerKind?: RepairTriggerKind;
+  }
 ): Promise<{
   planUid: string;
   planVersion: number;
@@ -616,6 +691,8 @@ export async function repairExecution(
   const auth = buildAuthContext(project, config);
   const llmConfig = mergeLLMRuntimeOverrides(await getWorkspaceLLMRuntimeOverrides(), options?.llmConfig);
   const runtimeConfig = getLLMRuntimeConfig(llmConfig);
+  const repairTriggerKind: RepairTriggerKind = options?.repairTriggerKind === 'auto' ? 'auto' : 'manual';
+  const capabilityVerificationMeta = buildCapabilityVerificationAuditMeta(config.featureDescription || '');
   const { snapshot, promptDescription, promptContext } = await buildGenerationInput(config, auth);
   const events = await listExecutionEvents(executionUid);
 
@@ -710,6 +787,8 @@ export async function repairExecution(
       previousPlanVersion: plan.planVersion,
       planVersion: repairedPlan.planVersion,
       generationModel: runtimeConfig.model,
+      repairTriggerKind,
+      ...capabilityVerificationMeta,
     },
   });
 
@@ -717,6 +796,7 @@ export async function repairExecution(
     actorLabel: options?.actorLabel || 'AI纠错',
     llmConfig,
     autoRepairRemaining: Math.max(0, Number(options?.autoRepairRemaining || 0)),
+    repairTriggerKind,
   });
   return {
     planUid: repairedPlan.planUid,
@@ -732,6 +812,7 @@ export async function executePlan(
     enableAutoRepair?: boolean;
     llmConfig?: LLMRuntimeOverrides;
     autoRepairRemaining?: number;
+    repairTriggerKind?: RepairTriggerKind;
   }
 ): Promise<{ executionUid: string }> {
   const plan = await getPlanByUid(planUid);
@@ -748,6 +829,9 @@ export async function executePlan(
   if (!project) throw new Error('计划关联项目不存在');
   const llmConfig = mergeLLMRuntimeOverrides(await getWorkspaceLLMRuntimeOverrides(), options?.llmConfig);
   const runtimeConfig = getLLMRuntimeConfig(llmConfig);
+  const capabilityVerificationMeta = buildCapabilityVerificationAuditMeta(config.featureDescription || '');
+  const repairTriggerKind =
+    options?.repairTriggerKind === 'auto' || options?.repairTriggerKind === 'manual' ? options.repairTriggerKind : '';
   const autoRepairRemaining =
     typeof options?.autoRepairRemaining === 'number'
       ? Math.max(0, Math.floor(options.autoRepairRemaining))
@@ -795,6 +879,8 @@ export async function executePlan(
       configName: config.name,
       triggerSource: 'manual',
       autoRepairRemaining,
+      ...(repairTriggerKind ? { repairTriggerKind } : {}),
+      ...capabilityVerificationMeta,
     },
   });
 
@@ -811,6 +897,8 @@ export async function executePlan(
     actorLabel: options?.actorLabel,
     llmConfig,
     autoRepairRemaining,
+    repairTriggerKind,
+    capabilityVerification: capabilityVerificationMeta.capabilityVerification || null,
   });
 
   return { executionUid };
@@ -836,6 +924,8 @@ export async function getExecutionDetail(executionUid: string) {
       ? extractIntentImportStatusFromArtifactMeta(importedArtifact.meta) ||
         (execution.status === 'passed' || execution.status === 'failed' ? execution.status : '')
       : '';
+  const capabilityVerification =
+    resolveCapabilityVerificationExecutionContext(configRecord?.featureDescription || '') || extractCapabilityVerificationFromArtifactMeta(artifacts);
 
   return {
     execution,
@@ -843,6 +933,7 @@ export async function getExecutionDetail(executionUid: string) {
     planCases,
     config,
     project,
+    capabilityVerification,
     events,
     conversations,
     artifacts,
@@ -873,6 +964,8 @@ async function runExecutionInBackground(input: {
   actorLabel?: string;
   llmConfig?: LLMRuntimeOverrides;
   autoRepairRemaining: number;
+  repairTriggerKind?: RepairTriggerKind | '';
+  capabilityVerification?: CapabilityVerificationExecutionContext | null;
 }) {
   try {
     await insertLlmConversation({
@@ -937,6 +1030,8 @@ async function runExecutionInBackground(input: {
         durationMs: result.duration,
         stepStats: outcome.stepStats,
         errorMessage: result.error || '',
+        ...(input.repairTriggerKind ? { repairTriggerKind: input.repairTriggerKind } : {}),
+        ...(input.capabilityVerification ? { capabilityVerification: input.capabilityVerification } : {}),
       },
     }).catch(() => undefined);
 
@@ -965,6 +1060,7 @@ async function runExecutionInBackground(input: {
         fileName: artifactFileName,
         content: input.planCode,
         success: outcome.status === 'passed',
+        ...(input.capabilityVerification ? { capabilityVerification: input.capabilityVerification } : {}),
       },
     });
     await insertExecutionEvent(input.executionUid, 'artifact', {
@@ -1018,6 +1114,7 @@ async function runExecutionInBackground(input: {
             actorLabel: input.actorLabel || '自动纠错',
             llmConfig: input.llmConfig,
             autoRepairRemaining: input.autoRepairRemaining - 1,
+            repairTriggerKind: 'auto',
           });
           const startedSummary = `执行失败，已自动发起 AI 纠错并重跑。新执行 ${repaired.executionUid}，剩余自动修复 ${Math.max(0, input.autoRepairRemaining - 1)} 次。`;
           await insertExecutionEvent(input.executionUid, 'status', {
@@ -1083,6 +1180,7 @@ async function runExecutionInBackground(input: {
         content: input.planCode,
         success: false,
         exception: true,
+        ...(input.capabilityVerification ? { capabilityVerification: input.capabilityVerification } : {}),
       },
     }).catch(() => undefined);
     await insertExecutionEvent(input.executionUid, 'artifact', {
@@ -1104,6 +1202,8 @@ async function runExecutionInBackground(input: {
         configUid: input.configUid,
         configName: input.configName,
         errorMessage: message,
+        ...(input.repairTriggerKind ? { repairTriggerKind: input.repairTriggerKind } : {}),
+        ...(input.capabilityVerification ? { capabilityVerification: input.capabilityVerification } : {}),
       },
     }).catch(() => undefined);
     await insertLlmConversation({

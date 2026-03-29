@@ -51,6 +51,7 @@ export interface IntentRepairObservationInput {
   executionError: string;
   previousCode?: string;
   recentEvents?: string[];
+  observationTags?: string[];
 }
 
 export interface IntentRepairResolutionInput {
@@ -138,6 +139,7 @@ function buildClusterTags(input: IntentRepairObservationInput): string[] {
     /businessid|orderid|contactphone|extract|提取|读取|共享变量/i.test(haystack) ? 'shared-variable' : null,
     /tobetruthy|not\.tobe\(|非空|received: false/i.test(haystack) ? 'weak-assertion' : null,
     /spin|loading|drawer|modal|初始化|null \(reading 'id'\)/i.test(haystack) ? 'page-race' : null,
+    ...(input.observationTags || []),
     normalizeUrlKey(input.targetUrl),
   ]);
 }
@@ -193,6 +195,7 @@ function extractStrategiesFromCode(code: string, result?: TestResult): string[] 
   return uniqueStrings([
     /__e2e\.selectAntdOption/.test(source) ? '__e2e.selectAntdOption' : null,
     /__e2e\.openAntdDropdown/.test(source) ? '__e2e.openAntdDropdown' : null,
+    /__e2e\.switchBusinessListOwnershipView/.test(source) ? '__e2e.switchBusinessListOwnershipView' : null,
     /__e2e\.clickAntdRowAction/.test(source) ? '__e2e.clickAntdRowAction' : null,
     /__e2e\.getFrame/.test(source) ? '__e2e.getFrame' : null,
     /__e2e\.waitForApiResponse/.test(source) ? '__e2e.waitForApiResponse' : null,
