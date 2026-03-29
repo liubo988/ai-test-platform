@@ -961,6 +961,7 @@ async function installApiMocks(page: Page) {
 }
 
 test.beforeAll(async () => {
+  test.setTimeout(180_000);
   smokeServerOutput = '';
   smokeServer = spawn(
     process.execPath,

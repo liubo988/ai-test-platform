@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
+import { createPortal } from 'react-dom';
 import BrowserView from '@/components/BrowserView';
 import type {
   IntentProjectKnowledgeMergeCandidateSource as IntentProjectKnowledgeDraftCandidateSource,
@@ -1345,6 +1346,21 @@ type IntentE2EInsightsResponse = {
   suppressedStarterHelperGovernanceSummary?: IntentE2EInsightSuppressedStarterHelperGovernanceSummary;
   error?: string;
 };
+
+type InsightWorkbenchView = 'overview' | 'quality' | 'trace' | 'governance' | 'knowledge';
+
+type InsightWorkbenchTab = {
+  key: InsightWorkbenchView;
+  label: string;
+  description: string;
+  countLabel: string;
+};
+
+type HeroSummaryView = 'entry' | 'auth' | 'learning';
+
+type WorkbenchRailView = 'overview' | 'live' | 'context' | 'governance' | 'compile' | 'workspace';
+
+type WorkbenchDetailView = 'scenario' | 'compile' | 'attempts';
 
 type ProjectKnowledgeRestoreResponse = {
   restoredFrom: string;
@@ -3457,6 +3473,12 @@ export default function IntentE2EWorkbench({
   const searchWorkspaceModuleUid = searchParams.get('moduleUid') || '';
   const searchIntentDraftUid = searchParams.get('draftUid') || '';
   const searchRequestedRunId = searchParams.get('runId') || '';
+  const launchedFromIntentDraft = Boolean(searchWorkspaceProjectUid.trim() && searchIntentDraftUid.trim());
+  const collapsePreferenceContextKey = embedded
+    ? 'embedded'
+    : launchedFromIntentDraft
+      ? `draft:${searchWorkspaceProjectUid.trim()}:${searchIntentDraftUid.trim()}`
+      : 'standalone';
   const defaultWorkspaceProjectUid = initialWorkspaceProjectUid || searchWorkspaceProjectUid;
   const defaultWorkspaceModuleUid = initialWorkspaceModuleUid || searchWorkspaceModuleUid;
   const [input, setInput] = useState('访问结算页，输入一个合法手机号并提交，最终看到成功页面。');
@@ -3474,6 +3496,7 @@ export default function IntentE2EWorkbench({
   const [result, setResult] = useState<IntentRunResult | null>(null);
   const [streamState, setStreamState] = useState<StreamState>(() => createEmptyStreamState());
   const [activeRunId, setActiveRunId] = useState('');
+  const [workbenchCollapsed, setWorkbenchCollapsed] = useState(() => !embedded && launchedFromIntentDraft);
   const [restoreChecked, setRestoreChecked] = useState(false);
   const [knowledgeDraftMinSeenCount, setKnowledgeDraftMinSeenCount] = useState(2);
   const [knowledgeDraftMinResolvedCount, setKnowledgeDraftMinResolvedCount] = useState(1);
@@ -3507,6 +3530,15 @@ export default function IntentE2EWorkbench({
   const [insightsLoading, setInsightsLoading] = useState(false);
   const [insightsError, setInsightsError] = useState('');
   const [insights, setInsights] = useState<IntentE2EInsightsResponse | null>(null);
+  const [insightsView, setInsightsView] = useState<InsightWorkbenchView>('overview');
+  const [heroSummaryView, setHeroSummaryView] = useState<HeroSummaryView>('entry');
+  const [railView, setRailView] = useState<WorkbenchRailView>('live');
+  const [detailView, setDetailView] = useState<WorkbenchDetailView>('scenario');
+  const [inputHelpOpen, setInputHelpOpen] = useState(false);
+  const [executionDetailsModalOpen, setExecutionDetailsModalOpen] = useState(false);
+  const [attemptDetailAttemptNumber, setAttemptDetailAttemptNumber] = useState<number | null>(null);
+  const [contextPortalHost, setContextPortalHost] = useState<HTMLDivElement | null>(null);
+  const [governancePortalHost, setGovernancePortalHost] = useState<HTMLDivElement | null>(null);
   const [knowledgeRestoredFrom, setKnowledgeRestoredFrom] = useState('');
   const [knowledgeRestoreBackupCreated, setKnowledgeRestoreBackupCreated] = useState('');
   const [workspaceProjects, setWorkspaceProjects] = useState<WorkspaceProjectOption[]>([]);
@@ -3533,6 +3565,8 @@ export default function IntentE2EWorkbench({
   const launchFormHydratedRunIdRef = useRef('');
   const launchFormHydratedDraftKeyRef = useRef('');
   const launchLlmOverrideRef = useRef<IntentLaunchLlmOverride | null>(null);
+  const inputHelpPopoverRef = useRef<HTMLDivElement | null>(null);
+  const collapseContextRef = useRef('');
 
   const displayScenarioCard = result?.scenarioCard ?? streamState.scenarioCard;
   const displayExecutionPlan = result?.executionPlan ?? null;
@@ -3551,6 +3585,10 @@ export default function IntentE2EWorkbench({
   const currentStageText = streamState.message || STAGE_COPY[streamState.stage];
   const showCanceledState = !running && streamState.stage === 'canceled' && !displayFinalResult;
   const finalAttempt = displayAttempts[displayAttempts.length - 1] || null;
+  const attemptDetailAttempt = useMemo(
+    () => (attemptDetailAttemptNumber === null ? null : displayAttempts.find((attempt) => attempt.attempt === attemptDetailAttemptNumber) || null),
+    [attemptDetailAttemptNumber, displayAttempts]
+  );
   const finalStats = useMemo(() => (displayFinalResult ? countByStatus(displayFinalResult) : null), [displayFinalResult]);
   const displayUsedHelpers = useMemo(
     () => uniqueStrings(displayAttempts.flatMap((attempt) => attempt.helperUsage?.usedHelpers || [])),
@@ -3648,6 +3686,211 @@ export default function IntentE2EWorkbench({
         latestRepairExecutionAt: '',
       },
     [insights?.suppressedStarterHelperGovernanceSummary, insights?.suppressedStarterHelpers]
+  );
+  const insightWorkbenchTabs = useMemo<InsightWorkbenchTab[]>(
+    () =>
+      insights
+        ? [
+            {
+              key: 'overview',
+              label: '总览',
+              description: '先看能否继续放量，再集中处理 watchlist、评测候选和整体失败模式。',
+              countLabel: `${insights.regressionWatchlist.items.length + insights.rolloutStrategy.gates.length} 项决策`,
+            },
+            {
+              key: 'quality',
+              label: '质量',
+              description: '拆开首轮、修复、review / verify 和场景族目标，单独判断 through rate。',
+              countLabel: `${
+                insights.verificationIntents.filter((item) => item.totalRuns > 0).length + insights.scenarioFamilySlo.items.length
+              } 组质量项`,
+            },
+            {
+              key: 'trace',
+              label: 'Trace',
+              description: '直接回看最近真实运行的 helper、signals、verifier 和 repair 轨迹。',
+              countLabel: `${insights.recentTraces.length} 条 trace`,
+            },
+            {
+              key: 'governance',
+              label: '治理',
+              description: '统一看观察期、回滚候选、provenance 和风险生命周期，避免上下跳着找。',
+              countLabel: `${
+                insights.probationRules.length + insights.rollbackCandidates.length + insights.riskLifecycleRules.length
+              } 个治理对象`,
+            },
+            {
+              key: 'knowledge',
+              label: '知识',
+              description: '集中看规则效果、Starter 资产和被压制 helper 的恢复进度。',
+              countLabel: `${
+                insights.knowledgeChangeRuleSummaries.length +
+                insights.starterHelpers.length +
+                insights.suppressedStarterHelpers.length
+              } 条规则/资产`,
+            },
+          ]
+        : [
+            { key: 'overview', label: '总览', description: '等待洞察数据。', countLabel: '等待数据' },
+            { key: 'quality', label: '质量', description: '等待洞察数据。', countLabel: '等待数据' },
+            { key: 'trace', label: 'Trace', description: '等待洞察数据。', countLabel: '等待数据' },
+            { key: 'governance', label: '治理', description: '等待洞察数据。', countLabel: '等待数据' },
+            { key: 'knowledge', label: '知识', description: '等待洞察数据。', countLabel: '等待数据' },
+          ],
+    [insights]
+  );
+  const activeInsightWorkbenchTab =
+    insightWorkbenchTabs.find((item) => item.key === insightsView) ?? insightWorkbenchTabs[0];
+  const heroSummaryTabs = useMemo(
+    () => [
+      {
+        key: 'entry' as HeroSummaryView,
+        label: '入口 / 图片',
+        summary: targetUrl.trim() ? '已填入口 URL' : '由 AI 推断入口',
+        detail: `图片 ${attachments.length} 张 · Vision ${llmConfig.visionEnabled ? '开' : '关'}`,
+      },
+      {
+        key: 'auth' as HeroSummaryView,
+        label: '登录上下文',
+        summary: embedded
+          ? embeddedProjectAuth?.authRequired
+            ? '复用项目统一认证'
+            : '未配置项目认证'
+          : hasAuthContent(auth)
+            ? '已补登录信息'
+            : '暂未补登录',
+        detail: embedded ? '统一项目认证' : auth.loginUrl.trim() ? '登录 URL 已填' : '需要时再补',
+      },
+      {
+        key: 'learning' as HeroSummaryView,
+        label: '学习信号',
+        summary: insights
+          ? `${insights.summary.totalRuns} 次历史运行`
+          : insightsLoading
+            ? '洞察加载中'
+            : insightsError
+              ? '洞察加载失败'
+              : '洞察数据待加载',
+        detail: insightsError
+            ? '请稍后重试'
+            : knowledgeDraftPreview
+            ? `候选 ${knowledgeDraftPreview.candidates.length} 条`
+            : '等待治理与知识沉淀',
+      },
+    ],
+    [
+      attachments.length,
+      auth,
+      embedded,
+      embeddedProjectAuth?.authRequired,
+      insights,
+      insightsError,
+      insightsLoading,
+      knowledgeDraftPreview,
+      llmConfig.visionEnabled,
+      targetUrl,
+    ]
+  );
+  const activeHeroSummaryTab = heroSummaryTabs.find((item) => item.key === heroSummaryView) ?? heroSummaryTabs[0];
+  const insightDecisionSignals = useMemo(
+    () =>
+      insights
+        ? [
+            {
+              key: 'rollout',
+              title: '放量阶段',
+              value: rolloutStrategyStageLabel(insights.rolloutStrategy.recommendedStage),
+              detail: `阻断 ${insights.rolloutStrategy.blockedCount} · 观察 ${insights.rolloutStrategy.warningCount} · 通过 ${insights.rolloutStrategy.readyCount}`,
+              toneClassName: rolloutStrategyStageTone(insights.rolloutStrategy.recommendedStage),
+            },
+            {
+              key: 'watchlist',
+              title: '回归观察',
+              value:
+                insights.regressionWatchlist.highSeverityCount > 0
+                  ? `${insights.regressionWatchlist.highSeverityCount} 个高风险`
+                  : insights.regressionWatchlist.items.length > 0
+                    ? `${insights.regressionWatchlist.items.length} 个观察项`
+                    : '暂无告警',
+              detail: insights.regressionWatchlist.items[0]?.title || '最近样本未发现必须立刻处理的回归项。',
+              toneClassName:
+                insights.regressionWatchlist.highSeverityCount > 0
+                  ? 'border border-rose-200 bg-rose-50 text-rose-700'
+                  : insights.regressionWatchlist.mediumSeverityCount > 0
+                    ? 'border border-amber-200 bg-amber-50 text-amber-700'
+                    : 'border border-emerald-200 bg-emerald-50 text-emerald-700',
+            },
+            {
+              key: 'rollback',
+              title: '回滚状态',
+              value: insights.rollbackCandidates.length > 0 ? `${insights.rollbackCandidates.length} 个候选` : '暂无回滚项',
+              detail:
+                insights.rollbackCandidates[0]?.title ||
+                '当前没有需要优先回滚的规则合并，可以继续积累样本。',
+              toneClassName:
+                insights.rollbackCandidates.length > 0
+                  ? 'border border-amber-200 bg-amber-50 text-amber-800'
+                  : 'border border-slate-200 bg-slate-50 text-slate-700',
+            },
+            {
+              key: 'asset',
+              title: 'Starter 资产',
+              value:
+                promotionCoverageSummary?.coveredAssetCount || insights.starterHelpers.length > 0
+                  ? `${promotionCoverageSummary?.coveredAssetCount || insights.starterHelpers.length} 个可复用资产`
+                  : '待积累',
+              detail:
+                starterHelperFailureSummary.highFailureCandidateCount > 0
+                  ? `高频失败 ${starterHelperFailureSummary.highFailureCandidateCount} 个，先治理再放量。`
+                  : promotionCoverageSummary?.latestStarterHelper
+                    ? `最新沉淀 ${promotionCoverageSummary.latestStarterHelper}`
+                    : '优先沉淀稳定 helper，减少首轮脚本脆弱性。',
+              toneClassName:
+                starterHelperFailureSummary.highFailureCandidateCount > 0
+                  ? 'border border-rose-200 bg-rose-50 text-rose-700'
+                  : 'border border-sky-200 bg-sky-50 text-sky-700',
+            },
+          ]
+        : [],
+    [insights, promotionCoverageSummary, starterHelperFailureSummary.highFailureCandidateCount]
+  );
+  const insightPriorityNotes = useMemo(
+    () =>
+      insights
+        ? [
+            {
+              key: 'rollout',
+              label: '放量建议',
+              detail: insights.rolloutStrategy.recommendation || insights.rolloutStrategy.summary,
+            },
+            insights.regressionWatchlist.items[0]
+              ? {
+                  key: 'watchlist',
+                  label: '回归焦点',
+                  detail: insights.regressionWatchlist.items[0].recommendation || insights.regressionWatchlist.items[0].summary,
+                }
+              : null,
+            insights.rollbackCandidates[0]
+              ? {
+                  key: 'rollback',
+                  label: '回滚预案',
+                  detail: insights.rollbackCandidates[0].recommendation,
+                }
+              : {
+                  key: 'rollback',
+                  label: '回滚状态',
+                  detail: '当前没有需要优先回滚的规则合并。',
+                },
+            overallFailurePressureSummary.latestRepairObservationSummary
+              ? {
+                  key: 'repair',
+                  label: '最近修复信号',
+                  detail: overallFailurePressureSummary.latestRepairObservationSummary,
+                }
+              : null,
+          ].filter((item): item is { key: string; label: string; detail: string } => Boolean(item))
+        : [],
+    [insights, overallFailurePressureSummary.latestRepairObservationSummary]
   );
   const starterCapabilitySelectedAssetSlugSet = useMemo(
     () => new Set(starterCapabilitySelectedAssetSlugs),
@@ -3879,6 +4122,845 @@ export default function IntentE2EWorkbench({
       (workspaceSaveMode === 'new' ? workspaceTaskName.trim() : workspaceConfigUid)
   );
   const workspaceBusy = workspaceLoadingProjects || workspaceLoadingModules || workspaceLoadingTasks || workspaceSaving;
+  const railStatusBadge = useMemo(() => {
+    if (running) {
+      return {
+        label: canceling ? 'STOPPING' : 'RUNNING',
+        className: canceling ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-sky-200 bg-sky-50 text-sky-800',
+      };
+    }
+
+    if (showCanceledState) {
+      return {
+        label: 'STOPPED',
+        className: 'border-amber-200 bg-amber-50 text-amber-800',
+      };
+    }
+
+    if (displayFinalResult) {
+      return {
+        label: displayFinalResult.success ? 'PASS' : 'FAIL',
+        className: statusPillTone(displayFinalResult.success),
+      };
+    }
+
+    return {
+      label: 'READY',
+      className: 'border-slate-200 bg-white/85 text-slate-600',
+    };
+  }, [canceling, displayFinalResult, running, showCanceledState]);
+  const railTabs = useMemo(() => {
+    const tabs: Array<{
+      key: WorkbenchRailView;
+      label: string;
+      description: string;
+      countLabel: string;
+    }> = [
+      {
+        key: 'live',
+        label: '实时画面',
+        description: '左侧盯浏览器画面，右侧同步看阶段推进、修复动作和最新诊断。',
+        countLabel: browserSessionId ? `${streamState.feed.length} 条动态` : '等待浏览器',
+      },
+      {
+        key: 'overview',
+        label: '状态总览',
+        description: '执行状态、模型、知识命中和 runId 集中在这里。',
+        countLabel: running ? '执行中' : displayFinalResult ? '已有终态' : '待启动',
+      },
+      {
+        key: 'context',
+        label: '执行上下文',
+        description: embedded
+          ? '查看项目统一认证，并根据需要补充模型执行参数。'
+          : '控制登录、模型与执行边界，避免“能跑但不稳”。',
+        countLabel: `${
+          embedded
+            ? embeddedProjectAuth?.authRequired
+              ? '项目认证'
+              : '未配认证'
+            : hasAuthContent(auth)
+              ? '登录已填'
+              : '登录留空'
+        } · ${llmConfig.provider}`,
+      },
+    ];
+
+    if (!embedded) {
+      tabs.push({
+        key: 'governance',
+        label: '治理学习',
+        description: '把知识草稿、运行洞察、审计与回滚集中到右侧工作舱，不再挤占左侧任务编辑区。',
+        countLabel: `${insights ? `${insights.summary.totalRuns} runs` : '洞察待加载'} · ${
+          knowledgeDraftPreview ? `${knowledgeDraftPreview.candidates.length} 候选` : '未生成草稿'
+        }`,
+      });
+    }
+
+    tabs.push(
+      {
+        key: 'compile',
+        label: '编译结果',
+        description: '把 ScenarioCard、ExecutionPlan、CompiledTemplate 和尝试记录都收进同一个执行详情面板。',
+        countLabel: displayExecutionPlan
+          ? `${displayExecutionPlan.steps.length} steps`
+          : displayCompiledTemplate
+            ? `${displayCompiledTemplate.slots.length} slots`
+            : displayAttempts.length > 0
+              ? `${displayAttempts.length} 次尝试`
+              : '等待编译',
+      },
+      {
+        key: 'workspace',
+        label: '沉淀操作',
+        description: '把运行同步到项目工作台，并处理 Starter 资产沉淀。',
+        countLabel:
+          displayFinalResult && activeRunId ? (workspaceSaveResult ? '已沉淀' : '可保存') : '待结果',
+      }
+    );
+
+    return tabs;
+  }, [
+    activeRunId,
+    auth,
+    browserSessionId,
+    displayAttempts.length,
+    displayCompiledTemplate,
+    displayExecutionPlan,
+    displayFinalResult,
+    embedded,
+    embeddedProjectAuth?.authRequired,
+    insights,
+    knowledgeDraftPreview,
+    llmConfig.provider,
+    running,
+    streamState.feed.length,
+    workspaceSaveResult,
+  ]);
+  const activeRailTab = railTabs.find((item) => item.key === railView) ?? railTabs[0];
+  const detailTabs = useMemo(
+    () => [
+      {
+        key: 'scenario' as WorkbenchDetailView,
+        label: 'ScenarioCard',
+        description: '查看结构化业务卡片、成功标准和规划步骤。',
+        countLabel: displayScenarioCard ? `${displayScenarioCard.flowDefinition.steps.length} 步` : '等待规划',
+      },
+      {
+        key: 'compile' as WorkbenchDetailView,
+        label: '编译结果',
+        description: '查看 ExecutionPlan、CompiledTemplate、VerificationPlan 和生成说明。',
+        countLabel: displayExecutionPlan
+          ? `${displayExecutionPlan.steps.length} steps`
+          : displayCompiledTemplate
+            ? `${displayCompiledTemplate.slots.length} slots`
+            : '等待编译',
+      },
+      {
+        key: 'attempts' as WorkbenchDetailView,
+        label: '尝试记录',
+        description: '回看首轮与修复轮次的脚本、日志、事件和 patch。',
+        countLabel: `${displayAttempts.length} 次`,
+      },
+    ],
+    [displayAttempts.length, displayCompiledTemplate, displayExecutionPlan, displayScenarioCard]
+  );
+  const activeDetailTab = detailTabs.find((item) => item.key === detailView) ?? detailTabs[0];
+  const activeDetailPreview = useMemo(() => {
+    if (detailView === 'scenario') {
+      return displayScenarioCard
+        ? `${displayScenarioCard.title} · ${displayScenarioCard.flowDefinition.steps.length} 步 · ${displayScenarioCard.successCriteria.length} 条成功标准`
+        : 'AI 还在规划 ScenarioCard。';
+    }
+
+    if (detailView === 'compile') {
+      const parts = [
+        displayExecutionPlan ? `ExecutionPlan ${displayExecutionPlan.steps.length} steps` : '',
+        displayCompiledTemplate ? `CompiledTemplate ${displayCompiledTemplate.slots.length} slots` : '',
+        displayVerificationPlan ? `VerificationPlan ${displayVerificationPlan.checks.length} checks` : '',
+      ].filter(Boolean);
+
+      return parts.length > 0 ? parts.join(' · ') : '编译产物和生成说明还在准备中。';
+    }
+
+    return finalAttempt
+      ? `共 ${displayAttempts.length} 次尝试 · 最近第 ${finalAttempt.attempt} 次 · ${attemptResultLabel(finalAttempt)}`
+      : '暂无尝试记录。';
+  }, [
+    detailView,
+    displayAttempts.length,
+    displayCompiledTemplate,
+    displayExecutionPlan,
+    displayScenarioCard,
+    displayVerificationPlan,
+    finalAttempt,
+  ]);
+  const liveFeedItems = useMemo(() => [...streamState.feed].reverse(), [streamState.feed]);
+  const liveAttemptValue = useMemo(() => {
+    if (browserAttempt) return `第 ${browserAttempt.attempt} 次`;
+    if (finalAttempt) return `第 ${finalAttempt.attempt} 次`;
+    return '等待首次尝试';
+  }, [browserAttempt, finalAttempt]);
+  const liveLogStatus = useMemo(() => {
+    if (running) {
+      return {
+        toneClassName: canceling ? 'border-amber-200 bg-amber-50/92 text-amber-800' : 'border-sky-200 bg-sky-50/92 text-sky-800',
+        title: canceling ? '正在停止当前自动测试' : 'AI 正在自动推进整条链路',
+        detail: currentStageText,
+        indicatorClassName: canceling
+          ? 'h-4 w-4 rounded-full border-2 border-amber-500 border-dashed animate-spin'
+          : 'h-4 w-4 rounded-full border-2 border-sky-500 border-t-transparent animate-spin',
+        badgeLabel: canceling ? 'STOPPING' : 'RUNNING',
+      };
+    }
+
+    if (showCanceledState) {
+      return {
+        toneClassName: 'border-amber-200 bg-amber-50/92 text-amber-800',
+        title: '测试已停止',
+        detail: `已保留当前流式上下文和 ${displayAttempts.length} 次尝试记录，方便继续诊断。`,
+        indicatorClassName: 'h-2.5 w-2.5 rounded-full bg-amber-500',
+        badgeLabel: 'STOPPED',
+      };
+    }
+
+    if (displayFinalResult) {
+      return {
+        toneClassName: statusPillTone(displayFinalResult.success),
+        title: displayFinalResult.success ? '测试通过' : '测试失败',
+        detail: `共执行 ${displayAttempts.length} 次尝试 · 最终耗时 ${formatDuration(displayFinalResult.duration)}`,
+        indicatorClassName: `h-2.5 w-2.5 rounded-full ${displayFinalResult.success ? 'bg-emerald-500' : 'bg-rose-500'}`,
+        badgeLabel: displayFinalResult.success ? 'PASS' : 'FAIL',
+      };
+    }
+
+    return {
+      toneClassName: 'border-slate-200 bg-slate-50/92 text-slate-600',
+      title: '等待启动',
+      detail: '开始自动测试后，这里会持续显示最新阶段、修复动作和关键诊断。',
+      indicatorClassName: 'h-2.5 w-2.5 rounded-full bg-slate-300 animate-pulse',
+      badgeLabel: 'READY',
+    };
+  }, [canceling, currentStageText, displayAttempts.length, displayFinalResult, running, showCanceledState]);
+  const showCollapsedWorkbenchRail = !embedded && workbenchCollapsed;
+
+  useEffect(() => {
+    if (collapseContextRef.current === collapsePreferenceContextKey) {
+      return;
+    }
+
+    collapseContextRef.current = collapsePreferenceContextKey;
+    setWorkbenchCollapsed(!embedded && launchedFromIntentDraft);
+  }, [collapsePreferenceContextKey, embedded, launchedFromIntentDraft]);
+
+  useEffect(() => {
+    if (!inputHelpOpen) {
+      return undefined;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+      if (inputHelpPopoverRef.current?.contains(target)) {
+        return;
+      }
+      setInputHelpOpen(false);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setInputHelpOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [inputHelpOpen]);
+
+  useEffect(() => {
+    if (!executionDetailsModalOpen) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setExecutionDetailsModalOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [executionDetailsModalOpen]);
+
+  useEffect(() => {
+    if (!hasDisplayDetails && executionDetailsModalOpen) {
+      setExecutionDetailsModalOpen(false);
+    }
+  }, [executionDetailsModalOpen, hasDisplayDetails]);
+
+  useEffect(() => {
+    if (attemptDetailAttemptNumber === null) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setAttemptDetailAttemptNumber(null);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [attemptDetailAttemptNumber]);
+
+  useEffect(() => {
+    if (attemptDetailAttemptNumber !== null && !attemptDetailAttempt) {
+      setAttemptDetailAttemptNumber(null);
+    }
+  }, [attemptDetailAttempt, attemptDetailAttemptNumber]);
+
+  const renderScenarioCardDetailBody = () => {
+    if (!displayScenarioCard) {
+      return null;
+    }
+
+    return (
+      <>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-slate-900">ScenarioCard</p>
+            <h2 className="mt-1.5 text-[22px] font-semibold tracking-[-0.03em] text-slate-950">{displayScenarioCard.title}</h2>
+            <p className="mt-1.5 text-sm leading-6 text-slate-600">{displayScenarioCard.featureDescription}</p>
+          </div>
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600">
+            {displayScenarioCard.taskMode === 'scenario' ? '业务流' : '单页面'}
+          </span>
+        </div>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50/85 p-3.5">
+            <p className="text-xs uppercase tracking-[0.14em] text-slate-400">Target URL</p>
+            <p className="mt-2 break-all text-sm text-slate-800">{displayTargetUrl || displayScenarioCard.targetUrl || '未生成'}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50/85 p-3.5">
+            <p className="text-xs uppercase tracking-[0.14em] text-slate-400">Expected Outcome</p>
+            <p className="mt-2 text-sm text-slate-800">{displayScenarioCard.flowDefinition.expectedOutcome || '未填写'}</p>
+          </div>
+        </div>
+
+        {displayResolvedUrls && displayResolvedUrls.scenarioEntryUrl && displayResolvedUrls.scenarioEntryUrl !== displayResolvedUrls.targetUrl ? (
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-3.5">
+              <p className="text-xs uppercase tracking-[0.14em] text-amber-600">Scenario Entry</p>
+              <p className="mt-2 break-all text-sm text-slate-800">{displayResolvedUrls.scenarioEntryUrl}</p>
+            </div>
+            <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-3.5">
+              <p className="text-xs uppercase tracking-[0.14em] text-amber-600">Precheck URL</p>
+              <p className="mt-2 break-all text-sm text-slate-800">{displayResolvedUrls.precheckUrl || displayResolvedUrls.scenarioEntryUrl}</p>
+            </div>
+            <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-3.5">
+              <p className="text-xs uppercase tracking-[0.14em] text-amber-600">Analyze URL</p>
+              <p className="mt-2 break-all text-sm text-slate-800">{displayResolvedUrls.analyzeUrl || displayResolvedUrls.scenarioEntryUrl}</p>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div>
+            <p className="text-sm font-medium text-slate-900">成功标准</p>
+            <ul className="mt-2.5 space-y-2 text-sm text-slate-700">
+              {displayScenarioCard.successCriteria.length > 0 ? (
+                displayScenarioCard.successCriteria.map((item, index) => (
+                  <li key={index} className="rounded-2xl border border-slate-200 bg-white px-3 py-1.5">
+                    {item}
+                  </li>
+                ))
+              ) : (
+                <li className="text-slate-400">暂无</li>
+              )}
+            </ul>
+          </div>
+          <div>
+            <p className="text-sm font-medium text-slate-900">视觉锚点</p>
+            <ul className="mt-2.5 space-y-2 text-sm text-slate-700">
+              {displayScenarioCard.visualAnchors.length > 0 ? (
+                displayScenarioCard.visualAnchors.map((item, index) => (
+                  <li key={index} className="rounded-2xl border border-slate-200 bg-white px-3 py-1.5">
+                    {item}
+                  </li>
+                ))
+              ) : (
+                <li className="text-slate-400">暂无</li>
+              )}
+            </ul>
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <p className="text-sm font-medium text-slate-900">规划步骤</p>
+          <div className="mt-2.5 space-y-2.5">
+            {displayScenarioCard.flowDefinition.steps.length > 0 ? (
+              displayScenarioCard.flowDefinition.steps.map((step, index) => (
+                <article key={step.stepUid || index} className="rounded-2xl border border-slate-200 bg-white p-3.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">
+                      {step.stepType}
+                    </span>
+                    <p className="text-sm font-medium text-slate-900">
+                      {index + 1}. {step.title || '未命名步骤'}
+                    </p>
+                  </div>
+                  {(step.target || step.instruction || step.expectedResult || step.extractVariable) && (
+                    <div className="mt-2.5 space-y-1.5 text-xs leading-6 text-slate-600">
+                      {step.target && (
+                        <p>
+                          <span className="font-medium text-slate-800">目标：</span>
+                          {step.target}
+                        </p>
+                      )}
+                      {step.instruction && (
+                        <p>
+                          <span className="font-medium text-slate-800">动作：</span>
+                          {step.instruction}
+                        </p>
+                      )}
+                      {step.expectedResult && (
+                        <p>
+                          <span className="font-medium text-slate-800">预期：</span>
+                          {step.expectedResult}
+                        </p>
+                      )}
+                      {step.extractVariable && (
+                        <p>
+                          <span className="font-medium text-slate-800">变量：</span>
+                          {step.extractVariable}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </article>
+              ))
+            ) : (
+              <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-sm text-slate-400">
+                当前卡片没有显式步骤。
+              </div>
+            )}
+          </div>
+        </div>
+      </>
+    );
+  };
+
+  const renderAttemptDetailBody = (attempt: IntentAttempt) => {
+    return (
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={`rounded-full border px-3 py-1 text-xs ${attemptTone(attempt.kind)}`}>
+                #{attempt.attempt} · {attempt.kind === 'repair' ? 'AI 修复' : '首次生成'}
+              </span>
+              <span className={`rounded-full border px-3 py-1 text-xs ${attemptResultTone(attempt)}`}>{attemptResultLabel(attempt)}</span>
+              {attempt.triage && (
+                <span className={`rounded-full border px-3 py-1 text-xs ${intentFailureTone(attempt.triage)}`}>
+                  {intentFailureClassLabel(attempt.triage.failureClass)}
+                </span>
+              )}
+            </div>
+            <p className="text-sm leading-6 text-slate-600">
+              {(attempt.status || 'completed') === 'running'
+                ? `实时接收 ${attempt.events.length} 条事件 · ${attempt.logs.length} 条日志 · 当前代码长度 ${attempt.code.length} 字符`
+                : `耗时 ${formatDuration(attempt.result?.duration || 0)} · 代码长度 ${attempt.code.length} 字符 · 事件 ${attempt.events.length} 条`}
+            </p>
+            {attempt.helperUsage && attempt.helperUsage.usedHelpers.length > 0 && (
+              <p className="text-xs leading-5 text-slate-500">
+                helper：{summarizeTextList(attempt.helperUsage.usedHelpers, 5)}
+                {attempt.helperUsage.usedSuggestedHelpers.length > 0 ? ` · 命中推荐 ${attempt.helperUsage.usedSuggestedHelpers.length} 个` : ''}
+              </p>
+            )}
+            {attempt.sessionId && <p className="text-xs text-slate-400">浏览器会话：{attempt.sessionId}</p>}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => navigator.clipboard.writeText(attempt.code).catch(() => {})}
+            className="inline-flex h-9 items-center justify-center rounded-xl border border-slate-200 bg-white px-3 text-xs text-slate-700 transition hover:bg-slate-50"
+          >
+            复制脚本
+          </button>
+        </div>
+
+        {attempt.structuredPatch && (
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-600">
+            <p className="font-medium text-slate-900">结构化 slot patch</p>
+            <p className="mt-1">
+              {attempt.structuredPatch.strategy} · base {baseCodeSourceLabel(attempt.structuredPatch.baseCodeSource)} ·
+              {attempt.structuredPatch.reusedPreviousCode ? ' 复用上一轮代码' : ' 不复用上一轮代码'}
+            </p>
+            <p className="mt-1">target：{summarizeTextList(attempt.structuredPatch.targetSlotUids, 4)}</p>
+            <p className="mt-1">returned：{summarizeTextList(attempt.structuredPatch.returnedSlotUids, 4)}</p>
+          </div>
+        )}
+
+        {attempt.result?.steps.length ? (
+          <div className="grid gap-3 md:grid-cols-3">
+            {attempt.result.steps.map((step, index) => (
+              <div key={`${attempt.attempt}-${index}`} className={`rounded-2xl border px-3 py-3 text-xs ${stepTone(step.status)}`}>
+                <p className="font-medium">{step.title}</p>
+                <p className="mt-1 opacity-80">
+                  {step.status} · {formatDuration(step.duration)}
+                </p>
+                {step.error && <p className="mt-2 whitespace-pre-wrap opacity-90">{step.error}</p>}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm text-slate-400">
+            {(attempt.status || 'completed') === 'running' ? '正在等待步骤反馈…' : '本次尝试没有结构化步骤回传。'}
+          </div>
+        )}
+
+        {attempt.result?.error && (
+          <pre className="max-h-[180px] overflow-auto rounded-2xl border border-rose-200 bg-rose-50 p-4 text-xs leading-6 text-rose-800 whitespace-pre-wrap">
+            {attempt.result.error}
+          </pre>
+        )}
+
+        <div className="grid gap-3 xl:grid-cols-2">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+            <p className="text-sm font-medium text-slate-900">事件流</p>
+            <div className="mt-3 max-h-[260px] space-y-2 overflow-auto pr-1 text-xs leading-5 text-slate-600">
+              {attempt.events.length > 0 ? (
+                attempt.events.map((item, index) => (
+                  <div key={index} className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                    <p className="font-medium text-slate-900">{item.type}</p>
+                    <p className="mt-1 whitespace-pre-wrap">{item.content}</p>
+                  </div>
+                ))
+              ) : (
+                <p className="text-slate-400">还没有事件。</p>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+            <p className="text-sm font-medium text-slate-900">执行日志</p>
+            <div className="mt-3 max-h-[260px] space-y-2 overflow-auto pr-1 text-xs leading-5 text-slate-600">
+              {attempt.logs.length > 0 ? (
+                attempt.logs.map((item, index) => (
+                  <div key={index} className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                    <p className="font-medium text-slate-900">{item.level.toUpperCase()}</p>
+                    <p className="mt-1 whitespace-pre-wrap">{item.message}</p>
+                  </div>
+                ))
+              ) : (
+                <p className="text-slate-400">没有额外日志。</p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {attempt.structuredPatch && (
+          <details className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+            <summary className="cursor-pointer list-none text-sm font-medium text-slate-900">查看结构化 patch JSON</summary>
+            <pre className="mt-3 max-h-[240px] overflow-auto rounded-2xl bg-slate-950/96 p-4 text-xs leading-6 text-slate-100 whitespace-pre-wrap">
+              {JSON.stringify(attempt.structuredPatch, null, 2)}
+            </pre>
+          </details>
+        )}
+
+        <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+          <p className="text-sm font-medium text-slate-900">脚本</p>
+          <pre className="mt-3 max-h-[360px] overflow-auto rounded-2xl bg-slate-950/96 p-4 text-xs leading-6 text-slate-100 whitespace-pre-wrap">
+            {attempt.code || '脚本尚未返回，稍后会实时显示。'}
+          </pre>
+        </div>
+      </div>
+    );
+  };
+  const renderCompileDetailBody = () => {
+    return (
+      <section className="rounded-[22px] border border-black/5 bg-white/92 p-4 shadow-[0_10px_24px_rgba(15,23,42,0.045)] md:p-5">
+        <p className="text-sm font-medium text-slate-900">编译后的生成说明</p>
+        <p className="mt-2 text-xs leading-5 text-slate-500">
+          这里会同时展示现有生成器还在消费的自然语言说明，以及新接入的结构化 ExecutionPlan / CompiledTemplate / VerificationPlan。
+        </p>
+
+        {(displayExecutionPlan || displayCompiledTemplate || displayVerificationPlan) && (
+          <div className="mt-4 grid gap-4">
+            {displayExecutionPlan && (
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-slate-900">ExecutionPlan</p>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                      {displayExecutionPlan.compiler} · {displayExecutionPlan.mode} · {displayExecutionPlan.steps.length} steps
+                    </p>
+                  </div>
+                  <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-600">
+                    {displayExecutionPlan.entryUrl || '无入口 URL'}
+                  </span>
+                </div>
+
+                <div className="mt-3 space-y-3">
+                  {displayExecutionPlan.steps.map((step, index) => (
+                    <div key={step.planStepUid} className="rounded-2xl border border-slate-200 bg-slate-50/80 px-3 py-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">
+                          {step.stepType}
+                        </span>
+                        <p className="text-sm font-medium text-slate-900">
+                          {index + 1}. {step.title || '未命名步骤'}
+                        </p>
+                      </div>
+                      <div className="mt-2 space-y-1 text-[11px] leading-5 text-slate-600">
+                        <p>目标：{step.target || '—'}</p>
+                        <p>Goal：{step.goal || '—'}</p>
+                        <p>Actions：{summarizeTextList(step.allowedActions, 5)}</p>
+                        <p>Helpers：{summarizeTextList(step.preferredHelpers, 4)}</p>
+                        <p>Assertions：{summarizeTextList(step.requiredAssertions, 3)}</p>
+                        {step.extractVariable && <p>变量：{step.extractVariable}</p>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {displayCompiledTemplate && (
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-slate-900">CompiledTemplate</p>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                      {displayCompiledTemplate.compiler} · {displayCompiledTemplate.slots.length} slots
+                    </p>
+                  </div>
+                  <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-600">
+                    {displayCompiledTemplate.testTitle || '未命名测试'}
+                  </span>
+                </div>
+
+                <div className="mt-3 grid gap-3 xl:grid-cols-3">
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-3 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">entry</p>
+                    <p className="mt-2 break-all text-xs leading-5 text-slate-700">{displayCompiledTemplate.entryUrl || '—'}</p>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      shared：{summarizeTextList(displayCompiledTemplate.sharedVariables, 4)}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-3 py-3 xl:col-span-2">
+                    <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">slots</p>
+                    <div className="mt-2 space-y-2">
+                      {displayCompiledTemplate.slots.map((slot) => (
+                        <div key={slot.slotUid} className="rounded-2xl border border-slate-200 bg-white px-3 py-3 text-xs leading-5 text-slate-600">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">
+                              {slot.kind}
+                            </span>
+                            <p className="font-medium text-slate-900">{slot.slotUid}</p>
+                            <p className="text-slate-500">{slot.title || '未命名 slot'}</p>
+                          </div>
+                          <div className="mt-2 space-y-1">
+                            <p>关联 checks：{summarizeTextList(slot.relatedCheckUids, 3)}</p>
+                            <p>Helpers：{summarizeTextList(slot.preferredHelpers, 4)}</p>
+                            <p>指令：{summarizeTextList(slot.instructions, 2)}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <details className="mt-3 rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+                  <summary className="cursor-pointer list-none text-sm font-medium text-slate-900">查看编译模板代码</summary>
+                  <pre className="mt-3 max-h-[320px] overflow-auto rounded-2xl bg-slate-950/96 p-4 text-xs leading-6 text-slate-100 whitespace-pre-wrap">
+                    {displayCompiledTemplate.code}
+                  </pre>
+                </details>
+              </div>
+            )}
+
+            {displayVerificationPlan && (
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-slate-900">VerificationPlan</p>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                      {displayVerificationPlan.strategy} · {displayVerificationPlan.checks.length} checks
+                    </p>
+                  </div>
+                  <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-600">
+                    {displayVerificationPlan.expectedOutcome || '无 expectedOutcome'}
+                  </span>
+                </div>
+
+                <div className="mt-3 space-y-3">
+                  {displayVerificationPlan.checks.slice(0, 8).map((check, index) => (
+                    <div key={check.checkUid} className="rounded-2xl border border-slate-200 bg-slate-50/80 px-3 py-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">
+                          {check.kind}
+                        </span>
+                        <p className="text-sm font-medium text-slate-900">
+                          {index + 1}. {check.title}
+                        </p>
+                      </div>
+                      <div className="mt-2 space-y-1 text-[11px] leading-5 text-slate-600">
+                        <p>来源：{check.source}</p>
+                        <p>规则：{check.instruction}</p>
+                        <p>Helpers：{summarizeTextList(check.preferredHelpers, 4)}</p>
+                        <p>关联步骤：{summarizeTextList(check.relatedPlanStepUids, 3)}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {displayDescription ? (
+          <pre className="mt-3 max-h-[520px] overflow-auto rounded-2xl border border-slate-200 bg-slate-950/96 p-4 text-xs leading-6 text-slate-100 whitespace-pre-wrap">
+            {displayDescription}
+          </pre>
+        ) : (
+          <div className="mt-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-sm text-slate-400">
+            说明还在生成中，稍后会自动出现。
+          </div>
+        )}
+
+        {displayScenarioCard && (
+          <details className="mt-3 rounded-2xl border border-slate-200 bg-white px-4 py-3">
+            <summary className="cursor-pointer list-none text-sm font-medium text-slate-900">查看原始 ScenarioCard JSON</summary>
+            <pre className="mt-3 max-h-[320px] overflow-auto rounded-2xl bg-slate-950/96 p-4 text-xs leading-6 text-slate-100 whitespace-pre-wrap">
+              {JSON.stringify(displayScenarioCard, null, 2)}
+            </pre>
+          </details>
+        )}
+      </section>
+    );
+  };
+  const renderAttemptsOverviewBody = () => {
+    return (
+      <section className="rounded-[22px] border border-black/5 bg-white/92 p-4 shadow-[0_10px_24px_rgba(15,23,42,0.045)] md:p-5">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-medium text-slate-900">尝试记录</p>
+            <p className="mt-1 text-xs text-slate-500">会展示首次生成以及后续 AI repair 尝试，运行中也会实时刷新。</p>
+          </div>
+          <p className="text-xs text-slate-500">共 {displayAttempts.length} 次</p>
+        </div>
+
+        {displayAttempts.length === 0 ? (
+          <div className="mt-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-sm text-slate-400">
+            暂无尝试记录，AI 准备生成第一轮脚本后会在这里更新。
+          </div>
+        ) : (
+          <div className="mt-4 space-y-3">
+            {displayAttempts.map((attempt) => (
+              <article key={attempt.attempt} className="rounded-[20px] border border-slate-200 bg-white p-3.5 shadow-[0_8px_20px_rgba(15,23,42,0.035)]">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="min-w-0 space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className={`rounded-full border px-3 py-1 text-xs ${attemptTone(attempt.kind)}`}>
+                        #{attempt.attempt} · {attempt.kind === 'repair' ? 'AI 修复' : '首次生成'}
+                      </span>
+                      <span className={`rounded-full border px-3 py-1 text-xs ${attemptResultTone(attempt)}`}>
+                        {attemptResultLabel(attempt)}
+                      </span>
+                    </div>
+                    <p className="text-sm text-slate-600">
+                      {(attempt.status || 'completed') === 'running'
+                        ? `实时接收 ${attempt.events.length} 条事件 · ${attempt.logs.length} 条日志 · 当前代码长度 ${attempt.code.length} 字符`
+                        : `耗时 ${formatDuration(attempt.result?.duration || 0)} · 代码长度 ${attempt.code.length} 字符 · 事件 ${attempt.events.length} 条`}
+                    </p>
+                    {attempt.helperUsage && attempt.helperUsage.usedHelpers.length > 0 && (
+                      <p className="text-xs text-slate-500">
+                        helper：{summarizeTextList(attempt.helperUsage.usedHelpers, 4)}
+                        {attempt.helperUsage.usedSuggestedHelpers.length > 0
+                          ? ` · 命中推荐 ${attempt.helperUsage.usedSuggestedHelpers.length} 个`
+                          : ''}
+                      </p>
+                    )}
+                    {attempt.structuredPatch && (
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-xs leading-5 text-slate-600">
+                        <p className="font-medium text-slate-900">结构化 slot patch</p>
+                        <p className="mt-1">
+                          {attempt.structuredPatch.strategy} · base {baseCodeSourceLabel(attempt.structuredPatch.baseCodeSource)} ·
+                          {attempt.structuredPatch.reusedPreviousCode ? ' 复用上一轮代码' : ' 不复用上一轮代码'}
+                        </p>
+                        <p className="mt-1">target：{summarizeTextList(attempt.structuredPatch.targetSlotUids, 4)}</p>
+                        <p className="mt-1">returned：{summarizeTextList(attempt.structuredPatch.returnedSlotUids, 4)}</p>
+                      </div>
+                    )}
+                    {attempt.sessionId && <p className="text-xs text-slate-400">浏览器会话：{attempt.sessionId}</p>}
+                    {attempt.triage && (
+                      <div className={`inline-flex max-w-full flex-wrap items-center gap-2 rounded-2xl border px-3 py-2 text-xs ${intentFailureTone(attempt.triage)}`}>
+                        <span className="rounded-full border px-2 py-0.5 font-medium">{intentFailureClassLabel(attempt.triage.failureClass)}</span>
+                        <span>{attempt.triage.summary}</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 flex-wrap items-center gap-2 lg:max-w-[240px] lg:justify-end">
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] text-slate-600">
+                      步骤 {attempt.result?.steps.length || 0}
+                    </span>
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] text-slate-600">
+                      事件 {attempt.events.length}
+                    </span>
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] text-slate-600">
+                      日志 {attempt.logs.length}
+                    </span>
+                    {attempt.structuredPatch && (
+                      <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-[11px] text-sky-700">
+                        Patch
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setAttemptDetailAttemptNumber(attempt.attempt)}
+                      className="inline-flex h-9 items-center justify-center rounded-full bg-slate-950 px-4 text-xs font-medium text-white transition hover:bg-slate-800"
+                    >
+                      查看详情
+                    </button>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+    );
+  };
+  const renderExecutionDetailsBody = () => {
+    if (detailView === 'scenario') {
+      return displayScenarioCard ? (
+        <section className="rounded-[22px] border border-black/5 bg-white/92 p-4 shadow-[0_10px_24px_rgba(15,23,42,0.045)] md:p-5">
+          {renderScenarioCardDetailBody()}
+        </section>
+      ) : (
+        <section className="rounded-[22px] border border-black/5 bg-white/92 p-4 shadow-[0_10px_24px_rgba(15,23,42,0.045)] md:p-5">
+          <p className="text-sm font-medium text-slate-900">ScenarioCard</p>
+          <div className="mt-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-sm text-slate-400">
+            AI 还在规划中，生成后会立刻展示。
+          </div>
+        </section>
+      );
+    }
+
+    if (detailView === 'compile') {
+      return renderCompileDetailBody();
+    }
+
+    return renderAttemptsOverviewBody();
+  };
   const removeRunIdFromUrl = useCallback(() => {
     if (embedded) return;
 
@@ -5245,350 +6327,548 @@ export default function IntentE2EWorkbench({
 
   return (
     <main
-      className={`bg-[radial-gradient(circle_at_top_left,rgba(91,135,255,0.17),transparent_32%),radial-gradient(circle_at_84%_18%,rgba(255,176,118,0.22),transparent_24%),linear-gradient(180deg,#f7f9fe_0%,#eef2f8_100%)] text-slate-900 ${
-        embedded ? 'max-h-[80vh] overflow-y-auto overscroll-contain' : 'min-h-screen'
+      className={`intent-e2e-workbench relative isolate font-['SF_Pro_Display','SF_Pro_Text','PingFang_SC','Helvetica_Neue',sans-serif] text-slate-900 ${
+        embedded ? 'max-h-[80vh] overflow-y-auto overscroll-contain' : 'min-h-screen xl:h-screen xl:overflow-hidden'
       }`}
     >
-      <div className={`mx-auto ${embedded ? 'max-w-[1040px] px-3 py-3 md:px-4' : 'max-w-[1480px] px-5 py-8 md:px-8 lg:px-10'}`}>
-        {!embedded && (
-          <section className="border border-white/60 bg-white/72 shadow-[0_16px_48px_rgba(15,23,42,0.10)] backdrop-blur-xl rounded-[28px] p-5 md:p-6">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-              <div className="space-y-3">
-                <Link href="/" className="inline-flex items-center gap-2 text-sm text-slate-500 transition hover:text-slate-900">
-                  <span>←</span>
-                  <span>返回项目中心</span>
-                </Link>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.26em] text-slate-400">Intent Driven E2E</p>
-                  <h1 className="mt-2 text-3xl font-semibold tracking-[-0.03em] text-slate-950">一句话 + 图片，自动跑端到端测试</h1>
-                  <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                    你只需要描述目标、补充可选截图和登录信息；系统会自动规划 ScenarioCard、生成 Playwright 测试、执行并在失败时尝试自愈，现已支持实时流式反馈与服务端 runId 恢复。
-                  </p>
-                </div>
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-3">
-                <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3 shadow-[0_8px_28px_rgba(15,23,42,0.05)]">
-                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">输入成本</p>
-                  <p className="mt-2 text-lg font-semibold text-slate-950">一句话</p>
-                  <p className="mt-1 text-xs text-slate-500">无需理解脚本或节点</p>
-                </div>
-                <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3 shadow-[0_8px_28px_rgba(15,23,42,0.05)]">
-                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">执行内核</p>
-                  <p className="mt-2 text-lg font-semibold text-slate-950">Playwright</p>
-                  <p className="mt-1 text-xs text-slate-500">定位、等待、断言更稳定</p>
-                </div>
-                <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3 shadow-[0_8px_28px_rgba(15,23,42,0.05)]">
-                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">当前模型</p>
-                  <p className="mt-2 text-lg font-semibold text-slate-950">{llmConfig.model || '加载中'}</p>
-                  <p className="mt-1 text-xs text-slate-500">{llmConfig.provider} / {llmConfig.apiStyle}</p>
-                </div>
-              </div>
-            </div>
-          </section>
-        )}
-
-        <section className={`grid gap-4 ${embedded ? 'mt-4 lg:grid-cols-[minmax(0,1fr)_320px]' : 'mt-6 xl:grid-cols-[minmax(0,1.2fr)_420px]'}`}>
-          <form
-            onSubmit={runIntentTest}
-            className={`space-y-6 border border-white/60 bg-white/70 shadow-[0_16px_48px_rgba(15,23,42,0.08)] backdrop-blur-xl ${
-              embedded ? 'rounded-[22px] p-4' : 'rounded-[28px] p-5 md:p-6'
-            }`}
-          >
-            <div>
-              <p className="text-sm font-medium text-slate-900">测试目标</p>
-              <p className="mt-1 text-xs leading-5 text-slate-500">尽量说清业务目标和成功标准，不需要写步骤脚本。</p>
-              <textarea
-                value={input}
-                onChange={(targetEvent) => setInput(targetEvent.target.value)}
-                rows={embedded ? 5 : 6}
-                placeholder="例如：登录后台后创建一个商机，保存成功后看到新建记录，并且列表中状态为待跟进。"
-                className="mt-3 w-full rounded-2xl border border-slate-200/80 bg-white px-4 py-3 text-sm leading-6 text-slate-800 outline-none transition focus:border-slate-400"
-              />
-            </div>
-
-            <div className="grid gap-4 md:grid-cols-2">
-              <label className="block">
-                <span className="text-sm font-medium text-slate-900">目标 URL（可选）</span>
-                <input
-                  value={targetUrl}
-                  onChange={(targetEvent) => setTargetUrl(targetEvent.target.value)}
-                  placeholder="https://example.com/checkout"
-                  className="mt-2 h-12 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
+      {!embedded && (
+        <>
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute left-[6%] top-10 h-44 w-44 rounded-full bg-[radial-gradient(circle,rgba(244,220,194,0.58),rgba(244,220,194,0)_72%)] blur-3xl"
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute right-[8%] top-4 h-56 w-56 rounded-full bg-[radial-gradient(circle,rgba(216,228,245,0.68),rgba(216,228,245,0)_70%)] blur-3xl"
+          />
+        </>
+      )}
+      <div
+        className={`intent-e2e-shell mx-auto ${
+          embedded ? 'max-w-[1080px] px-3 py-3 md:px-4' : 'max-w-[1640px] px-5 py-7 md:px-7 lg:px-10 xl:h-full xl:px-12'
+        }`}
+      >
+        <section
+          className={`grid gap-5 ${
+            embedded
+              ? 'mt-3 lg:grid-cols-[minmax(0,1fr)_350px]'
+              : showCollapsedWorkbenchRail
+                ? 'mt-1 xl:h-full xl:min-h-0 xl:grid-cols-[72px_minmax(0,1fr)] xl:items-stretch'
+                : 'mt-1 xl:h-full xl:min-h-0 xl:grid-cols-[minmax(320px,27%)_minmax(0,73%)] xl:items-stretch'
+          }`}
+        >
+          <form onSubmit={runIntentTest} className={embedded ? 'space-y-4' : 'xl:h-full xl:min-h-0'}>
+            {showCollapsedWorkbenchRail ? (
+              <section className="intent-e2e-hero relative overflow-hidden rounded-[26px] border border-black/5 bg-[linear-gradient(135deg,rgba(255,255,255,0.98),rgba(251,248,242,0.96)_54%,rgba(243,246,249,0.95))] px-2.5 py-3 text-slate-950 shadow-[0_24px_60px_rgba(44,37,28,0.08)] xl:h-full">
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute -right-10 -top-10 h-40 w-40 rounded-full bg-[radial-gradient(circle,rgba(214,225,241,0.46),rgba(214,225,241,0)_70%)] blur-2xl"
                 />
-              </label>
-              <div className="rounded-2xl border border-slate-200/80 bg-slate-50/90 px-4 py-3 text-xs leading-6 text-slate-600">
-                <p className="font-medium text-slate-800">建议写法</p>
-                <ul className="mt-2 space-y-1">
-                  <li>· 目标动作：登录 / 搜索 / 新建 / 提交 / 下单</li>
-                  <li>· 成功标准：页面文案 / URL / 列表状态 / 接口成功</li>
-                  <li>· 如果页面很复杂，可附一张预期截图</li>
-                </ul>
-              </div>
-            </div>
-
-            <section>
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium text-slate-900">截图 / 参考图（最多 4 张）</p>
-                  <p className="mt-1 text-xs text-slate-500">主要用于帮助 AI 理解页面和成功态，不直接作为执行控制源。</p>
-                </div>
-                <label className="inline-flex h-11 cursor-pointer items-center justify-center rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-700 transition hover:bg-slate-50">
-                  上传图片
-                  <input type="file" accept="image/*" multiple onChange={handleAttachmentChange} className="hidden" />
-                </label>
-              </div>
-
-              {!llmConfig.visionEnabled && attachments.length > 0 && (
-                <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
-                  当前已关闭 Vision，图片会保存在表单里，但不会发送给模型。
-                </div>
-              )}
-
-              {attachments.length === 0 ? (
-                <div className="mt-3 rounded-2xl border border-dashed border-slate-300/90 bg-slate-50/75 px-4 py-8 text-center text-sm text-slate-400">
-                  还没有上传图片；如果页面结构复杂或成功页面很依赖视觉特征，建议补一张截图。
-                </div>
-              ) : (
-                <div className="mt-4 grid gap-4 md:grid-cols-2">
-                  {attachments.map((attachment) => (
-                    <article key={attachment.id} className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_10px_24px_rgba(15,23,42,0.04)]">
-                      <img src={attachment.dataUrl} alt={attachment.name} className="h-44 w-full object-cover" />
-                      <div className="space-y-3 p-4">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-medium text-slate-900">{attachment.name}</p>
-                            <p className="mt-1 text-xs text-slate-500">用于辅助理解页面结构或成功态。</p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => removeAttachment(attachment.id)}
-                            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
-                          >
-                            删除
-                          </button>
-                        </div>
-                        <label className="block">
-                          <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">用途备注</span>
-                          <input
-                            value={attachment.purpose}
-                            onChange={(targetEvent) => updateAttachmentPurpose(attachment.id, targetEvent.target.value)}
-                            placeholder="例如：预期成功页；关键表单区域；目标按钮位置"
-                            className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-slate-50 px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
-                          />
-                        </label>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              )}
-            </section>
-
-            {embedded ? (
-              <section className="rounded-[24px] border border-sky-200 bg-sky-50/80 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-medium text-slate-900">统一登录认证</p>
-                    <p className="mt-1 text-xs leading-5 text-slate-600">
-                      {embeddedProjectAuth?.authRequired
-                        ? '本弹框不会单独展示登录信息表单；执行时会默认复用当前项目配置的统一登录认证。'
-                        : '当前项目还没有配置统一登录认证；本弹框不再单独展示登录信息表单，如需登录请先到项目设置里配置统一认证。'}
-                    </p>
+                <div className="relative flex h-full flex-col items-center justify-between">
+                  <div className="flex w-full flex-col items-center gap-3">
+                    <span className="inline-flex h-10 w-10 items-center justify-center rounded-[20px] bg-[#1f1a15] text-[11px] font-semibold uppercase tracking-[0.2em] text-white shadow-[0_14px_28px_rgba(31,26,21,0.18)]">
+                      IW
+                    </span>
+                    <div className="flex flex-col items-center gap-1.5">
+                      <span className="inline-flex min-h-5 items-center justify-center rounded-full border border-[#decaa7] bg-[#fbf3e6] px-2 text-[9px] font-medium tracking-[0.16em] text-[#8c7656]">
+                        {launchedFromIntentDraft ? '草稿' : '输入'}
+                      </span>
+                      <span className="inline-flex min-h-5 items-center justify-center rounded-full border border-white/80 bg-white/86 px-2 text-[9px] font-medium tracking-[0.12em] text-slate-500">
+                        展示
+                      </span>
+                    </div>
+                    {(runError || restoreNotice) && (
+                      <span
+                        title={runError || restoreNotice}
+                        className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-[0_0_0_4px_rgba(251,191,36,0.16)]"
+                      />
+                    )}
                   </div>
-                  <span className="rounded-full border border-sky-200 bg-white px-3 py-1 text-xs text-sky-700">
-                    {embeddedProjectAuth?.authRequired ? '默认复用项目认证' : '未配置项目认证'}
-                  </span>
-                </div>
-                {embeddedProjectAuth?.loginDescription && (
-                  <div className="mt-3 rounded-2xl border border-sky-100 bg-white/80 px-3 py-3 text-xs leading-5 text-slate-600">
-                    {embeddedProjectAuth.loginDescription}
+
+                  <div className="my-4 w-px flex-1 bg-[linear-gradient(180deg,rgba(201,184,158,0),rgba(201,184,158,0.9),rgba(201,184,158,0))]" />
+
+                  <div className="flex flex-col items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setWorkbenchCollapsed(false)}
+                      className="inline-flex h-11 w-11 items-center justify-center rounded-[18px] bg-[#1f1a15] text-[11px] font-medium leading-4 text-white shadow-[0_12px_24px_rgba(31,26,21,0.16)] transition hover:bg-[#171310]"
+                      title="展开左栏"
+                    >
+                      展开
+                    </button>
+                    <Link
+                      href="/"
+                      className="inline-flex h-11 w-11 items-center justify-center rounded-[18px] border border-[#d7d0c5] bg-white/88 text-[11px] leading-4 text-slate-600 shadow-[0_10px_22px_rgba(44,37,28,0.05)] transition hover:border-[#c6baaa] hover:text-slate-900"
+                      title="返回项目中心"
+                    >
+                      返回
+                    </Link>
                   </div>
-                )}
+                </div>
               </section>
             ) : (
-              <section className="rounded-[28px] border border-slate-200 bg-slate-50/75 p-5">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-medium text-slate-900">登录信息（可选）</p>
-                    <p className="mt-1 text-xs text-slate-500">如果页面访问前必须登录，可以补充账号、密码与登录说明。</p>
-                  </div>
-                  <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-500">可留空</span>
-                </div>
-
-                <div className="mt-4 grid gap-4 md:grid-cols-2">
-                  <label className="block">
-                    <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">Login URL</span>
-                    <input
-                      value={auth.loginUrl}
-                      onChange={(targetEvent) => setAuth((current) => ({ ...current, loginUrl: targetEvent.target.value }))}
-                      placeholder="https://example.com/login"
-                      className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">Username</span>
-                    <input
-                      value={auth.username}
-                      onChange={(targetEvent) => setAuth((current) => ({ ...current, username: targetEvent.target.value }))}
-                      placeholder="13800138000"
-                      className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">Password</span>
-                    <input
-                      type="password"
-                      value={auth.password}
-                      onChange={(targetEvent) => setAuth((current) => ({ ...current, password: targetEvent.target.value }))}
-                      placeholder="••••••••"
-                      className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">登录说明</span>
-                    <input
-                      value={auth.loginDescription}
-                      onChange={(targetEvent) => setAuth((current) => ({ ...current, loginDescription: targetEvent.target.value }))}
-                      placeholder="例如：短信登录 / 密码登录 / SSO"
-                      className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
-                    />
-                  </label>
-                </div>
-              </section>
-            )}
-
-            {!embedded && (
-              <section className="rounded-[28px] border border-slate-200 bg-slate-50/75 p-5">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-medium text-slate-900">LLM 配置</p>
-                    <p className="mt-1 text-xs text-slate-500">默认值来自项目首页的团队共享配置；这里的修改只作用于当前页面和本次运行。</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={resetLlmConfig}
-                    disabled={!configResponse}
-                    className="inline-flex h-10 items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    恢复默认
-                  </button>
-                </div>
-
-                {configLoading ? (
-                  <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-8 text-center text-sm text-slate-400">正在加载配置…</div>
-                ) : configError ? (
-                  <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{configError}</div>
-                ) : (
-                  <div className="mt-4 space-y-4">
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <label className="block">
-                        <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">Provider</span>
-                        <select
-                          value={llmConfig.provider}
-                          onChange={(targetEvent) =>
-                            setLlmConfig((current) => ({
-                              ...current,
-                              provider: targetEvent.target.value,
-                              providerImplemented: targetEvent.target.value === 'openai',
-                            }))
-                          }
-                          className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
-                        >
-                          {(configResponse?.availableProviders || ['openai', 'gemini', 'claude']).map((item) => (
-                            <option key={item} value={item}>
-                              {item === 'openai' ? 'openai（已实现）' : `${item}（预留）`}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="block">
-                        <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">API Style</span>
-                        <select
-                          value={llmConfig.apiStyle}
-                          onChange={(targetEvent) => setLlmConfig((current) => ({ ...current, apiStyle: targetEvent.target.value }))}
-                          className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
-                        >
-                          {(configResponse?.availableApiStyles || ['auto', 'responses', 'chat']).map((item) => (
-                            <option key={item} value={item}>
-                              {item}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+            <section className="intent-e2e-hero intent-e2e-scroll relative overflow-hidden rounded-[32px] border border-black/5 bg-[linear-gradient(135deg,rgba(255,255,255,0.98),rgba(251,248,242,0.96)_54%,rgba(243,246,249,0.95))] px-5 py-5 text-slate-950 shadow-[0_24px_60px_rgba(44,37,28,0.08)] md:px-6 md:py-6 xl:h-full xl:overflow-y-auto xl:overscroll-contain">
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute -right-12 -top-12 h-48 w-48 rounded-full bg-[radial-gradient(circle,rgba(214,225,241,0.5),rgba(214,225,241,0)_70%)] blur-2xl"
+              />
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute left-10 top-0 h-36 w-36 rounded-full bg-[radial-gradient(circle,rgba(255,242,223,0.8),rgba(255,242,223,0)_72%)] blur-2xl"
+              />
+              <div className="relative space-y-4">
+                <div className="space-y-4">
+                  <div className="min-w-0">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#8c7656]">Intent Workbench</p>
+                      {!embedded && (
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setWorkbenchCollapsed(true)}
+                            className="inline-flex h-9 items-center justify-center rounded-full border border-[#d7d0c5] bg-white/88 px-3 text-[12px] text-slate-600 shadow-[0_8px_22px_rgba(44,37,28,0.06)] transition hover:border-[#c6baaa] hover:text-slate-900"
+                            title="收起"
+                          >
+                            收起
+                          </button>
+                          <Link
+                            href="/"
+                            title="返回项目"
+                            className="inline-flex h-9 items-center justify-center rounded-full border border-[#d7d0c5] bg-white/88 px-3.5 text-[12px] text-slate-600 shadow-[0_8px_22px_rgba(44,37,28,0.06)] transition hover:border-[#c6baaa] hover:text-slate-900"
+                          >
+                            返回项目
+                          </Link>
+                        </div>
+                      )}
                     </div>
+                    <h2 className="mt-3 text-[22px] font-semibold tracking-[-0.05em] text-slate-950 md:text-[28px] xl:text-[30px]">
+                      讲清任务，AI 自动规划、执行与修复
+                    </h2>
+                    <p className="mt-2.5 text-[13px] leading-6 text-slate-600 md:text-[14px]">
+                      左侧输入任务，右侧查看执行、上下文与治理。
+                    </p>
+                  </div>
 
-                    <label className="block">
-                      <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">Model</span>
-                      <input
-                        value={llmConfig.model}
-                        onChange={(targetEvent) => setLlmConfig((current) => ({ ...current, model: targetEvent.target.value }))}
-                        className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
-                      />
-                    </label>
-
-                    <label className="block">
-                      <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">Base URL</span>
-                      <input
-                        value={llmConfig.baseUrl}
-                        onChange={(targetEvent) => setLlmConfig((current) => ({ ...current, baseUrl: targetEvent.target.value }))}
-                        className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
-                      />
-                    </label>
-
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <label className="block">
-                        <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">自愈重试次数</span>
-                        <input
-                          type="number"
-                          min={0}
-                          max={5}
-                          value={llmConfig.selfHealRetries}
-                          onChange={(targetEvent) =>
-                            setLlmConfig((current) => ({ ...current, selfHealRetries: Math.max(0, Number(targetEvent.target.value) || 0) }))
-                          }
-                          className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">最大规划步数</span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={12}
-                          value={llmConfig.maxPlanSteps}
-                          onChange={(targetEvent) =>
-                            setLlmConfig((current) => ({ ...current, maxPlanSteps: Math.max(1, Number(targetEvent.target.value) || 1) }))
-                          }
-                          className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
-                        />
-                      </label>
-                    </div>
-
-                    <label className="flex items-center justify-between rounded-2xl border border-slate-200/80 bg-white px-4 py-3">
-                      <div>
-                        <p className="text-sm font-medium text-slate-900">Vision 开关</p>
-                        <p className="mt-1 text-xs text-slate-500">关闭后，上传图片不会发给模型。</p>
+                  <div className="space-y-2.5">
+                    <div className="rounded-[22px] border border-[#e8ddd0] bg-white/72 p-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.9)]">
+                      <div className="grid grid-cols-3 gap-1.5">
+                        <button
+                          type="submit"
+                          disabled={running || configLoading}
+                          className="inline-flex h-9 min-w-0 items-center justify-center rounded-full bg-[#1f1a15] px-2 text-[11px] font-medium text-white shadow-[0_10px_20px_rgba(34,27,20,0.14)] transition hover:bg-[#171310] disabled:cursor-not-allowed disabled:bg-slate-400"
+                        >
+                          {running ? (canceling ? '正在停止…' : 'AI 正在自动执行…') : '开始自动测试'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={stopIntentTest}
+                          disabled={!running || !activeRunId || canceling}
+                          className="inline-flex h-9 min-w-0 items-center justify-center rounded-full border border-[#e7d3ae] bg-[#fbf2e5] px-2 text-[11px] font-medium text-[#8d6330] transition hover:bg-[#f7e8d3] disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {canceling ? '停止中…' : '停止当前测试'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => clearExecutionState()}
+                          disabled={running}
+                          className="inline-flex h-9 min-w-0 items-center justify-center rounded-full border border-[#ddd5ca] bg-white/88 px-2 text-[11px] font-medium text-slate-700 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          清空结果
+                        </button>
                       </div>
-                      <input
-                        type="checkbox"
-                        checked={llmConfig.visionEnabled}
-                        onChange={(targetEvent) => setLlmConfig((current) => ({ ...current, visionEnabled: targetEvent.target.checked }))}
-                        className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-400"
-                      />
-                    </label>
+                    </div>
 
-                    {!providerIsImplemented && (
-                      <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">
-                        当前仅 `openai` provider 已实现；`gemini / claude` 已预留配置位，但尚未接入实际 adapter。
+                    <div className="rounded-[24px] border border-[#e8ddd0] bg-[linear-gradient(180deg,rgba(255,255,255,0.78),rgba(249,244,236,0.74))] p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.9)]">
+                      <div className="grid gap-1.5 sm:grid-cols-3">
+                        {heroSummaryTabs.map((item) => {
+                          const active = item.key === activeHeroSummaryTab.key;
+
+                          return (
+                            <button
+                              key={item.key}
+                              type="button"
+                              aria-pressed={active}
+                              onClick={() => setHeroSummaryView(item.key)}
+                              className={`rounded-[18px] px-3 py-2.5 text-left transition ${
+                                active
+                                  ? 'bg-[#fbf4e7] text-slate-950 shadow-[inset_0_0_0_1px_rgba(225,202,164,0.6)]'
+                                  : 'text-slate-600 hover:bg-white/78'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className={`text-[10px] uppercase tracking-[0.16em] ${active ? 'text-[#8c7656]' : 'text-slate-400'}`}>
+                                  {item.label}
+                                </span>
+                                <span className={`h-2.5 w-2.5 rounded-full ${active ? 'bg-[#9a7341]' : 'bg-slate-300'}`} />
+                              </div>
+                              <p className="mt-1.5 text-[13px] font-semibold leading-5 text-current">{item.summary}</p>
+                              <p className="mt-1 text-[11px] leading-5 text-slate-500">{item.detail}</p>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <section className="rounded-[28px] border border-[#e3d9cb] bg-[linear-gradient(180deg,rgba(255,252,247,0.92),rgba(249,244,235,0.82))] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.88),0_12px_24px_rgba(90,72,44,0.04)] md:p-5">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#e7dfd3] pb-3">
+                    <div>
+                      <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-[#8c7656]">Task Brief</p>
+                      <p className="mt-1 text-sm font-medium text-slate-900">把这次任务一次写完整</p>
+                    </div>
+                    <span className="rounded-full border border-[#e3d7c5] bg-white/86 px-3 py-1 text-[11px] font-medium text-slate-500">
+                      目标 / 入口 / 参考图
+                    </span>
+                  </div>
+
+                  <div className="mt-4 space-y-4">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <label htmlFor="intent-e2e-input" className="text-xs font-medium tracking-[0.08em] text-slate-400">
+                          测试目标
+                        </label>
+                        <div ref={inputHelpPopoverRef} className="relative">
+                          <button
+                            type="button"
+                            aria-label="查看填写提示"
+                            aria-expanded={inputHelpOpen}
+                            aria-controls="intent-e2e-input-help"
+                            onClick={() => setInputHelpOpen((current) => !current)}
+                            className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-white text-[11px] font-medium text-slate-500 transition hover:border-slate-300 hover:text-slate-900"
+                          >
+                            ?
+                          </button>
+                          {inputHelpOpen && (
+                            <div
+                              id="intent-e2e-input-help"
+                              className="absolute left-0 top-full z-30 mt-2 w-[300px] rounded-[18px] border border-slate-200 bg-white p-3.5 text-left shadow-[0_16px_36px_rgba(15,23,42,0.14)]"
+                              role="dialog"
+                              aria-label="填写提示"
+                            >
+                              <p className="text-sm font-medium text-slate-900">建议只写“业务结果”，不要写点击脚本</p>
+                              <div className="mt-2.5 space-y-1.5 text-xs leading-6 text-slate-600">
+                                <p>目标动作：登录 / 搜索 / 新建 / 提交 / 下单</p>
+                                <p>成功标准：页面文案 / URL / 列表状态 / 接口成功</p>
+                                <p>复杂页面：补一张成功态或关键表单截图，帮助模型理解页面结构。</p>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <textarea
+                        id="intent-e2e-input"
+                        value={input}
+                        onChange={(targetEvent) => setInput(targetEvent.target.value)}
+                        rows={embedded ? 2 : 4}
+                        placeholder="例如：登录后台后创建一个商机，保存成功后看到新建记录，并且列表中状态为待跟进。"
+                        className="mt-2.5 w-full rounded-[22px] border border-[#dfd8ce] bg-[#fdfaf5]/94 px-4 py-3.5 text-sm leading-6 text-slate-900 shadow-[inset_0_1px_0_rgba(255,255,255,0.94),0_10px_22px_rgba(90,72,44,0.04)] outline-none transition placeholder:text-slate-400 focus:border-[#c9bba7]"
+                      />
+                    </div>
+
+                    <div className="border-t border-[#e7dfd3] pt-4">
+                      <label className="block">
+                        <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">Target URL</span>
+                        <input
+                          value={targetUrl}
+                          onChange={(targetEvent) => setTargetUrl(targetEvent.target.value)}
+                          placeholder="https://example.com/checkout"
+                          className="mt-2.5 h-11 w-full rounded-2xl border border-[#ddd2c4] bg-white/88 px-4 text-sm text-slate-800 outline-none transition focus:border-[#c9bba7]"
+                        />
+                        <p className="mt-2 text-[11px] leading-5 text-slate-500">尽量给真实入口，能减少 AI 在多层导航里的试探。</p>
+                      </label>
+                    </div>
+
+                    <div className="border-t border-[#e7dfd3] pt-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">截图 / 参考图</p>
+                          <p className="mt-1 text-[11px] leading-5 text-slate-500">补目标页、关键区域或成功态即可。</p>
+                        </div>
+                        <label className="inline-flex h-9 cursor-pointer items-center justify-center rounded-full border border-[#ddd2c4] bg-white/88 px-3.5 text-xs text-slate-700 transition hover:bg-white">
+                          上传图片
+                          <input type="file" accept="image/*" multiple onChange={handleAttachmentChange} className="hidden" />
+                        </label>
+                      </div>
+
+                      {!llmConfig.visionEnabled && attachments.length > 0 && (
+                        <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+                          当前已关闭 Vision，图片会保存在表单里，但不会发送给模型。
+                        </div>
+                      )}
+
+                      {attachments.length === 0 ? (
+                        <div className="mt-3 rounded-[20px] border border-dashed border-[#d8cfc1] bg-white/72 px-4 py-4 text-center text-[13px] text-slate-400">
+                          还没有上传图片；复杂页面建议补一张成功态或关键表单截图。
+                        </div>
+                      ) : (
+                        <div className="mt-3 space-y-3">
+                          {attachments.map((attachment) => (
+                            <article key={attachment.id} className="overflow-hidden rounded-[20px] border border-[#ddd4c8] bg-white/92 shadow-[0_8px_20px_rgba(15,23,42,0.03)]">
+                              <img src={attachment.dataUrl} alt={attachment.name} className="h-28 w-full object-cover" />
+                              <div className="space-y-2.5 p-3.5">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div>
+                                    <p className="text-sm font-medium text-slate-900">{attachment.name}</p>
+                                    <p className="mt-1 text-xs text-slate-500">用于辅助理解页面结构或成功态。</p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => removeAttachment(attachment.id)}
+                                    className="rounded-full border border-[#ddd2c4] bg-white px-3 py-1 text-[11px] text-slate-600 transition hover:bg-slate-50"
+                                  >
+                                    删除
+                                  </button>
+                                </div>
+                                <label className="block">
+                                  <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">用途备注</span>
+                                  <input
+                                    value={attachment.purpose}
+                                    onChange={(targetEvent) => updateAttachmentPurpose(attachment.id, targetEvent.target.value)}
+                                    placeholder="例如：预期成功页；关键表单区域；目标按钮位置"
+                                    className="mt-2 h-10 w-full rounded-2xl border border-[#ddd2c4] bg-[#fbf7f0] px-4 text-sm text-slate-800 outline-none transition focus:border-[#c9bba7]"
+                                  />
+                                </label>
+                              </div>
+                            </article>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </section>
+
+                {(runError || restoreNotice) && (
+                  <div className="space-y-3">
+                    {runError && (
+                      <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                        {runError}
+                      </div>
+                    )}
+                    {restoreNotice && (
+                      <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                        {restoreNotice}
                       </div>
                     )}
                   </div>
                 )}
-              </section>
+
+              </div>
+            </section>
             )}
 
-            {!embedded && (
-              <section className="rounded-[28px] border border-slate-200 bg-slate-50/75 p-5">
+            {contextPortalHost &&
+              createPortal(
+              <div className="space-y-4">
+                {embedded ? (
+                  <section className="rounded-[24px] border border-sky-200 bg-sky-50/85 p-4 shadow-[0_12px_28px_rgba(56,189,248,0.09)]">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium text-slate-900">统一登录认证</p>
+                        <p className="mt-1 text-xs leading-5 text-slate-600">
+                          {embeddedProjectAuth?.authRequired
+                            ? '本弹框不会单独展示登录信息表单；执行时会默认复用当前项目配置的统一登录认证。'
+                            : '当前项目还没有配置统一登录认证；本弹框不再单独展示登录信息表单，如需登录请先到项目设置里配置统一认证。'}
+                        </p>
+                      </div>
+                      <span className="rounded-full border border-sky-200 bg-white px-3 py-1 text-xs text-sky-700">
+                        {embeddedProjectAuth?.authRequired ? '默认复用项目认证' : '未配置项目认证'}
+                      </span>
+                    </div>
+                    {embeddedProjectAuth?.loginDescription && (
+                      <div className="mt-3 rounded-2xl border border-sky-100 bg-white/80 px-3 py-3 text-xs leading-5 text-slate-600">
+                        {embeddedProjectAuth.loginDescription}
+                      </div>
+                    )}
+                  </section>
+                ) : (
+                  <section className="intent-e2e-panel rounded-[24px] border border-slate-200 bg-slate-50/78 p-4 shadow-[0_12px_28px_rgba(15,23,42,0.05)]">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium text-slate-900">登录信息（可选）</p>
+                        <p className="mt-1 text-xs text-slate-500">如果页面访问前必须登录，可以补充账号、密码与登录说明。</p>
+                      </div>
+                      <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-500">可留空</span>
+                    </div>
+
+                    <div className="mt-4 grid gap-4 md:grid-cols-2">
+                      <label className="block">
+                        <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">Login URL</span>
+                        <input
+                          value={auth.loginUrl}
+                          onChange={(targetEvent) => setAuth((current) => ({ ...current, loginUrl: targetEvent.target.value }))}
+                          placeholder="https://example.com/login"
+                          className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">Username</span>
+                        <input
+                          value={auth.username}
+                          onChange={(targetEvent) => setAuth((current) => ({ ...current, username: targetEvent.target.value }))}
+                          placeholder="13800138000"
+                          className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">Password</span>
+                        <input
+                          type="password"
+                          value={auth.password}
+                          onChange={(targetEvent) => setAuth((current) => ({ ...current, password: targetEvent.target.value }))}
+                          placeholder="••••••••"
+                          className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">登录说明</span>
+                        <input
+                          value={auth.loginDescription}
+                          onChange={(targetEvent) => setAuth((current) => ({ ...current, loginDescription: targetEvent.target.value }))}
+                          placeholder="例如：短信登录 / 密码登录 / SSO"
+                          className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
+                        />
+                      </label>
+                    </div>
+                  </section>
+                )}
+
+                {!embedded && (
+                  <section className="intent-e2e-panel rounded-[24px] border border-slate-200 bg-slate-50/78 p-4 shadow-[0_12px_28px_rgba(15,23,42,0.05)]">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium text-slate-900">LLM 配置</p>
+                        <p className="mt-1 text-xs text-slate-500">默认值来自项目首页的团队共享配置；这里的修改只作用于当前页面和本次运行。</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={resetLlmConfig}
+                        disabled={!configResponse}
+                        className="inline-flex h-10 items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        恢复默认
+                      </button>
+                    </div>
+
+                    {configLoading ? (
+                      <div className="mt-3 rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-6 text-center text-sm text-slate-400">正在加载配置…</div>
+                    ) : configError ? (
+                      <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{configError}</div>
+                    ) : (
+                      <div className="mt-3 space-y-3">
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <label className="block">
+                            <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">Provider</span>
+                            <select
+                              value={llmConfig.provider}
+                              onChange={(targetEvent) =>
+                                setLlmConfig((current) => ({
+                                  ...current,
+                                  provider: targetEvent.target.value,
+                                  providerImplemented: targetEvent.target.value === 'openai',
+                                }))
+                              }
+                              className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
+                            >
+                              {(configResponse?.availableProviders || ['openai', 'gemini', 'claude']).map((item) => (
+                                <option key={item} value={item}>
+                                  {item === 'openai' ? 'openai（已实现）' : `${item}（预留）`}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="block">
+                            <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">API Style</span>
+                            <select
+                              value={llmConfig.apiStyle}
+                              onChange={(targetEvent) => setLlmConfig((current) => ({ ...current, apiStyle: targetEvent.target.value }))}
+                              className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
+                            >
+                              {(configResponse?.availableApiStyles || ['auto', 'responses', 'chat']).map((item) => (
+                                <option key={item} value={item}>
+                                  {item}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+
+                        <label className="block">
+                          <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">Model</span>
+                          <input
+                            value={llmConfig.model}
+                            onChange={(targetEvent) => setLlmConfig((current) => ({ ...current, model: targetEvent.target.value }))}
+                            className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">Base URL</span>
+                          <input
+                            value={llmConfig.baseUrl}
+                            onChange={(targetEvent) => setLlmConfig((current) => ({ ...current, baseUrl: targetEvent.target.value }))}
+                            className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
+                          />
+                        </label>
+
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <label className="block">
+                            <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">自愈重试次数</span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={5}
+                              value={llmConfig.selfHealRetries}
+                              onChange={(targetEvent) =>
+                                setLlmConfig((current) => ({ ...current, selfHealRetries: Math.max(0, Number(targetEvent.target.value) || 0) }))
+                              }
+                              className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">最大规划步数</span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={12}
+                              value={llmConfig.maxPlanSteps}
+                              onChange={(targetEvent) =>
+                                setLlmConfig((current) => ({ ...current, maxPlanSteps: Math.max(1, Number(targetEvent.target.value) || 1) }))
+                              }
+                              className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
+                            />
+                          </label>
+                        </div>
+
+                        <label className="flex items-center justify-between rounded-2xl border border-slate-200/80 bg-white px-4 py-3">
+                          <div>
+                            <p className="text-sm font-medium text-slate-900">Vision 开关</p>
+                            <p className="mt-1 text-xs text-slate-500">关闭后，上传图片不会发给模型。</p>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={llmConfig.visionEnabled}
+                            onChange={(targetEvent) => setLlmConfig((current) => ({ ...current, visionEnabled: targetEvent.target.checked }))}
+                            className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-400"
+                          />
+                        </label>
+
+                        {!providerIsImplemented && (
+                          <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">
+                            当前仅 `openai` provider 已实现；`gemini / claude` 已预留配置位，但尚未接入实际 adapter。
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </section>
+                )}
+              </div>
+              , contextPortalHost)}
+
+            {!embedded &&
+              governancePortalHost &&
+              createPortal(
+              <section className="intent-e2e-panel rounded-[24px] border border-slate-200 bg-slate-50/75 p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <p className="text-sm font-medium text-slate-900">项目知识草稿</p>
@@ -5599,7 +6879,7 @@ export default function IntentE2EWorkbench({
                   <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-500">repair → knowledge</span>
                 </div>
 
-                <div className="mt-4 grid gap-4 sm:grid-cols-3">
+                <div className="mt-3 grid gap-3 sm:grid-cols-3">
                   <label className="block">
                     <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">Min Seen</span>
                     <input
@@ -5632,7 +6912,7 @@ export default function IntentE2EWorkbench({
                   </label>
                 </div>
 
-                <div className="mt-4 flex flex-wrap items-center gap-3">
+                <div className="mt-3 flex flex-wrap items-center gap-3">
                   <button
                     type="button"
                     onClick={previewProjectKnowledgeDraft}
@@ -5929,98 +7209,189 @@ export default function IntentE2EWorkbench({
 
                 {insights ? (
                   <>
-                    <p className="mt-2 text-[11px] leading-5 text-slate-500">
-                      {workspaceProjectUid ? `当前展示项目 ${workspaceProjectUid}` : '当前展示全局'} 最近 {insights.scope.runLimit} 次终态运行，
-                      并结合最近 {insights.scope.auditLimit} 条项目知识审计生成趋势。
-                    </p>
-
-                    <div
-                      className={`mt-4 grid gap-3 sm:grid-cols-2 ${
-                        promotionCoverageSummary?.coveredAssetCount ? 'xl:grid-cols-7' : 'xl:grid-cols-6'
-                      }`}
-                    >
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                        <p className="text-xs uppercase tracking-[0.14em] text-slate-400">runs</p>
-                        <p className="mt-2 text-2xl font-semibold text-slate-950">{insights.summary.totalRuns}</p>
-                        <p className="mt-1 text-[11px] text-slate-500">
-                          通过 {insights.summary.passedRuns} · 失败 {insights.summary.failedRuns} · 取消 {insights.summary.canceledRuns}
-                        </p>
-                      </div>
-                      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
-                        <p className="text-xs uppercase tracking-[0.14em] text-emerald-600">pass rate</p>
-                        <p className="mt-2 text-2xl font-semibold text-emerald-900">{formatRatePercent(insights.summary.passRate)}</p>
-                        <p className="mt-1 text-[11px] text-emerald-700">最近成功率，先看这项是否稳定抬升。</p>
-                      </div>
-                      <div className="rounded-2xl border border-teal-200 bg-teal-50 px-4 py-3">
-                        <p className="text-xs uppercase tracking-[0.14em] text-teal-600">first pass</p>
-                        <p className="mt-2 text-2xl font-semibold text-teal-900">{formatRatePercent(insights.summary.firstPassPassRate)}</p>
-                        <p className="mt-1 text-[11px] text-teal-700">首轮直接通过 {insights.summary.firstPassPassedRuns} 次。</p>
-                      </div>
-                      <div className="rounded-2xl border border-cyan-200 bg-cyan-50 px-4 py-3">
-                        <p className="text-xs uppercase tracking-[0.14em] text-cyan-600">repair pass</p>
-                        <p className="mt-2 text-2xl font-semibold text-cyan-900">{formatRatePercent(insights.summary.repairedPassRate)}</p>
-                        <p className="mt-1 text-[11px] text-cyan-700">经过修复后通过 {insights.summary.repairedPassRuns} 次。</p>
-                      </div>
-                      <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3">
-                        <p className="text-xs uppercase tracking-[0.14em] text-sky-600">knowledge hit</p>
-                        <p className="mt-2 text-2xl font-semibold text-sky-900">{formatRatePercent(insights.summary.knowledgeHitRate)}</p>
-                        <p className="mt-1 text-[11px] text-sky-700">有命中知识规则的运行占比。</p>
-                      </div>
-                      <div className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3">
-                        <p className="text-xs uppercase tracking-[0.14em] text-violet-600">helper reuse</p>
-                        <p className="mt-2 text-2xl font-semibold text-violet-900">{formatRatePercent(insights.summary.suggestedHelperReuseRate)}</p>
-                        <p className="mt-1 text-[11px] text-violet-700">实际复用了推荐 helper 的运行占比。</p>
-                      </div>
-                      {promotionCoverageSummary?.coveredAssetCount ? (
-                        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
-                          <p className="text-xs uppercase tracking-[0.14em] text-amber-700">promotion coverage</p>
-                          <p className="mt-2 text-2xl font-semibold text-amber-950">
-                            {promotionCoverageSummary.coveredAssetCount}
-                          </p>
-                          <p className="mt-1 text-[11px] text-amber-800">
-                            Starter helper {promotionCoverageSummary.starterHelperCount} 个
-                            {promotionCoverageSummary.starterCapabilityCount > 0
-                              ? ` · 能力 ${promotionCoverageSummary.starterCapabilityCount} 条`
-                              : ''}
-                            {promotionCoverageSummary.successfulRunRuleCount > 0
-                              ? ` · Successful Run 规则 ${promotionCoverageSummary.successfulRunRuleCount} 条`
-                              : ''}
-                            {promotionCoverageSummary.lastRecordedAt
-                              ? ` · 最近 ${formatDateTime(promotionCoverageSummary.lastRecordedAt)}`
-                              : ''}
-                          </p>
-                          {(promotionCoverageSummary.latestStarterHelper ||
-                            promotionCoverageSummary.latestSuccessfulRunRuleId) && (
-                            <div className="mt-2 space-y-1 text-[11px] text-amber-900">
-                              {promotionCoverageSummary.latestStarterHelper ? (
-                                <p>
-                                  最新 Starter：
-                                  {promotionCoverageSummary.latestStarterHelper}
-                                  {promotionCoverageSummary.latestStarterModuleName
-                                    ? ` · ${promotionCoverageSummary.latestStarterModuleName}`
-                                    : ''}
-                                  {promotionCoverageSummary.latestStarterScenarioTitle
-                                    ? ` / ${promotionCoverageSummary.latestStarterScenarioTitle}`
-                                    : ''}
-                                </p>
-                              ) : null}
-                              {promotionCoverageSummary.latestSuccessfulRunRuleId ? (
-                                <p>
-                                  最新 Successful Run：
-                                  {promotionCoverageSummary.latestSuccessfulRunRuleTitle || promotionCoverageSummary.latestSuccessfulRunRuleId}
-                                  {promotionCoverageSummary.latestSuccessfulRunRequestedModuleUid
-                                    ? ` · ${promotionCoverageSummary.latestSuccessfulRunRequestedModuleUid}`
-                                    : ''}
-                                </p>
-                              ) : null}
+                    <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(320px,1fr)]">
+                      <div className="rounded-3xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-sky-50 px-5 py-5">
+                        <div className="flex flex-wrap items-start justify-between gap-4">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Insights Cockpit</p>
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                              <p className="text-lg font-semibold text-slate-950">当前放量判断</p>
+                              <span
+                                className={`rounded-full border px-3 py-1 text-[11px] font-medium ${rolloutStrategyStageTone(
+                                  insights.rolloutStrategy.recommendedStage
+                                )}`}
+                              >
+                                {rolloutStrategyStageLabel(insights.rolloutStrategy.recommendedStage)}
+                              </span>
                             </div>
-                          )}
+                            <p className="mt-3 text-sm leading-6 text-slate-600">{insights.rolloutStrategy.summary}</p>
+                            <p className="mt-2 text-xs leading-5 text-slate-500">
+                              {workspaceProjectUid ? `当前展示项目 ${workspaceProjectUid}` : '当前展示全局'} 最近 {insights.scope.runLimit} 次终态运行，
+                              并结合最近 {insights.scope.auditLimit} 条项目知识审计生成趋势。
+                            </p>
+                          </div>
+                          <div className="rounded-2xl border border-white/80 bg-white/90 px-4 py-3 text-right">
+                            <p className="text-[11px] uppercase tracking-[0.16em] text-slate-400">recent scope</p>
+                            <p className="mt-2 text-2xl font-semibold text-slate-950">{insights.summary.totalRuns}</p>
+                            <p className="mt-1 text-[11px] text-slate-500">
+                              通过 {insights.summary.passedRuns} · 失败 {insights.summary.failedRuns} · 取消 {insights.summary.canceledRuns}
+                            </p>
+                          </div>
                         </div>
-                      ) : null}
+
+                        <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                          <div className="rounded-2xl border border-emerald-200 bg-white/90 px-4 py-4">
+                            <p className="text-[11px] uppercase tracking-[0.16em] text-emerald-600">pass rate</p>
+                            <p className="mt-2 text-2xl font-semibold text-emerald-900">{formatRatePercent(insights.summary.passRate)}</p>
+                            <p className="mt-1 text-[11px] text-emerald-700">先看这项是否稳定抬升。</p>
+                          </div>
+                          <div className="rounded-2xl border border-teal-200 bg-white/90 px-4 py-4">
+                            <p className="text-[11px] uppercase tracking-[0.16em] text-teal-600">first pass</p>
+                            <p className="mt-2 text-2xl font-semibold text-teal-900">{formatRatePercent(insights.summary.firstPassPassRate)}</p>
+                            <p className="mt-1 text-[11px] text-teal-700">首轮直接通过 {insights.summary.firstPassPassedRuns} 次。</p>
+                          </div>
+                          <div className="rounded-2xl border border-cyan-200 bg-white/90 px-4 py-4">
+                            <p className="text-[11px] uppercase tracking-[0.16em] text-cyan-600">repair pass</p>
+                            <p className="mt-2 text-2xl font-semibold text-cyan-900">{formatRatePercent(insights.summary.repairedPassRate)}</p>
+                            <p className="mt-1 text-[11px] text-cyan-700">修复后通过 {insights.summary.repairedPassRuns} 次。</p>
+                          </div>
+                          <div className="rounded-2xl border border-violet-200 bg-white/90 px-4 py-4">
+                            <p className="text-[11px] uppercase tracking-[0.16em] text-violet-600">helper reuse</p>
+                            <p className="mt-2 text-2xl font-semibold text-violet-900">
+                              {formatRatePercent(insights.summary.suggestedHelperReuseRate)}
+                            </p>
+                            <p className="mt-1 text-[11px] text-violet-700">
+                              知识命中 {formatRatePercent(insights.summary.knowledgeHitRate)}。
+                            </p>
+                          </div>
+                        </div>
+
+                        {promotionCoverageSummary?.coveredAssetCount ? (
+                          <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-[11px] leading-5 text-amber-900">
+                            <p className="font-medium text-amber-950">资产沉淀覆盖</p>
+                            <p className="mt-1">
+                              Starter helper {promotionCoverageSummary.starterHelperCount} 个
+                              {promotionCoverageSummary.starterCapabilityCount > 0
+                                ? ` · 能力 ${promotionCoverageSummary.starterCapabilityCount} 条`
+                                : ''}
+                              {promotionCoverageSummary.successfulRunRuleCount > 0
+                                ? ` · Successful Run 规则 ${promotionCoverageSummary.successfulRunRuleCount} 条`
+                                : ''}
+                              {promotionCoverageSummary.lastRecordedAt
+                                ? ` · 最近 ${formatDateTime(promotionCoverageSummary.lastRecordedAt)}`
+                                : ''}
+                            </p>
+                            {(promotionCoverageSummary.latestStarterHelper ||
+                              promotionCoverageSummary.latestSuccessfulRunRuleId) && (
+                              <p className="mt-1">
+                                {promotionCoverageSummary.latestStarterHelper
+                                  ? `最新 Starter：${promotionCoverageSummary.latestStarterHelper}${
+                                      promotionCoverageSummary.latestStarterModuleName
+                                        ? ` · ${promotionCoverageSummary.latestStarterModuleName}`
+                                        : ''
+                                    }${
+                                      promotionCoverageSummary.latestStarterScenarioTitle
+                                        ? ` / ${promotionCoverageSummary.latestStarterScenarioTitle}`
+                                        : ''
+                                    }`
+                                  : ''}
+                                {promotionCoverageSummary.latestStarterHelper && promotionCoverageSummary.latestSuccessfulRunRuleId ? ' · ' : ''}
+                                {promotionCoverageSummary.latestSuccessfulRunRuleId
+                                  ? `最新 Successful Run：${
+                                      promotionCoverageSummary.latestSuccessfulRunRuleTitle ||
+                                      promotionCoverageSummary.latestSuccessfulRunRuleId
+                                    }${
+                                      promotionCoverageSummary.latestSuccessfulRunRequestedModuleUid
+                                        ? ` · ${promotionCoverageSummary.latestSuccessfulRunRequestedModuleUid}`
+                                        : ''
+                                    }`
+                                  : ''}
+                              </p>
+                            )}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="space-y-3">
+                        <div className="rounded-3xl border border-slate-200 bg-slate-50 px-4 py-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="font-medium text-slate-900">当前优先动作</p>
+                            <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
+                              {insightPriorityNotes.length} 条
+                            </span>
+                          </div>
+                          <div className="mt-3 space-y-3">
+                            {insightPriorityNotes.map((item) => (
+                              <div key={item.key} className="rounded-2xl border border-white/80 bg-white px-3 py-3">
+                                <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">{item.label}</p>
+                                <p className="mt-2 text-xs leading-6 text-slate-600">{item.detail}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="rounded-3xl border border-slate-200 bg-white px-4 py-4">
+                          <p className="font-medium text-slate-900">决策信号</p>
+                          <div className="mt-3 grid gap-2">
+                            {insightDecisionSignals.map((item) => (
+                              <div key={item.key} className={`rounded-2xl px-3 py-3 ${item.toneClassName}`}>
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] opacity-70">{item.title}</p>
+                                  <span className="rounded-full border border-current/15 bg-white/80 px-2.5 py-1 text-[10px] font-medium">
+                                    {item.value}
+                                  </span>
+                                </div>
+                                <p className="mt-2 text-xs leading-5 opacity-90">{item.detail}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
                     </div>
 
-                    {insights.verificationIntents.some((item) => item.intent !== 'unknown') && (
-                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                    <div className="sticky top-4 z-10 mt-5 rounded-3xl border border-slate-200 bg-white/95 px-4 py-4 backdrop-blur">
+                      <div className="flex flex-wrap gap-2">
+                        {insightWorkbenchTabs.map((item) => {
+                          const active = item.key === insightsView;
+
+                          return (
+                            <button
+                              key={item.key}
+                              type="button"
+                              onClick={() => setInsightsView(item.key)}
+                              className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-medium transition ${
+                                active
+                                  ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
+                                  : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                              }`}
+                            >
+                              <span>{item.label}</span>
+                              <span
+                                className={`rounded-full px-2.5 py-0.5 text-[10px] ${
+                                  active ? 'bg-white/15 text-white' : 'bg-white text-slate-500'
+                                }`}
+                              >
+                                {item.countLabel}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                        <div>
+                          <p className="text-sm font-medium text-slate-900">{activeInsightWorkbenchTab.label}</p>
+                          <p className="mt-1 text-xs leading-5 text-slate-500">{activeInsightWorkbenchTab.description}</p>
+                        </div>
+                        <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
+                          {activeInsightWorkbenchTab.countLabel}
+                        </span>
+                      </div>
+                    </div>
+
+                    {insightsView === 'quality' && (
+                      <>
+                        {insights.verificationIntents.some((item) => item.intent !== 'unknown') && (
+                          <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div>
                             <p className="font-medium text-slate-900">验证意图分桶</p>
@@ -6217,8 +7588,12 @@ export default function IntentE2EWorkbench({
                         </div>
                       </div>
                     )}
+                      </>
+                    )}
 
-                    {insights.regressionWatchlist.items.length > 0 && (
+                    {insightsView === 'overview' && (
+                      <>
+                        {insights.regressionWatchlist.items.length > 0 && (
                       <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div>
@@ -6486,7 +7861,12 @@ export default function IntentE2EWorkbench({
                       </div>
                     )}
 
-                    {insights.recentTraces.length > 0 && (
+                      </>
+                    )}
+
+                    {insightsView === 'trace' && (
+                      <>
+                        {insights.recentTraces.length > 0 && (
                       <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div>
@@ -6688,7 +8068,12 @@ export default function IntentE2EWorkbench({
                       </div>
                     )}
 
-                    {insights.knowledgeChangeGraders.length > 0 && (
+                      </>
+                    )}
+
+                    {insightsView === 'knowledge' && (
+                      <>
+                        {insights.knowledgeChangeGraders.length > 0 && (
                       <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div>
@@ -6919,7 +8304,12 @@ export default function IntentE2EWorkbench({
                       </div>
                     )}
 
-                    {insights.probationRules.length > 0 && (
+                      </>
+                    )}
+
+                    {insightsView === 'governance' && (
+                      <>
+                        {insights.probationRules.length > 0 && (
                       <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div>
@@ -7365,7 +8755,12 @@ export default function IntentE2EWorkbench({
                       </div>
                     )}
 
-                    {insights.starterHelpers.length > 0 && (
+                      </>
+                    )}
+
+                    {insightsView === 'knowledge' && (
+                      <>
+                        {insights.starterHelpers.length > 0 && (
                       <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div>
@@ -7876,8 +9271,11 @@ export default function IntentE2EWorkbench({
                         </div>
                       </div>
                     )}
+                      </>
+                    )}
 
-                    <div className="mt-4 grid gap-3 xl:grid-cols-3">
+                    {insightsView === 'overview' && (
+                      <div className="mt-4 grid gap-3 xl:grid-cols-3">
                       <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
                         <p className="font-medium text-slate-900">高频命中规则</p>
                         {insights.topRules.length === 0 ? (
@@ -7945,7 +9343,8 @@ export default function IntentE2EWorkbench({
                           </div>
                         )}
                       </div>
-                    </div>
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-sm text-slate-400">
@@ -8695,50 +10094,59 @@ export default function IntentE2EWorkbench({
                 </div>
               )}
               </section>
-            )}
-
-            {runError && (
-              <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                {runError}
-              </div>
-            )}
-
-            {restoreNotice && (
-              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                {restoreNotice}
-              </div>
-            )}
-
-            <div className="flex flex-wrap items-center gap-3">
-              <button
-                type="submit"
-                disabled={running || configLoading}
-                className="inline-flex h-12 items-center justify-center rounded-2xl bg-slate-950 px-6 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
-              >
-                {running ? (canceling ? '正在停止…' : 'AI 正在自动执行…') : '开始自动测试'}
-              </button>
-              <button
-                type="button"
-                onClick={stopIntentTest}
-                disabled={!running || !activeRunId || canceling}
-                className="inline-flex h-12 items-center justify-center rounded-2xl border border-amber-200 bg-amber-50 px-5 text-sm text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {canceling ? '停止中…' : '停止当前测试'}
-              </button>
-              <button
-                type="button"
-                onClick={() => clearExecutionState()}
-                disabled={running}
-                className="inline-flex h-12 items-center justify-center rounded-2xl border border-slate-200 bg-white px-5 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                清空结果
-              </button>
-            </div>
+              , governancePortalHost)}
           </form>
 
-          <aside className="space-y-6">
-            <section className="rounded-[28px] border border-white/60 bg-white/70 p-5 shadow-[0_16px_48px_rgba(15,23,42,0.08)] backdrop-blur-xl">
-              <p className="text-sm font-medium text-slate-900">执行状态</p>
+          <aside className={embedded ? 'space-y-4' : 'intent-e2e-scroll space-y-4 xl:h-full xl:min-h-0 xl:overflow-y-auto xl:overscroll-contain xl:pl-2'}>
+            <section className="intent-e2e-command-deck overflow-hidden rounded-[32px] border border-black/5 bg-[linear-gradient(180deg,rgba(248,244,237,0.94),rgba(242,238,231,0.92))] shadow-[0_28px_70px_rgba(44,37,28,0.1)] backdrop-blur-xl">
+              <div className="border-b border-[#ddd5ca] bg-[linear-gradient(180deg,rgba(250,247,241,0.98),rgba(242,238,231,0.94))] px-5 py-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#8c7656]">Execution</p>
+                    <p className="mt-2 text-[17px] font-semibold tracking-[-0.03em] text-slate-950">执行与反馈中心</p>
+                    <p className="mt-2 max-w-sm text-xs leading-6 text-slate-500">{activeRailTab.description}</p>
+                  </div>
+                  <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${railStatusBadge.className}`}>
+                    {railStatusBadge.label}
+                  </span>
+                </div>
+
+                <div className="mt-4 overflow-x-auto">
+                  <div className="flex min-w-max gap-5 border-b border-[#e1d8ca]">
+                    {railTabs.map((item) => {
+                      const active = item.key === activeRailTab.key;
+
+                      return (
+                      <button
+                        key={item.key}
+                        type="button"
+                        onClick={() => {
+                          setRailView(item.key);
+                          if (item.key === 'compile') {
+                            setDetailView('compile');
+                          }
+                        }}
+                        className={`inline-flex items-center gap-2 border-b-2 px-0 pb-3 text-[13px] font-medium transition ${
+                          active
+                              ? 'border-[#b68d56] text-slate-950'
+                              : 'border-transparent text-slate-500 hover:text-slate-900'
+                          }`}
+                        >
+                          <span>{item.label}</span>
+                          <span className={`text-[10px] ${active ? 'text-[#8c7656]' : 'text-slate-400'}`}>
+                            {item.countLabel}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-5">
+                {railView === 'overview' && (
+                  <>
+                    <p className="text-sm font-medium text-slate-900">执行状态</p>
 
               {running ? (
                 <div className={`mt-4 rounded-2xl border px-4 py-4 ${canceling ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-sky-200 bg-sky-50 text-sky-800'}`}>
@@ -8812,13 +10220,13 @@ export default function IntentE2EWorkbench({
                   )}
                 </div>
               ) : (
-                <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-400">
+                <div className="mt-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-sm text-slate-400">
                   还没有执行结果。填写左侧表单后点击“开始自动测试”。
                 </div>
               )}
 
               {displayLlmMeta && (
-                <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-700">
+                <div className="mt-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
                   <p className="font-medium text-slate-900">最终使用模型</p>
                   <p className="mt-2 break-all text-xs leading-6 text-slate-600">
                     {displayLlmMeta.provider} / {displayLlmMeta.model} · vision {displayLlmMeta.visionEnabled ? 'on' : 'off'} · 输入图片 {displayLlmMeta.attachmentCount} 张
@@ -8827,7 +10235,7 @@ export default function IntentE2EWorkbench({
               )}
 
               {displayKnowledge && (
-                <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-700">
+                <div className="mt-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <p className="font-medium text-slate-900">知识命中与 Helper 使用</p>
@@ -8838,7 +10246,7 @@ export default function IntentE2EWorkbench({
                     </span>
                   </div>
 
-                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
                     <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
                       <p className="text-xs uppercase tracking-[0.14em] text-slate-400">matched rules</p>
                       <p className="mt-2 text-sm font-medium text-slate-900">{summarizeTextList(displayKnowledge.matchedRuleTitles, 3)}</p>
@@ -8855,7 +10263,7 @@ export default function IntentE2EWorkbench({
                     </div>
                   </div>
 
-                    <div className="mt-3 space-y-2 text-[11px] leading-5 text-slate-500">
+                    <div className="mt-2.5 space-y-1.5 text-[11px] leading-5 text-slate-500">
                       <p className="break-all">
                         规则文件：<span className="font-mono">{displayKnowledge.profilePath}</span>
                       </p>
@@ -8871,7 +10279,7 @@ export default function IntentE2EWorkbench({
               )}
 
               {activeRunId && (
-                <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-700">
+                <div className="mt-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
                   <p className="font-medium text-slate-900">服务端 Run ID</p>
                   <p className="mt-2 break-all font-mono text-xs leading-6 text-slate-600">{activeRunId}</p>
                   <p className="mt-2 text-xs text-slate-500">
@@ -8880,8 +10288,95 @@ export default function IntentE2EWorkbench({
                 </div>
               )}
 
-              {displayFinalResult && activeRunId && (
-                <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-700">
+                  </>
+                )}
+
+                {railView === 'context' && (
+                  <div className="space-y-4">
+                    <div className="intent-e2e-detail-launcher rounded-[26px] border border-black/5 bg-white/92 p-4 shadow-[0_12px_28px_rgba(44,37,28,0.06)]">
+                      <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">Execution Context</p>
+                      <p className="mt-1.5 text-base font-semibold tracking-[-0.02em] text-slate-950">登录、模型与执行边界</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">
+                        本次运行真正需要的上下文统一收在这里，左侧不再继续堆控制项。
+                      </p>
+                    </div>
+                    <div ref={setContextPortalHost} className="space-y-4" />
+                  </div>
+                )}
+
+                {railView === 'governance' && !embedded && (
+                  <div className="space-y-4">
+                    <div className="intent-e2e-detail-launcher rounded-[26px] border border-black/5 bg-white/92 p-4 shadow-[0_12px_28px_rgba(44,37,28,0.06)]">
+                      <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">Governance</p>
+                      <p className="mt-1.5 text-base font-semibold tracking-[-0.02em] text-slate-950">知识草稿、洞察、审计与回滚</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">
+                        治理学习单独放到右侧工作舱，和实时执行、编译产物并列查看，避免干扰任务输入。
+                      </p>
+                    </div>
+                    <div ref={setGovernancePortalHost} className="space-y-4" />
+                  </div>
+                )}
+
+                {railView === 'compile' && (
+                  <div className="space-y-4">
+                    <div className="intent-e2e-detail-launcher rounded-[26px] border border-black/5 bg-white/92 p-4 shadow-[0_12px_28px_rgba(44,37,28,0.06)]">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">Execution Details</p>
+                          <p className="mt-1.5 text-base font-semibold tracking-[-0.02em] text-slate-950">{activeDetailTab.label}</p>
+                          <p className="mt-1 text-xs leading-5 text-slate-500">{activeDetailTab.description}</p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
+                            {activeDetailTab.countLabel}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setExecutionDetailsModalOpen(true)}
+                            className="inline-flex h-9 items-center justify-center rounded-full border border-slate-200 bg-white px-3.5 text-xs text-slate-700 transition hover:bg-slate-50"
+                          >
+                            全屏查看
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 overflow-x-auto">
+                        <div className="flex min-w-max gap-5 border-b border-[#e1d8ca]">
+                          {detailTabs.map((item) => {
+                            const active = item.key === activeDetailTab.key;
+
+                            return (
+                              <button
+                                key={item.key}
+                                type="button"
+                                onClick={() => setDetailView(item.key)}
+                                className={`inline-flex items-center gap-2 border-b-2 px-0 pb-3 text-[13px] font-medium transition ${
+                                  active
+                                    ? 'border-[#b68d56] text-slate-950'
+                                    : 'border-transparent text-slate-500 hover:text-slate-900'
+                                }`}
+                              >
+                                <span>{item.label}</span>
+                                <span className={`text-[10px] ${active ? 'text-[#8c7656]' : 'text-slate-400'}`}>{item.countLabel}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="intent-e2e-detail-launcher rounded-[26px] border border-black/5 bg-white/92 p-4 shadow-[0_12px_28px_rgba(44,37,28,0.06)]">
+                      <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">Current Snapshot</p>
+                      <p className="mt-2 text-sm text-slate-800">{activeDetailPreview}</p>
+                    </div>
+
+                    {renderExecutionDetailsBody()}
+                  </div>
+                )}
+
+                {railView === 'workspace' && (
+                  displayFinalResult && activeRunId ? (
+                    <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <p className="font-medium text-slate-900">保存到项目工作台</p>
@@ -9285,509 +10780,233 @@ export default function IntentE2EWorkbench({
                       </>
                     )}
                   </div>
-                </div>
-              )}
-
-              <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-medium text-slate-900">浏览器实时画面</p>
-                    <p className="mt-1 text-xs text-slate-500">
-                      {browserSessionId
-                        ? `当前展示第 ${browserAttempt?.attempt || '-'} 次尝试的实时浏览器画面${running ? '，执行中会持续刷新。' : '，已保留最后一帧。'}`
-                        : '执行开始后会自动连接当前尝试的浏览器画面。'}
-                    </p>
-                  </div>
-                  {browserSessionId && (
-                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] text-slate-500">
-                      {browserSessionId}
-                    </span>
-                  )}
-                </div>
-                <div className="mt-3">
-                  {browserSessionId ? (
-                    <BrowserView sessionId={browserSessionId} isActive={running} hideHeader compact />
+                    </div>
                   ) : (
-                    <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-400">
-                      还没有浏览器执行会话；开始生成并执行脚本后会自动显示。
+                    <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-sm text-slate-400">
+                      当前还没有可沉淀的最终结果。等一次运行进入终态后，这里会显示工作台保存和 Starter 资产处理入口。
                     </div>
-                  )}
-                </div>
-              </div>
+                  )
+                )}
 
-              {streamState.feed.length > 0 && (
-                <div className="mt-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm font-medium text-slate-900">实时进展</p>
-                    <span className="text-xs text-slate-400">最近 {streamState.feed.length} 条</span>
-                  </div>
-                  <div className="mt-3 space-y-2">
-                    {streamState.feed.map((item) => (
-                      <div key={item.id} className={`rounded-2xl border px-3 py-2 text-xs leading-5 ${feedToneClass(item.tone)}`}>
-                        {item.text}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </section>
-          </aside>
-        </section>
-
-        {hasDisplayDetails && (
-          <section className="mt-6 space-y-6">
-            <div className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
-              {displayScenarioCard ? (
-                <section className="rounded-[28px] border border-white/60 bg-white/72 p-5 shadow-[0_16px_48px_rgba(15,23,42,0.08)] backdrop-blur-xl md:p-6">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-sm font-medium text-slate-900">ScenarioCard</p>
-                      <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-slate-950">{displayScenarioCard.title}</h2>
-                      <p className="mt-2 text-sm leading-6 text-slate-600">{displayScenarioCard.featureDescription}</p>
-                    </div>
-                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600">
-                      {displayScenarioCard.taskMode === 'scenario' ? '业务流' : '单页面'}
-                    </span>
-                  </div>
-
-                  <div className="mt-5 grid gap-4 md:grid-cols-2">
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50/85 p-4">
-                      <p className="text-xs uppercase tracking-[0.14em] text-slate-400">Target URL</p>
-                      <p className="mt-2 break-all text-sm text-slate-800">{displayTargetUrl || displayScenarioCard.targetUrl || '未生成'}</p>
-                    </div>
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50/85 p-4">
-                      <p className="text-xs uppercase tracking-[0.14em] text-slate-400">Expected Outcome</p>
-                      <p className="mt-2 text-sm text-slate-800">{displayScenarioCard.flowDefinition.expectedOutcome || '未填写'}</p>
-                    </div>
-                  </div>
-
-                  {displayResolvedUrls && displayResolvedUrls.scenarioEntryUrl && displayResolvedUrls.scenarioEntryUrl !== displayResolvedUrls.targetUrl ? (
-                    <div className="mt-4 grid gap-4 md:grid-cols-3">
-                      <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4">
-                        <p className="text-xs uppercase tracking-[0.14em] text-amber-600">Scenario Entry</p>
-                        <p className="mt-2 break-all text-sm text-slate-800">{displayResolvedUrls.scenarioEntryUrl}</p>
-                      </div>
-                      <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4">
-                        <p className="text-xs uppercase tracking-[0.14em] text-amber-600">Precheck URL</p>
-                        <p className="mt-2 break-all text-sm text-slate-800">{displayResolvedUrls.precheckUrl || displayResolvedUrls.scenarioEntryUrl}</p>
-                      </div>
-                      <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4">
-                        <p className="text-xs uppercase tracking-[0.14em] text-amber-600">Analyze URL</p>
-                        <p className="mt-2 break-all text-sm text-slate-800">{displayResolvedUrls.analyzeUrl || displayResolvedUrls.scenarioEntryUrl}</p>
-                      </div>
-                    </div>
-                  ) : null}
-
-                  <div className="mt-5 grid gap-5 md:grid-cols-2">
-                    <div>
-                      <p className="text-sm font-medium text-slate-900">成功标准</p>
-                      <ul className="mt-3 space-y-2 text-sm text-slate-700">
-                        {displayScenarioCard.successCriteria.length > 0 ? (
-                          displayScenarioCard.successCriteria.map((item, index) => (
-                            <li key={index} className="rounded-2xl border border-slate-200 bg-white px-3 py-2">
-                              {item}
-                            </li>
-                          ))
-                        ) : (
-                          <li className="text-slate-400">暂无</li>
-                        )}
-                      </ul>
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-slate-900">视觉锚点</p>
-                      <ul className="mt-3 space-y-2 text-sm text-slate-700">
-                        {displayScenarioCard.visualAnchors.length > 0 ? (
-                          displayScenarioCard.visualAnchors.map((item, index) => (
-                            <li key={index} className="rounded-2xl border border-slate-200 bg-white px-3 py-2">
-                              {item}
-                            </li>
-                          ))
-                        ) : (
-                          <li className="text-slate-400">暂无</li>
-                        )}
-                      </ul>
-                    </div>
-                  </div>
-
-                  <div className="mt-5">
-                    <p className="text-sm font-medium text-slate-900">规划步骤</p>
-                    <div className="mt-3 space-y-3">
-                      {displayScenarioCard.flowDefinition.steps.length > 0 ? (
-                        displayScenarioCard.flowDefinition.steps.map((step, index) => (
-                          <article key={step.stepUid || index} className="rounded-2xl border border-slate-200 bg-white p-4">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">
-                                {step.stepType}
-                              </span>
-                              <p className="text-sm font-medium text-slate-900">
-                                {index + 1}. {step.title || '未命名步骤'}
-                              </p>
-                            </div>
-                            {(step.target || step.instruction || step.expectedResult || step.extractVariable) && (
-                              <div className="mt-3 space-y-2 text-xs leading-6 text-slate-600">
-                                {step.target && (
-                                  <p>
-                                    <span className="font-medium text-slate-800">目标：</span>
-                                    {step.target}
-                                  </p>
-                                )}
-                                {step.instruction && (
-                                  <p>
-                                    <span className="font-medium text-slate-800">动作：</span>
-                                    {step.instruction}
-                                  </p>
-                                )}
-                                {step.expectedResult && (
-                                  <p>
-                                    <span className="font-medium text-slate-800">预期：</span>
-                                    {step.expectedResult}
-                                  </p>
-                                )}
-                                {step.extractVariable && (
-                                  <p>
-                                    <span className="font-medium text-slate-800">变量：</span>
-                                    {step.extractVariable}
-                                  </p>
-                                )}
-                              </div>
-                            )}
-                          </article>
-                        ))
-                      ) : (
-                        <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-400">当前卡片没有显式步骤。</div>
-                      )}
-                    </div>
-                  </div>
-                </section>
-              ) : (
-                <section className="rounded-[28px] border border-white/60 bg-white/72 p-5 shadow-[0_16px_48px_rgba(15,23,42,0.08)] backdrop-blur-xl md:p-6">
-                  <p className="text-sm font-medium text-slate-900">ScenarioCard</p>
-                  <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-400">
-                    AI 还在规划中，生成后会立刻展示。
-                  </div>
-                </section>
-              )}
-
-              <section className="rounded-[28px] border border-white/60 bg-white/72 p-5 shadow-[0_16px_48px_rgba(15,23,42,0.08)] backdrop-blur-xl md:p-6">
-                <p className="text-sm font-medium text-slate-900">编译后的生成说明</p>
-                <p className="mt-2 text-xs leading-5 text-slate-500">这里会同时展示现有生成器还在消费的自然语言说明，以及新接入的结构化 ExecutionPlan / CompiledTemplate / VerificationPlan。</p>
-
-                {(displayExecutionPlan || displayCompiledTemplate || displayVerificationPlan) && (
-                  <div className="mt-4 grid gap-4">
-                    {displayExecutionPlan && (
-                      <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-medium text-slate-900">ExecutionPlan</p>
-                            <p className="mt-1 text-xs leading-5 text-slate-500">
-                              {displayExecutionPlan.compiler} · {displayExecutionPlan.mode} · {displayExecutionPlan.steps.length} steps
-                            </p>
-                          </div>
-                          <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-600">
-                            {displayExecutionPlan.entryUrl || '无入口 URL'}
-                          </span>
+                {railView === 'live' && (
+                  <div className="grid gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(270px,0.74fr)] xl:items-stretch">
+                    <div className="intent-e2e-browser-stage overflow-hidden rounded-[28px] border border-black/5 bg-[linear-gradient(180deg,rgba(252,249,243,0.97),rgba(245,241,233,0.96))] px-4 py-4 shadow-[0_18px_44px_rgba(44,37,28,0.08)] xl:flex xl:min-h-0 xl:flex-col">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-medium text-slate-900">浏览器实时画面</p>
+                          <p className="mt-1 text-xs leading-5 text-slate-500">
+                            {browserSessionId
+                              ? `当前展示第 ${browserAttempt?.attempt || '-'} 次尝试的实时浏览器画面${running ? '，执行中会持续刷新。' : '，已保留最后一帧。'}`
+                              : '执行开始后会自动连接当前尝试的浏览器画面。'}
+                          </p>
                         </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${railStatusBadge.className}`}>
+                            {railStatusBadge.label}
+                          </span>
+                          {browserSessionId && (
+                            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] text-slate-500">
+                              {browserSessionId}
+                            </span>
+                          )}
+                        </div>
+                      </div>
 
-                        <div className="mt-3 space-y-3">
-                          {displayExecutionPlan.steps.map((step, index) => (
-                            <div key={step.planStepUid} className="rounded-2xl border border-slate-200 bg-slate-50/80 px-3 py-3">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">
-                                  {step.stepType}
-                                </span>
-                                <p className="text-sm font-medium text-slate-900">
-                                  {index + 1}. {step.title || '未命名步骤'}
-                                </p>
+                      <div className="mt-4">
+                        {browserSessionId ? (
+                          <BrowserView
+                            sessionId={browserSessionId}
+                            isActive={running}
+                            hideHeader
+                            compact
+                            className="rounded-[28px] border border-[#24272d]/90 bg-[#101216] p-3.5 shadow-[0_22px_60px_rgba(15,23,42,0.28)]"
+                            viewportClassName="aspect-video min-h-[280px] rounded-[22px] md:min-h-[320px]"
+                          />
+                        ) : (
+                          <div className="overflow-hidden rounded-[28px] border border-[#24272d]/90 bg-[#101216] p-3.5 shadow-[0_22px_60px_rgba(15,23,42,0.28)]">
+                            <div className="relative aspect-video min-h-[280px] overflow-hidden rounded-[22px] border border-white/10 bg-[#06080b] md:min-h-[320px]">
+                              <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-between bg-gradient-to-b from-black/55 to-transparent px-4 py-3">
+                                <div className="flex items-center gap-2">
+                                  <span className="h-2.5 w-2.5 rounded-full bg-[#ffb86c]" />
+                                  <span className="h-2.5 w-2.5 rounded-full bg-[#ffd26f]" />
+                                  <span className="h-2.5 w-2.5 rounded-full bg-[#89d185]" />
+                                </div>
+                                <span className="text-[10px] uppercase tracking-[0.18em] text-slate-400">Live Preview Idle</span>
                               </div>
-                              <div className="mt-2 space-y-1 text-[11px] leading-5 text-slate-600">
-                                <p>目标：{step.target || '—'}</p>
-                                <p>Goal：{step.goal || '—'}</p>
-                                <p>Actions：{summarizeTextList(step.allowedActions, 5)}</p>
-                                <p>Helpers：{summarizeTextList(step.preferredHelpers, 4)}</p>
-                                <p>Assertions：{summarizeTextList(step.requiredAssertions, 3)}</p>
-                                {step.extractVariable && <p>变量：{step.extractVariable}</p>}
+                              <div className="flex h-full items-center justify-center bg-[radial-gradient(circle_at_top,rgba(28,34,44,0.72),transparent_48%),linear-gradient(180deg,#080a0e,#0d1118_56%,#0a0d12)] px-6 pt-10 text-center">
+                                <div className="max-w-[320px]">
+                                  <p className="text-sm font-medium text-slate-200">浏览器实时画面会在执行开始后自动出现</p>
+                                  <p className="mt-3 text-xs leading-6 text-slate-400">
+                                    当前还没有浏览器执行会话。开始生成并执行脚本后，这里会切到真实运行画面，并持续保留最后一帧。
+                                  </p>
+                                </div>
                               </div>
                             </div>
-                          ))}
-                        </div>
+                          </div>
+                        )}
                       </div>
-                    )}
+                    </div>
 
-                    {displayCompiledTemplate && (
-                      <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                        <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="space-y-4 xl:flex xl:min-h-0 xl:flex-col">
+                      <div className="intent-e2e-feed-panel overflow-hidden rounded-[26px] border border-slate-200 bg-white px-4 py-4 shadow-[0_12px_28px_rgba(44,37,28,0.06)] xl:flex xl:h-full xl:min-h-0 xl:flex-col">
+                        <div className="flex items-start justify-between gap-3">
                           <div>
-                            <p className="text-sm font-medium text-slate-900">CompiledTemplate</p>
-                            <p className="mt-1 text-xs leading-5 text-slate-500">
-                              {displayCompiledTemplate.compiler} · {displayCompiledTemplate.slots.length} slots
-                            </p>
+                            <p className="text-sm font-medium text-slate-900">实时日志</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">把执行状态和最新动态都收在这里，避免在 tab 之间来回切换。</p>
                           </div>
-                          <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-600">
-                            {displayCompiledTemplate.testTitle || '未命名测试'}
-                          </span>
+                          <div className="text-right text-[11px] text-slate-400">
+                            <p>最新在上</p>
+                            <p className="mt-1">共 {streamState.feed.length} 条</p>
+                          </div>
                         </div>
 
-                        <div className="mt-3 grid gap-3 xl:grid-cols-3">
-                          <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-3 py-3">
-                            <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">entry</p>
-                            <p className="mt-2 break-all text-xs leading-5 text-slate-700">{displayCompiledTemplate.entryUrl || '—'}</p>
-                            <p className="mt-1 text-[11px] text-slate-500">
-                              shared：{summarizeTextList(displayCompiledTemplate.sharedVariables, 4)}
-                            </p>
+                        <div className={`mt-4 rounded-[20px] border px-3.5 py-3 ${liveLogStatus.toneClassName}`}>
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span className={liveLogStatus.indicatorClassName} />
+                              <p className="truncate text-sm font-medium">{liveLogStatus.title}</p>
+                            </div>
+                            <span className="rounded-full border border-current/15 bg-white/75 px-2.5 py-1 text-[10px] font-medium">
+                              {liveLogStatus.badgeLabel}
+                            </span>
                           </div>
-                          <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-3 py-3 xl:col-span-2">
-                            <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">slots</p>
-                            <div className="mt-2 space-y-2">
-                              {displayCompiledTemplate.slots.map((slot) => (
-                                <div key={slot.slotUid} className="rounded-2xl border border-slate-200 bg-white px-3 py-3 text-xs leading-5 text-slate-600">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">
-                                      {slot.kind}
-                                    </span>
-                                    <p className="font-medium text-slate-900">{slot.slotUid}</p>
-                                    <p className="text-slate-500">{slot.title || '未命名 slot'}</p>
-                                  </div>
-                                  <div className="mt-2 space-y-1">
-                                    <p>关联 checks：{summarizeTextList(slot.relatedCheckUids, 3)}</p>
-                                    <p>Helpers：{summarizeTextList(slot.preferredHelpers, 4)}</p>
-                                    <p>指令：{summarizeTextList(slot.instructions, 2)}</p>
+                          <p className="mt-2 text-xs leading-5 opacity-90">{liveLogStatus.detail}</p>
+                          <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] opacity-80">
+                            <span>当前尝试</span>
+                            <span className="rounded-full border border-current/15 bg-white/70 px-2.5 py-0.5">{liveAttemptValue}</span>
+                            <span>累计 {displayAttempts.length} 次</span>
+                          </div>
+                        </div>
+
+                        {liveFeedItems.length > 0 ? (
+                          <div className="mt-4 rounded-[22px] border border-slate-200 bg-slate-50/80 p-2.5 xl:flex xl:min-h-0 xl:flex-1 xl:flex-col">
+                            <div aria-live="polite" className="intent-e2e-scroll space-y-2 overflow-y-auto pr-1 xl:min-h-0 xl:flex-1 xl:overscroll-contain">
+                              {liveFeedItems.map((item, index) => (
+                                <div
+                                  key={item.id}
+                                  className={`rounded-2xl border px-3 py-2.5 text-xs leading-5 ${feedToneClass(item.tone)} ${
+                                    index === 0 ? 'shadow-[0_8px_18px_rgba(15,23,42,0.05)]' : ''
+                                  }`}
+                                >
+                                  <div className="flex items-start gap-2">
+                                    {index === 0 && (
+                                      <span className="rounded-full border border-current/20 bg-white/75 px-2 py-0.5 text-[10px] font-medium">
+                                        最新
+                                      </span>
+                                    )}
+                                    <p className="flex-1">{item.text}</p>
                                   </div>
                                 </div>
                               ))}
                             </div>
                           </div>
-                        </div>
-
-                        <details className="mt-3 rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
-                          <summary className="cursor-pointer list-none text-sm font-medium text-slate-900">查看编译模板代码</summary>
-                          <pre className="mt-3 max-h-[320px] overflow-auto rounded-2xl bg-slate-950/96 p-4 text-xs leading-6 text-slate-100 whitespace-pre-wrap">
-                            {displayCompiledTemplate.code}
-                          </pre>
-                        </details>
-                      </div>
-                    )}
-
-                    {displayVerificationPlan && (
-                      <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-medium text-slate-900">VerificationPlan</p>
-                            <p className="mt-1 text-xs leading-5 text-slate-500">
-                              {displayVerificationPlan.strategy} · {displayVerificationPlan.checks.length} checks
-                            </p>
+                        ) : (
+                          <div className="mt-4 rounded-[22px] border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-sm text-slate-400 xl:min-h-0 xl:flex-1">
+                            执行开始后，这里会持续显示最新阶段、修复和诊断信息。
                           </div>
-                          <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-600">
-                            {displayVerificationPlan.expectedOutcome || '无 expectedOutcome'}
-                          </span>
-                        </div>
-
-                        <div className="mt-3 space-y-3">
-                          {displayVerificationPlan.checks.slice(0, 8).map((check, index) => (
-                            <div key={check.checkUid} className="rounded-2xl border border-slate-200 bg-slate-50/80 px-3 py-3">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">
-                                  {check.kind}
-                                </span>
-                                <p className="text-sm font-medium text-slate-900">
-                                  {index + 1}. {check.title}
-                                </p>
-                              </div>
-                              <div className="mt-2 space-y-1 text-[11px] leading-5 text-slate-600">
-                                <p>来源：{check.source}</p>
-                                <p>规则：{check.instruction}</p>
-                                <p>Helpers：{summarizeTextList(check.preferredHelpers, 4)}</p>
-                                <p>关联步骤：{summarizeTextList(check.relatedPlanStepUids, 3)}</p>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
+                        )}
                       </div>
-                    )}
+                    </div>
                   </div>
                 )}
-
-                {displayDescription ? (
-                  <pre className="mt-4 max-h-[560px] overflow-auto rounded-2xl border border-slate-200 bg-slate-950/96 p-4 text-xs leading-6 text-slate-100 whitespace-pre-wrap">
-                    {displayDescription}
-                  </pre>
-                ) : (
-                  <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-400">
-                    说明还在生成中，稍后会自动出现。
-                  </div>
-                )}
-
-                {displayScenarioCard && (
-                  <details className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                    <summary className="cursor-pointer list-none text-sm font-medium text-slate-900">查看原始 ScenarioCard JSON</summary>
-                    <pre className="mt-3 max-h-[320px] overflow-auto rounded-2xl bg-slate-950/96 p-4 text-xs leading-6 text-slate-100 whitespace-pre-wrap">
-                      {JSON.stringify(displayScenarioCard, null, 2)}
-                    </pre>
-                  </details>
-                )}
-              </section>
-            </div>
-
-            <section className="rounded-[28px] border border-white/60 bg-white/72 p-5 shadow-[0_16px_48px_rgba(15,23,42,0.08)] backdrop-blur-xl md:p-6">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium text-slate-900">尝试记录</p>
-                  <p className="mt-1 text-xs text-slate-500">会展示首次生成以及后续 AI repair 尝试，运行中也会实时刷新。</p>
-                </div>
-                <p className="text-xs text-slate-500">共 {displayAttempts.length} 次</p>
               </div>
-
-              {displayAttempts.length === 0 ? (
-                <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-400">
-                  暂无尝试记录，AI 准备生成第一轮脚本后会在这里更新。
-                </div>
-              ) : (
-                <div className="mt-5 space-y-4">
-                  {displayAttempts.map((attempt) => (
-                    <article key={attempt.attempt} className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">
-                      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                        <div className="space-y-2">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className={`rounded-full border px-3 py-1 text-xs ${attemptTone(attempt.kind)}`}>
-                              #{attempt.attempt} · {attempt.kind === 'repair' ? 'AI 修复' : '首次生成'}
-                            </span>
-                            <span className={`rounded-full border px-3 py-1 text-xs ${attemptResultTone(attempt)}`}>
-                              {attemptResultLabel(attempt)}
-                            </span>
-                          </div>
-                          <p className="text-sm text-slate-600">
-                            {(attempt.status || 'completed') === 'running'
-                              ? `实时接收 ${attempt.events.length} 条事件 · ${attempt.logs.length} 条日志 · 当前代码长度 ${attempt.code.length} 字符`
-                              : `耗时 ${formatDuration(attempt.result?.duration || 0)} · 代码长度 ${attempt.code.length} 字符 · 事件 ${attempt.events.length} 条`}
-                          </p>
-                          {attempt.helperUsage && attempt.helperUsage.usedHelpers.length > 0 && (
-                            <p className="text-xs text-slate-500">
-                              helper：{summarizeTextList(attempt.helperUsage.usedHelpers, 4)}
-                              {attempt.helperUsage.usedSuggestedHelpers.length > 0
-                                ? ` · 命中推荐 ${attempt.helperUsage.usedSuggestedHelpers.length} 个`
-                                : ''}
-                            </p>
-                          )}
-                          {attempt.structuredPatch && (
-                            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-xs leading-5 text-slate-600">
-                              <p className="font-medium text-slate-900">结构化 slot patch</p>
-                              <p className="mt-1">
-                                {attempt.structuredPatch.strategy} · base {baseCodeSourceLabel(attempt.structuredPatch.baseCodeSource)} ·
-                                {attempt.structuredPatch.reusedPreviousCode ? ' 复用上一轮代码' : ' 不复用上一轮代码'}
-                              </p>
-                              <p className="mt-1">target：{summarizeTextList(attempt.structuredPatch.targetSlotUids, 4)}</p>
-                              <p className="mt-1">returned：{summarizeTextList(attempt.structuredPatch.returnedSlotUids, 4)}</p>
-                            </div>
-                          )}
-                          {attempt.sessionId && <p className="text-xs text-slate-400">浏览器会话：{attempt.sessionId}</p>}
-                          {attempt.triage && (
-                            <div className={`inline-flex max-w-full flex-wrap items-center gap-2 rounded-2xl border px-3 py-2 text-xs ${intentFailureTone(attempt.triage)}`}>
-                              <span className="rounded-full border px-2 py-0.5 font-medium">{intentFailureClassLabel(attempt.triage.failureClass)}</span>
-                              <span>{attempt.triage.summary}</span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {attempt.result?.steps.length ? (
-                        <div className="mt-4 grid gap-3 md:grid-cols-3">
-                          {attempt.result.steps.map((step, index) => (
-                            <div key={`${attempt.attempt}-${index}`} className={`rounded-2xl border px-3 py-3 text-xs ${stepTone(step.status)}`}>
-                              <p className="font-medium">{step.title}</p>
-                              <p className="mt-1 opacity-80">
-                                {step.status} · {formatDuration(step.duration)}
-                              </p>
-                              {step.error && <p className="mt-2 whitespace-pre-wrap opacity-90">{step.error}</p>}
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm text-slate-400">
-                          {(attempt.status || 'completed') === 'running' ? '正在等待步骤反馈…' : '本次尝试没有结构化步骤回传。'}
-                        </div>
-                      )}
-
-                      {attempt.result?.error && (
-                        <pre className="mt-4 max-h-[180px] overflow-auto rounded-2xl border border-rose-200 bg-rose-50 p-4 text-xs leading-6 text-rose-800 whitespace-pre-wrap">
-                          {attempt.result.error}
-                        </pre>
-                      )}
-
-                      <div className="mt-4 grid gap-4 xl:grid-cols-4">
-                        <details className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 xl:col-span-1">
-                          <summary className="cursor-pointer list-none text-sm font-medium text-slate-900">查看事件</summary>
-                          <div className="mt-3 max-h-[260px] space-y-2 overflow-auto pr-1 text-xs leading-5 text-slate-600">
-                            {attempt.events.length > 0 ? (
-                              attempt.events.map((item, index) => (
-                                <div key={index} className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                                  <p className="font-medium text-slate-900">{item.type}</p>
-                                  <p className="mt-1 whitespace-pre-wrap">{item.content}</p>
-                                </div>
-                              ))
-                            ) : (
-                              <p className="text-slate-400">还没有事件。</p>
-                            )}
-                          </div>
-                        </details>
-
-                        <details className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 xl:col-span-1">
-                          <summary className="cursor-pointer list-none text-sm font-medium text-slate-900">查看执行日志</summary>
-                          <div className="mt-3 max-h-[260px] space-y-2 overflow-auto pr-1 text-xs leading-5 text-slate-600">
-                            {attempt.logs.length > 0 ? (
-                              attempt.logs.map((item, index) => (
-                                <div key={index} className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                                  <p className="font-medium text-slate-900">{item.level.toUpperCase()}</p>
-                                  <p className="mt-1 whitespace-pre-wrap">{item.message}</p>
-                                </div>
-                              ))
-                            ) : (
-                              <p className="text-slate-400">没有额外日志。</p>
-                            )}
-                          </div>
-                        </details>
-
-                        <details className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 xl:col-span-1">
-                          <summary className="cursor-pointer list-none text-sm font-medium text-slate-900">查看结构化 patch</summary>
-                          <div className="mt-3 max-h-[260px] overflow-auto pr-1 text-xs leading-5 text-slate-600">
-                            {attempt.structuredPatch ? (
-                              <>
-                                <div className="rounded-xl border border-slate-200 bg-white px-3 py-3">
-                                  <p className="font-medium text-slate-900">{attempt.structuredPatch.strategy}</p>
-                                  <p className="mt-1">base：{baseCodeSourceLabel(attempt.structuredPatch.baseCodeSource)}</p>
-                                  <p className="mt-1">target：{summarizeTextList(attempt.structuredPatch.targetSlotUids, 4)}</p>
-                                  <p className="mt-1">returned：{summarizeTextList(attempt.structuredPatch.returnedSlotUids, 4)}</p>
-                                </div>
-                                <pre className="mt-3 max-h-[220px] overflow-auto rounded-2xl bg-slate-950/96 p-4 text-xs leading-6 text-slate-100 whitespace-pre-wrap">
-                                  {JSON.stringify(attempt.structuredPatch, null, 2)}
-                                </pre>
-                              </>
-                            ) : (
-                              <p className="text-slate-400">本次尝试没有结构化 patch。</p>
-                            )}
-                          </div>
-                        </details>
-
-                        <details className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 xl:col-span-1" open={attempt === finalAttempt || attempt.status === 'running'}>
-                          <summary className="cursor-pointer list-none text-sm font-medium text-slate-900">查看脚本</summary>
-                          <div className="mt-3">
-                            <button
-                              type="button"
-                              onClick={() => navigator.clipboard.writeText(attempt.code).catch(() => {})}
-                              className="inline-flex h-9 items-center justify-center rounded-xl border border-slate-200 bg-white px-3 text-xs text-slate-700 transition hover:bg-slate-50"
-                            >
-                              复制脚本
-                            </button>
-                            <pre className="mt-3 max-h-[360px] overflow-auto rounded-2xl bg-slate-950/96 p-4 text-xs leading-6 text-slate-100 whitespace-pre-wrap">
-                              {attempt.code || '脚本尚未返回，稍后会实时显示。'}
-                            </pre>
-                          </div>
-                        </details>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              )}
             </section>
-          </section>
+          </aside>
+        </section>
+
+        {executionDetailsModalOpen && (
+          <div
+            className="fixed inset-0 z-[120] flex items-center justify-center bg-[rgba(28,26,21,0.26)] px-4 py-6 backdrop-blur-sm"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Execution Details"
+            onClick={() => setExecutionDetailsModalOpen(false)}
+          >
+            <div
+              className="intent-e2e-modal-surface flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-[30px] border border-black/10 bg-[#f5f1ea] shadow-[0_24px_80px_rgba(15,23,42,0.24)]"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="shrink-0 flex items-start justify-between gap-4 border-b border-slate-200 bg-white/92 px-5 py-4 backdrop-blur">
+                <div>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">Execution Details</p>
+                  <p className="mt-1 text-base font-semibold text-slate-950">{activeDetailTab.label}</p>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">{activeDetailTab.description}</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
+                    {activeDetailTab.countLabel}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setExecutionDetailsModalOpen(false)}
+                    className="inline-flex h-9 items-center justify-center rounded-full border border-slate-200 bg-white px-3.5 text-sm text-slate-600 transition hover:bg-slate-50"
+                  >
+                    关闭
+                  </button>
+                </div>
+              </div>
+              <div className="shrink-0 border-b border-slate-200 bg-white/92 px-5 py-3 backdrop-blur">
+                <div className="flex flex-wrap gap-1.5 rounded-[16px] bg-slate-100/90 p-1">
+                  {detailTabs.map((item) => {
+                    const active = item.key === activeDetailTab.key;
+
+                    return (
+                      <button
+                        key={item.key}
+                        type="button"
+                        onClick={() => setDetailView(item.key)}
+                        className={`inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-[11px] font-medium transition ${
+                          active
+                            ? 'border-slate-200 bg-white text-slate-950 shadow-[0_1px_4px_rgba(15,23,42,0.08)]'
+                            : 'border-transparent bg-transparent text-slate-500 hover:bg-white/70 hover:text-slate-900'
+                        }`}
+                      >
+                        <span>{item.label}</span>
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] ${active ? 'bg-slate-100 text-slate-600' : 'bg-white text-slate-500'}`}>
+                          {item.countLabel}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 md:px-6 md:py-5">{renderExecutionDetailsBody()}</div>
+            </div>
+          </div>
+        )}
+
+        {attemptDetailAttempt && (
+          <div
+            className="fixed inset-0 z-[130] flex items-center justify-center bg-[rgba(28,26,21,0.26)] px-4 py-6 backdrop-blur-sm"
+            role="dialog"
+            aria-modal="true"
+            aria-label="尝试记录详情"
+            onClick={() => setAttemptDetailAttemptNumber(null)}
+          >
+            <div
+              className="intent-e2e-modal-surface flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-[30px] border border-black/10 bg-[#f5f1ea] shadow-[0_24px_80px_rgba(15,23,42,0.24)]"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="shrink-0 flex items-start justify-between gap-4 border-b border-slate-200 bg-white/92 px-5 py-4 backdrop-blur">
+                <div>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">Attempt Detail</p>
+                  <p className="mt-1 text-base font-semibold text-slate-950">
+                    第 {attemptDetailAttempt.attempt} 次尝试详情
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAttemptDetailAttemptNumber(null)}
+                  className="inline-flex h-9 items-center justify-center rounded-full border border-slate-200 bg-white px-3.5 text-sm text-slate-600 transition hover:bg-slate-50"
+                >
+                  关闭
+                </button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 md:px-6 md:py-5">
+                {renderAttemptDetailBody(attemptDetailAttempt)}
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </main>

@@ -7,9 +7,18 @@ interface Props {
   isActive: boolean;
   compact?: boolean;
   hideHeader?: boolean;
+  viewportClassName?: string;
+  className?: string;
 }
 
-export default function BrowserView({ sessionId, isActive, compact = false, hideHeader = false }: Props) {
+export default function BrowserView({
+  sessionId,
+  isActive,
+  compact = false,
+  hideHeader = false,
+  viewportClassName = '',
+  className = '',
+}: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
@@ -159,9 +168,14 @@ export default function BrowserView({ sessionId, isActive, compact = false, hide
     return '';
   })();
   const showOverlay = Boolean(overlayMessage);
+  const shellClassName = compact
+    ? 'rounded-[30px] border border-white/10 bg-[linear-gradient(180deg,rgba(17,19,23,0.96),rgba(8,10,14,0.98))] p-3.5 shadow-[0_28px_70px_rgba(15,23,42,0.34)]'
+    : 'rounded-[28px] border border-black/5 bg-[rgba(255,251,246,0.92)] p-5 shadow-[0_18px_40px_rgba(44,37,28,0.08)]';
+  const viewportToneClassName = compact ? 'bg-[#06080b]' : 'bg-gray-900';
+  const canvasClassName = viewportClassName ? 'h-full w-full' : 'h-auto w-full';
 
   return (
-    <div className={compact ? 'rounded-lg bg-zinc-950 p-2' : 'bg-white rounded-lg shadow p-5'}>
+    <div className={`${shellClassName} ${className}`.trim()}>
       {!hideHeader && (
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-semibold text-gray-800">浏览器实时画面</h2>
@@ -175,18 +189,28 @@ export default function BrowserView({ sessionId, isActive, compact = false, hide
         </div>
       )}
 
-      <div className={`${compact ? 'bg-zinc-900' : 'bg-gray-900'} rounded-lg overflow-hidden relative`}>
-        <canvas ref={canvasRef} width={1280} height={720} className="w-full h-auto" />
+      <div className={`${viewportToneClassName} relative overflow-hidden rounded-[22px] ${viewportClassName}`.trim()}>
+        {compact && (
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-between bg-gradient-to-b from-black/55 to-transparent px-4 py-3">
+            <div className="flex items-center gap-2">
+              <span className="h-2.5 w-2.5 rounded-full bg-[#ffb86c]" />
+              <span className="h-2.5 w-2.5 rounded-full bg-[#ffd26f]" />
+              <span className="h-2.5 w-2.5 rounded-full bg-[#89d185]" />
+            </div>
+            <span className="text-[10px] uppercase tracking-[0.18em] text-slate-400">Live Preview</span>
+          </div>
+        )}
+        <canvas ref={canvasRef} width={1280} height={720} className={canvasClassName} />
         {showOverlay && (
-          <div className="absolute inset-0 flex items-center justify-center bg-gray-900/80 text-gray-400 text-sm">
+          <div className="absolute inset-0 flex items-center justify-center bg-[#07090d]/78 px-6 text-center text-sm tracking-[0.01em] text-slate-300">
             {overlayMessage}
           </div>
         )}
       </div>
       {hideHeader && (
-        <div className="flex items-center gap-3 text-xs text-gray-500">
-          <span className={`flex items-center gap-1 ${connected ? 'text-green-600' : 'text-gray-400'}`}>
-            <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500' : 'bg-gray-300'}`} />
+        <div className="mt-3 flex items-center gap-3 text-[11px] text-slate-400">
+          <span className={`flex items-center gap-1 ${connected ? 'text-emerald-300' : 'text-slate-500'}`}>
+            <span className={`h-2 w-2 rounded-full ${connected ? 'bg-emerald-400' : 'bg-slate-600'}`} />
             {connected ? '已连接' : hasReceivedFrames ? '已断开 (保留最后画面)' : '未连接'}
           </span>
           {frameCount > 0 && <span>帧数: {frameCount}</span>}

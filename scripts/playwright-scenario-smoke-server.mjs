@@ -20,9 +20,13 @@ function restoreWorkspaceFiles() {
   }
 }
 
-try {
-  fs.rmSync(path.join(ROOT, distDir, 'dev', 'lock'));
-} catch {}
+// This distDir is dedicated to the scenario smoke server. Clear stale Next locks
+// left behind by interrupted runs before rebuilding it.
+for (const lockPath of [path.join(ROOT, distDir, 'lock'), path.join(ROOT, distDir, 'dev', 'lock')]) {
+  try {
+    fs.rmSync(lockPath, { force: true });
+  } catch {}
+}
 
 try {
   execFileSync(process.execPath, [nextCli, 'build', '--webpack'], {

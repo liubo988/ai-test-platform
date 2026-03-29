@@ -9,7 +9,7 @@ export const metadata: Metadata = {
 
 export default function IntentE2EPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen bg-slate-950 text-slate-100 p-6">正在加载意图工作台…</div>}>
+    <Suspense fallback={<div className="min-h-screen bg-[#f7f3eb] p-6 text-slate-600">正在加载意图工作台…</div>}>
       <IntentE2EWorkbench />
     </Suspense>
   );

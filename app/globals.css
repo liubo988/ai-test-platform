@@ -22,3 +22,101 @@ body {
 * {
   border-color: rgb(228 228 231 / 1);
 }
+
+.intent-e2e-workbench {
+  background:
+    radial-gradient(circle at 14% 0%, rgba(255, 243, 221, 0.92), transparent 24%),
+    radial-gradient(circle at 84% 9%, rgba(214, 225, 241, 0.88), transparent 23%),
+    linear-gradient(180deg, #f8f4ed 0%, #f4efe7 50%, #eeebe4 100%);
+}
+
+.intent-e2e-workbench::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.34), transparent 24%),
+    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.26), transparent 40%);
+  opacity: 0.9;
+}
+
+.intent-e2e-shell {
+  position: relative;
+}
+
+.intent-e2e-shell::before {
+  content: '';
+  position: absolute;
+  left: 4%;
+  right: 4%;
+  top: 4px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(137, 118, 88, 0.22), transparent);
+  pointer-events: none;
+}
+
+.intent-e2e-scroll {
+  scrollbar-gutter: stable both-edges;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(140, 118, 86, 0.35) transparent;
+}
+
+.intent-e2e-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.intent-e2e-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.intent-e2e-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(140, 118, 86, 0.26);
+  background-clip: padding-box;
+}
+
+.intent-e2e-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(140, 118, 86, 0.4);
+  background-clip: padding-box;
+}
+
+.intent-e2e-hero,
+.intent-e2e-section-nav,
+.intent-e2e-panel,
+.intent-e2e-command-deck,
+.intent-e2e-browser-stage,
+.intent-e2e-feed-panel,
+.intent-e2e-detail-launcher,
+.intent-e2e-modal-surface {
+  border-color: rgba(94, 79, 61, 0.1);
+}
+
+.intent-e2e-panel {
+  background: rgba(255, 250, 244, 0.88);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.76),
+    0 18px 46px rgba(44, 37, 28, 0.06);
+}
+
+.intent-e2e-command-deck {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.76),
+    0 28px 70px rgba(44, 37, 28, 0.1);
+}
+
+.intent-e2e-browser-stage,
+.intent-e2e-feed-panel,
+.intent-e2e-detail-launcher {
+  background: rgba(252, 248, 241, 0.9);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.76),
+    0 14px 34px rgba(44, 37, 28, 0.06);
+}
+
+.intent-e2e-modal-surface {
+  background: linear-gradient(180deg, #f7f2e9 0%, #f0ebe2 100%);
+  box-shadow: 0 30px 96px rgba(15, 23, 42, 0.24);
+}
