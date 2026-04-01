@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { normalizeIntentE2ERequestBody } from '@/lib/ai/intent-e2e-request';
 import { createIntentE2ERun, startIntentE2ERun, waitForIntentE2ERunPersistence } from '@/lib/ai/intent-e2e-run-registry';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
+import { resolveIntentE2ESystemOnboardingDefaults } from '@/lib/intent-e2e-system-onboarding';
 import { getWorkspaceLLMRuntimeOverrides, mergeLLMRuntimeOverrides } from '@/lib/llm/workspace-config';
 import { resolveIntentE2EProjectAuth } from '@/lib/server/intent-e2e-project-auth';
 import { applyActorCookie } from '@/lib/server/project-actor';
@@ -30,6 +31,17 @@ export async function POST(req: NextRequest) {
       llmConfig: mergeLLMRuntimeOverrides(await getWorkspaceLLMRuntimeOverrides(), request.llmConfig),
     };
     ({ request, actorUserUid } = await resolveIntentE2EProjectAuth(req, request));
+    const onboarding = resolveIntentE2ESystemOnboardingDefaults({
+      onboardingManifestId: request.onboardingManifestId,
+      targetUrl: request.targetUrl,
+      runtimeGovernance: request.runtimeGovernance,
+    });
+    request = {
+      ...request,
+      targetUrl: onboarding.targetUrl,
+      runtimeGovernance: onboarding.runtimeGovernance,
+      ...(onboarding.systemOnboarding ? { systemOnboarding: onboarding.systemOnboarding } : {}),
+    };
     const createdRun = createIntentE2ERun(request);
     const run = startIntentE2ERun(createdRun.runId, request);
     await waitForIntentE2ERunPersistence(run.runId);

@@ -20,10 +20,25 @@ import {
 import type { ScenarioAttachment, ScenarioCard } from '../ai/scenario-card';
 import type { LLMRuntimeOverrides } from '../llm/provider-config';
 import {
-  extractIntentImportRunIdFromPrompt,
   normalizeIntentImportStatusFromActionType,
   type IntentImportStatus,
 } from '../intent-e2e-import';
+import {
+  normalizePlatformRunnerType,
+  normalizePlatformTestType,
+  type PlatformRunnerType,
+  type PlatformTestType,
+} from '../test-platform-asset-model';
+import {
+  buildArtifactPlatformMaterializedQuery,
+  buildPlatformMaterializedQueryIndex,
+  buildPromptPlatformMaterializedQuery,
+  createEmptyPlatformMaterializedQueryIndex,
+  resolvePlatformQueryFilters,
+  type PlatformMaterializedQueryIndex,
+  type PlatformMaterializedQuery,
+  type PlatformContractIdFilterType,
+} from '../test-platform-query-contract';
 
 export type ProjectStatus = 'active' | 'archived';
 export type ModuleStatus = 'active' | 'archived';
@@ -313,9 +328,210 @@ export interface TestConfigRecord {
   latestExecutionStatus: string;
   latestPlanImportedFromRunId?: string;
   latestPlanImportedStatus?: IntentImportStatus | '';
+  latestPlanImportedTestType?: string;
+  latestPlanImportedRunnerType?: string;
+  latestPlanImportedTestCaseId?: string;
+  latestPlanImportedTestSpecId?: string;
+  latestPlanImportedVerificationContractId?: string;
+  latestPlanImportedArtifactKinds?: string[];
+  platformQuery?: PlatformMaterializedQuery | null;
   sourceIntentDraftUid?: string;
   sourceIntentDraftTitle?: string;
   sourceIntentDraftImportedAt?: string;
+}
+
+export interface PlatformSummaryByTestTypeItem {
+  testType: PlatformTestType;
+  count: number;
+}
+
+export interface PlatformSummaryByRunnerTypeItem {
+  runnerType: PlatformRunnerType;
+  count: number;
+}
+
+export interface PlatformAggregationSummary {
+  scopeCount: number;
+  importedCount: number;
+  platformTaggedCount: number;
+  byTestType: PlatformSummaryByTestTypeItem[];
+  byRunnerType: PlatformSummaryByRunnerTypeItem[];
+  byArtifactKind: Array<{ artifactKind: string; count: number }>;
+}
+
+export interface TestConfigListResult {
+  page: number;
+  pageSize: number;
+  total: number;
+  items: TestConfigRecord[];
+  platformSummary: PlatformAggregationSummary;
+  platformIndex: PlatformMaterializedQueryIndex;
+}
+
+export interface TestConfigExecutionHistoryRecord {
+  executionUid: string;
+  planUid: string;
+  planVersion: number;
+  projectUid: string;
+  status: ExecutionStatus;
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  resultSummary: string;
+  errorMessage: string;
+  workerSessionId: string;
+  createdAt: string;
+  intentImportedFromRunId?: string;
+  intentImportedTestType?: string;
+  intentImportedRunnerType?: string;
+  intentImportedTestCaseId?: string;
+  intentImportedTestSpecId?: string;
+  intentImportedVerificationContractId?: string;
+  intentImportedArtifactKinds?: string[];
+  platformQuery?: PlatformMaterializedQuery | null;
+}
+
+export interface TestConfigExecutionHistoryListResult {
+  items: TestConfigExecutionHistoryRecord[];
+  platformSummary: PlatformAggregationSummary;
+  platformIndex: PlatformMaterializedQueryIndex;
+}
+
+const PLATFORM_TEST_TYPE_SUMMARY_ORDER: PlatformTestType[] = [
+  'browser_e2e',
+  'api_flow',
+  'repo_test',
+  'contract_check',
+];
+
+const PLATFORM_RUNNER_TYPE_SUMMARY_ORDER: PlatformRunnerType[] = [
+  'playwright_runner',
+  'http_runner',
+  'repo_test_runner',
+  'contract_runner',
+];
+
+function createEmptyPlatformAggregationSummary(scopeCount = 0): PlatformAggregationSummary {
+  return {
+    scopeCount: Math.max(0, scopeCount),
+    importedCount: 0,
+    platformTaggedCount: 0,
+    byTestType: [],
+    byRunnerType: [],
+    byArtifactKind: [],
+  };
+}
+
+function buildPlatformAggregationSummary(
+  items: Array<{
+    importedFromRunId?: unknown;
+    testType?: unknown;
+    runnerType?: unknown;
+    artifactKinds?: unknown;
+  }>,
+  scopeCount = items.length
+): PlatformAggregationSummary {
+  if (items.length === 0) {
+    return createEmptyPlatformAggregationSummary(scopeCount);
+  }
+
+  const testTypeCounts = new Map<PlatformTestType, number>();
+  const runnerTypeCounts = new Map<PlatformRunnerType, number>();
+  const artifactKindCounts = new Map<string, number>();
+  let importedCount = 0;
+  let platformTaggedCount = 0;
+
+  for (const item of items) {
+    const importedFromRunId = typeof item.importedFromRunId === 'string' ? item.importedFromRunId.trim() : '';
+    const testType = normalizePlatformTestType(item.testType);
+    const runnerType = normalizePlatformRunnerType(item.runnerType);
+    const artifactKinds = Array.isArray(item.artifactKinds)
+      ? item.artifactKinds.filter((candidate): candidate is string => typeof candidate === 'string').map((candidate) => candidate.trim()).filter(Boolean)
+      : [];
+
+    if (importedFromRunId) {
+      importedCount += 1;
+    }
+
+    if (testType || runnerType) {
+      platformTaggedCount += 1;
+    }
+
+    if (testType) {
+      testTypeCounts.set(testType, (testTypeCounts.get(testType) || 0) + 1);
+    }
+
+    if (runnerType) {
+      runnerTypeCounts.set(runnerType, (runnerTypeCounts.get(runnerType) || 0) + 1);
+    }
+
+    for (const artifactKind of new Set(artifactKinds)) {
+      artifactKindCounts.set(artifactKind, (artifactKindCounts.get(artifactKind) || 0) + 1);
+    }
+  }
+
+  return {
+    scopeCount: Math.max(0, scopeCount),
+    importedCount,
+    platformTaggedCount,
+    byTestType: PLATFORM_TEST_TYPE_SUMMARY_ORDER.flatMap((testType) => {
+      const count = testTypeCounts.get(testType) || 0;
+      return count > 0 ? [{ testType, count }] : [];
+    }),
+    byRunnerType: PLATFORM_RUNNER_TYPE_SUMMARY_ORDER.flatMap((runnerType) => {
+      const count = runnerTypeCounts.get(runnerType) || 0;
+      return count > 0 ? [{ runnerType, count }] : [];
+    }),
+    byArtifactKind: [...artifactKindCounts.entries()]
+      .sort((left, right) => {
+        if (right[1] !== left[1]) return right[1] - left[1];
+        return left[0].localeCompare(right[0]);
+      })
+      .map(([artifactKind, count]) => ({ artifactKind, count })),
+  };
+}
+
+function buildLatestPlanGenerationPromptProjectionSql(configAlias: string): string {
+  return `(
+        SELECT p2.generation_prompt
+        FROM test_plans p2
+        WHERE p2.config_uid = ${configAlias}.config_uid
+        ORDER BY p2.plan_version DESC
+        LIMIT 1
+      )`;
+}
+
+function buildLatestGeneratedSpecMetaProjectionSql(executionAlias: string): string {
+  return `(
+         SELECT a.meta
+         FROM execution_artifacts a
+         WHERE a.execution_uid = ${executionAlias}.execution_uid
+           AND a.artifact_type = 'generated_spec'
+         ORDER BY a.created_at DESC, a.id DESC
+         LIMIT 1
+       )`;
+}
+
+function buildLatestGeneratedSpecMetaJsonExtractProjectionSql(executionAlias: string, jsonPath: string): string {
+  return `(
+         SELECT JSON_UNQUOTE(JSON_EXTRACT(a.meta, '${jsonPath}'))
+         FROM execution_artifacts a
+         WHERE a.execution_uid = ${executionAlias}.execution_uid
+           AND a.artifact_type = 'generated_spec'
+         ORDER BY a.created_at DESC, a.id DESC
+         LIMIT 1
+       )`;
+}
+
+function buildLatestGeneratedSpecMetaJsonSearchProjectionSql(executionAlias: string, jsonPath: string): string {
+  return `(
+         SELECT JSON_SEARCH(a.meta, 'one', ?, null, '${jsonPath}')
+         FROM execution_artifacts a
+         WHERE a.execution_uid = ${executionAlias}.execution_uid
+           AND a.artifact_type = 'generated_spec'
+         ORDER BY a.created_at DESC, a.id DESC
+         LIMIT 1
+       )`;
 }
 
 export interface TestPlanInput {
@@ -338,6 +554,7 @@ export interface TestPlanRecord {
   planVersion: number;
   planCode: string;
   planSummary: string;
+  generationPrompt: string;
   generatedFiles: Array<{ name: string; content: string; language: string }>;
   createdAt: string;
 }
@@ -1128,7 +1345,8 @@ function normalizeConfigRow(row: RowDataPacket): TestConfigRecord {
   const taskMode = normalizeTaskMode(row.task_mode);
   const normalizedFlow = normalizeFlowDefinition(row.flow_definition, targetUrl);
   const flowDefinition = taskMode === 'scenario' || hasScenarioContent(normalizedFlow) ? normalizedFlow : null;
-  const latestPlanImportedFromRunId = extractIntentImportRunIdFromPrompt(row.latest_plan_generation_prompt);
+  const platformQuery = buildPromptPlatformMaterializedQuery(row.latest_plan_generation_prompt);
+  const latestPlanImportedFromRunId = platformQuery?.importedFromRunId || '';
   const latestPlanImportedStatus = latestPlanImportedFromRunId
     ? normalizeIntentImportStatusFromActionType(row.latest_plan_import_action_type)
     : '';
@@ -1164,6 +1382,13 @@ function normalizeConfigRow(row: RowDataPacket): TestConfigRecord {
     latestExecutionStatus: row.latest_execution_status ? String(row.latest_execution_status) : '',
     latestPlanImportedFromRunId,
     latestPlanImportedStatus,
+    latestPlanImportedTestType: platformQuery?.testType || '',
+    latestPlanImportedRunnerType: platformQuery?.runnerType || '',
+    latestPlanImportedTestCaseId: platformQuery?.testCaseId || '',
+    latestPlanImportedTestSpecId: platformQuery?.testSpecId || '',
+    latestPlanImportedVerificationContractId: platformQuery?.verificationContractId || '',
+    latestPlanImportedArtifactKinds: platformQuery?.artifactKinds || [],
+    platformQuery,
     sourceIntentDraftUid: row.source_intent_draft_uid ? String(row.source_intent_draft_uid) : '',
     sourceIntentDraftTitle: row.source_intent_draft_title ? String(row.source_intent_draft_title) : '',
     sourceIntentDraftImportedAt: toIso(row.source_intent_draft_imported_at),
@@ -1179,6 +1404,7 @@ function normalizePlanRow(row: RowDataPacket): TestPlanRecord {
     planVersion: Number(row.plan_version),
     planCode: String(row.plan_code),
     planSummary: row.plan_summary ? String(row.plan_summary) : '',
+    generationPrompt: row.generation_prompt ? String(row.generation_prompt) : '',
     generatedFiles: safeJsonParse<Array<{ name: string; content: string; language: string }>>(row.generated_files_json, []),
     createdAt: toIso(row.created_at),
   };
@@ -3368,7 +3594,15 @@ export async function listTestConfigs(params: {
   pageSize?: number;
   projectUid?: string;
   moduleUid?: string;
-}) {
+  platformTestType?: string;
+  platformRunnerType?: string;
+  platformArtifactKind?: string;
+  platformContractIdType?: PlatformContractIdFilterType | '';
+  platformContractId?: string;
+  platformTestCaseId?: string;
+  platformTestSpecId?: string;
+  platformVerificationContractId?: string;
+}): Promise<TestConfigListResult> {
   await ensureTestConfigurationScenarioColumns();
   await ensureProjectIntentDraftTables();
   await reconcileStaleExecutions({
@@ -3381,6 +3615,15 @@ export async function listTestConfigs(params: {
   const offset = (page - 1) * pageSize;
   const status = params.status || 'active';
   const keyword = (params.keyword || '').trim();
+  const {
+    platformTestType,
+    platformRunnerType,
+    platformArtifactKind,
+    platformTestCaseId,
+    platformTestSpecId,
+    platformVerificationContractId,
+  } = resolvePlatformQueryFilters(params);
+  const latestPlanGenerationPromptProjectionSql = buildLatestPlanGenerationPromptProjectionSql('c');
 
   const where: string[] = [];
   const args: unknown[] = [];
@@ -3404,6 +3647,36 @@ export async function listTestConfigs(params: {
     const like = `%${keyword}%`;
     where.push('(c.name LIKE ? OR m.name LIKE ? OR c.target_url LIKE ? OR c.feature_description LIKE ?)');
     args.push(like, like, like, like);
+  }
+
+  if (platformTestType) {
+    where.push(`COALESCE(${latestPlanGenerationPromptProjectionSql}, '') LIKE ?`);
+    args.push(`%平台测试类型：${platformTestType}%`);
+  }
+
+  if (platformRunnerType) {
+    where.push(`COALESCE(${latestPlanGenerationPromptProjectionSql}, '') LIKE ?`);
+    args.push(`%平台执行器：${platformRunnerType}%`);
+  }
+
+  if (platformArtifactKind) {
+    where.push(`COALESCE(${latestPlanGenerationPromptProjectionSql}, '') LIKE ?`);
+    args.push(`%平台产物类型：%${platformArtifactKind}%`);
+  }
+
+  if (platformTestCaseId) {
+    where.push(`COALESCE(${latestPlanGenerationPromptProjectionSql}, '') LIKE ?`);
+    args.push(`%平台用例资产：${platformTestCaseId}%`);
+  }
+
+  if (platformTestSpecId) {
+    where.push(`COALESCE(${latestPlanGenerationPromptProjectionSql}, '') LIKE ?`);
+    args.push(`%平台规格资产：${platformTestSpecId}%`);
+  }
+
+  if (platformVerificationContractId) {
+    where.push(`COALESCE(${latestPlanGenerationPromptProjectionSql}, '') LIKE ?`);
+    args.push(`%平台验收契约：${platformVerificationContractId}%`);
   }
 
   const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
@@ -3432,13 +3705,7 @@ export async function listTestConfigs(params: {
         ORDER BY p2.plan_version DESC
         LIMIT 1
       ) AS latest_plan_version,
-      (
-        SELECT p2.generation_prompt
-        FROM test_plans p2
-        WHERE p2.config_uid = c.config_uid
-        ORDER BY p2.plan_version DESC
-        LIMIT 1
-      ) AS latest_plan_generation_prompt,
+      ${latestPlanGenerationPromptProjectionSql} AS latest_plan_generation_prompt,
       (
         SELECT a2.action_type
         FROM project_activity_logs a2
@@ -3507,11 +3774,35 @@ export async function listTestConfigs(params: {
     args
   );
 
+  const total = Number(countRows[0]?.total || 0);
+  let platformSummary = createEmptyPlatformAggregationSummary(total);
+  let platformIndex = createEmptyPlatformMaterializedQueryIndex(total);
+
+  if (total > 0) {
+    const [summaryRows] = await pool.query<RowDataPacket[]>(
+      `SELECT
+        ${latestPlanGenerationPromptProjectionSql} AS latest_plan_generation_prompt
+       FROM test_configurations c
+       LEFT JOIN test_modules m ON m.module_uid = c.module_uid
+       LEFT JOIN test_projects p ON p.project_uid = c.project_uid
+       ${whereSql}`,
+      args
+    );
+
+    const platformQueries = summaryRows.map((row) => buildPromptPlatformMaterializedQuery(row.latest_plan_generation_prompt));
+    const nonEmptyPlatformQueries = platformQueries.filter((item): item is PlatformMaterializedQuery => Boolean(item));
+
+    platformSummary = buildPlatformAggregationSummary(nonEmptyPlatformQueries, total);
+    platformIndex = buildPlatformMaterializedQueryIndex(platformQueries, total);
+  }
+
   return {
     page,
     pageSize,
-    total: Number(countRows[0]?.total || 0),
+    total,
     items: rows.map(normalizeConfigRow),
+    platformSummary,
+    platformIndex,
   };
 }
 
@@ -4061,60 +4352,155 @@ export async function getExecution(executionUid: string): Promise<{
   };
 }
 
-export async function listExecutionsByConfigUid(configUid: string, limit = 30): Promise<
-  Array<{
-    executionUid: string;
-    planUid: string;
-    planVersion: number;
-    projectUid: string;
-    status: ExecutionStatus;
-    startedAt: string;
-    endedAt: string;
-    durationMs: number;
-    resultSummary: string;
-    errorMessage: string;
-    workerSessionId: string;
-    createdAt: string;
-    intentImportedFromRunId?: string;
-  }>
-> {
+export async function listExecutionsByConfigUid(
+  configUid: string,
+  limit = 30,
+  filters?: {
+    platformTestType?: string;
+    platformRunnerType?: string;
+    platformArtifactKind?: string;
+    platformContractIdType?: PlatformContractIdFilterType | '';
+    platformContractId?: string;
+    platformTestCaseId?: string;
+    platformTestSpecId?: string;
+    platformVerificationContractId?: string;
+  }
+): Promise<TestConfigExecutionHistoryListResult> {
   await reconcileStaleExecutions({ configUid });
   const pool = getDbPool();
+  const where = ['e.config_uid = ?'];
+  const args: unknown[] = [configUid];
+  const {
+    platformTestType,
+    platformRunnerType,
+    platformArtifactKind,
+    platformTestCaseId,
+    platformTestSpecId,
+    platformVerificationContractId,
+  } = resolvePlatformQueryFilters(filters || {});
+  const latestGeneratedSpecImportedFromRunIdProjectionSql = buildLatestGeneratedSpecMetaJsonExtractProjectionSql(
+    'e',
+    '$.importedFromRunId'
+  );
+  const latestGeneratedSpecTestTypeProjectionSql = buildLatestGeneratedSpecMetaJsonExtractProjectionSql(
+    'e',
+    '$.platformAssetBundle.testType'
+  );
+  const latestGeneratedSpecRunnerTypeProjectionSql = buildLatestGeneratedSpecMetaJsonExtractProjectionSql(
+    'e',
+    '$.platformAssetBundle.runnerType'
+  );
+  const latestGeneratedSpecTestCaseIdProjectionSql = buildLatestGeneratedSpecMetaJsonExtractProjectionSql(
+    'e',
+    '$.platformAssetBundle.testCase.caseId'
+  );
+  const latestGeneratedSpecTestSpecIdProjectionSql = buildLatestGeneratedSpecMetaJsonExtractProjectionSql(
+    'e',
+    '$.platformAssetBundle.testSpec.specId'
+  );
+  const latestGeneratedSpecVerificationContractIdProjectionSql = buildLatestGeneratedSpecMetaJsonExtractProjectionSql(
+    'e',
+    '$.platformAssetBundle.verificationContract.contractId'
+  );
+  const latestGeneratedSpecArtifactKindSearchProjectionSql = buildLatestGeneratedSpecMetaJsonSearchProjectionSql(
+    'e',
+    '$.platformAssetBundle.artifactContract.artifactKinds[*]'
+  );
+  const latestGeneratedSpecMetaProjectionSql = buildLatestGeneratedSpecMetaProjectionSql('e');
+
+  if (platformTestType) {
+    where.push(`COALESCE(${latestGeneratedSpecTestTypeProjectionSql}, '') = ?`);
+    args.push(platformTestType);
+  }
+
+  if (platformRunnerType) {
+    where.push(`COALESCE(${latestGeneratedSpecRunnerTypeProjectionSql}, '') = ?`);
+    args.push(platformRunnerType);
+  }
+
+  if (platformArtifactKind) {
+    where.push(`COALESCE(${latestGeneratedSpecArtifactKindSearchProjectionSql}, '') <> ''`);
+    args.push(platformArtifactKind);
+  }
+
+  if (platformTestCaseId) {
+    where.push(`COALESCE(${latestGeneratedSpecTestCaseIdProjectionSql}, '') = ?`);
+    args.push(platformTestCaseId);
+  }
+
+  if (platformTestSpecId) {
+    where.push(`COALESCE(${latestGeneratedSpecTestSpecIdProjectionSql}, '') = ?`);
+    args.push(platformTestSpecId);
+  }
+
+  if (platformVerificationContractId) {
+    where.push(`COALESCE(${latestGeneratedSpecVerificationContractIdProjectionSql}, '') = ?`);
+    args.push(platformVerificationContractId);
+  }
+
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT
-       e.*,
-       p.plan_version,
-       (
-         SELECT JSON_UNQUOTE(JSON_EXTRACT(a.meta, '$.importedFromRunId'))
-         FROM execution_artifacts a
-         WHERE a.execution_uid = e.execution_uid
-           AND a.artifact_type = 'generated_spec'
-         ORDER BY a.created_at DESC, a.id DESC
-         LIMIT 1
-       ) AS intent_imported_from_run_id
+      e.*,
+      p.plan_version,
+      ${latestGeneratedSpecImportedFromRunIdProjectionSql} AS intent_imported_from_run_id,
+      ${latestGeneratedSpecTestTypeProjectionSql} AS intent_imported_test_type,
+      ${latestGeneratedSpecRunnerTypeProjectionSql} AS intent_imported_runner_type,
+      ${latestGeneratedSpecMetaProjectionSql} AS latest_generated_spec_meta
      FROM test_executions e
      LEFT JOIN test_plans p ON p.plan_uid = e.plan_uid
-     WHERE e.config_uid = ?
+     WHERE ${where.join(' AND ')}
      ORDER BY e.created_at DESC
      LIMIT ?`,
-    [configUid, Math.max(1, Math.min(100, limit))]
+    [...args, Math.max(1, Math.min(100, limit))]
   );
 
-  return rows.map((row) => ({
-    executionUid: String(row.execution_uid),
-    planUid: String(row.plan_uid),
-    planVersion: Number(row.plan_version || 0),
-    projectUid: row.project_uid ? String(row.project_uid) : '',
-    status: row.status as ExecutionStatus,
-    startedAt: toIso(row.started_at),
-    endedAt: toIso(row.ended_at),
-    durationMs: Number(row.duration_ms || 0),
-    resultSummary: row.result_summary ? String(row.result_summary) : '',
-    errorMessage: row.error_message ? String(row.error_message) : '',
-    workerSessionId: row.worker_session_id ? String(row.worker_session_id) : '',
-    createdAt: toIso(row.created_at),
-    intentImportedFromRunId: row.intent_imported_from_run_id ? String(row.intent_imported_from_run_id) : '',
-  }));
+  const items = rows.map((row): TestConfigExecutionHistoryRecord => {
+    const latestGeneratedSpecMeta = safeJsonParse<unknown>(row.latest_generated_spec_meta, null);
+    const platformQuery = buildArtifactPlatformMaterializedQuery(latestGeneratedSpecMeta, {
+      importedFromRunId: row.intent_imported_from_run_id ? String(row.intent_imported_from_run_id) : '',
+      testType: row.intent_imported_test_type ? String(row.intent_imported_test_type) : '',
+      runnerType: row.intent_imported_runner_type ? String(row.intent_imported_runner_type) : '',
+    });
+    const intentImportedFromRunId = platformQuery?.importedFromRunId || '';
+    const intentImportedTestType = platformQuery?.testType || '';
+    const intentImportedRunnerType = platformQuery?.runnerType || '';
+    const intentImportedTestCaseId = platformQuery?.testCaseId || '';
+    const intentImportedTestSpecId = platformQuery?.testSpecId || '';
+    const intentImportedVerificationContractId = platformQuery?.verificationContractId || '';
+    const intentImportedArtifactKinds = platformQuery?.artifactKinds || [];
+
+    return {
+      executionUid: String(row.execution_uid),
+      planUid: String(row.plan_uid),
+      planVersion: Number(row.plan_version || 0),
+      projectUid: row.project_uid ? String(row.project_uid) : '',
+      status: row.status as ExecutionStatus,
+      startedAt: toIso(row.started_at),
+      endedAt: toIso(row.ended_at),
+      durationMs: Number(row.duration_ms || 0),
+      resultSummary: row.result_summary ? String(row.result_summary) : '',
+      errorMessage: row.error_message ? String(row.error_message) : '',
+      workerSessionId: row.worker_session_id ? String(row.worker_session_id) : '',
+      createdAt: toIso(row.created_at),
+      intentImportedFromRunId,
+      intentImportedTestType,
+      intentImportedRunnerType,
+      intentImportedTestCaseId,
+      intentImportedTestSpecId,
+      intentImportedVerificationContractId,
+      intentImportedArtifactKinds,
+      platformQuery,
+    };
+  });
+
+  return {
+    items,
+    platformSummary: buildPlatformAggregationSummary(
+      items.flatMap((item) => (item.platformQuery ? [item.platformQuery] : [])),
+      items.length
+    ),
+    platformIndex: buildPlatformMaterializedQueryIndex(items.map((item) => item.platformQuery)),
+  };
 }
 
 export async function insertLlmConversation(input: LlmConversationInput): Promise<void> {

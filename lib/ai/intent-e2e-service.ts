@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   analyzePage,
   precheckPageAccess,
@@ -8,7 +10,7 @@ import {
   type PageSnapshot,
 } from '@/lib/page-analyzer';
 import { getIntentE2ERecipePerformanceMap, getIntentE2ERulePerformanceMap, getIntentE2EStarterHelpers } from '@/lib/ai/intent-e2e-insights';
-import { executeTest, type TestResult } from '@/lib/test-executor';
+import { type TestResult } from '@/lib/test-executor';
 import {
   generateTest,
   repairTest,
@@ -33,7 +35,22 @@ import {
 } from '@/lib/intent-execution-artifacts';
 import { getLLMRuntimeConfig, type LLMRuntimeOverrides } from '@/lib/llm/provider-config';
 import { buildGenerateInputFromScenarioCard, generateScenarioCard, type ScenarioAttachment, type ScenarioCard } from '@/lib/ai/scenario-card';
-import { listRelevantIntentRepairHints, recordIntentRepairFailure, recordIntentRepairResolution } from '@/lib/ai/intent-repair-memory';
+import { resolveIntentE2EQualitySplit, type IntentE2EQualitySplit } from '@/lib/intent-e2e-quality-split';
+import {
+  buildBrowserE2EPlatformTestAssetBundle,
+  type PlatformArtifactContractAsset,
+  type PlatformRunnerType,
+  type PlatformTestCaseAsset,
+  type PlatformTestSpecAsset,
+  type PlatformTestType,
+  type PlatformVerificationContractAsset,
+} from '@/lib/test-platform-asset-model';
+import {
+  getIntentRepairMemoryPath,
+  listRelevantIntentRepairHints,
+  recordIntentRepairFailure,
+  recordIntentRepairResolution,
+} from '@/lib/ai/intent-repair-memory';
 import {
   buildIntentE2EFailureDiagnosis,
   buildIntentE2EFailureSignature,
@@ -42,8 +59,24 @@ import {
   type IntentE2EFailureContext,
   type IntentE2EFailureTriage,
 } from '@/lib/ai/intent-e2e-failure-triage';
+import { resolveIntentE2EPrecheckPolicy, type IntentE2EPrecheckPolicy } from '@/lib/intent-e2e-precheck-policy';
+import {
+  shouldEnforceIntentE2ERuntimeGovernance,
+  validateIntentE2ERuntimeGovernance,
+  type IntentE2ERuntimeGovernance,
+} from '@/lib/intent-e2e-runtime-governance';
+import { type IntentE2ERunControl } from '@/lib/intent-e2e-run-control';
+import {
+  archiveIntentE2ERunArtifacts,
+  type IntentE2ERunArtifactArchiveAttempt,
+  type IntentE2ERunArtifactIndex,
+} from '@/lib/intent-e2e-run-artifacts';
+import { getIntentProjectOnboardingPath, readIntentProjectOnboardingStatus } from '@/lib/intent-project-onboarding';
 import type { IntentResolvedStarterAsset } from '@/lib/intent-starter-assets';
-import type { IntentProjectKnowledgeRule } from '@/lib/intent-project-knowledge';
+import { getIntentProjectKnowledgePath, type IntentProjectKnowledgeRule } from '@/lib/intent-project-knowledge';
+import type { IntentE2ECiCdReport } from '@/lib/intent-e2e-cicd-report';
+import type { IntentE2ECiCdProfile, IntentE2ESystemOnboardingManifestSummary } from '@/lib/intent-e2e-system-onboarding';
+import { resolveIntentRunnerAdapter, type IntentRunnerGeneratedArtifact } from '@/lib/intent-runner-adapter';
 
 export interface IntentE2EKnowledgeSummary {
   profilePath: string;
@@ -53,6 +86,22 @@ export interface IntentE2EKnowledgeSummary {
   capabilitySlugs: string[];
   suggestedHelpers: string[];
   starterAssets: IntentResolvedStarterAsset[];
+}
+
+export type IntentE2EAssetReadinessStatus = 'ready' | 'asset_missing' | 'no_hit';
+
+export interface IntentE2EAssetReadiness {
+  status: IntentE2EAssetReadinessStatus;
+  projectUid: string;
+  onboardingPath?: string;
+  knowledgePath?: string;
+  repairMemoryPath?: string;
+  hasOnboarding?: boolean;
+  onboardingReady?: boolean;
+  hasKnowledgeAsset?: boolean;
+  hasRepairMemoryAsset?: boolean;
+  knowledgeMatchCount: number;
+  reasons: string[];
 }
 
 export interface IntentE2EAttemptHelperUsage {
@@ -80,9 +129,14 @@ export interface IntentE2ERunRequest {
   targetUrl?: string;
   projectUid?: string;
   moduleUid?: string;
+  onboardingManifestId?: string;
+  systemOnboarding?: IntentE2ESystemOnboardingManifestSummary;
+  cicdProfile?: IntentE2ECiCdProfile;
   auth?: AuthConfig;
   attachments?: ScenarioAttachment[];
   llmConfig?: LLMRuntimeOverrides;
+  runControl?: IntentE2ERunControl;
+  runtimeGovernance?: IntentE2ERuntimeGovernance;
 }
 
 export interface IntentE2EAttempt {
@@ -108,6 +162,12 @@ export interface IntentE2EResolvedUrls {
 }
 
 export interface IntentE2ERunResult {
+  testType?: PlatformTestType;
+  runnerType?: PlatformRunnerType;
+  testCase?: PlatformTestCaseAsset | null;
+  testSpec?: PlatformTestSpecAsset | null;
+  verificationContract?: PlatformVerificationContractAsset | null;
+  artifactContract?: PlatformArtifactContractAsset | null;
   scenarioCard: ScenarioCard;
   executionPlan?: IntentExecutionPlan;
   verificationPlan?: IntentVerificationPlan;
@@ -122,6 +182,10 @@ export interface IntentE2ERunResult {
   resolvedUrls?: IntentE2EResolvedUrls;
   description: string;
   knowledge?: IntentE2EKnowledgeSummary | null;
+  assetReadiness?: IntentE2EAssetReadiness | null;
+  qualitySplit?: IntentE2EQualitySplit | null;
+  artifactIndex?: IntentE2ERunArtifactIndex | null;
+  ciReport?: IntentE2ECiCdReport | null;
   knowledgeCandidates?: IntentE2ESuccessKnowledgeCandidate[];
   attempts: IntentE2EAttempt[];
   finalResult: TestResult;
@@ -130,6 +194,7 @@ export interface IntentE2ERunResult {
 
 export interface IntentE2ERunOptions {
   signal?: AbortSignal;
+  runId?: string;
 }
 
 interface IntentRepairLearningObservationArtifact {
@@ -138,6 +203,7 @@ interface IntentRepairLearningObservationArtifact {
 }
 
 export type IntentE2EStreamStage =
+  | 'queued'
   | 'received'
   | 'planning'
   | 'prechecking'
@@ -427,6 +493,97 @@ function createTerminalFailureResult(stepTitle: string, errorMessage: string): T
       },
     ],
     error: message,
+  };
+}
+
+function looksLikeMutatingScenarioCard(card: ScenarioCard): boolean {
+  const combinedText = [
+    card.title,
+    card.featureDescription,
+    card.flowDefinition.expectedOutcome,
+    ...card.successCriteria,
+    ...card.notes,
+    ...card.flowDefinition.steps.flatMap((step) => [step.title, step.target, step.instruction, step.expectedResult]),
+  ].join('\n');
+
+  return /(创建|新建|新增|添加|保存|提交|删除|作废|审批|领取|分配|关闭|开通|下单|支付|结算)/i.test(combinedText);
+}
+
+type IntentE2ERuntimeGovernanceCheckResult =
+  | {
+      blocked: false;
+    }
+  | {
+      blocked: true;
+      output: IntentE2ERunResult;
+    };
+
+async function runIntentE2ERuntimeGovernanceCheck(
+  input: {
+    targetUrl: string;
+    resolvedUrls?: IntentE2EResolvedUrls;
+    description: string;
+    platformAssets: ReturnType<typeof buildBrowserE2EPlatformTestAssetBundle>;
+    auth?: AuthConfig;
+    runtimeGovernance?: IntentE2ERuntimeGovernance;
+    scenarioCard: ScenarioCard;
+    llmMeta: IntentE2ERunResult['llmMeta'];
+    assetReadiness?: IntentE2EAssetReadiness | null;
+  },
+  listener?: IntentE2EStreamListener,
+  signal?: AbortSignal
+): Promise<IntentE2ERuntimeGovernanceCheckResult> {
+  if (!shouldEnforceIntentE2ERuntimeGovernance(input.runtimeGovernance)) {
+    return { blocked: false };
+  }
+
+  throwIfAborted(signal);
+  await emit(listener, {
+    type: 'stage',
+    stage: 'prechecking',
+    message: '正在校验运行环境 / 账号 / 数据治理约束…',
+  });
+
+  const issues = validateIntentE2ERuntimeGovernance({
+    governance: input.runtimeGovernance,
+    hasAuth: Boolean(input.auth?.loginUrl || input.auth?.username || input.auth?.password || input.auth?.loginDescription),
+    requiresFixture: looksLikeMutatingScenarioCard(input.scenarioCard),
+  });
+
+  if (!issues.length) {
+    return { blocked: false };
+  }
+
+  const errorMessage = issues.map((issue) => issue.message).join('；');
+  const finalResult = createTerminalFailureResult('运行治理校验', errorMessage);
+  const finalFailureTriage = classifyIntentE2EFailure(
+    finalResult,
+    issues.map((issue) => ({ level: 'error', message: issue.message })),
+    { pageUrl: input.resolvedUrls?.precheckUrl || input.targetUrl }
+  );
+  const qualitySplit = resolveIntentE2EQualitySplit({
+    status: 'failed',
+    failureClass: finalFailureTriage?.failureClass,
+  });
+  const output: IntentE2ERunResult = {
+    ...input.platformAssets,
+    scenarioCard: input.scenarioCard,
+    llmMeta: input.llmMeta,
+    targetUrl: input.targetUrl,
+    ...(input.resolvedUrls ? { resolvedUrls: input.resolvedUrls } : {}),
+    description: input.description,
+    knowledge: null,
+    assetReadiness: input.assetReadiness || null,
+    qualitySplit,
+    attempts: [],
+    finalResult,
+    finalFailureTriage,
+  };
+
+  await emitFinalRunState(listener, output);
+  return {
+    blocked: true,
+    output,
   };
 }
 
@@ -829,6 +986,77 @@ function buildIntentE2EKnowledgeSummary(planning: ResolvedPromptPlanningContext)
   };
 }
 
+function pathExists(filePath: string): boolean {
+  if (!filePath) return false;
+  const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath);
+  return fs.existsSync(absolutePath);
+}
+
+function mapOnboardingMissingFieldToReason(field: string): string {
+  switch (field) {
+    case 'manifest':
+      return 'onboarding_manifest_missing';
+    case 'invalid_json':
+      return 'onboarding_manifest_invalid';
+    default:
+      return `onboarding_${field}_missing`;
+  }
+}
+
+function buildIntentE2EAssetReadiness(input: {
+  projectUid?: string | null;
+  knowledgeMatchCount?: number;
+}): IntentE2EAssetReadiness {
+  const projectUid = input.projectUid?.trim() || '';
+  const knowledgeEvaluated = typeof input.knowledgeMatchCount === 'number' && Number.isFinite(input.knowledgeMatchCount);
+  const knowledgeMatchCount =
+    knowledgeEvaluated
+      ? Math.max(0, Math.floor(input.knowledgeMatchCount ?? 0))
+      : 0;
+
+  if (!projectUid) {
+    return {
+      status: 'ready',
+      projectUid: '',
+      knowledgeMatchCount,
+      reasons: ['global_scope'],
+    };
+  }
+
+  const onboardingStatus = readIntentProjectOnboardingStatus(projectUid);
+  const onboardingPath = onboardingStatus.path || getIntentProjectOnboardingPath(projectUid);
+  const knowledgePath = getIntentProjectKnowledgePath(projectUid, { mode: 'write', legacyFallback: false });
+  const repairMemoryPath = getIntentRepairMemoryPath(projectUid, { mode: 'write', legacyFallback: false });
+  const hasKnowledgeAsset = pathExists(knowledgePath);
+  const hasRepairMemoryAsset = pathExists(repairMemoryPath);
+  const reasons = uniqueStrings([
+    ...onboardingStatus.missingFields.map((field) => mapOnboardingMissingFieldToReason(field)),
+    hasKnowledgeAsset ? '' : 'project_knowledge_missing',
+    hasRepairMemoryAsset ? '' : 'repair_memory_missing',
+    knowledgeEvaluated && knowledgeMatchCount <= 0 ? 'knowledge_no_hit' : '',
+  ]);
+  const status: IntentE2EAssetReadinessStatus =
+    !onboardingStatus.exists || !onboardingStatus.ready || !hasKnowledgeAsset
+      ? 'asset_missing'
+      : !knowledgeEvaluated || knowledgeMatchCount > 0
+      ? 'ready'
+      : 'no_hit';
+
+  return {
+    status,
+    projectUid,
+    onboardingPath: onboardingPath || undefined,
+    knowledgePath,
+    repairMemoryPath,
+    hasOnboarding: onboardingStatus.exists,
+    onboardingReady: onboardingStatus.ready,
+    hasKnowledgeAsset,
+    hasRepairMemoryAsset,
+    knowledgeMatchCount,
+    reasons,
+  };
+}
+
 function trimInlineText(value: string, max = 160): string {
   const normalized = String(value || '').replace(/\s+/g, ' ').trim();
   if (!normalized) return '';
@@ -862,35 +1090,6 @@ function routeTokenFromMatchUrl(matchUrl: string): string {
 function selectKnowledgeCandidatePageLabel(targetUrl: string): string {
   const matchUrl = normalizeKnowledgeMatchUrl(targetUrl);
   return matchUrl.split('/').filter(Boolean).slice(-1)[0] || '页面';
-}
-
-function looksLikeCreateFlowPrecheckBypass(card: ScenarioCard, targetUrl: string, precheckUrl: string): boolean {
-  if (card.taskMode !== 'scenario') return false;
-
-  const normalizedTargetUrl = normalizeKnowledgeMatchUrl(targetUrl);
-  const normalizedPrecheckUrl = normalizeKnowledgeMatchUrl(precheckUrl);
-  const normalizedEntryUrl = normalizeKnowledgeMatchUrl(card.flowDefinition.entryUrl || '');
-  if (!normalizedTargetUrl || !normalizedPrecheckUrl || normalizedTargetUrl === normalizedPrecheckUrl) {
-    return false;
-  }
-
-  if (normalizedEntryUrl !== normalizedPrecheckUrl) {
-    return false;
-  }
-
-  const earlyStepText = card.flowDefinition.steps
-    .slice(0, 3)
-    .flatMap((step) => [step.title, step.target, step.instruction, step.expectedResult])
-    .join('\n');
-  const fullFlowText = [
-    card.title,
-    card.featureDescription,
-    card.flowDefinition.expectedOutcome,
-    ...card.successCriteria,
-    ...card.flowDefinition.steps.flatMap((step) => [step.title, step.target, step.instruction, step.expectedResult]),
-  ].join('\n');
-
-  return /(新建|创建|新增|添加)/i.test(earlyStepText) && /(保存|提交|保存并继续|提交并继续)/i.test(fullFlowText);
 }
 
 function mapHelperToCapabilitySlug(helper: string): string {
@@ -1269,21 +1468,20 @@ async function runIntentE2EPrecheck(
     precheckUrl?: string;
     resolvedUrls?: IntentE2EResolvedUrls;
     description: string;
+    platformAssets: ReturnType<typeof buildBrowserE2EPlatformTestAssetBundle>;
     auth?: AuthConfig;
     scenarioCard: ScenarioCard;
+    precheckPolicy: IntentE2EPrecheckPolicy;
     llmMeta: IntentE2ERunResult['llmMeta'];
     knowledge?: IntentE2EKnowledgeSummary | null;
+    assetReadiness?: IntentE2EAssetReadiness | null;
   },
   listener?: IntentE2EStreamListener,
   signal?: AbortSignal
 ): Promise<IntentE2EPrecheckResult> {
   const precheckUrl = input.precheckUrl?.trim() || input.targetUrl;
-  const precheckOptions: PageAccessPrecheckOptions | undefined = looksLikeCreateFlowPrecheckBypass(
-    input.scenarioCard,
-    input.targetUrl,
-    precheckUrl
-  )
-    ? { ignoreFailureClasses: ['data_missing'] }
+  const precheckOptions: PageAccessPrecheckOptions | undefined = input.precheckPolicy.ignoreFailureClasses.length
+    ? { ignoreFailureClasses: [...input.precheckPolicy.ignoreFailureClasses] }
     : undefined;
   throwIfAborted(signal);
   await emit(listener, {
@@ -1304,13 +1502,20 @@ async function runIntentE2EPrecheck(
         precheck.matchedSignals.map((signal) => ({ level: 'error', message: signal })),
         { pageUrl: precheckUrl }
       );
+      const qualitySplit = resolveIntentE2EQualitySplit({
+        status: 'failed',
+        failureClass: finalFailureTriage?.failureClass,
+      });
       const output: IntentE2ERunResult = {
+        ...input.platformAssets,
         scenarioCard: input.scenarioCard,
         llmMeta: input.llmMeta,
         targetUrl: input.targetUrl,
         ...(input.resolvedUrls ? { resolvedUrls: input.resolvedUrls } : {}),
         description: input.description,
         knowledge: input.knowledge || null,
+        assetReadiness: input.assetReadiness || null,
+        qualitySplit,
         attempts: [],
         finalResult,
         finalFailureTriage,
@@ -1332,13 +1537,20 @@ async function runIntentE2EPrecheck(
 
     const finalResult = createTerminalFailureResult('前置检查', error instanceof Error ? error.message : '页面前置检查失败');
     const finalFailureTriage = classifyIntentE2EFailure(finalResult, [], { pageUrl: precheckUrl });
+    const qualitySplit = resolveIntentE2EQualitySplit({
+      status: 'failed',
+      failureClass: finalFailureTriage?.failureClass,
+    });
     const output: IntentE2ERunResult = {
+      ...input.platformAssets,
       scenarioCard: input.scenarioCard,
       llmMeta: input.llmMeta,
       targetUrl: input.targetUrl,
       ...(input.resolvedUrls ? { resolvedUrls: input.resolvedUrls } : {}),
       description: input.description,
       knowledge: input.knowledge || null,
+      assetReadiness: input.assetReadiness || null,
+      qualitySplit,
       attempts: [],
       finalResult,
       finalFailureTriage,
@@ -1388,13 +1600,32 @@ export async function runIntentDrivenE2EStream(
   });
 
   const { targetUrl, description, context } = buildGenerateInputFromScenarioCard(scenarioCardOutput.card);
-  const scenarioEntryUrl = context.scenarioEntryUrl?.trim() || targetUrl;
+  const projectUid = input.projectUid?.trim() || '';
+  const promptContext = projectUid ? { ...context, projectUid } : context;
+  const repairMemoryOptions = projectUid ? { projectUid } : {};
+  const baseAssetReadiness = buildIntentE2EAssetReadiness({ projectUid });
+  const scenarioEntryUrl = promptContext.scenarioEntryUrl?.trim() || targetUrl;
   const resolvedUrls: IntentE2EResolvedUrls = {
     targetUrl,
     scenarioEntryUrl,
     precheckUrl: scenarioEntryUrl,
     analyzeUrl: scenarioEntryUrl,
   };
+  const precheckPolicy = resolveIntentE2EPrecheckPolicy({
+    scenarioCard: scenarioCardOutput.card,
+    targetUrl,
+    precheckUrl: scenarioEntryUrl,
+  });
+  const basePlatformAssets = buildBrowserE2EPlatformTestAssetBundle({
+    projectUid,
+    moduleUid: input.moduleUid?.trim() || '',
+    requestInput: trimmedInput,
+    scenarioCard: scenarioCardOutput.card,
+    description,
+    targetUrl,
+    scenarioEntryUrl,
+    precheckPolicyNotes: precheckPolicy.policyNotes,
+  });
   if (!targetUrl) {
     throw new Error('AI 已生成 ScenarioCard，但未能确定目标 URL；请在请求中补充 targetUrl');
   }
@@ -1405,15 +1636,37 @@ export async function runIntentDrivenE2EStream(
     description,
   });
 
+  const runtimeGovernanceCheck = await runIntentE2ERuntimeGovernanceCheck(
+    {
+      targetUrl,
+      resolvedUrls,
+      description,
+      platformAssets: basePlatformAssets,
+      auth: input.auth,
+      runtimeGovernance: input.runtimeGovernance,
+      scenarioCard: scenarioCardOutput.card,
+      llmMeta: scenarioCardOutput.llmMeta,
+      assetReadiness: baseAssetReadiness,
+    },
+    listener,
+    signal
+  );
+  if (runtimeGovernanceCheck.blocked) {
+    return runtimeGovernanceCheck.output;
+  }
+
   const precheck = await runIntentE2EPrecheck(
     {
       targetUrl,
       precheckUrl: scenarioEntryUrl,
       resolvedUrls,
       description,
+      platformAssets: basePlatformAssets,
       auth: input.auth,
       scenarioCard: scenarioCardOutput.card,
+      precheckPolicy,
       llmMeta: scenarioCardOutput.llmMeta,
+      assetReadiness: baseAssetReadiness,
     },
     listener,
     signal
@@ -1440,12 +1693,13 @@ export async function runIntentDrivenE2EStream(
   );
   throwIfAborted(signal);
   const [rulePerformanceById, starterHelpers, recipePerformanceBySlug] = await Promise.all([
-    loadIntentE2ERulePerformanceFeedback(input.projectUid?.trim() || ''),
-    loadIntentE2EStarterHelperFeedback(input.projectUid?.trim() || ''),
-    loadIntentE2ERecipePerformanceFeedback(input.projectUid?.trim() || ''),
+    loadIntentE2ERulePerformanceFeedback(projectUid),
+    loadIntentE2EStarterHelperFeedback(projectUid),
+    loadIntentE2ERecipePerformanceFeedback(projectUid),
   ]);
-  const planning = resolveIntentPromptPlanningContext(snapshot, description, context, {
+  const planning = resolveIntentPromptPlanningContext(snapshot, description, promptContext, {
     auth: input.auth,
+    projectUid,
     rulePerformanceById,
     starterHelpers,
     recipePerformanceBySlug,
@@ -1459,10 +1713,34 @@ export async function runIntentDrivenE2EStream(
       })
     : undefined;
   const knowledge = buildIntentE2EKnowledgeSummary(planning);
+  const assetReadiness = buildIntentE2EAssetReadiness({
+    projectUid,
+    knowledgeMatchCount: knowledge.matchCount,
+  });
+  const platformAssets = buildBrowserE2EPlatformTestAssetBundle({
+    projectUid,
+    moduleUid: input.moduleUid?.trim() || '',
+    requestInput: trimmedInput,
+    scenarioCard: scenarioCardOutput.card,
+    description,
+    targetUrl,
+    scenarioEntryUrl,
+    executionPlan: planning.executionPlan,
+    verificationPlan: planning.verificationPlan,
+    precheckPolicyNotes: precheckPolicy.policyNotes,
+    compiledTemplate,
+  });
 
   const attempts: IntentE2EAttempt[] = [];
+  const archivedAttempts: IntentE2ERunArtifactArchiveAttempt[] = [];
+  const archivedRepairSnapshots: Array<{
+    attempt: number;
+    snapshot: PageSnapshot;
+    report?: RepairObservationReport | null;
+  }> = [];
   const runtimeConfig = getLLMRuntimeConfig(input.llmConfig);
   const observedRepairClusterIds = new Set<string>();
+  const runnerAdapter = resolveIntentRunnerAdapter(platformAssets.testType, platformAssets.runnerType);
 
   let currentCode = '';
   let finalResult: TestResult | null = null;
@@ -1523,22 +1801,29 @@ export async function runIntentDrivenE2EStream(
       kind === 'repair' && repairObservationSnapshot
         ? buildRepairObservationReport(repairObservationSnapshot, previousTriage)
         : null;
+    if (repairObservationSnapshot) {
+      archivedRepairSnapshots.push({
+        attempt,
+        snapshot: repairObservationSnapshot,
+        report: repairObservationReport,
+      });
+    }
     const repairObservationArtifact = buildRepairLearningObservationArtifact(repairObservationReport);
     const repairObservationTags = repairObservationArtifact?.observationTags || [];
     const repairMemoryHints = repairInput
       ? await listRelevantIntentRepairHints({
           ...repairInput,
           observationTags: repairObservationTags,
-        })
+        }, 3, repairMemoryOptions)
       : [];
     const repairPromptContext =
       kind === 'repair' && (repairObservationSnapshot || repairObservationReport)
         ? {
-            ...(context || {}),
+            ...(promptContext || {}),
             ...(repairObservationSnapshot ? { repairObservationSnapshot } : {}),
             ...(repairObservationReport ? { repairObservationReport } : {}),
           }
-        : context;
+        : promptContext;
 
     if (repairMemoryHints.length > 0) {
       await emit(listener, {
@@ -1566,7 +1851,7 @@ export async function runIntentDrivenE2EStream(
     const generation =
       kind === 'generate'
         ? await collectGeneratedCode(
-            generateTest(snapshot, description, input.auth, context, input.llmConfig, signal, planning),
+            generateTest(snapshot, description, input.auth, promptContext, input.llmConfig, signal, planning),
             (event) => emit(listener, { type: 'attempt_event', attempt, kind, event }),
             signal
           )
@@ -1631,7 +1916,20 @@ export async function runIntentDrivenE2EStream(
     });
 
     const logs: Array<{ level: string; message: string; at?: string }> = [];
-    const result = await executeTest(currentCode, sessionId, input.auth, {
+    const result = await runnerAdapter.execute({
+      sessionId,
+      code: currentCode,
+      auth: input.auth,
+      testType: platformAssets.testType,
+      runnerType: platformAssets.runnerType,
+      testCase: platformAssets.testCase,
+      testSpec: platformAssets.testSpec,
+      verificationContract: platformAssets.verificationContract,
+      artifactContract: platformAssets.artifactContract,
+      executionPlan: planning.executionPlan,
+      verificationPlan: planning.verificationPlan,
+      compiledTemplate,
+    }, {
       signal,
       onStep(payload) {
         emitBackground(listener, {
@@ -1665,6 +1963,12 @@ export async function runIntentDrivenE2EStream(
     });
 
     throwIfAborted(signal);
+    const runnerArtifacts = (result.artifacts || []).map((artifact): IntentRunnerGeneratedArtifact => ({
+      artifactType: artifact.artifactType,
+      fileName: artifact.fileName,
+      content: artifact.content,
+      ...(artifact.meta !== undefined ? { meta: artifact.meta } : {}),
+    }));
     const triage = result.success
       ? null
       : classifyIntentE2EFailure(result, logs, {
@@ -1689,6 +1993,31 @@ export async function runIntentDrivenE2EStream(
     };
 
     attempts.push(attemptResult);
+    archivedAttempts.push({
+      attempt,
+      kind,
+      sessionId,
+      generationEvents: generation.events.map((event) => ({ ...event })),
+      logs: logs.map((log) => ({
+        level: log.level,
+        message: log.message,
+        ...(log.at ? { at: log.at } : {}),
+      })),
+      result: {
+        success: result.success,
+        duration: result.duration,
+        ...(result.error !== undefined ? { error: result.error } : {}),
+        steps: result.steps.map((step) => ({
+          title: step.title,
+          status: step.status,
+          duration: step.duration,
+          ...(step.error ? { error: step.error } : {}),
+          ...(step.at ? { at: step.at } : {}),
+        })),
+      },
+      triage,
+      ...(runnerArtifacts.length > 0 ? { runnerArtifacts } : {}),
+    });
     if (attemptResult.triage && !result.success) {
       attemptResult.triage = {
         ...attemptResult.triage,
@@ -1737,7 +2066,7 @@ export async function runIntentDrivenE2EStream(
           description,
           fixedCode: currentCode,
           finalResult: result,
-        });
+        }, repairMemoryOptions);
         observedRepairClusterIds.clear();
       }
     } else {
@@ -1756,7 +2085,7 @@ export async function runIntentDrivenE2EStream(
         previousCode: currentCode,
         recentEvents: buildRepairEvents(result, logs, attemptResult.triage),
         observationTags: repairObservationTags,
-      });
+      }, repairMemoryOptions);
       if (failureHint.clusterId) {
         observedRepairClusterIds.add(failureHint.clusterId);
       }
@@ -1806,8 +2135,28 @@ export async function runIntentDrivenE2EStream(
         successfulRepairObservationArtifact
       )
     : [];
+  const qualitySplit = resolveIntentE2EQualitySplit({
+    status: finalResult.success ? 'passed' : 'failed',
+    failureClass: finalFailureTriage?.failureClass,
+  });
+  let artifactIndex: IntentE2ERunArtifactIndex | null = null;
+  if (options?.runId) {
+    try {
+      artifactIndex = await archiveIntentE2ERunArtifacts({
+        runId: options.runId,
+        targetUrl,
+        description,
+        initialSnapshot: snapshot,
+        repairSnapshots: archivedRepairSnapshots,
+        attempts: archivedAttempts,
+      });
+    } catch (error) {
+      console.error('[intent-e2e-service] archive run artifacts failed', options.runId, error);
+    }
+  }
 
   const output: IntentE2ERunResult = {
+    ...platformAssets,
     scenarioCard: scenarioCardOutput.card,
     executionPlan: planning.executionPlan,
     verificationPlan: planning.verificationPlan,
@@ -1817,6 +2166,9 @@ export async function runIntentDrivenE2EStream(
     resolvedUrls,
     description,
     knowledge,
+    assetReadiness,
+    qualitySplit,
+    artifactIndex,
     knowledgeCandidates,
     attempts,
     finalResult,

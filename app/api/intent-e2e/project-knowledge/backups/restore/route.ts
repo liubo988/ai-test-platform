@@ -3,6 +3,8 @@ import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { insertProjectActivityLog } from '@/lib/db/repository';
 import {
   createIntentProjectKnowledgeAuditEntry,
+  getIntentProjectKnowledgeBackupDir,
+  getIntentProjectKnowledgePath,
   restoreIntentProjectKnowledgeBackup,
   type IntentProjectKnowledgeAuditNotice,
   type IntentProjectKnowledgeAuditPreflightSummary,
@@ -124,7 +126,14 @@ export async function POST(req: NextRequest) {
       actorLabel = actor.displayName || 'system';
     }
 
-    const result = await restoreIntentProjectKnowledgeBackup(backupPath || null);
+    const result = await restoreIntentProjectKnowledgeBackup(
+      backupPath || null,
+      getIntentProjectKnowledgePath(projectUid, {
+        mode: 'write',
+        legacyFallback: false,
+      }),
+      getIntentProjectKnowledgeBackupDir(projectUid)
+    );
     const preflightSummary = buildRestorePreflightSummary(result);
     const baseMergeReceipts = buildRestoreReceipts(result, []);
     let auditEntry = createIntentProjectKnowledgeAuditEntry({

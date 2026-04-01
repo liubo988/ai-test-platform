@@ -55,6 +55,12 @@ describe('POST /api/intent-e2e/runs', () => {
           apiStyle: 'responses',
           selfHealRetries: 3,
         },
+        runControl: {
+          priority: 'high',
+          timeoutMs: 60000,
+          retryLimit: 1,
+          replayOfRunId: 'intent-run-prev',
+        },
       },
     } as never);
     vi.mocked(createIntentE2ERun).mockReturnValue({
@@ -95,6 +101,12 @@ describe('POST /api/intent-e2e/runs', () => {
         llmConfig: {
           selfHealRetries: 3,
         },
+        runControl: {
+          priority: 'high',
+          timeoutMs: 60_000,
+          retryLimit: 1,
+          replayOfRunId: 'intent-run-prev',
+        },
       }),
     });
     const res = await POST(req);
@@ -120,6 +132,12 @@ describe('POST /api/intent-e2e/runs', () => {
           apiStyle: 'responses',
           selfHealRetries: 3,
         },
+        runControl: {
+          priority: 'high',
+          timeoutMs: 60_000,
+          retryLimit: 1,
+          replayOfRunId: 'intent-run-prev',
+        },
       })
     );
     expect(startIntentE2ERun).toHaveBeenCalledWith(
@@ -138,5 +156,88 @@ describe('POST /api/intent-e2e/runs', () => {
         status: 'running',
       }),
     });
+  });
+
+  it('applies onboarding manifest defaults before creating the async run', async () => {
+    vi.mocked(getWorkspaceLLMRuntimeOverrides).mockResolvedValue({} as never);
+    vi.mocked(resolveIntentE2EProjectAuth).mockResolvedValue({
+      actorUserUid: 'usr_1',
+      request: {
+        input: '登录供应商门户后检查订单列表',
+        projectUid: 'proj_vendor',
+        moduleUid: 'mod_vendor',
+        onboardingManifestId: 'vendor_portal_staging',
+        cicdProfile: 'scheduled_regression',
+      },
+    } as never);
+    vi.mocked(createIntentE2ERun).mockReturnValue({
+      runId: 'intent-run-2',
+    } as never);
+    vi.mocked(startIntentE2ERun).mockReturnValue({
+      runId: 'intent-run-2',
+      status: 'created',
+      stage: 'created',
+      createdAt: '2026-04-01T10:00:00.000Z',
+      updatedAt: '2026-04-01T10:00:00.000Z',
+      request: {
+        input: '登录供应商门户后检查订单列表',
+        targetUrl: 'https://vendor.example.test/login',
+        attachmentCount: 0,
+        hasAuth: false,
+        cicdProfile: 'scheduled_regression',
+        llm: {
+          provider: 'openai',
+          model: '',
+          apiStyle: 'auto',
+          visionEnabled: null,
+          selfHealRetries: null,
+          maxPlanSteps: null,
+        },
+      },
+      taskPlatform: {
+        requestFingerprint: 'fp-1',
+        priority: 'normal',
+        timeoutMs: 30000,
+        retryLimit: 0,
+        retryCount: 0,
+        retryReasons: [],
+        replayOfRunId: '',
+        replayRootRunId: 'intent-run-2',
+        replaySequence: 0,
+        flaky: false,
+        flakyReason: '',
+        flakyPeerRunIds: [],
+      },
+      events: [],
+      result: null,
+      error: null,
+    } as never);
+    vi.mocked(waitForIntentE2ERunPersistence).mockResolvedValue(undefined as never);
+
+    const req = new NextRequest('http://localhost/api/intent-e2e/runs', {
+      method: 'POST',
+      body: JSON.stringify({
+        input: '登录供应商门户后检查订单列表',
+        projectUid: 'proj_vendor',
+        moduleUid: 'mod_vendor',
+        onboardingManifestId: 'vendor_portal_staging',
+        cicdProfile: 'scheduled_regression',
+      }),
+    });
+    await POST(req);
+
+    expect(createIntentE2ERun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetUrl: 'https://vendor.example.test/login',
+        systemOnboarding: expect.objectContaining({
+          manifestId: 'vendor_portal_staging',
+          systemKey: 'vendor_portal',
+        }),
+        runtimeGovernance: expect.objectContaining({
+          environmentProfile: 'staging',
+        }),
+        cicdProfile: 'scheduled_regression',
+      })
+    );
   });
 });

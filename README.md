@@ -59,9 +59,10 @@ npm run edge:generate
 - `GET /api/llm/config`
 
 ### Intent E2E 开发主线
-- `intent-e2e` 当前的开发主文档、阶段状态、逐轮完成内容、验证结果、风险与下一步，统一以 [docs/intent-e2e-high-success-roadmap-2026-03-20.md](docs/intent-e2e-high-success-roadmap-2026-03-20.md) 为准。
-- 详细的“最近一次联调验证”与阶段回写不再在 README 和 roadmap 双份维护，避免状态漂移。
-- 如果当前任务涉及 `ExecutionPlan / VerificationPlan`、verifier、starter helper、repair memory、project knowledge 或 `/intent-e2e` 工作台，请先阅读 roadmap 中的“当前状态快照”“阶段状态”和最新一条进度更新。
+- `R0-R7` 的历史主线与高成功率能力收口，统一以 [docs/intent-e2e-high-success-roadmap-2026-03-20.md](docs/intent-e2e-high-success-roadmap-2026-03-20.md) 为准。
+- `R7.5-R14` 的生产化续线、多项目资产隔离、统一测试类型抽象与后续平台化演进，统一以 [docs/intent-e2e-production-roadmap-2026-03-29.md](docs/intent-e2e-production-roadmap-2026-03-29.md) 为准。
+- 详细的“最近一次联调验证”与阶段回写不再在 README 和多份 roadmap 间重复维护，避免状态漂移。
+- 如果当前任务涉及 `ExecutionPlan / VerificationPlan`、verifier、starter helper、repair memory、project knowledge、run registry / insights，或 `/intent-e2e` 工作台，请先阅读对应 roadmap 的“阶段状态”和最新一条进度更新。
 
 ### 工作台能力
 在 `/intent-e2e` 页面里可以直接：
@@ -81,18 +82,26 @@ npm run edge:generate
 - 项目能力工作台里可先按来源 / Starter Helper / 验证状态筛出 Starter 能力，再对当前筛选结果做批量归档、批量验证或批量修复失败项，避免沉淀后又只能逐条清理
 - 无论是单条验证还是批量验证 / 修复，顶部“能力验证批次”面板都会持续显示执行状态、等待目录回写数和每条运行入口，直到 capability `meta` 真正同步完成
 - repair memory 达到阈值后，可在工作台里直接预览 / 写出项目知识规则草稿，并勾选候选后一键合并回项目规则文件；合并时会自动备份旧文件、展示本次变更预览、给出 merge / restore 前后覆盖对比，并保留最近审计记录
-- 可直接在工作台查看“历史运行洞察”：最近通过率、知识命中率、推荐 helper 复用率、Starter Helper 建议、Top 规则 / helper / 失败类别，以及疑似导致成功率下滑的规则合并回滚提示
+- 可直接在工作台查看“历史运行洞察”：最近通过率、剔除 blocker 后的 `modelQualityPassRate`、`blockedRate`、知识命中率、推荐 helper 复用率、Starter Helper 建议、Top 规则 / helper / 失败类别，以及疑似导致成功率下滑的规则合并回滚提示
+- 当前运行结果和 recent traces 会额外展示 `qualitySplit` pill，显式区分 `model_quality / auth_blocked / permission_blocked / env_blocked / data_blocked`
+- 当前运行结果和 recent traces 也会显式透出 `testType / runnerType`，当前 browser E2E 会标记为 `browser_e2e / playwright_runner`
+- 旧的 run snapshot 即使当时还没写入 `testCase / testSpec / verificationContract / artifactContract`，恢复到工作台时也会按 browser-E2E 上下文自动回填一份兼容平台资产
 - 新 merge 的规则会先进入“观察期”卡片：默认观察前 6 次终态运行，展示基线通过率、当前通过率、剩余样本数；若前 3 次起通过率跌到 35% 以下，或相对合并前基线下滑 15 个点以上，会自动降级并支持直接回滚到对应备份
 - 随时停止当前自动测试，并保留已生成的上下文和尝试记录
 - 自动显示服务端 `runId`，刷新页面后可自动恢复当前运行
 - 在流式执行完成后查看最终 `ScenarioCard`、编译后的描述、每次尝试的脚本 / 日志 / 结果
 - 在流式执行结束后，可直接把本次结果保存为项目任务，或追加为已有任务的新脚本版本；同时写入执行历史，失败结果也能沉淀到工作台继续修复
+- 项目工作台里的任务列表和单任务执行历史现在也会给 `intent-e2e` 导入结果展示 `testType / runnerType` pill，并支持按平台类型 / 执行器 / `artifactKind` 下拉筛选，以及通过单字段选择器按 `platformContractIdType + platformContractId` 做服务端查询；legacy 的 `platformTestCaseId / platformTestSpecId / platformVerificationContractId` 仍兼容；这些筛选会直接走服务端 query contract，而不只是本地文本搜索；当前任务区和执行历史头部还会展示 `platformSummary` 聚合 pills，方便快速看当前查询范围里的 intent 导入数、平台标签数、平台分布与 `artifactKinds` 分布；列表项本身也会直接透出 `testCaseId / testSpecId / verificationContractId / artifactKinds`，并新增稳定的 `platformQuery` item contract，显式标注 query source 是 `latest_plan_prompt` 还是 `execution_artifact_meta`；两条 query response 顶层还会返回 `platformIndex`，给工作台当前范围的 contract-id suggestions 和 source index pills 提供统一物化视图
+- 异步运行入口现在会在并发配额命中时进入 `queued` 阶段；同项目同签名 run 会被串行化隔离，终态 run 还会保留 `taskPlatform` 元数据（`priority / timeoutMs / retryCount / replayOfRunId / flaky`）
+- 终态 run result 现在会额外保留 `artifactIndex`，把 `trace / log / screenshot / response_summary / runner_artifact` 统一归档到 `reports/intent-e2e/runs/<runId>/`
 
 ### 请求体示例
 ```json
 {
   "input": "访问结算页，输入有效手机号并提交，最终看到成功页面",
   "targetUrl": "http://127.0.0.1:4173/checkout",
+  "onboardingManifestId": "vendor_portal_staging",
+  "cicdProfile": "pr_gate",
   "attachments": [
     {
       "name": "expected-success-page.png",
@@ -114,31 +123,90 @@ npm run edge:generate
     "visionEnabled": true,
     "selfHealRetries": 2,
     "maxPlanSteps": 8
+  },
+  "runControl": {
+    "priority": "high",
+    "timeoutMs": 600000,
+    "retryLimit": 1,
+    "replayOfRunId": "intent-run-previous"
   }
 }
 ```
 
 ### 返回内容
-- `POST /api/intent-e2e`：返回完整 JSON，字段包括 `scenarioCard`、`description`、`attempts`、`finalResult`
+- `POST /api/intent-e2e`：返回完整 JSON，字段包括 `testType`、`runnerType`、`testCase`、`testSpec`、`verificationContract`、`artifactContract`、`scenarioCard`、`description`、`assetReadiness`、`qualitySplit`、`attempts`、`finalResult`；若请求带 `onboardingManifestId` 或 `cicdProfile`，终态还会附带 `ciReport`
 - `POST /api/intent-e2e/stream`：返回 SSE 事件流，包含 `stage`、`scenario_card`、`description`、`attempt_started`、`attempt_execution_started`、`attempt_event`、`attempt_step`、`attempt_log`、`attempt_result`、`final_result`；保留为直接流式 fallback
-- `POST /api/intent-e2e/runs`：立即返回 `{ runId, run }`，服务端后台继续执行
-- `GET /api/intent-e2e/runs/:runId`：返回当前运行快照，包含 `status`、`stage`、`events`、`result`
-- `GET /api/intent-e2e/runs/:runId/stream`：先补发 backlog，再推送实时事件，适合刷新恢复 / 断线重连
+- `POST /api/intent-e2e/runs`：立即返回 `{ runId, run }`，服务端后台继续执行；请求体可选带 `runControl.{priority,timeoutMs,retryLimit,replayOfRunId}`、`onboardingManifestId`、`cicdProfile`，run snapshot 顶层会保留 `testType / runnerType + taskPlatform`
+- `POST /api/intent-e2e`、`POST /api/intent-e2e/stream`、`POST /api/intent-e2e/runs` 现在都会统一走 shared LLM merge + project auth resolution，不再只有异步入口补项目凭证上下文
+- 三个运行入口的请求体都可选带 `runtimeGovernance`：当前支持 `environmentProfile`（`dev / test / uat / staging`）、`credential.{source,secretRef,accountRef,sessionMode}`、`fixture.{strategy,setupRef,cleanupRef,owner,idempotencyKey}`；如果显式提供治理契约但对登录凭证或写数据流程缺少必要字段，服务端会在 page precheck 前直接阻断运行
+- 若请求里带 `projectUid`，服务端还会尝试从项目级 runtime governance manifest 自动补默认 `environmentProfile / credential / fixture` 字段，减少调用方手填
+- `GET /api/intent-e2e/runs/:runId`：返回当前运行快照，包含 `status`、`stage`、`events`、`result`、`taskPlatform`；终态 `result` 会保留 `testCase / testSpec / verificationContract / artifactContract / artifactIndex`，若本次 run 启用了 manifest / CI profile，还会保留 `ciReport`
+- `GET /api/intent-e2e/runs/:runId/stream`：先补发 backlog，再推送实时事件，适合刷新恢复 / 断线重连；异步 run 在并发配额命中时会先收到 `stage=queued`
 - `POST /api/intent-e2e/runs/:runId/cancel`：触发服务端停止当前运行
-- `POST /api/intent-e2e/runs/:runId/workspace`：把最终运行结果导入现有项目工作台，沉淀为任务、脚本版本和执行历史
-- `GET /api/intent-e2e/insights`：汇总最近终态运行的通过率、知识命中率、helper 复用率、`starterHelpers`、Top 规则 / helper / 失败类别、`probationRules`，以及基于 merge 审计推导的回滚候选
+- `POST /api/intent-e2e/runs/:runId/workspace`：把最终运行结果导入现有项目工作台，沉淀为任务、脚本版本和执行历史；导入后的 `generated_spec` artifact meta 会保留 `platformAssetBundle`，响应里的 `workspaceQueryPath` 可直接跳到带平台筛选的聚焦任务视图，`workspaceHistoryPath` 可直接打开该任务的聚焦执行历史视图；若当前 run 的凭证来自 project-backed `credential.secretRef`，导入时不会再把该项目密码复制成任务级 legacy auth
+- `POST /api/intent-e2e/runs/:runId/workspace` 在 plan prompt、artifact meta 和 activity meta 里也会保留本次 run 的 `runtimeGovernance` 摘要，方便后续追踪环境 / 凭证 / 数据治理上下文
+- `GET /api/intent-e2e/insights`：汇总最近终态运行的通过率、`modelQualityPassRate / blockedRate`、知识命中率、helper 复用率、`assetMissing / noHit` 冷启动信号、`starterHelpers`、Top 规则 / helper / 失败类别、`probationRules`，以及基于 merge 审计推导的回滚候选；`recentTraces` 还会透出每次运行的 `testType / runnerType`
+- `GET /api/test-configs`：返回项目工作台任务列表；当前支持可选 `platformTestType / platformRunnerType / platformArtifactKind / platformContractIdType / platformContractId` 查询参数，用于筛出某一类平台导入任务；legacy 的 `platformTestCaseId / platformTestSpecId / platformVerificationContractId` 仍兼容；若该任务来自 `intent-e2e` 导入，还会透出 `latestPlanImportedTestCaseId / latestPlanImportedTestSpecId / latestPlanImportedVerificationContractId / latestPlanImportedArtifactKinds`，并新增稳定的 `platformQuery` item contract（含 `source / importedFromRunId / testType / runnerType / contract ids / artifactKinds / imported / platformTagged`）；响应还会额外返回 `platformSummary` 与 `platformIndex`，后者会按当前查询范围物化 `bySource / byTestCaseId / byTestSpecId / byVerificationContractId`
+- `GET /api/test-configs/:configUid/executions`：返回项目工作台里的单任务执行历史；若该执行来自 `intent-e2e` 导入，会额外透出 `intentImportedTestType / intentImportedRunnerType / intentImportedTestCaseId / intentImportedTestSpecId / intentImportedVerificationContractId / intentImportedArtifactKinds`，并支持可选 `platformTestType / platformRunnerType / platformArtifactKind / platformContractIdType / platformContractId` 查询参数；legacy 的 `platformTestCaseId / platformTestSpecId / platformVerificationContractId` 仍兼容；响应项同样会返回 `platformQuery` item contract，显式区分 `execution_artifact_meta` 与 imported-only legacy 形态；整体响应继续返回当前返回窗口的 `platformSummary` 与 `platformIndex`
+- `GET /api/test-executions/:executionUid`：若该执行历史来自 `intent-e2e` 导入，`intentImport` 里会额外透出 `testType / runnerType` 和关键 contract id，方便后续按平台语义追踪
+- `/executions/:executionUid` 和 `/runs/:executionUid` 的执行详情页现在也会直接展示这批 `intentImport` 平台字段，并提供回到项目工作台聚焦任务 / 聚焦执行历史的直达链接，不再只剩一个 runId
 
 ### Repair Memory
 - 默认会把失败聚类和成功修法写入 `reports/intent-e2e-repair-memory.json`
 - 可通过环境变量 `INTENT_E2E_REPAIR_MEMORY_PATH` 覆盖持久化路径
+- 若请求里带 `projectUid`，会优先读 `reports/intent-e2e/projects/<projectUid>/intent-e2e-repair-memory.json`；项目文件不存在时，读取阶段会回退到当前全局 legacy 文件，但后续写回会直接落到项目文件
+- 可通过环境变量 `INTENT_E2E_PROJECT_ASSET_ROOT` 覆盖项目级资产根目录
 - 每次失败会按错误类别 + 归一化错误签名聚类，记录常见误区与最近失败代码片段
 - 后续 repair 会先查询相似历史，再把 `常用修法 / 常见误区` 注入 Prompt；修复成功后再回写成功策略
 
 ### Project Knowledge
 - 默认会读取根目录 `intent-e2e.project-knowledge.json` 作为项目知识规则文件
 - 可通过环境变量 `INTENT_E2E_PROJECT_KNOWLEDGE_PATH` 切换到别的 JSON 文件
+- 若请求里带 `projectUid`，会优先读 `reports/intent-e2e/projects/<projectUid>/intent-e2e.project-knowledge.json`；项目文件不存在时，运行态读取会回退到当前全局 legacy 文件，但 merge / restore / 后续写回会直接落到项目文件
+- 可通过环境变量 `INTENT_E2E_PROJECT_ASSET_ROOT` 覆盖项目级资产根目录
 - 每条规则可按 URL / 标题 / 页面正文 / iframe URL / 用户意图命中后，自动追加全局规则、步骤约束、首选 helper 和动作库能力
 - 这是后续最推荐的迭代入口：优先改这份 JSON，而不是直接改 Prompt 大段文案
+
+### Project Onboarding
+- 当前项目级 onboarding manifest 默认路径为 `reports/intent-e2e/projects/<projectUid>/intent-e2e.project-onboarding.json`
+- 当前冷启动 readiness 会检查最小 contract：`baseUrl`、`loginEntry`、`targetUrlFamilies`、`stableIdentifierHints`、`keyResponsePatterns`、`defaultListOwnershipHints`、`detailEntryHints`、`goldFlows`
+- 当请求带 `projectUid` 且 onboarding / project knowledge 未就绪时，当前运行结果的 `assetReadiness` 和 `GET /api/intent-e2e/insights` 会显式返回 `asset_missing / no_hit`，避免继续把冷启动问题伪装成纯模型失败
+
+### Project Runtime Governance
+- 当前项目级 runtime governance manifest 默认路径为 `reports/intent-e2e/projects/<projectUid>/intent-e2e.project-runtime-governance.json`
+- manifest 复用 `runtimeGovernance` 同一套字段：`environmentProfile`、`credential.{source,secretRef,accountRef,sessionMode}`、`fixture.{strategy,setupRef,cleanupRef,owner,idempotencyKey}`
+- 当运行请求带 `projectUid` 时，服务端会先读取该 manifest 作为默认值，再合并请求里的显式 override
+- 如果实际登录凭证仍来自项目内置 auth，最终 run request 会以 project-backed `credential.secretRef=project://<projectUid>/auth/default` 为准，但会保留 manifest 里的 `accountRef / sessionMode`
+- 如果项目内置 auth 被实际复用、但 `accountRef / sessionMode` 仍缺失，服务端会再派生默认 `accountRef=account://project/<projectUid>/<loginUsername>` 与 `sessionMode=shared`，避免共享账号继续停留在匿名状态
+- 如果项目上下文里的 fixture contract 缺少 `owner`，服务端会派生 `owner://project/<projectUid>/members/<actorUserUid>` 作为默认数据归属 ref；workspace import 会继续沿现有 `runtimeGovernance` 链把这些派生字段写进 prompt / artifact / activity meta
+- `GET /api/intent-e2e/insights?projectUid=...` 还会返回 `runtimeGovernanceStatus`，在不发起 run 的情况下提前暴露 manifest 缺失、格式无效、shared accountRef 缺失或 fixture contract 不完整
+
+### Run Platform
+- `POST /api/intent-e2e/runs` 的 `runControl` 当前支持：
+  - `priority`：`low / normal / high`
+  - `timeoutMs`：run-level timeout，当前会限制在 `30s ~ 30min`
+  - `retryLimit`：仅对 `env_blocked` 或暂态 timeout / network error 触发整轮重试，当前上限 `2`
+  - `replayOfRunId`：显式把本次 rerun 关联到上一条 run，便于 flaky 跟踪
+- 当前默认并发配额：
+  - 全局 `INTENT_E2E_MAX_CONCURRENT_RUNS=2`
+  - 单项目 `INTENT_E2E_PROJECT_MAX_CONCURRENT_RUNS=1`
+- 工件归档默认路径：`reports/intent-e2e/runs/<runId>/`
+- 可通过环境变量 `INTENT_E2E_RUN_ARTIFACT_ROOT` 覆盖归档根目录
+
+### System Onboarding & CI/CD
+- repo-owned onboarding manifest registry：`intent-e2e.system-onboarding-manifests.json`
+- 当前已内置 1 个非当前系统样板：`vendor_portal_staging`
+- manifest 最小字段已收口为：`systemProfile`、`testType`、`envProfile`、`credentialReference`、`fixtureStrategy`、`benchmarkBinding`
+- 三个运行入口都可选传 `onboardingManifestId`；当前会自动补 `targetUrl` 默认值，并把 manifest 的 `environment / credential / fixture` 默认治理字段合并进请求
+- 当前支持的 `cicdProfile`：
+  - `pr_gate`
+  - `scheduled_regression`
+  - `release_candidate_validation`
+- 终态 `ciReport` 统一输出：
+  - `passFail`
+  - `gate`
+  - `benchmarkCompare`
+  - `rollbackRecommendation`
 
 ### Knowledge Draft
 - 默认会把自动草拟的规则候选输出到 `reports/intent-e2e.project-knowledge.draft.json`
@@ -147,6 +215,7 @@ npm run edge:generate
 - 可通过环境变量 `INTENT_E2E_PROJECT_KNOWLEDGE_BACKUP_DIR` 覆盖备份目录
 - merge / restore 审计默认会追加到 `reports/intent-e2e.project-knowledge.audit.jsonl`
 - 可通过环境变量 `INTENT_E2E_PROJECT_KNOWLEDGE_AUDIT_PATH` 覆盖审计日志路径
+- 若请求里带 `projectUid`，草稿输出、knowledge merge 和 backup / restore 会统一落到 `reports/intent-e2e/projects/<projectUid>/` 下面的项目级资产目录，不再继续写全局知识文件
 - `GET /api/intent-e2e/project-knowledge/draft` 会基于当前 repair memory 返回候选规则预览
 - `POST /api/intent-e2e/project-knowledge/draft` 传入 `{ "write": true }` 会把草稿写到文件，工作台里也已提供一键写出入口
 - `POST /api/intent-e2e/project-knowledge/merge` 传入候选 `candidateIds` 后，会把选中的建议规则直接合并回 `intent-e2e.project-knowledge.json`，并返回 backup 路径、变更预览、覆盖对比与最新审计记录
@@ -157,6 +226,7 @@ npm run edge:generate
 - `POST /api/intent-e2e/project-knowledge/backups/restore` 传入某个 `backupPath` 后，可直接把项目规则回滚到该备份版本，并返回回滚前后配置对比
 - `GET /api/intent-e2e/insights` 可选带 `projectUid`、`runLimit`、`auditLimit`；若指定 `projectUid`，会校验该项目的 `owner/editor/viewer` 权限
 - `GET /api/intent-e2e/insights` 当前直接复用已持久化的 run snapshot 和知识审计，不额外建表；新 merge 的规则会进入最多 6 次终态运行的观察期，并结合合并前最多 5 次终态运行做基线对比
+- `GET /api/intent-e2e/insights` 的 `summary` 现会额外返回 `modelQualityEligibleRuns / modelQualityPassRate / modelQualityFailureRuns / blockedRuns / blockedRate / permissionBlockedRuns / dataBlockedRuns / assetMissingRuns / assetMissingRate / noHitRuns / noHitRate`，`recentTraces` 也会带每次运行的 `testType / runnerType + assetReadiness + qualitySplit`
 - 观察期在满足至少 3 次样本后，如果通过率降到 35% 以下，或相对基线下滑达到 15 个点，会自动标记为 `degraded`；完成 6 次观察且未降级则自动转正
 - `GET /api/intent-e2e/insights` 还会从已转正或稳定高通过率规则里提炼 `starterHelpers`：要求 helper 至少复用 2 次、成功 2 次且通过率不低于 70%，并给出来源规则、复用次数和推荐文案
 - 当前服务端在执行 generate / repair 前，会把最近运行沉淀出的规则表现反馈回规划阶段：高通过率规则会前置进 DSL / Prompt，观察期规则轻微降权，已降级或历史低通过率且命中过回滚候选的规则会被降权甚至跳过；同时把 `starterHelpers` 一起注入规划，让首轮生成优先复用已验证过的 helper
@@ -173,6 +243,6 @@ npm run edge:generate
 ## 下一步建议
 1. 给能力验证批次再补“失败原因聚合 / 一键只看未回写项”视图，减少大批量治理时在目录卡片和运行页之间来回切换
 2. 继续扩充 runtime helper catalog，把更多已稳定高收益的 helper 纳入白名单（如 `select_option`、`enter_frame_context`、`wait_for_visible_modal`）
-3. 决定是否把当前全局 `intent-e2e.project-knowledge.json` 继续拆成 project-scoped 知识文件，减少多项目之间的规则串扰
+3. 决定是否把当前 `asset_missing / no_hit / blocked split` 升级成服务端强门禁，而不只是 workbench / insights 显式信号
 4. 接入真实预发环境 E2E（通过 `E2E_BASE_URL`）
 5. 完善 provider 切换占位（OpenAI / Claude / Gemini），保持执行层不变

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { resolveProjectScopedIntentAssetStorage } from '@/lib/intent-project-knowledge';
 import type { TestResult } from '@/lib/test-executor';
 
 export interface IntentRepairMemoryHint {
@@ -67,6 +68,14 @@ const MAX_CLUSTERS = 200;
 const MAX_LIST_ITEMS = 6;
 let cachePath = '';
 let cacheStore: IntentRepairMemoryStore | null = null;
+
+type IntentRepairMemoryPathMode = 'read' | 'write';
+
+export interface IntentRepairMemoryPathOptions {
+  projectUid?: string | null;
+  mode?: IntentRepairMemoryPathMode;
+  legacyFallback?: boolean;
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -207,12 +216,22 @@ function extractStrategiesFromCode(code: string, result?: TestResult): string[] 
   ]);
 }
 
-function resolveMemoryFilePath(): string {
-  return process.env.INTENT_E2E_REPAIR_MEMORY_PATH?.trim() || DEFAULT_MEMORY_FILE;
+function resolveMemoryStorage(options: IntentRepairMemoryPathOptions = {}) {
+  return resolveProjectScopedIntentAssetStorage({
+    projectUid: options.projectUid,
+    legacyPath: process.env.INTENT_E2E_REPAIR_MEMORY_PATH?.trim() || DEFAULT_MEMORY_FILE,
+    projectFileName: 'intent-e2e-repair-memory.json',
+    legacyFallback: options.legacyFallback,
+  });
 }
 
-async function loadStore(): Promise<IntentRepairMemoryStore> {
-  const memoryPath = resolveMemoryFilePath();
+function resolveMemoryFilePath(options: IntentRepairMemoryPathOptions = {}): string {
+  const storage = resolveMemoryStorage(options);
+  return options.mode === 'write' ? storage.writePath : storage.readPath;
+}
+
+async function loadStore(options: IntentRepairMemoryPathOptions = {}): Promise<IntentRepairMemoryStore> {
+  const memoryPath = resolveMemoryFilePath({ ...options, mode: 'read' });
   if (cacheStore && cachePath === memoryPath) {
     return cacheStore;
   }
@@ -237,8 +256,8 @@ async function loadStore(): Promise<IntentRepairMemoryStore> {
   }
 }
 
-async function saveStore(store: IntentRepairMemoryStore): Promise<void> {
-  const memoryPath = resolveMemoryFilePath();
+async function saveStore(store: IntentRepairMemoryStore, options: IntentRepairMemoryPathOptions = {}): Promise<void> {
+  const memoryPath = resolveMemoryFilePath({ ...options, mode: 'write', legacyFallback: false });
   store.updatedAt = nowIso();
   cachePath = memoryPath;
   cacheStore = store;
@@ -285,8 +304,11 @@ function toHint(record: IntentRepairClusterRecord): IntentRepairMemoryHint {
   };
 }
 
-export async function recordIntentRepairFailure(input: IntentRepairObservationInput): Promise<IntentRepairMemoryHint> {
-  const store = await loadStore();
+export async function recordIntentRepairFailure(
+  input: IntentRepairObservationInput,
+  options: IntentRepairMemoryPathOptions = {}
+): Promise<IntentRepairMemoryHint> {
+  const store = await loadStore(options);
   const { category, normalizedError, tags, antiPatterns } = classifyIntentRepairFailure(input);
   const urlKey = normalizeUrlKey(input.targetUrl);
   const clusterId = buildClusterId(category, urlKey, normalizedError, tags);
@@ -330,13 +352,16 @@ export async function recordIntentRepairFailure(input: IntentRepairObservationIn
   record.successRate = record.seenCount > 0 ? Number((record.resolvedCount / record.seenCount).toFixed(3)) : 0;
 
   store.clusters = store.clusters.slice(0, MAX_CLUSTERS);
-  await saveStore(store);
+  await saveStore(store, options);
   return toHint(record);
 }
 
-export async function recordIntentRepairResolution(input: IntentRepairResolutionInput): Promise<void> {
+export async function recordIntentRepairResolution(
+  input: IntentRepairResolutionInput,
+  options: IntentRepairMemoryPathOptions = {}
+): Promise<void> {
   if (!input.clusterIds.length) return;
-  const store = await loadStore();
+  const store = await loadStore(options);
   const timestamp = nowIso();
   const strategies = extractStrategiesFromCode(input.fixedCode, input.finalResult);
   let mutated = false;
@@ -357,7 +382,7 @@ export async function recordIntentRepairResolution(input: IntentRepairResolution
   }
 
   if (mutated) {
-    await saveStore(store);
+    await saveStore(store, options);
   }
 }
 
@@ -368,9 +393,10 @@ function overlapScore(a: string[], b: string[]): number {
 
 export async function listRelevantIntentRepairHints(
   input: IntentRepairObservationInput,
-  limit = 3
+  limit = 3,
+  options: IntentRepairMemoryPathOptions = {}
 ): Promise<IntentRepairMemoryHint[]> {
-  const store = await loadStore();
+  const store = await loadStore(options);
   if (store.clusters.length === 0) return [];
 
   const { category, normalizedError, tags } = classifyIntentRepairFailure(input);
@@ -413,12 +439,18 @@ export function renderIntentRepairMemoryHints(hints: IntentRepairMemoryHint[]): 
 }
 
 
-export function getIntentRepairMemoryPath(): string {
-  return resolveMemoryFilePath();
+export function getIntentRepairMemoryPath(
+  projectUid = '',
+  options: Omit<IntentRepairMemoryPathOptions, 'projectUid'> = {}
+): string {
+  return resolveMemoryFilePath({ ...options, projectUid });
 }
 
-export async function listIntentRepairMemoryClusters(): Promise<IntentRepairMemoryClusterSnapshot[]> {
-  const store = await loadStore();
+export async function listIntentRepairMemoryClusters(
+  projectUid = '',
+  options: Pick<IntentRepairMemoryPathOptions, 'legacyFallback'> = {}
+): Promise<IntentRepairMemoryClusterSnapshot[]> {
+  const store = await loadStore({ projectUid, legacyFallback: options.legacyFallback });
   return store.clusters.map((record) => toClusterSnapshot(record));
 }
 

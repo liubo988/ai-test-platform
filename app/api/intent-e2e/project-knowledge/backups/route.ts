@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { listIntentProjectKnowledgeBackups } from '@/lib/intent-project-knowledge';
+import {
+  getIntentProjectKnowledgeBackupDir,
+  getIntentProjectKnowledgePath,
+  listIntentProjectKnowledgeBackups,
+} from '@/lib/intent-project-knowledge';
 
 function normalizeNumber(value: string | null, fallback: number): number {
   const parsed = Number(value);
@@ -9,7 +13,15 @@ function normalizeNumber(value: string | null, fallback: number): number {
 export async function GET(req: NextRequest) {
   try {
     const limit = normalizeNumber(req.nextUrl.searchParams.get('limit'), 12);
-    const result = await listIntentProjectKnowledgeBackups(limit);
+    const projectUid = req.nextUrl.searchParams.get('projectUid')?.trim() || '';
+    const result = await listIntentProjectKnowledgeBackups(
+      limit,
+      getIntentProjectKnowledgePath(projectUid, {
+        mode: 'write',
+        legacyFallback: false,
+      }),
+      getIntentProjectKnowledgeBackupDir(projectUid)
+    );
     return NextResponse.json(result);
   } catch (error: unknown) {
     return NextResponse.json(

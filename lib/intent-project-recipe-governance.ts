@@ -1,5 +1,9 @@
 import { getIntentE2EInsights, getIntentE2ERecipePerformanceMap } from './ai/intent-e2e-insights';
 import {
+  evaluateIntentE2ERolloutPolicyDecision,
+  type IntentE2ERolloutPolicyDecision,
+} from './intent-e2e-rollout-policy';
+import {
   getIntentProjectRecipeProfile,
   type IntentProjectRecipeProfile,
 } from './intent-project-recipe-registry';
@@ -59,6 +63,27 @@ export interface ListIntentProjectRecipeGovernanceDecisionsOptions {
   limit?: number;
 }
 
+export interface IntentProjectRecipeGovernanceRolloutPatch {
+  slug?: string;
+  successRate?: number;
+  lastVerifiedAt?: string;
+}
+
+export interface EvaluateIntentProjectRecipeGovernanceMutationRolloutOptions {
+  projectUid?: string;
+  patch?: IntentProjectRecipeGovernanceRolloutPatch | null;
+  runLimit?: number;
+  rolloutOverride?: boolean;
+  rolloutOverrideReason?: string;
+  rolloutCanaryAcknowledged?: boolean;
+  rolloutCanaryLabel?: string;
+}
+
+export interface IntentProjectRecipeGovernanceMutationRolloutEvaluation {
+  governanceDecision: IntentProjectRecipeGovernanceDecisionItem | null;
+  rolloutPolicyDecision: IntentE2ERolloutPolicyDecision | null;
+}
+
 interface RecipeGovernanceEvaluationCandidateSignal {
   evalCaseId: string;
   priority: 'p0' | 'p1' | 'p2';
@@ -83,6 +108,10 @@ const RECIPE_GOVERNANCE_WATCHLIST_DEGRADE_SUCCESS_RATE = 70;
 const RECIPE_GOVERNANCE_MIN_FAILED_RUNS = 2;
 const RECIPE_GOVERNANCE_RATE_EPSILON = 0.05;
 
+function normalizeString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
 function toTimestamp(value: string): number {
   const timestamp = Date.parse(String(value || '').trim());
   return Number.isFinite(timestamp) ? timestamp : 0;
@@ -90,6 +119,21 @@ function toTimestamp(value: string): number {
 
 function normalizeRate(value: number): number {
   return Number.isFinite(value) ? Number(value.toFixed(1)) : 0;
+}
+
+function normalizeGovernanceRolloutPatch(
+  patch?: IntentProjectRecipeGovernanceRolloutPatch | null
+): IntentProjectRecipeGovernanceDecisionPatch | null {
+  const slug = normalizeString(patch?.slug);
+  const lastVerifiedAt = normalizeString(patch?.lastVerifiedAt);
+  const successRate = Number(patch?.successRate);
+  if (!slug || !lastVerifiedAt || !Number.isFinite(successRate)) return null;
+
+  return {
+    slug,
+    successRate: normalizeRate(successRate),
+    lastVerifiedAt,
+  };
 }
 
 function recipeDecisionStatusLabel(value: IntentProjectRecipeGovernanceDecisionStatus): string {
@@ -416,6 +460,45 @@ function pickLatestGovernanceRepairObservation(
   };
 }
 
+interface IntentProjectRecipeGovernanceContext {
+  projectUid: string;
+  runLimit: number;
+  profile: IntentProjectRecipeProfile;
+  performanceBySlug: Record<string, IntentRecipePerformanceFeedback>;
+  evaluationCandidates: RecipeGovernanceEvaluationCandidateSignal[];
+  rolloutStrategy: Awaited<ReturnType<typeof getIntentE2EInsights>>['rolloutStrategy'] | null;
+  rollbackCandidates: Awaited<ReturnType<typeof getIntentE2EInsights>>['rollbackCandidates'];
+}
+
+async function loadIntentProjectRecipeGovernanceContext(
+  options: ListIntentProjectRecipeGovernanceDecisionsOptions = {}
+): Promise<IntentProjectRecipeGovernanceContext> {
+  const runLimit = Math.max(1, Math.min(200, Math.floor(options.runLimit || 50)));
+  const profile = getIntentProjectRecipeProfile();
+  const projectUid = normalizeString(options.projectUid);
+  const [performanceBySlug, insights] = await Promise.all([
+    getIntentE2ERecipePerformanceMap({
+      projectUid,
+      runLimit,
+    }),
+    getIntentE2EInsights({
+      projectUid,
+      runLimit,
+      auditLimit: 12,
+    }).catch(() => null),
+  ]);
+
+  return {
+    projectUid,
+    runLimit,
+    profile,
+    performanceBySlug,
+    evaluationCandidates: insights?.evaluationBaseline.candidates || [],
+    rolloutStrategy: insights?.rolloutStrategy || null,
+    rollbackCandidates: insights?.rollbackCandidates || [],
+  };
+}
+
 export function buildIntentProjectRecipeGovernanceDecisionResult(
   profile: IntentProjectRecipeProfile,
   performanceBySlug: Record<string, IntentRecipePerformanceFeedback>,
@@ -448,27 +531,83 @@ export function buildIntentProjectRecipeGovernanceDecisionResult(
   };
 }
 
+export function matchesIntentProjectRecipeGovernanceDecisionPatch(
+  decision: IntentProjectRecipeGovernanceDecisionItem | null | undefined,
+  patch?: IntentProjectRecipeGovernanceRolloutPatch | null
+): boolean {
+  const normalizedPatch = normalizeGovernanceRolloutPatch(patch);
+  if (!decision || !decision.canApply || !decision.recommendedPatch || !normalizedPatch) {
+    return false;
+  }
+
+  return (
+    normalizedPatch.slug === decision.slug &&
+    normalizedPatch.lastVerifiedAt === normalizeString(decision.recommendedPatch.lastVerifiedAt) &&
+    normalizedPatch.successRate === normalizeRate(decision.recommendedPatch.successRate)
+  );
+}
+
+export async function evaluateIntentProjectRecipeGovernanceMutationRollout(
+  options: EvaluateIntentProjectRecipeGovernanceMutationRolloutOptions = {}
+): Promise<IntentProjectRecipeGovernanceMutationRolloutEvaluation> {
+  const normalizedPatch = normalizeGovernanceRolloutPatch(options.patch);
+  if (!normalizedPatch) {
+    return {
+      governanceDecision: null,
+      rolloutPolicyDecision: null,
+    };
+  }
+
+  const context = await loadIntentProjectRecipeGovernanceContext({
+    projectUid: options.projectUid,
+    runLimit: options.runLimit,
+    limit: 0,
+  });
+  const governanceResult = buildIntentProjectRecipeGovernanceDecisionResult(
+    context.profile,
+    context.performanceBySlug,
+    {
+      limit: Math.max(1, context.profile.recipes.length || 1),
+      runLimit: context.runLimit,
+      evaluationCandidates: context.evaluationCandidates,
+    }
+  );
+  const governanceDecision =
+    governanceResult.items.find((item) => matchesIntentProjectRecipeGovernanceDecisionPatch(item, normalizedPatch)) || null;
+  if (!governanceDecision) {
+    return {
+      governanceDecision: null,
+      rolloutPolicyDecision: null,
+    };
+  }
+
+  const rolloutPolicyDecision = await evaluateIntentE2ERolloutPolicyDecision({
+    projectUid: context.projectUid,
+    selectedRuleIds: [normalizedPatch.slug],
+    rolloutStrategy: context.rolloutStrategy,
+    rollbackCandidates: context.rollbackCandidates,
+    subjectLabel: 'recipe',
+    actionLabel: '应用治理更新',
+    rolloutOverride: options.rolloutOverride,
+    rolloutOverrideReason: options.rolloutOverrideReason,
+    rolloutCanaryAcknowledged: options.rolloutCanaryAcknowledged,
+    rolloutCanaryLabel: options.rolloutCanaryLabel,
+  });
+
+  return {
+    governanceDecision,
+    rolloutPolicyDecision,
+  };
+}
+
 export async function listIntentProjectRecipeGovernanceDecisions(
   options: ListIntentProjectRecipeGovernanceDecisionsOptions = {}
 ): Promise<IntentProjectRecipeGovernanceDecisionResult> {
-  const runLimit = Math.max(1, Math.min(200, Math.floor(options.runLimit || 50)));
-  const profile = getIntentProjectRecipeProfile();
-  const projectUid = options.projectUid?.trim() || '';
-  const [performanceBySlug, insights] = await Promise.all([
-    getIntentE2ERecipePerformanceMap({
-      projectUid,
-      runLimit,
-    }),
-    getIntentE2EInsights({
-      projectUid,
-      runLimit,
-      auditLimit: 12,
-    }).catch(() => null),
-  ]);
+  const context = await loadIntentProjectRecipeGovernanceContext(options);
 
-  return buildIntentProjectRecipeGovernanceDecisionResult(profile, performanceBySlug, {
+  return buildIntentProjectRecipeGovernanceDecisionResult(context.profile, context.performanceBySlug, {
     limit: options.limit,
-    runLimit,
-    evaluationCandidates: insights?.evaluationBaseline.candidates || [],
+    runLimit: context.runLimit,
+    evaluationCandidates: context.evaluationCandidates,
   });
 }

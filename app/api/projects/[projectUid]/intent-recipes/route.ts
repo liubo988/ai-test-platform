@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
+import { evaluateIntentProjectRecipeGovernanceMutationRollout } from '@/lib/intent-project-recipe-governance';
 import {
   createIntentProjectRecipeAuditEntry,
   getIntentProjectRecipeProfile,
@@ -21,12 +22,28 @@ function normalizeMode(value: unknown): MutationMode | '' {
   return normalized === 'merge' || normalized === 'update' || normalized === 'register' ? normalized : '';
 }
 
+function normalizeString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeBoolean(value: unknown): boolean {
+  return value === true;
+}
+
 function normalizeRecipeArray(value: unknown): IntentRecipe[] {
   return Array.isArray(value) ? (value as IntentRecipe[]) : [];
 }
 
 function normalizeMergeRecipeArray(value: unknown): IntentProjectRecipeMergeInput[] {
   return Array.isArray(value) ? (value as IntentProjectRecipeMergeInput[]) : [];
+}
+
+function isRolloutSensitiveRecipeUpdate(value: unknown): value is IntentProjectRecipeMergeInput {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  return (
+    Object.prototype.hasOwnProperty.call(value, 'successRate') ||
+    Object.prototype.hasOwnProperty.call(value, 'lastVerifiedAt')
+  );
 }
 
 function buildRegisterAuditComparison(
@@ -80,12 +97,22 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ projectUid
     const { actor } = await requireProjectRole(req, projectUid, ['owner', 'editor'], '当前操作者没有权限修改项目 recipe 资产');
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
     const mode = normalizeMode(body.mode);
+    const rolloutOverride = normalizeBoolean(body.rolloutOverride);
+    const rolloutOverrideReason = normalizeString(body.rolloutOverrideReason);
+    const rolloutCanaryAcknowledged = normalizeBoolean(body.rolloutCanaryAcknowledged);
+    const rolloutCanaryLabel = normalizeString(body.rolloutCanaryLabel);
     if (!mode) {
       return NextResponse.json({ error: '缺少必要字段: mode' }, { status: 400 });
     }
 
     let result: Awaited<ReturnType<typeof registerIntentProjectRecipes>> | Awaited<ReturnType<typeof mergeIntentProjectRecipes>>;
     let comparison: IntentProjectRecipeAuditComparison;
+    let governanceDecision: Awaited<
+      ReturnType<typeof evaluateIntentProjectRecipeGovernanceMutationRollout>
+    >['governanceDecision'] = null;
+    let rolloutPolicyDecision: Awaited<
+      ReturnType<typeof evaluateIntentProjectRecipeGovernanceMutationRollout>
+    >['rolloutPolicyDecision'] = null;
 
     if (mode === 'register') {
       const recipes = normalizeRecipeArray(body.recipes);
@@ -109,6 +136,31 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ projectUid
       if (!recipe || typeof recipe !== 'object') {
         return NextResponse.json({ error: '缺少必要字段: recipe' }, { status: 400 });
       }
+
+      if (isRolloutSensitiveRecipeUpdate(recipe)) {
+        const governanceRollout = await evaluateIntentProjectRecipeGovernanceMutationRollout({
+          projectUid,
+          patch: recipe,
+          rolloutOverride,
+          rolloutOverrideReason,
+          rolloutCanaryAcknowledged,
+          rolloutCanaryLabel,
+        });
+        governanceDecision = governanceRollout.governanceDecision;
+        rolloutPolicyDecision = governanceRollout.rolloutPolicyDecision;
+
+        if (rolloutPolicyDecision && !rolloutPolicyDecision.allowMerge) {
+          return NextResponse.json(
+            {
+              error: `${rolloutPolicyDecision.summary}${rolloutPolicyDecision.recommendation ? ` ${rolloutPolicyDecision.recommendation}` : ''}`.trim(),
+              governanceDecision: governanceDecision || undefined,
+              rolloutPolicyDecision,
+            },
+            { status: 409 }
+          );
+        }
+      }
+
       const updateResult = await updateIntentProjectRecipe(recipe);
       result = updateResult;
       comparison = buildMutationAuditComparison(updateResult);
@@ -135,6 +187,13 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ projectUid
       result,
       auditEntry,
       auditWarning: auditWarning || undefined,
+      governanceDecision: governanceDecision || undefined,
+      rolloutPolicyDecision: rolloutPolicyDecision || undefined,
+      rolloutWarning:
+        rolloutPolicyDecision &&
+        !(rolloutPolicyDecision.appliedMode === 'full_release' && rolloutPolicyDecision.receipts.length === 0)
+          ? rolloutPolicyDecision.summary
+          : undefined,
     });
     return applyActorCookie(response, actor.userUid);
   } catch (error: unknown) {

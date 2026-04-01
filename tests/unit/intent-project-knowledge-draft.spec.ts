@@ -27,6 +27,7 @@ let knowledgePath = '';
 let draftPath = '';
 let backupDir = '';
 let auditPath = '';
+let projectAssetRoot = '';
 
 beforeEach(async () => {
   tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'intent-project-knowledge-draft-'));
@@ -35,11 +36,13 @@ beforeEach(async () => {
   draftPath = path.join(tempDir, 'project-knowledge.draft.json');
   backupDir = path.join(tempDir, 'project-knowledge-backups');
   auditPath = path.join(tempDir, 'project-knowledge.audit.jsonl');
+  projectAssetRoot = path.join(tempDir, 'projects');
   process.env.INTENT_E2E_REPAIR_MEMORY_PATH = memoryPath;
   process.env.INTENT_E2E_PROJECT_KNOWLEDGE_PATH = knowledgePath;
   process.env.INTENT_E2E_PROJECT_KNOWLEDGE_DRAFT_PATH = draftPath;
   process.env.INTENT_E2E_PROJECT_KNOWLEDGE_BACKUP_DIR = backupDir;
   process.env.INTENT_E2E_PROJECT_KNOWLEDGE_AUDIT_PATH = auditPath;
+  process.env.INTENT_E2E_PROJECT_ASSET_ROOT = projectAssetRoot;
   resetIntentRepairMemoryCache();
   resetIntentProjectKnowledgeCache();
   vi.mocked(listIntentE2ERunSnapshots).mockReset();
@@ -53,6 +56,7 @@ afterEach(async () => {
   delete process.env.INTENT_E2E_PROJECT_KNOWLEDGE_DRAFT_PATH;
   delete process.env.INTENT_E2E_PROJECT_KNOWLEDGE_BACKUP_DIR;
   delete process.env.INTENT_E2E_PROJECT_KNOWLEDGE_AUDIT_PATH;
+  delete process.env.INTENT_E2E_PROJECT_ASSET_ROOT;
   resetIntentRepairMemoryCache();
   resetIntentProjectKnowledgeCache();
   if (tempDir) {
@@ -263,6 +267,48 @@ describe('intent-project-knowledge-draft', () => {
     expect(writtenTo).toBe(draftPath);
     expect(saved.candidates).toHaveLength(1);
     expect(summary).toContain('row-action-not-found');
+  });
+
+  it('keeps project-scoped draft and target paths while still reading legacy fallback assets before project files exist', async () => {
+    const failure = {
+      targetUrl: 'https://uat.example.com/#/business/businesslist',
+      pageTitle: '商机列表',
+      description: '创建商机后在列表里生成订单',
+      executionError: 'Error: 未找到行操作：查看',
+      previousCode: "await page.getByRole('button', { name: '查看' }).click();",
+      recentEvents: ['INFO createOrder success'],
+    };
+
+    const first = await recordIntentRepairFailure(failure);
+    await recordIntentRepairFailure(failure);
+    await recordIntentRepairResolution({
+      clusterIds: [first.clusterId],
+      targetUrl: failure.targetUrl,
+      description: failure.description,
+      fixedCode: [
+        "await __e2e.clickAntdRowAction(page, targetRow, '生成订单');",
+        "await __e2e.waitForApiResponse(page, { urlIncludes: '/crmapi/business/createOrder', method: 'POST' });",
+      ].join('\n'),
+      finalResult: {
+        success: true,
+        duration: 920,
+        steps: [],
+        error: null,
+      },
+    });
+
+    const draft = await generateIntentProjectKnowledgeDraft({ projectUid: 'proj alpha' });
+    const writtenTo = await writeIntentProjectKnowledgeDraft(draft);
+    const projectDraftPath = path.join(projectAssetRoot, 'proj-alpha', 'intent-e2e.project-knowledge.draft.json');
+    const projectKnowledgePath = path.join(projectAssetRoot, 'proj-alpha', 'intent-e2e.project-knowledge.json');
+
+    expect(draft.sourceMemoryPath).toBe(memoryPath);
+    expect(draft.targetKnowledgePath).toBe(projectKnowledgePath);
+    expect(draft.outputPath).toBe(projectDraftPath);
+    expect(writtenTo).toBe(projectDraftPath);
+    expect(JSON.parse(await fs.readFile(projectDraftPath, 'utf8'))).toMatchObject({
+      targetKnowledgePath: projectKnowledgePath,
+    });
   });
 
   it('boosts repair memory candidates when restore history shows recovered evidence and keeps them default-selected', async () => {

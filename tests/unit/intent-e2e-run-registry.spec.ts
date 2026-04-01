@@ -9,8 +9,16 @@ vi.mock('@/lib/db/repository', () => ({
   upsertIntentE2ERunSnapshot: vi.fn(),
 }));
 
+vi.mock('@/lib/intent-e2e-cicd-report', () => ({
+  buildIntentE2ECiCdReport: vi.fn(),
+  cloneIntentE2ECiCdReport: vi.fn((value: unknown) => (value ? JSON.parse(JSON.stringify(value)) : undefined)),
+  normalizeIntentE2ECiCdReport: vi.fn((value: unknown) => (value && typeof value === 'object' ? value : undefined)),
+}));
+
 import { runIntentDrivenE2EStream, type IntentE2ERunResult } from '@/lib/ai/intent-e2e-service';
 import { getIntentE2ERunSnapshotByRunId, upsertIntentE2ERunSnapshot } from '@/lib/db/repository';
+import { buildIntentE2ECiCdReport } from '@/lib/intent-e2e-cicd-report';
+import { buildBrowserE2EPlatformTestAssetBundle } from '@/lib/test-platform-asset-model';
 import {
   cancelIntentE2ERun,
   createIntentE2ERun,
@@ -46,124 +54,141 @@ function createScenarioCard() {
 
 function createFinalResult(success = true): IntentE2ERunResult {
   const stepStatus = success ? ('passed' as const) : ('failed' as const);
-
-  return {
-    scenarioCard: createScenarioCard(),
-    compiledTemplate: {
-      version: 1,
-      compiler: 'deterministic_dsl_v1',
-      testTitle: 'checkout success',
-      entryUrl: 'https://example.com/checkout',
-      sharedVariables: ['orderId'],
-      slots: [
-        {
-          slotUid: 'plan_step_1',
-          kind: 'plan_step',
-          title: '打开结算页',
-          planStepUid: 'plan_step_1',
-          relatedCheckUids: [],
-          preferredHelpers: ['__e2e.waitForApiResponse'],
-          instructions: ['进入结算页并等待页面就绪'],
-        },
-        {
-          slotUid: 'verification',
-          kind: 'verification',
-          title: '最终业务验收',
-          relatedCheckUids: ['verify_success_1'],
-          preferredHelpers: ['__e2e.waitForApiResponse'],
-          instructions: ['校验成功页出现“提交成功”'],
-        },
-      ],
-      code: "test('checkout success', async ({ page }) => {});",
-    },
-    executionPlan: {
-      version: 1,
-      compiler: 'deterministic_dsl_v1',
-      mode: 'scenario',
-      entryUrl: 'https://example.com/checkout',
-      summary: '打开结算页并提交',
-      expectedOutcome: '看到成功页面',
-      sharedVariables: ['orderId'],
-      globalRules: [],
-      preferredPrimitives: [],
-      outputContract: [],
-      steps: [
-        {
-          planStepUid: 'plan_step_1',
-          scenarioStepUid: 'step_checkout',
-          stepType: 'ui',
-          title: '打开结算页',
-          target: 'https://example.com/checkout',
-          goal: '进入结算页并等待页面就绪',
-          allowedActions: ['navigate', 'wait_for_response'],
-          preferredHelpers: ['__e2e.waitForApiResponse'],
-          requiredAssertions: ['成功页出现“提交成功”'],
-          extractVariable: 'orderId',
-          sharedVariables: ['orderId'],
-          dependsOnPlanStepUids: [],
-        },
-      ],
-    },
-    verificationPlan: {
-      version: 1,
-      strategy: 'deterministic_verification_v1',
-      expectedOutcome: '看到成功页面',
-      cleanupNotes: '',
-      checks: [
-        {
-          checkUid: 'verify_success_1',
-          kind: 'table_row',
-          source: 'success_criteria',
-          title: '成功标准 1',
-          instruction: '成功页出现“提交成功”且 orderId 可回查',
-          stableIdentifiers: ['orderId'],
-          expectedFields: ['状态', 'orderId'],
-          fieldPathHints: [
-            {
-              label: '状态',
-              paths: ['statusName', 'statusText'],
-            },
-          ],
-          fieldSpecs: [
-            {
-              label: '状态',
-              expectedSource: 'list_record',
-              preferredPaths: ['statusName', 'statusText'],
-              scopeHints: ['详情页'],
-            },
-            {
-              label: 'orderId',
-              expectedSource: 'shared_variable',
-              preferredPaths: ['orderId', 'data.orderId', 'id'],
-              scopeHints: ['详情页'],
-            },
-          ],
-          recordLookup: {
-            listResponse: { urlIncludes: '/order', method: 'GET' },
-            detailUrl: '/order/detail/{{primaryValue}}',
-            rowHasTexts: ['orderId', '已提交'],
-            searchSurface: {
-              keywordInput: { selector: 'input#orderKeyword:visible' },
-              searchButton: { textIncludes: '搜索' },
-            },
-            tableScope: { selector: '.order-table-wrapper' },
-            detailReadyLocator: { textIncludes: '订单详情' },
-            detailEntry: {
-              trigger: 'row_action',
-              actionLabel: '查看',
-              target: 'drawer_or_modal',
-            },
+  const scenarioCard = createScenarioCard();
+  const compiledTemplate = {
+    version: 1 as const,
+    compiler: 'deterministic_dsl_v1' as const,
+    testTitle: 'checkout success',
+    entryUrl: 'https://example.com/checkout',
+    sharedVariables: ['orderId'],
+    slots: [
+      {
+        slotUid: 'plan_step_1',
+        kind: 'plan_step' as const,
+        title: '打开结算页',
+        planStepUid: 'plan_step_1',
+        relatedCheckUids: [],
+        preferredHelpers: ['__e2e.waitForApiResponse'],
+        instructions: ['进入结算页并等待页面就绪'],
+      },
+      {
+        slotUid: 'verification',
+        kind: 'verification' as const,
+        title: '最终业务验收',
+        relatedCheckUids: ['verify_success_1'],
+        preferredHelpers: ['__e2e.waitForApiResponse'],
+        instructions: ['校验成功页出现“提交成功”'],
+      },
+    ],
+    code: "test('checkout success', async ({ page }) => {});",
+  };
+  const executionPlan = {
+    version: 1 as const,
+    compiler: 'deterministic_dsl_v1' as const,
+    mode: 'scenario' as const,
+    entryUrl: 'https://example.com/checkout',
+    summary: '打开结算页并提交',
+    expectedOutcome: '看到成功页面',
+    sharedVariables: ['orderId'],
+    globalRules: [],
+    preferredPrimitives: [],
+    outputContract: [],
+    steps: [
+      {
+        planStepUid: 'plan_step_1',
+        scenarioStepUid: 'step_checkout',
+        stepType: 'ui' as const,
+        title: '打开结算页',
+        target: 'https://example.com/checkout',
+        goal: '进入结算页并等待页面就绪',
+        allowedActions: ['navigate', 'wait_for_response'],
+        preferredHelpers: ['__e2e.waitForApiResponse'],
+        requiredAssertions: ['成功页出现“提交成功”'],
+        extractVariable: 'orderId',
+        sharedVariables: ['orderId'],
+        dependsOnPlanStepUids: [],
+      },
+    ],
+  };
+  const verificationPlan = {
+    version: 1 as const,
+    strategy: 'deterministic_verification_v1' as const,
+    expectedOutcome: '看到成功页面',
+    cleanupNotes: '',
+    checks: [
+      {
+        checkUid: 'verify_success_1',
+        kind: 'table_row' as const,
+        source: 'success_criteria' as const,
+        title: '成功标准 1',
+        instruction: '成功页出现“提交成功”且 orderId 可回查',
+        stableIdentifiers: ['orderId'],
+        expectedFields: ['状态', 'orderId'],
+        fieldPathHints: [
+          {
+            label: '状态',
+            paths: ['statusName', 'statusText'],
           },
-          detailSurface: {
-            titleIncludes: '订单详情',
+        ],
+        fieldSpecs: [
+          {
+            label: '状态',
+            expectedSource: 'list_record' as const,
+            preferredPaths: ['statusName', 'statusText'],
             scopeHints: ['详情页'],
           },
-          preferredHelpers: ['__e2e.waitForApiResponse'],
-          relatedPlanStepUids: ['plan_step_1'],
-          required: true,
+          {
+            label: 'orderId',
+            expectedSource: 'shared_variable' as const,
+            preferredPaths: ['orderId', 'data.orderId', 'id'],
+            scopeHints: ['详情页'],
+          },
+        ],
+        recordLookup: {
+          listResponse: { urlIncludes: '/order', method: 'GET' as const },
+          detailUrl: '/order/detail/{{primaryValue}}',
+          rowHasTexts: ['orderId', '已提交'],
+          searchSurface: {
+            keywordInput: { selector: 'input#orderKeyword:visible' },
+            searchButton: { textIncludes: '搜索' },
+          },
+          tableScope: { selector: '.order-table-wrapper' },
+          detailReadyLocator: { textIncludes: '订单详情' },
+          detailEntry: {
+            trigger: 'row_action' as const,
+            actionLabel: '查看',
+            target: 'drawer_or_modal' as const,
+          },
         },
-      ],
-    },
+        detailSurface: {
+          titleIncludes: '订单详情',
+          scopeHints: ['详情页'],
+        },
+        preferredHelpers: ['__e2e.waitForApiResponse'],
+        relatedPlanStepUids: ['plan_step_1'],
+        required: true,
+      },
+    ],
+  };
+  const description = '访问结算页并完成提交，最终看到成功页面。';
+  const platformAssets = buildBrowserE2EPlatformTestAssetBundle({
+    projectUid: 'proj_checkout',
+    requestInput: '访问结算页并提交，最终看到成功页面',
+    scenarioCard,
+    description,
+    targetUrl: 'https://example.com/checkout',
+    scenarioEntryUrl: 'https://example.com/checkout',
+    executionPlan,
+    verificationPlan,
+    compiledTemplate,
+  });
+
+  return {
+    ...platformAssets,
+    scenarioCard,
+    compiledTemplate,
+    executionPlan,
+    verificationPlan,
     llmMeta: {
       provider: 'openai',
       model: 'gpt-5.4',
@@ -177,7 +202,26 @@ function createFinalResult(success = true): IntentE2ERunResult {
       precheckUrl: 'https://example.com/checkout',
       analyzeUrl: 'https://example.com/checkout',
     },
-    description: '访问结算页并完成提交，最终看到成功页面。',
+    description,
+    assetReadiness: {
+      status: 'no_hit',
+      projectUid: 'proj_checkout',
+      onboardingPath: 'reports/intent-e2e/projects/proj_checkout/intent-e2e.project-onboarding.json',
+      knowledgePath: 'reports/intent-e2e/projects/proj_checkout/intent-e2e.project-knowledge.json',
+      repairMemoryPath: 'reports/intent-e2e/projects/proj_checkout/intent-e2e-repair-memory.json',
+      hasOnboarding: true,
+      onboardingReady: true,
+      hasKnowledgeAsset: true,
+      hasRepairMemoryAsset: false,
+      knowledgeMatchCount: 0,
+      reasons: ['repair_memory_missing', 'knowledge_no_hit'],
+    },
+    qualitySplit: {
+      bucket: success ? 'passed' : 'model_quality',
+      blocked: false,
+      qualityEligible: true,
+      blockerKind: '',
+    },
     knowledgeCandidates: [
       {
         candidateId: 'success-candidate-order-lookup',
@@ -350,7 +394,25 @@ function createPrecheckFailureResult(): IntentE2ERunResult {
       summary: '判定为认证阻塞：登录流程或会话状态异常，本次不继续自动修复脚本。',
       matchedSignals: ['登录页不可识别'],
     },
+    qualitySplit: {
+      bucket: 'auth_blocked',
+      blocked: true,
+      qualityEligible: false,
+      blockerKind: 'auth',
+    },
   };
+}
+
+function createRetryableFailureResult(): IntentE2ERunResult {
+  const result = createFinalResult(false);
+  result.finalResult.error = 'gateway timeout while waiting for upstream';
+  result.qualitySplit = {
+    bucket: 'env_blocked',
+    blocked: true,
+    qualityEligible: false,
+    blockerKind: 'environment',
+  };
+  return result;
 }
 
 describe('intent-e2e-run-registry', () => {
@@ -456,6 +518,25 @@ describe('intent-e2e-run-registry', () => {
       observationTags: ['obs-page-surface', 'obs-anchor-missing'],
       observationSummary: 'page_surface=observed；anchor_presence=not_found',
     });
+    expect(finished?.result?.assetReadiness).toEqual({
+      status: 'no_hit',
+      projectUid: 'proj_checkout',
+      onboardingPath: 'reports/intent-e2e/projects/proj_checkout/intent-e2e.project-onboarding.json',
+      knowledgePath: 'reports/intent-e2e/projects/proj_checkout/intent-e2e.project-knowledge.json',
+      repairMemoryPath: 'reports/intent-e2e/projects/proj_checkout/intent-e2e-repair-memory.json',
+      hasOnboarding: true,
+      onboardingReady: true,
+      hasKnowledgeAsset: true,
+      hasRepairMemoryAsset: false,
+      knowledgeMatchCount: 0,
+      reasons: ['repair_memory_missing', 'knowledge_no_hit'],
+    });
+    expect(finished?.result?.qualitySplit).toEqual({
+      bucket: 'passed',
+      blocked: false,
+      qualityEligible: true,
+      blockerKind: '',
+    });
     expect(finished?.result?.knowledgeCandidates?.[0]?.rule.recordLookupHints?.[0]?.detailEntry).toEqual({
       trigger: 'row_action',
       actionLabel: '查看',
@@ -473,6 +554,41 @@ describe('intent-e2e-run-registry', () => {
         moduleUid: 'mod_1',
       })
     );
+  });
+
+  it('keeps runtime governance in the request summary for downstream workspace import decisions', () => {
+    const created = createIntentE2ERun({
+      input: '创建订单并校验成功页',
+      runtimeGovernance: {
+        environmentProfile: 'test',
+        credential: {
+          source: 'project',
+          secretRef: 'project://proj_1/auth/default',
+        },
+        fixture: {
+          strategy: 'setup_cleanup',
+          setupRef: 'fixture://order/setup',
+          cleanupRef: 'fixture://order/cleanup',
+          owner: 'qa-order',
+          idempotencyKey: 'order-create-smoke',
+        },
+      },
+    });
+
+    expect(created.request.runtimeGovernance).toEqual({
+      environmentProfile: 'test',
+      credential: {
+        source: 'project',
+        secretRef: 'project://proj_1/auth/default',
+      },
+      fixture: {
+        strategy: 'setup_cleanup',
+        setupRef: 'fixture://order/setup',
+        cleanupRef: 'fixture://order/cleanup',
+        owner: 'qa-order',
+        idempotencyKey: 'order-create-smoke',
+      },
+    });
   });
 
   it('stores failed final_result from precheck-style failures without promoting them to runtime errors', async () => {
@@ -503,6 +619,12 @@ describe('intent-e2e-run-registry', () => {
       finalFailureTriage: {
         failureClass: 'auth_failed',
         repairable: false,
+      },
+      qualitySplit: {
+        bucket: 'auth_blocked',
+        blocked: true,
+        qualityEligible: false,
+        blockerKind: 'auth',
       },
     });
     expect(finished?.events.some((event) => event.type === 'error')).toBe(false);
@@ -736,8 +858,53 @@ describe('intent-e2e-run-registry', () => {
     const loaded = await loadIntentE2ERun('intent-run-persisted');
 
     expect(loaded?.runId).toBe('intent-run-persisted');
+    expect(loaded?.testType).toBe('browser_e2e');
+    expect(loaded?.runnerType).toBe('playwright_runner');
     expect(loaded?.status).toBe('passed');
     expect(loaded?.result?.finalResult.success).toBe(true);
+    expect(loaded?.result?.testType).toBe('browser_e2e');
+    expect(loaded?.result?.runnerType).toBe('playwright_runner');
+    expect(loaded?.result?.testCase).toMatchObject({
+      source: 'intent_e2e',
+      projectUid: 'proj_checkout',
+      moduleUid: '',
+      typeFields: {
+        taskMode: 'scenario',
+        entryUrl: 'https://example.com/checkout',
+        targetUrl: 'https://example.com/checkout',
+        successCriteriaCount: 1,
+      },
+    });
+    expect(loaded?.result?.testSpec).toMatchObject({
+      source: 'intent_e2e',
+      targetUrl: 'https://example.com/checkout',
+      scenarioEntryUrl: 'https://example.com/checkout',
+      stepCount: 1,
+      compiledSlotCount: 2,
+      hasStructuredPlan: true,
+    });
+    expect(loaded?.result?.verificationContract).toMatchObject({
+      source: 'intent_e2e',
+      expectedOutcome: '看到成功页面',
+      requiredCheckCount: 1,
+      checkKinds: ['table_row'],
+      stableIdentifiers: ['orderId'],
+      typeFields: {
+        verificationPlanAvailable: true,
+        policyNotes: [],
+      },
+    });
+    expect(loaded?.result?.artifactContract).toMatchObject({
+      source: 'intent_e2e',
+      artifactKinds: ['scenario_card', 'execution_plan', 'verification_plan', 'compiled_template', 'attempt_trace', 'final_result'],
+      supportsStreaming: true,
+      typeFields: {
+        browserSession: true,
+        compiledTemplate: true,
+        structuredPatch: true,
+        repairObservation: true,
+      },
+    });
     expect(loaded?.result?.resolvedUrls).toEqual({
       targetUrl: 'https://example.com/checkout',
       scenarioEntryUrl: 'https://example.com/checkout',
@@ -777,6 +944,25 @@ describe('intent-e2e-run-registry', () => {
       observationTags: ['obs-page-surface', 'obs-anchor-missing'],
       observationSummary: 'page_surface=observed；anchor_presence=not_found',
     });
+    expect(loaded?.result?.assetReadiness).toEqual({
+      status: 'no_hit',
+      projectUid: 'proj_checkout',
+      onboardingPath: 'reports/intent-e2e/projects/proj_checkout/intent-e2e.project-onboarding.json',
+      knowledgePath: 'reports/intent-e2e/projects/proj_checkout/intent-e2e.project-knowledge.json',
+      repairMemoryPath: 'reports/intent-e2e/projects/proj_checkout/intent-e2e-repair-memory.json',
+      hasOnboarding: true,
+      onboardingReady: true,
+      hasKnowledgeAsset: true,
+      hasRepairMemoryAsset: false,
+      knowledgeMatchCount: 0,
+      reasons: ['repair_memory_missing', 'knowledge_no_hit'],
+    });
+    expect(loaded?.result?.qualitySplit).toEqual({
+      bucket: 'passed',
+      blocked: false,
+      qualityEligible: true,
+      blockerKind: '',
+    });
     expect(loaded?.result?.knowledgeCandidates?.[0]?.rule.recordLookupHints?.[0]?.detailEntry).toEqual({
       trigger: 'row_action',
       actionLabel: '查看',
@@ -787,6 +973,97 @@ describe('intent-e2e-run-registry', () => {
       code: "await page.goto('https://example.com/checkout');",
     });
     expect(upsertIntentE2ERunSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('defaults platform metadata when loading legacy snapshots without explicit platform fields', async () => {
+    const {
+      testType: _ignoredTestType,
+      runnerType: _ignoredRunnerType,
+      testCase: _ignoredTestCase,
+      testSpec: _ignoredTestSpec,
+      verificationContract: _ignoredVerificationContract,
+      artifactContract: _ignoredArtifactContract,
+      ...legacyResult
+    } = createFinalResult(true);
+
+    vi.mocked(getIntentE2ERunSnapshotByRunId).mockResolvedValue({
+      runId: 'intent-run-legacy',
+      projectUid: 'proj_legacy',
+      status: 'passed',
+      stage: 'completed',
+      requestInput: '访问结算页并提交，最终看到成功页面',
+      targetUrl: 'https://example.com/checkout',
+      state: {
+        runId: 'intent-run-legacy',
+        status: 'passed',
+        stage: 'completed',
+        createdAt: '2026-03-18T09:00:00.000Z',
+        updatedAt: '2026-03-18T09:00:10.000Z',
+        startedAt: '2026-03-18T09:00:01.000Z',
+        endedAt: '2026-03-18T09:00:10.000Z',
+        request: {
+          input: '访问结算页并提交，最终看到成功页面',
+          targetUrl: 'https://example.com/checkout',
+          attachmentCount: 0,
+          hasAuth: false,
+          llm: {
+            provider: 'openai',
+            model: 'gpt-5.4',
+            apiStyle: 'responses',
+            visionEnabled: true,
+            selfHealRetries: 3,
+            maxPlanSteps: 8,
+          },
+        },
+        events: [],
+        result: legacyResult,
+        error: null,
+      },
+      error: '',
+      createdAt: '2026-03-18T09:00:00.000Z',
+      updatedAt: '2026-03-18T09:00:10.000Z',
+      startedAt: '2026-03-18T09:00:01.000Z',
+      endedAt: '2026-03-18T09:00:10.000Z',
+    } as never);
+
+    const loaded = await loadIntentE2ERun('intent-run-legacy');
+
+    expect(loaded?.testType).toBe('browser_e2e');
+    expect(loaded?.runnerType).toBe('playwright_runner');
+    expect(loaded?.result?.testType).toBe('browser_e2e');
+    expect(loaded?.result?.runnerType).toBe('playwright_runner');
+    expect(loaded?.result?.testCase).toMatchObject({
+      source: 'intent_e2e',
+      projectUid: 'proj_legacy',
+      moduleUid: '',
+      title: '结算成功流程',
+      typeFields: {
+        taskMode: 'scenario',
+        entryUrl: 'https://example.com/checkout',
+        targetUrl: 'https://example.com/checkout',
+        successCriteriaCount: 1,
+      },
+    });
+    expect(loaded?.result?.testSpec).toMatchObject({
+      source: 'intent_e2e',
+      targetUrl: 'https://example.com/checkout',
+      scenarioEntryUrl: 'https://example.com/checkout',
+      stepCount: 1,
+      compiledSlotCount: 2,
+      hasStructuredPlan: true,
+    });
+    expect(loaded?.result?.verificationContract).toMatchObject({
+      source: 'intent_e2e',
+      expectedOutcome: '看到成功页面',
+      requiredCheckCount: 1,
+      checkKinds: ['table_row'],
+      stableIdentifiers: ['orderId'],
+    });
+    expect(loaded?.result?.artifactContract).toMatchObject({
+      source: 'intent_e2e',
+      artifactKinds: ['scenario_card', 'execution_plan', 'verification_plan', 'compiled_template', 'attempt_trace', 'final_result'],
+      supportsStreaming: true,
+    });
   });
 
   it('keeps fresh persisted non-terminal runs as running during restore', async () => {
@@ -891,5 +1168,291 @@ describe('intent-e2e-run-registry', () => {
     expect(loaded?.error).toContain('服务端已重启');
     expect(loaded?.events.at(-1)).toMatchObject({ type: 'error' });
     expect(upsertIntentE2ERunSnapshot).toHaveBeenCalledWith(expect.objectContaining({ runId: 'intent-run-stale', status: 'failed' }));
+  });
+
+  it('queues later runs when concurrency quota is full and auto-starts them after the slot is released', async () => {
+    const previousGlobalLimit = process.env.INTENT_E2E_MAX_CONCURRENT_RUNS;
+    const previousProjectLimit = process.env.INTENT_E2E_PROJECT_MAX_CONCURRENT_RUNS;
+    process.env.INTENT_E2E_MAX_CONCURRENT_RUNS = '1';
+    process.env.INTENT_E2E_PROJECT_MAX_CONCURRENT_RUNS = '1';
+
+    try {
+      let releaseFirstRun!: () => void;
+      const passedResult = createFinalResult(true);
+
+      vi.mocked(runIntentDrivenE2EStream).mockImplementation(async (_request, listener) => {
+        if (!releaseFirstRun) {
+          await new Promise<void>((resolve) => {
+            releaseFirstRun = resolve;
+          });
+        }
+        await listener?.({
+          type: 'stage',
+          stage: 'planning',
+          message: '正在规划场景…',
+        });
+        await listener?.({
+          type: 'stage',
+          stage: 'completed',
+          message: '自动测试已完成，最终结果：通过。',
+        });
+        await listener?.({
+          type: 'final_result',
+          result: passedResult,
+        });
+        return passedResult as never;
+      });
+
+      const firstCreated = createIntentE2ERun({ input: '任务一', projectUid: 'proj_queue' });
+      startIntentE2ERun(firstCreated.runId, { input: '任务一', projectUid: 'proj_queue' });
+
+      const secondCreated = createIntentE2ERun({
+        input: '任务二',
+        projectUid: 'proj_queue',
+        runControl: { priority: 'high' },
+      });
+      const secondStarted = startIntentE2ERun(secondCreated.runId, {
+        input: '任务二',
+        projectUid: 'proj_queue',
+        runControl: { priority: 'high' },
+      });
+
+      expect(secondStarted.status).toBe('created');
+      expect(secondStarted.stage).toBe('queued');
+      expect(secondStarted.taskPlatform.priority).toBe('high');
+      expect(secondStarted.taskPlatform.queuePosition).toBe(1);
+
+      expect(typeof releaseFirstRun).toBe('function');
+      releaseFirstRun();
+
+      await waitForIntentE2ERunCompletion(firstCreated.runId);
+      await waitForIntentE2ERunCompletion(secondCreated.runId);
+
+      const queuedRun = getIntentE2ERun(secondCreated.runId);
+      expect(queuedRun?.status).toBe('passed');
+      expect(queuedRun?.taskPlatform.queueWaitMs).toBeGreaterThanOrEqual(0);
+      expect(vi.mocked(runIntentDrivenE2EStream).mock.calls[1]?.[2]).toMatchObject({
+        runId: secondCreated.runId,
+      });
+    } finally {
+      if (previousGlobalLimit === undefined) delete process.env.INTENT_E2E_MAX_CONCURRENT_RUNS;
+      else process.env.INTENT_E2E_MAX_CONCURRENT_RUNS = previousGlobalLimit;
+      if (previousProjectLimit === undefined) delete process.env.INTENT_E2E_PROJECT_MAX_CONCURRENT_RUNS;
+      else process.env.INTENT_E2E_PROJECT_MAX_CONCURRENT_RUNS = previousProjectLimit;
+    }
+  });
+
+  it('buffers terminal events when a retryable run is retried and only persists the final terminal result', async () => {
+    const retryableFailure = createRetryableFailureResult();
+    const passedResult = createFinalResult(true);
+    let invocation = 0;
+
+    vi.mocked(runIntentDrivenE2EStream).mockImplementation(async (_request, listener) => {
+      invocation += 1;
+      await listener?.({
+        type: 'stage',
+        stage: 'planning',
+        message: `第 ${invocation} 轮正在规划场景…`,
+      });
+      await listener?.({
+        type: 'stage',
+        stage: 'completed',
+        message: invocation === 1 ? '自动测试已结束，但暂未完全通过。' : '自动测试已完成，最终结果：通过。',
+      });
+      await listener?.({
+        type: 'final_result',
+        result: invocation === 1 ? retryableFailure : passedResult,
+      });
+      return (invocation === 1 ? retryableFailure : passedResult) as never;
+    });
+
+    const created = createIntentE2ERun({
+      input: '访问结算页并提交，最终看到成功页面',
+      runControl: { retryLimit: 1 },
+    });
+    startIntentE2ERun(created.runId, {
+      input: '访问结算页并提交，最终看到成功页面',
+      runControl: { retryLimit: 1 },
+    });
+
+    await waitForIntentE2ERunCompletion(created.runId);
+
+    const finished = getIntentE2ERun(created.runId);
+    expect(finished?.status).toBe('passed');
+    expect(finished?.taskPlatform.retryCount).toBe(1);
+    expect(finished?.taskPlatform.retryReasons).toEqual(['环境阻塞，允许整轮重试']);
+    expect(finished?.events.filter((event) => event.type === 'final_result')).toHaveLength(1);
+    expect(finished?.events.filter((event) => event.type === 'stage' && event.stage === 'completed')).toHaveLength(1);
+    expect(finished?.events.some((event) => event.type === 'stage' && event.stage === 'received' && event.message.includes('可重试'))).toBe(true);
+  });
+
+  it('marks replay runs and their baseline peers as flaky when terminal outcomes diverge', async () => {
+    const passedResult = createFinalResult(true);
+    const failedResult = createFinalResult(false);
+    let invocation = 0;
+
+    vi.mocked(runIntentDrivenE2EStream).mockImplementation(async (_request, listener) => {
+      invocation += 1;
+      const result = invocation === 1 ? passedResult : failedResult;
+      await listener?.({
+        type: 'stage',
+        stage: 'completed',
+        message: result.finalResult.success ? '自动测试已完成，最终结果：通过。' : '自动测试已结束，但暂未完全通过。',
+      });
+      await listener?.({
+        type: 'final_result',
+        result,
+      });
+      return result as never;
+    });
+
+    const baseline = createIntentE2ERun({ input: '回放前 baseline run', projectUid: 'proj_flaky' });
+    startIntentE2ERun(baseline.runId, { input: '回放前 baseline run', projectUid: 'proj_flaky' });
+    await waitForIntentE2ERunCompletion(baseline.runId);
+
+    const replay = createIntentE2ERun({
+      input: '回放前 baseline run',
+      projectUid: 'proj_flaky',
+      runControl: { replayOfRunId: baseline.runId },
+    });
+    startIntentE2ERun(replay.runId, {
+      input: '回放前 baseline run',
+      projectUid: 'proj_flaky',
+      runControl: { replayOfRunId: baseline.runId },
+    });
+    await waitForIntentE2ERunCompletion(replay.runId);
+
+    const replayRun = getIntentE2ERun(replay.runId);
+    const baselineRun = getIntentE2ERun(baseline.runId);
+    expect(replayRun?.taskPlatform.replayOfRunId).toBe(baseline.runId);
+    expect(replayRun?.taskPlatform.flaky).toBe(true);
+    expect(replayRun?.taskPlatform.flakyReason).toBe('replay_outcome_changed');
+    expect(replayRun?.taskPlatform.flakyPeerRunIds).toContain(baseline.runId);
+    expect(baselineRun?.taskPlatform.flaky).toBe(true);
+    expect(baselineRun?.taskPlatform.flakyReason).toBe('replay_outcome_changed');
+    expect(baselineRun?.taskPlatform.flakyPeerRunIds).toContain(replay.runId);
+  });
+
+  it('attaches ci report to the terminal result when the request opts into cicd output', async () => {
+    const finalResult = createFinalResult(true);
+    vi.mocked(runIntentDrivenE2EStream).mockResolvedValue(finalResult as never);
+    vi.mocked(buildIntentE2ECiCdReport).mockResolvedValue({
+      version: 1,
+      runId: 'intent-run-ci',
+      generatedAt: '2026-04-01T10:00:00.000Z',
+      profile: 'pr_gate',
+      projectUid: 'proj_vendor',
+      moduleUid: 'mod_vendor',
+      testType: 'browser_e2e',
+      runnerType: 'playwright_runner',
+      onboardingManifest: {
+        manifestId: 'vendor_portal_staging',
+        displayName: 'Vendor Portal Staging',
+        systemKey: 'vendor_portal',
+        systemDisplayName: '供应商门户 Staging',
+        testType: 'browser_e2e',
+        runnerType: 'playwright_runner',
+        envProfile: 'staging',
+        entryUrl: 'https://vendor.example.test/login',
+        targetUrlFamilies: ['https://vendor.example.test/login'],
+        benchmarkBinding: {
+          mode: 'project_default',
+        },
+      },
+      passFail: {
+        status: 'passed',
+        passed: true,
+        qualityBucket: 'passed',
+        summary: 'ok',
+      },
+      gate: {
+        decision: 'pass',
+        allow: true,
+        effectiveStage: 'full_release',
+        summary: 'ok',
+        recommendation: 'ok',
+        benchmarkRequired: false,
+        benchmarkBound: false,
+        policySource: 'default',
+        blockedGateIds: [],
+        warningGateIds: [],
+        rollbackAuditIds: [],
+      },
+      benchmarkCompare: {
+        status: 'not_bound',
+        benchmarkBound: false,
+        bindingSatisfied: true,
+        benchmarkUid: '',
+        benchmarkPath: '',
+        comparedAt: '2026-04-01T10:00:00.000Z',
+        comparedLabel: 'pr_gate',
+        improvedCases: 0,
+        unchangedCases: 0,
+        regressedCases: 0,
+        missingCases: 0,
+        summary: 'n/a',
+      },
+      rollbackRecommendation: {
+        level: 'none',
+        summary: 'n/a',
+        auditIds: [],
+      },
+      artifacts: {
+        rootPath: '',
+        itemCount: 0,
+        byKind: [],
+      },
+    } as never);
+
+    const created = createIntentE2ERun({
+      input: '登录供应商门户后检查订单列表',
+      projectUid: 'proj_vendor',
+      moduleUid: 'mod_vendor',
+      cicdProfile: 'pr_gate',
+      systemOnboarding: {
+        manifestId: 'vendor_portal_staging',
+        displayName: 'Vendor Portal Staging',
+        systemKey: 'vendor_portal',
+        systemDisplayName: '供应商门户 Staging',
+        testType: 'browser_e2e',
+        runnerType: 'playwright_runner',
+        envProfile: 'staging',
+        entryUrl: 'https://vendor.example.test/login',
+        targetUrlFamilies: ['https://vendor.example.test/login'],
+        benchmarkBinding: {
+          mode: 'project_default',
+        },
+      },
+    });
+    startIntentE2ERun(created.runId, {
+      input: '登录供应商门户后检查订单列表',
+      projectUid: 'proj_vendor',
+      moduleUid: 'mod_vendor',
+      cicdProfile: 'pr_gate',
+      systemOnboarding: {
+        manifestId: 'vendor_portal_staging',
+        displayName: 'Vendor Portal Staging',
+        systemKey: 'vendor_portal',
+        systemDisplayName: '供应商门户 Staging',
+        testType: 'browser_e2e',
+        runnerType: 'playwright_runner',
+        envProfile: 'staging',
+        entryUrl: 'https://vendor.example.test/login',
+        targetUrlFamilies: ['https://vendor.example.test/login'],
+        benchmarkBinding: {
+          mode: 'project_default',
+        },
+      },
+    });
+    await waitForIntentE2ERunCompletion(created.runId);
+
+    const run = getIntentE2ERun(created.runId);
+    expect(buildIntentE2ECiCdReport).toHaveBeenCalledTimes(1);
+    expect(run?.result?.ciReport).toMatchObject({
+      profile: 'pr_gate',
+      gate: {
+        decision: 'pass',
+      },
+    });
   });
 });

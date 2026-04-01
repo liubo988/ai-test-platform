@@ -30,6 +30,7 @@ import {
   resolveCapabilityVerificationRecommendationTargets,
   summarizeCapabilityVerificationPromotionFocus,
 } from '@/lib/capability-verification-recommendation-queue';
+import { readExecutionEntryNavigationTargets } from '@/lib/execution-entry-navigation';
 import { describeExecutionOutcome } from '@/lib/execution-outcome';
 import {
   collectIntentStarterHelperHealthGovernanceCapabilityItems,
@@ -251,7 +252,15 @@ type CapabilityVerificationLaunchResponse = {
   planUid: string;
   planVersion: number;
   executionUid: string;
-  runPath: string;
+  runPath?: string;
+  workspacePath?: string;
+  workspaceHistoryPath?: string;
+  workspaceQueryPath?: string;
+  executionContext?: {
+    runPath?: string;
+    workspacePath?: string;
+    workspaceHistoryPath?: string;
+  } | null;
 };
 
 type CapabilityVerificationMode = 'verify' | 'repair';
@@ -262,6 +271,8 @@ type CapabilityVerificationMonitorItem = {
   capabilityName: string;
   executionUid: string;
   runPath: string;
+  workspacePath: string;
+  workspaceHistoryPath: string;
   mode: CapabilityVerificationMode;
   verificationIntent?: CapabilityVerificationIntent;
   status: CapabilityVerificationExecutionStatus;
@@ -2427,6 +2438,8 @@ export default function ProjectIntentWorkbench({
       capabilityName: string;
       executionUid: string;
       runPath: string;
+      workspacePath: string;
+      workspaceHistoryPath: string;
       mode: CapabilityVerificationMode;
       verificationIntent?: CapabilityVerificationIntent;
       latestRepairObservationAt?: string;
@@ -2456,6 +2469,8 @@ export default function ProjectIntentWorkbench({
         capabilityName: item.capabilityName,
         executionUid: item.executionUid,
         runPath: item.runPath,
+        workspacePath: item.workspacePath,
+        workspaceHistoryPath: item.workspaceHistoryPath,
         mode: item.mode,
         verificationIntent:
           item.mode === 'verify'
@@ -2480,13 +2495,17 @@ export default function ProjectIntentWorkbench({
       | 'capabilityUid'
       | 'executionUid'
       | 'runPath'
+      | 'workspacePath'
+      | 'workspaceHistoryPath'
       | 'verificationIntent'
       | 'latestRepairObservationAt'
       | 'latestRepairObservationSummary'
       | 'latestRepairObservationVerifierCheckUids'
     >
   ) {
-    if (typeof window === 'undefined' || !item.runPath) return;
+    if (typeof window === 'undefined') return;
+    const navigation = readExecutionEntryNavigationTargets(item);
+    if (!navigation.runPath) return;
 
     stashCapabilityVerificationExecutionObservation(item.executionUid, {
       capabilityUid: item.capabilityUid,
@@ -2495,7 +2514,23 @@ export default function ProjectIntentWorkbench({
       latestRepairObservationSummary: item.latestRepairObservationSummary,
       latestRepairObservationVerifierCheckUids: item.latestRepairObservationVerifierCheckUids,
     });
-    window.open(item.runPath, '_blank', 'noopener,noreferrer');
+    window.open(navigation.runPath, '_blank', 'noopener,noreferrer');
+  }
+
+  function openCapabilityVerificationWorkspace(
+    item: Pick<CapabilityVerificationMonitorItem, 'executionUid' | 'runPath' | 'workspacePath' | 'workspaceHistoryPath'>,
+    target: 'workspace' | 'workspaceHistory'
+  ) {
+    if (typeof window === 'undefined') return;
+    const navigation = readExecutionEntryNavigationTargets(item);
+    const path =
+      target === 'workspaceHistory'
+        ? navigation.hasWorkspaceHistoryPath
+          ? navigation.workspaceHistoryPath
+          : ''
+        : navigation.workspacePath;
+    if (!path) return;
+    window.open(path, '_blank', 'noopener,noreferrer');
   }
 
   function dismissCapabilityVerificationBatch(batchUid: string) {
@@ -3394,6 +3429,7 @@ export default function ProjectIntentWorkbench({
         latestRepairObservationSummary: observation.latestRepairObservationSummary,
         latestRepairObservationVerifierCheckUids: observation.latestRepairObservationVerifierCheckUids,
       });
+      const launchNavigation = readExecutionEntryNavigationTargets(payload);
       registerCapabilityVerificationBatch({
         title: mode === 'repair' ? `能力修复：${item.name}` : `能力验证：${item.name}`,
         mode,
@@ -3404,7 +3440,9 @@ export default function ProjectIntentWorkbench({
             capabilityUid: item.capabilityUid,
             capabilityName: item.name,
             executionUid: payload.executionUid,
-            runPath: payload.runPath,
+            runPath: launchNavigation.runPath,
+            workspacePath: launchNavigation.workspacePath,
+            workspaceHistoryPath: launchNavigation.workspaceHistoryPath,
             mode,
             verificationIntent,
             latestRepairObservationAt: observation.latestRepairObservationAt,
@@ -3418,11 +3456,13 @@ export default function ProjectIntentWorkbench({
           ? `已启动验证修复，AI 会基于上次失败执行重写并重跑脚本（运行 ${payload.executionUid}）`
           : `已启动能力验证，执行通过后会自动升级为执行验证（运行 ${payload.executionUid}）`
       );
-      if (payload.runPath) {
+      if (launchNavigation.runPath) {
         openCapabilityVerificationRun({
           capabilityUid: item.capabilityUid,
           executionUid: payload.executionUid,
-          runPath: payload.runPath,
+          runPath: launchNavigation.runPath,
+          workspacePath: launchNavigation.workspacePath,
+          workspaceHistoryPath: launchNavigation.workspaceHistoryPath,
           verificationIntent,
           latestRepairObservationAt: observation.latestRepairObservationAt,
           latestRepairObservationSummary: observation.latestRepairObservationSummary,
@@ -3537,6 +3577,7 @@ export default function ProjectIntentWorkbench({
       const launched: Array<{
         item: CapabilityItem;
         payload: CapabilityVerificationLaunchResponse;
+        navigation: ReturnType<typeof readExecutionEntryNavigationTargets>;
         verificationIntent?: CapabilityVerificationIntent;
         observation: Pick<
           CapabilityVerificationMonitorItem,
@@ -3560,7 +3601,8 @@ export default function ProjectIntentWorkbench({
             latestRepairObservationSummary: observation.latestRepairObservationSummary,
             latestRepairObservationVerifierCheckUids: observation.latestRepairObservationVerifierCheckUids,
           });
-          launched.push({ item, payload, verificationIntent: itemVerificationIntent, observation });
+          const navigation = readExecutionEntryNavigationTargets(payload);
+          launched.push({ item, payload, navigation, verificationIntent: itemVerificationIntent, observation });
         } catch (err: unknown) {
           failed.push({
             item,
@@ -3588,7 +3630,7 @@ export default function ProjectIntentWorkbench({
               configUid: launchedItem.payload.configUid,
               planUid: launchedItem.payload.planUid,
               executionUid: launchedItem.payload.executionUid,
-              runPath: launchedItem.payload.runPath,
+              runPath: launchedItem.navigation.runPath,
             },
           ];
         });
@@ -3615,12 +3657,14 @@ export default function ProjectIntentWorkbench({
         mode,
         verificationIntent: effectiveVerificationIntent,
         moduleName,
-        items: launched.map(({ item, payload, verificationIntent: itemVerificationIntent, observation }) => {
+        items: launched.map(({ item, payload, navigation, verificationIntent: itemVerificationIntent, observation }) => {
           return {
             capabilityUid: item.capabilityUid,
             capabilityName: item.name,
             executionUid: payload.executionUid,
-            runPath: payload.runPath,
+            runPath: navigation.runPath,
+            workspacePath: navigation.workspacePath,
+            workspaceHistoryPath: navigation.workspaceHistoryPath,
             mode,
             verificationIntent: itemVerificationIntent,
             latestRepairObservationAt: observation.latestRepairObservationAt,
@@ -6662,6 +6706,7 @@ export default function ProjectIntentWorkbench({
                       resultSummary: item.resultSummary,
                       errorMessage: item.errorMessage,
                     });
+                    const navigation = readExecutionEntryNavigationTargets(item);
                     const outcomeToneClass =
                       outcome.tone === 'emerald'
                         ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
@@ -6714,12 +6759,28 @@ export default function ProjectIntentWorkbench({
                           </p>
                         ) : null}
                         <div className="mt-3 flex flex-wrap gap-1.5">
-                          {item.runPath && (
+                          {navigation.runPath && (
                             <button
                               onClick={() => openCapabilityVerificationRun(item)}
                               className="h-7 rounded-lg border border-slate-200 bg-white px-2.5 text-[11px] text-slate-600 transition hover:bg-slate-50"
                             >
                               打开运行
+                            </button>
+                          )}
+                          {navigation.workspacePath && (
+                            <button
+                              onClick={() => openCapabilityVerificationWorkspace(item, 'workspace')}
+                              className="h-7 rounded-lg border border-slate-200 bg-white px-2.5 text-[11px] text-slate-600 transition hover:bg-slate-50"
+                            >
+                              打开工作台
+                            </button>
+                          )}
+                          {navigation.hasWorkspaceHistoryPath && (
+                            <button
+                              onClick={() => openCapabilityVerificationWorkspace(item, 'workspaceHistory')}
+                              className="h-7 rounded-lg border border-slate-200 bg-white px-2.5 text-[11px] text-slate-600 transition hover:bg-slate-50"
+                            >
+                              执行历史
                             </button>
                           )}
                         </div>

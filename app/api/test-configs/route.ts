@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
-import { createTestConfig, getModuleByUid, listTestConfigs } from '@/lib/db/repository';
+import { createTestConfig, getModuleByUid } from '@/lib/db/repository';
 import { applyActorCookie, requireProjectRole, toErrorResponse } from '@/lib/server/project-actor';
+import { listWorkspaceTaskPlatformQueryView } from '@/lib/services/workspace-platform-query-facade';
+import { normalizePlatformRunnerType, normalizePlatformTestType } from '@/lib/test-platform-asset-model';
+import { normalizePlatformContractIdFilter } from '@/lib/test-platform-query-contract';
 import { normalizeFlowDefinition, normalizeTaskMode, validateTaskConfigInput } from '@/lib/task-flow';
 
 function toBoolean(input: unknown): boolean {
@@ -28,6 +31,16 @@ export async function GET(req: NextRequest) {
     const status = (searchParams.get('status') || 'active') as 'active' | 'archived' | 'all';
     const projectUid = searchParams.get('projectUid') || '';
     const moduleUid = searchParams.get('moduleUid') || '';
+    const platformTestType = normalizePlatformTestType(searchParams.get('platformTestType') || '');
+    const platformRunnerType = normalizePlatformRunnerType(searchParams.get('platformRunnerType') || '');
+    const platformArtifactKind = searchParams.get('platformArtifactKind')?.trim() || '';
+    const platformContractIdFilter = normalizePlatformContractIdFilter({
+      type: searchParams.get('platformContractIdType'),
+      value: searchParams.get('platformContractId'),
+    });
+    const platformTestCaseId = searchParams.get('platformTestCaseId')?.trim() || '';
+    const platformTestSpecId = searchParams.get('platformTestSpecId')?.trim() || '';
+    const platformVerificationContractId = searchParams.get('platformVerificationContractId')?.trim() || '';
     let actorUserUid = '';
 
     if (projectUid) {
@@ -40,8 +53,29 @@ export async function GET(req: NextRequest) {
       actorUserUid = actor.userUid;
     }
 
-    const data = await listTestConfigs({ page, pageSize, keyword, status, projectUid, moduleUid });
-    return actorUserUid ? applyActorCookie(NextResponse.json(data), actorUserUid) : NextResponse.json(data);
+    const view = await listWorkspaceTaskPlatformQueryView({
+      page,
+      pageSize,
+      keyword,
+      status,
+      projectUid,
+      moduleUid,
+      filters: {
+        ...(platformTestType ? { platformTestType } : {}),
+        ...(platformRunnerType ? { platformRunnerType } : {}),
+        ...(platformArtifactKind ? { platformArtifactKind } : {}),
+        ...(platformContractIdFilter
+          ? {
+              platformContractIdType: platformContractIdFilter.type,
+              platformContractId: platformContractIdFilter.value,
+            }
+          : {}),
+        ...(platformTestCaseId ? { platformTestCaseId } : {}),
+        ...(platformTestSpecId ? { platformTestSpecId } : {}),
+        ...(platformVerificationContractId ? { platformVerificationContractId } : {}),
+      },
+    });
+    return actorUserUid ? applyActorCookie(NextResponse.json(view.data), actorUserUid) : NextResponse.json(view.data);
   } catch (error: unknown) {
     return toErrorResponse(error, '加载配置失败');
   }

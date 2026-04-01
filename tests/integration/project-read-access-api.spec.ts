@@ -35,6 +35,7 @@ import {
 
 type Fixture = {
   projectUid: string;
+  moduleUid: string;
   configUid: string;
   planUid: string;
   executionUid: string;
@@ -208,7 +209,19 @@ async function setupFixture(): Promise<Fixture> {
     projectUid: project.projectUid,
     artifactType: 'generated_spec',
     storagePath: 'artifacts/generated-checkout.spec.ts',
-    meta: { sizeBytes: 128 },
+    meta: {
+      sizeBytes: 128,
+      importedFromRunId: 'intent-run-read-access-1',
+      success: true,
+      platformAssetBundle: {
+        testType: 'browser_e2e',
+        runnerType: 'playwright_runner',
+        testCase: { caseId: 'tc_read_access_1' },
+        testSpec: { specId: 'ts_read_access_1' },
+        verificationContract: { contractId: 'vc_read_access_1' },
+        artifactContract: { artifactKinds: ['scenario_card', 'final_result'] },
+      },
+    },
   });
   await insertLlmConversation({
     projectUid: project.projectUid,
@@ -237,8 +250,39 @@ async function setupFixture(): Promise<Fixture> {
     project.projectUid
   );
 
+  const legacyExecutionUid = await createExecution({
+    planUid: plan.planUid,
+    configUid: config.configUid,
+    projectUid: project.projectUid,
+    workerSessionId: `${workerSessionId}-legacy`,
+  });
+
+  await insertExecutionArtifact({
+    executionUid: legacyExecutionUid,
+    projectUid: project.projectUid,
+    artifactType: 'generated_spec',
+    storagePath: 'artifacts/generated-checkout-legacy.spec.ts',
+    meta: {
+      sizeBytes: 96,
+      importedFromRunId: 'intent-run-read-access-legacy-1',
+      success: false,
+    },
+  });
+  await updateExecutionStatus(
+    legacyExecutionUid,
+    'failed',
+    {
+      endedAt: new Date(),
+      durationMs: 42000,
+      resultSummary: '历史导入，未带平台标签',
+      errorMessage: 'legacy import without platform metadata',
+    },
+    project.projectUid
+  );
+
   const fixture = {
     projectUid: project.projectUid,
+    moduleUid: module.moduleUid,
     configUid: config.configUid,
     planUid: plan.planUid,
     executionUid,
@@ -339,10 +383,70 @@ describe.sequential('project read access API integration', () => {
 
     expect(responses.configExecutionsRes.status).toBe(200);
     const executionsPayload = await responses.configExecutionsRes.json();
-    expect(executionsPayload.items).toHaveLength(1);
-    expect(executionsPayload.items[0]).toMatchObject({
-      executionUid: fixture.executionUid,
-      status: 'passed',
+    expect(executionsPayload.items).toHaveLength(2);
+    expect(executionsPayload.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          executionUid: fixture.executionUid,
+          status: 'passed',
+          intentImportedFromRunId: 'intent-run-read-access-1',
+          intentImportedTestType: 'browser_e2e',
+          intentImportedRunnerType: 'playwright_runner',
+          intentImportedTestCaseId: 'tc_read_access_1',
+          intentImportedTestSpecId: 'ts_read_access_1',
+          intentImportedVerificationContractId: 'vc_read_access_1',
+          intentImportedArtifactKinds: ['scenario_card', 'final_result'],
+          platformQuery: {
+            version: 1,
+            source: 'execution_artifact_meta',
+            importedFromRunId: 'intent-run-read-access-1',
+            testType: 'browser_e2e',
+            runnerType: 'playwright_runner',
+            testCaseId: 'tc_read_access_1',
+            testSpecId: 'ts_read_access_1',
+            verificationContractId: 'vc_read_access_1',
+            artifactKinds: ['scenario_card', 'final_result'],
+            imported: true,
+            platformTagged: true,
+          },
+        }),
+        expect.objectContaining({
+          executionUid: expect.any(String),
+          platformQuery: {
+            version: 1,
+            source: 'execution_artifact_meta',
+            importedFromRunId: 'intent-run-read-access-legacy-1',
+            testType: '',
+            runnerType: '',
+            testCaseId: '',
+            testSpecId: '',
+            verificationContractId: '',
+            artifactKinds: [],
+            imported: true,
+            platformTagged: false,
+          },
+        }),
+      ])
+    );
+    expect(executionsPayload.platformIndex).toEqual({
+      scopeCount: 2,
+      importedCount: 2,
+      platformTaggedCount: 1,
+      bySource: [{ source: 'execution_artifact_meta', count: 2 }],
+      byTestCaseId: [{ id: 'tc_read_access_1', count: 1 }],
+      byTestSpecId: [{ id: 'ts_read_access_1', count: 1 }],
+      byVerificationContractId: [{ id: 'vc_read_access_1', count: 1 }],
+    });
+    expect(executionsPayload.platformSummary).toEqual({
+      scopeCount: 2,
+      importedCount: 2,
+      platformTaggedCount: 1,
+      byTestType: [{ testType: 'browser_e2e', count: 1 }],
+      byRunnerType: [{ runnerType: 'playwright_runner', count: 1 }],
+      byArtifactKind: [
+        { artifactKind: 'final_result', count: 1 },
+        { artifactKind: 'scenario_card', count: 1 },
+      ],
     });
 
     expect(responses.planGenerationConversationsRes.status).toBe(200);
@@ -386,6 +490,28 @@ describe.sequential('project read access API integration', () => {
       projectUid: fixture.projectUid,
       authRequired: true,
     });
+    expect(detailPayload.intentImport).toMatchObject({
+      importedFromRunId: 'intent-run-read-access-1',
+      workspacePreset: {
+        scope: {
+          projectUid: fixture.projectUid,
+          moduleUid: fixture.moduleUid,
+          configUid: fixture.configUid,
+        },
+        focused: true,
+        query: {
+          contractIdType: 'test_case',
+          contractId: 'tc_read_access_1',
+          focused: true,
+        },
+        task: {
+          path: `/projects/${fixture.projectUid}?module=${fixture.moduleUid}&platformTestType=browser_e2e&platformRunnerType=playwright_runner&platformContractIdType=test_case&platformContractId=tc_read_access_1`,
+        },
+        history: {
+          path: `/projects/${fixture.projectUid}?module=${fixture.moduleUid}&platformTestType=browser_e2e&platformRunnerType=playwright_runner&platformContractIdType=test_case&platformContractId=tc_read_access_1&historyConfigUid=${fixture.configUid}&historyPlatformTestType=browser_e2e&historyPlatformRunnerType=playwright_runner&historyPlatformContractIdType=test_case&historyPlatformContractId=tc_read_access_1`,
+        },
+      },
+    });
     expect(detailPayload.config).not.toHaveProperty('loginPasswordPlain');
     expect(detailPayload.project).not.toHaveProperty('loginPasswordPlain');
 
@@ -402,6 +528,153 @@ describe.sequential('project read access API integration', () => {
       sessionId: fixture.workerSessionId,
       frames: [],
       total: 0,
+    });
+  });
+
+  it('filters execution history by platform query params for authorized readers', async () => {
+    const fixture = await setupFixture();
+
+    const allRes = await listConfigExecutions(
+      createActorRequest(`http://localhost/api/test-configs/${fixture.configUid}/executions?limit=5`, fixture.viewerUid),
+      { params: Promise.resolve({ configUid: fixture.configUid }) }
+    );
+    expect(allRes.status).toBe(200);
+    const all = await allRes.json();
+    expect(all.items).toHaveLength(2);
+    expect(all.platformSummary).toEqual({
+      scopeCount: 2,
+      importedCount: 2,
+      platformTaggedCount: 1,
+      byTestType: [{ testType: 'browser_e2e', count: 1 }],
+      byRunnerType: [{ runnerType: 'playwright_runner', count: 1 }],
+      byArtifactKind: [
+        { artifactKind: 'final_result', count: 1 },
+        { artifactKind: 'scenario_card', count: 1 },
+      ],
+    });
+
+    const matchedRes = await listConfigExecutions(
+      createActorRequest(
+        `http://localhost/api/test-configs/${fixture.configUid}/executions?limit=5&platformTestType=browser_e2e&platformRunnerType=playwright_runner&platformArtifactKind=final_result`,
+        fixture.viewerUid
+      ),
+      { params: Promise.resolve({ configUid: fixture.configUid }) }
+    );
+    expect(matchedRes.status).toBe(200);
+    const matched = await matchedRes.json();
+    expect(matched.items).toHaveLength(1);
+    expect(matched.items[0]).toMatchObject({
+      executionUid: fixture.executionUid,
+      intentImportedTestType: 'browser_e2e',
+      intentImportedRunnerType: 'playwright_runner',
+      intentImportedTestCaseId: 'tc_read_access_1',
+      intentImportedTestSpecId: 'ts_read_access_1',
+      intentImportedVerificationContractId: 'vc_read_access_1',
+      intentImportedArtifactKinds: ['scenario_card', 'final_result'],
+      platformQuery: {
+        version: 1,
+        source: 'execution_artifact_meta',
+        importedFromRunId: 'intent-run-read-access-1',
+        testType: 'browser_e2e',
+        runnerType: 'playwright_runner',
+        testCaseId: 'tc_read_access_1',
+        testSpecId: 'ts_read_access_1',
+        verificationContractId: 'vc_read_access_1',
+        artifactKinds: ['scenario_card', 'final_result'],
+        imported: true,
+        platformTagged: true,
+      },
+    });
+    expect(matched.platformSummary).toEqual({
+      scopeCount: 1,
+      importedCount: 1,
+      platformTaggedCount: 1,
+      byTestType: [{ testType: 'browser_e2e', count: 1 }],
+      byRunnerType: [{ runnerType: 'playwright_runner', count: 1 }],
+      byArtifactKind: [
+        { artifactKind: 'final_result', count: 1 },
+        { artifactKind: 'scenario_card', count: 1 },
+      ],
+    });
+    expect(matched.platformIndex).toEqual({
+      scopeCount: 1,
+      importedCount: 1,
+      platformTaggedCount: 1,
+      bySource: [{ source: 'execution_artifact_meta', count: 1 }],
+      byTestCaseId: [{ id: 'tc_read_access_1', count: 1 }],
+      byTestSpecId: [{ id: 'ts_read_access_1', count: 1 }],
+      byVerificationContractId: [{ id: 'vc_read_access_1', count: 1 }],
+    });
+
+    const combinedContractMatchedRes = await listConfigExecutions(
+      createActorRequest(
+        `http://localhost/api/test-configs/${fixture.configUid}/executions?limit=5&platformContractIdType=verification_contract&platformContractId=vc_read_access_1`,
+        fixture.viewerUid
+      ),
+      { params: Promise.resolve({ configUid: fixture.configUid }) }
+    );
+    expect(combinedContractMatchedRes.status).toBe(200);
+    const combinedContractMatched = await combinedContractMatchedRes.json();
+    expect(combinedContractMatched.items).toHaveLength(1);
+    expect(combinedContractMatched.items[0]).toMatchObject({
+      executionUid: fixture.executionUid,
+      intentImportedVerificationContractId: 'vc_read_access_1',
+    });
+    expect(combinedContractMatched.platformSummary).toEqual({
+      scopeCount: 1,
+      importedCount: 1,
+      platformTaggedCount: 1,
+      byTestType: [{ testType: 'browser_e2e', count: 1 }],
+      byRunnerType: [{ runnerType: 'playwright_runner', count: 1 }],
+      byArtifactKind: [
+        { artifactKind: 'final_result', count: 1 },
+        { artifactKind: 'scenario_card', count: 1 },
+      ],
+    });
+
+    const legacyContractMatchedRes = await listConfigExecutions(
+      createActorRequest(
+        `http://localhost/api/test-configs/${fixture.configUid}/executions?limit=5&platformTestCaseId=tc_read_access_1&platformTestSpecId=ts_read_access_1&platformVerificationContractId=vc_read_access_1`,
+        fixture.viewerUid
+      ),
+      { params: Promise.resolve({ configUid: fixture.configUid }) }
+    );
+    expect(legacyContractMatchedRes.status).toBe(200);
+    const legacyContractMatched = await legacyContractMatchedRes.json();
+    expect(legacyContractMatched.items).toHaveLength(1);
+    expect(legacyContractMatched.items[0]).toMatchObject({
+      executionUid: fixture.executionUid,
+      intentImportedTestCaseId: 'tc_read_access_1',
+      intentImportedTestSpecId: 'ts_read_access_1',
+      intentImportedVerificationContractId: 'vc_read_access_1',
+    });
+
+    const mismatchRes = await listConfigExecutions(
+      createActorRequest(
+        `http://localhost/api/test-configs/${fixture.configUid}/executions?limit=5&platformArtifactKind=compiled_template`,
+        fixture.viewerUid
+      ),
+      { params: Promise.resolve({ configUid: fixture.configUid }) }
+    );
+    expect(mismatchRes.status).toBe(200);
+    const mismatch = await mismatchRes.json();
+    expect(mismatch.items).toEqual([]);
+    expect(mismatch.platformSummary).toEqual({
+      scopeCount: 0,
+      importedCount: 0,
+      platformTaggedCount: 0,
+      byTestType: [],
+      byRunnerType: [],
+      byArtifactKind: [],
+    });
+    expect(mismatch.platformIndex).toEqual({
+      scopeCount: 0,
+      importedCount: 0,
+      platformTaggedCount: 0,
+      bySource: [],
+      byTestCaseId: [],
+      byTestSpecId: [],
+      byVerificationContractId: [],
     });
   });
 

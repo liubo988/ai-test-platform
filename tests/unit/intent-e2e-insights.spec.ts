@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildIntentE2EEvaluationBaselineFromData,
   buildIntentE2EInsightsFromData,
   buildIntentE2ERecipePerformanceMapFromData,
   buildIntentE2ERolloutStrategy,
@@ -351,16 +352,30 @@ describe('intent-e2e insights', () => {
       repairedPassRate: 0,
       terminalPassRate: 33.3,
       passRate: 33.3,
+      modelQualityEligibleRuns: 2,
+      modelQualityPassRate: 50,
+      modelQualityFailureRuns: 1,
+      modelQualityFailureRate: 50,
+      blockedRuns: 1,
+      blockedRate: 33.3,
       knowledgeHitRuns: 2,
       knowledgeHitRate: 66.7,
       suggestedHelperReuseRuns: 2,
       suggestedHelperReuseRate: 66.7,
       authBlockRuns: 0,
       authBlockRate: 0,
+      permissionBlockedRuns: 0,
+      permissionBlockedRate: 0,
       envBlockRuns: 1,
       envBlockRate: 33.3,
+      dataBlockedRuns: 0,
+      dataBlockedRate: 0,
       assertionFailureRuns: 0,
       assertionFailureRate: 0,
+      assetMissingRuns: 0,
+      assetMissingRate: 0,
+      noHitRuns: 1,
+      noHitRate: 33.3,
     });
     expect(result.topRules).toEqual([
       {
@@ -538,10 +553,20 @@ describe('intent-e2e insights', () => {
       passedRuns: 1,
       failedRuns: 4,
       canceledRuns: 1,
+      modelQualityEligibleRuns: 2,
+      modelQualityPassRate: 50,
+      modelQualityFailureRuns: 1,
+      modelQualityFailureRate: 50,
+      blockedRuns: 4,
+      blockedRate: 66.7,
       authBlockRuns: 2,
       authBlockRate: 33.3,
+      permissionBlockedRuns: 1,
+      permissionBlockedRate: 16.7,
       envBlockRuns: 2,
       envBlockRate: 33.3,
+      dataBlockedRuns: 1,
+      dataBlockedRate: 16.7,
       assertionFailureRuns: 1,
       assertionFailureRate: 16.7,
     });
@@ -1573,6 +1598,11 @@ describe('intent-e2e insights', () => {
               ],
               matchedRecipeSlugs: ['business.create', 'business.list.verify'],
             },
+            verificationContract: {
+              typeFields: {
+                policyNotes: ['前置检查策略：创建型流程允许列表页空态绕过 data_missing 阻断。'],
+              },
+            },
             knowledge: {
               matchedRuleIds: ['business.submit'],
               matchedRuleTitles: ['商机提交流程'],
@@ -1696,6 +1726,9 @@ describe('intent-e2e insights', () => {
       {
         traceVersion: 1,
         runId: 'trace_run',
+        testType: 'browser_e2e',
+        runnerType: 'playwright_runner',
+        verificationPolicyNotes: ['前置检查策略：创建型流程允许列表页空态绕过 data_missing 阻断。'],
         projectUid: 'proj_checkout',
         status: 'failed',
         finishedAt: '2026-03-19T10:09:00.000Z',
@@ -1718,6 +1751,25 @@ describe('intent-e2e insights', () => {
         structuredPatchAttempted: true,
         targetedRepairAttempted: true,
         knowledgeHit: true,
+        assetReadiness: {
+          status: 'ready',
+          projectUid: 'proj_checkout',
+          onboardingPath: undefined,
+          knowledgePath: undefined,
+          repairMemoryPath: undefined,
+          hasOnboarding: undefined,
+          onboardingReady: undefined,
+          hasKnowledgeAsset: undefined,
+          hasRepairMemoryAsset: undefined,
+          knowledgeMatchCount: 1,
+          reasons: [],
+        },
+        qualitySplit: {
+          bucket: 'model_quality',
+          blocked: false,
+          qualityEligible: true,
+          blockerKind: '',
+        },
         matchedRecipeSlugs: ['business.create', 'business.list.verify'],
         matchedRuleIds: ['business.submit'],
         matchedRuleTitles: ['商机提交流程'],
@@ -1822,6 +1874,65 @@ describe('intent-e2e insights', () => {
         ],
       },
     ]);
+  });
+
+  it('falls back to verificationPlan policy notes when verification contract is absent', () => {
+    const runSnapshots = [
+      makeRunSnapshot({
+        runId: 'legacy_policy_run',
+        status: 'failed',
+        endedAt: '2026-03-19T10:10:00.000Z',
+        requestInput: '打开新建页并确认空列表场景可以继续创建',
+        targetUrl: 'https://example.com/business/list',
+        state: {
+          result: {
+            description: '创建型列表页空态回归',
+            scenarioCard: {
+              title: '列表页空态创建',
+              taskMode: 'scenario',
+              featureDescription: '列表页空态也应允许继续创建',
+              flowDefinition: {
+                steps: [{ stepType: 'ui', title: '打开列表页', target: '商机列表', instruction: '进入列表页', expectedResult: '列表可见' }],
+              },
+            },
+            verificationPlan: {
+              expectedOutcome: '即使列表为空，也应继续确认是否存在可用新建入口',
+              checks: [],
+              policyNotes: [
+                '前置检查策略：创建型流程允许列表页空态绕过 data_missing 阻断。',
+                '校验策略：最终以创建入口可用性为准。',
+              ],
+            },
+            attempts: [
+              {
+                kind: 'generate',
+                result: { success: false },
+                triage: {
+                  failureClass: 'data_missing',
+                },
+              },
+            ],
+            finalFailureTriage: {
+              failureClass: 'data_missing',
+            },
+          },
+        },
+      }),
+    ];
+
+    const result = buildIntentE2EInsightsFromData(runSnapshots, [], {
+      projectUid: 'proj_checkout',
+      runLimit: 20,
+      auditLimit: 12,
+    });
+
+    expect(result.recentTraces[0]).toMatchObject({
+      runId: 'legacy_policy_run',
+      verificationPolicyNotes: [
+        '前置检查策略：创建型流程允许列表页空态绕过 data_missing 阻断。',
+        '校验策略：最终以创建入口可用性为准。',
+      ],
+    });
   });
 
   it('builds roadmap priority scenario stats for the four tracked verifier families', () => {
@@ -2240,6 +2351,138 @@ describe('intent-e2e insights', () => {
     ]);
   });
 
+  it('surfaces asset_missing and no_hit signals in summary and recent traces', () => {
+    const runSnapshots = [
+      makeRunSnapshot({
+        runId: 'run_asset_missing',
+        status: 'failed',
+        endedAt: '2026-03-20T10:00:00.000Z',
+        state: {
+          result: {
+            assetReadiness: {
+              status: 'asset_missing',
+              projectUid: 'proj_checkout',
+              onboardingPath: 'reports/intent-e2e/projects/proj_checkout/intent-e2e.project-onboarding.json',
+              knowledgePath: 'reports/intent-e2e/projects/proj_checkout/intent-e2e.project-knowledge.json',
+              repairMemoryPath: 'reports/intent-e2e/projects/proj_checkout/intent-e2e-repair-memory.json',
+              hasOnboarding: false,
+              onboardingReady: false,
+              hasKnowledgeAsset: false,
+              hasRepairMemoryAsset: false,
+              knowledgeMatchCount: 1,
+              reasons: ['onboarding_manifest_missing', 'project_knowledge_missing'],
+            },
+            knowledge: {
+              matchedRuleIds: ['checkout.submit'],
+              matchedRuleTitles: ['结算提交页'],
+              suggestedHelpers: ['__e2e.waitForApiResponse'],
+            },
+            finalFailureTriage: {
+              failureClass: 'unknown',
+            },
+          },
+        },
+      }),
+      makeRunSnapshot({
+        runId: 'run_no_hit',
+        status: 'passed',
+        endedAt: '2026-03-20T10:05:00.000Z',
+        state: {
+          result: {
+            assetReadiness: {
+              status: 'no_hit',
+              projectUid: 'proj_checkout',
+              onboardingPath: 'reports/intent-e2e/projects/proj_checkout/intent-e2e.project-onboarding.json',
+              knowledgePath: 'reports/intent-e2e/projects/proj_checkout/intent-e2e.project-knowledge.json',
+              repairMemoryPath: 'reports/intent-e2e/projects/proj_checkout/intent-e2e-repair-memory.json',
+              hasOnboarding: true,
+              onboardingReady: true,
+              hasKnowledgeAsset: true,
+              hasRepairMemoryAsset: false,
+              knowledgeMatchCount: 0,
+              reasons: ['repair_memory_missing', 'knowledge_no_hit'],
+            },
+            knowledge: {
+              matchedRuleIds: [],
+              matchedRuleTitles: [],
+              suggestedHelpers: [],
+            },
+          },
+        },
+      }),
+    ];
+
+    const result = buildIntentE2EInsightsFromData(runSnapshots, [], {
+      projectUid: 'proj_checkout',
+      runLimit: 8,
+      auditLimit: 12,
+    });
+
+    expect(result.summary).toMatchObject({
+      totalRuns: 2,
+      assetMissingRuns: 1,
+      assetMissingRate: 50,
+      noHitRuns: 1,
+      noHitRate: 50,
+    });
+    expect(result.recentTraces).toHaveLength(2);
+    expect(result.recentTraces[0]).toMatchObject({
+      runId: 'run_no_hit',
+      assetReadiness: {
+        status: 'no_hit',
+        reasons: ['repair_memory_missing', 'knowledge_no_hit'],
+      },
+    });
+    expect(result.recentTraces[1]).toMatchObject({
+      runId: 'run_asset_missing',
+      assetReadiness: {
+        status: 'asset_missing',
+        reasons: ['onboarding_manifest_missing', 'project_knowledge_missing'],
+      },
+    });
+  });
+
+  it('includes project runtime governance status in project-scoped insights', () => {
+    const result = buildIntentE2EInsightsFromData([], [], {
+      projectUid: 'proj_checkout',
+      runLimit: 8,
+      auditLimit: 12,
+      runtimeGovernanceStatus: {
+        projectUid: 'proj_checkout',
+        path: 'reports/intent-e2e/projects/proj_checkout/intent-e2e.project-runtime-governance.json',
+        exists: true,
+        valid: true,
+        ready: false,
+        hasEnvironmentProfile: true,
+        hasCredentialDefaults: true,
+        hasFixtureDefaults: false,
+        issues: [
+          {
+            code: 'shared_account_ref_missing',
+            message: 'project runtime governance 使用 shared session，但缺少 credential.accountRef；账号归属不可追踪。',
+          },
+        ],
+      },
+    });
+
+    expect(result.runtimeGovernanceStatus).toEqual({
+      projectUid: 'proj_checkout',
+      path: 'reports/intent-e2e/projects/proj_checkout/intent-e2e.project-runtime-governance.json',
+      exists: true,
+      valid: true,
+      ready: false,
+      hasEnvironmentProfile: true,
+      hasCredentialDefaults: true,
+      hasFixtureDefaults: false,
+      issues: [
+        {
+          code: 'shared_account_ref_missing',
+          message: 'project runtime governance 使用 shared session，但缺少 credential.accountRef；账号归属不可追踪。',
+        },
+      ],
+    });
+  });
+
   it('buckets verification intents and exposes review labels in recent traces', () => {
     const runSnapshots = [
       makeRunSnapshot({
@@ -2436,6 +2679,9 @@ describe('intent-e2e insights', () => {
     expect(result.recentTraces.find((item) => item.runId === 'review_run')).toMatchObject({
       verificationIntent: 'review',
       verificationIntentLabel: '保守复核',
+      qualitySplit: {
+        bucket: 'passed',
+      },
       finalGraderResult: {
         status: 'passed',
         summary: '终态通过',
@@ -2446,6 +2692,9 @@ describe('intent-e2e insights', () => {
     expect(result.recentTraces.find((item) => item.runId === 'verify_run')).toMatchObject({
       verificationIntent: 'verify',
       verificationIntentLabel: '标准验证',
+      qualitySplit: {
+        bucket: 'model_quality',
+      },
       finalGraderResult: {
         status: 'failed',
         failureClass: 'selector_drift',
@@ -2454,6 +2703,9 @@ describe('intent-e2e insights', () => {
     expect(result.recentTraces.find((item) => item.runId === 'unknown_run')).toMatchObject({
       verificationIntent: 'unknown',
       verificationIntentLabel: '未标注意图',
+      qualitySplit: {
+        bucket: 'env_blocked',
+      },
       finalGraderResult: {
         status: 'canceled',
         failureClass: 'env_transient',
@@ -2876,6 +3128,7 @@ describe('intent-e2e insights', () => {
     expect(result.evaluationBaseline.candidates[0]?.selectionReason).toContain('复杂企业流程');
     expect(result.evaluationBaseline.candidates[0]?.selectionReason).toContain('含 1 次失败');
     expect(result.evaluationBaseline.candidates[0]?.selectionReason).toContain('repair 通过');
+    expect(buildIntentE2EEvaluationBaselineFromData(runSnapshots)).toMatchObject(result.evaluationBaseline);
   });
 
   it('flags rollback candidates when pass rate drops after a merge audit', () => {

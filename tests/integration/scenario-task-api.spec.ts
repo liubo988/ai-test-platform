@@ -3,6 +3,8 @@ import { GET as getConfigByUid, PUT as updateConfigByUid } from '../../app/api/t
 import { GET as listConfigs, POST as createConfig } from '../../app/api/test-configs/route';
 import {
   addProjectMember,
+  createTestConfig,
+  createTestPlan,
   createTestModule,
   createTestProject,
   ensureWorkspaceActor,
@@ -237,6 +239,308 @@ describe.sequential('scenario task config API integration', () => {
     const detail = await detailRes.json();
     expect(detail.item.taskMode).toBe('page');
     expect(detail.item.flowDefinition).toBeNull();
+  });
+
+  it('filters listed tasks by platform import query params', async () => {
+    const fixture = await setupFixture();
+
+    const createReq = createActorRequest('http://localhost/api/test-configs', fixture.ownerUid, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        projectUid: fixture.projectUid,
+        moduleUid: fixture.moduleUid,
+        sortOrder: 60,
+        name: '平台导入任务',
+        taskMode: 'scenario',
+        targetUrl: 'https://example.com/platform-import',
+        featureDescription: '验证 workspace query 的平台过滤参数',
+        flowDefinition: {
+          steps: [
+            {
+              stepType: 'ui',
+              title: '导入场景',
+              target: '/platform-import',
+              instruction: '执行导入任务',
+              expectedResult: '导入成功',
+              extractVariable: '',
+            },
+          ],
+        },
+      }),
+    });
+    const createRes = await createConfig(createReq);
+    expect(createRes.status).toBe(201);
+    const created = await createRes.json();
+
+    await createTestPlan({
+      projectUid: fixture.projectUid,
+      configUid: created.item.configUid,
+      planTitle: 'Intent 平台导入计划',
+      planCode: "test('platform import', async () => {});",
+      planSummary: '用于验证 platform filter contract',
+      generationModel: 'integration-test-model',
+      generationPrompt: [
+        '[intent_e2e_import] runId=intent-run-platform-1',
+        '平台测试类型：browser_e2e',
+        '平台执行器：playwright_runner',
+        '平台用例资产：tc_platform_1',
+        '平台规格资产：ts_platform_1',
+        '平台验收契约：vc_platform_1',
+        '平台产物类型：scenario_card / final_result / attempt_trace',
+      ].join('\n'),
+      generatedFiles: [
+        {
+          name: 'platform-import.spec.ts',
+          content: "test('platform import', async () => {});",
+          language: 'typescript',
+        },
+      ],
+      tiers: { simple: 1, medium: 0, complex: 0 },
+    });
+
+    const legacyImported = await createTestConfig(
+      {
+        projectUid: fixture.projectUid,
+        moduleUid: fixture.moduleUid,
+        sortOrder: 61,
+        name: 'Legacy 导入任务',
+        taskMode: 'scenario',
+        targetUrl: 'https://example.com/platform-legacy-import',
+        featureDescription: '验证未带平台标签的旧导入任务会计入 importedCount',
+        flowDefinition: {
+          version: 1,
+          entryUrl: 'https://example.com/platform-legacy-import',
+          sharedVariables: [],
+          expectedOutcome: '旧导入任务仍会被识别为 imported',
+          cleanupNotes: '',
+          steps: [
+            {
+              stepUid: 'step-legacy-platform-import',
+              stepType: 'ui',
+              title: 'legacy 导入场景',
+              target: '/platform-legacy-import',
+              instruction: '执行旧导入任务',
+              expectedResult: '导入成功',
+              extractVariable: '',
+            },
+          ],
+        },
+      },
+      { actorLabel: 'integration-test' }
+    );
+
+    await createTestPlan({
+      projectUid: fixture.projectUid,
+      configUid: legacyImported.configUid,
+      planTitle: 'Legacy Intent 导入计划',
+      planCode: "test('legacy import', async () => {});",
+      planSummary: '用于验证 platform summary contract',
+      generationModel: 'integration-test-model',
+      generationPrompt: '[intent_e2e_import] runId=intent-run-platform-legacy-1',
+      generatedFiles: [
+        {
+          name: 'legacy-platform-import.spec.ts',
+          content: "test('legacy import', async () => {});",
+          language: 'typescript',
+        },
+      ],
+      tiers: { simple: 1, medium: 0, complex: 0 },
+    });
+
+    const allReq = createActorRequest(
+      `http://localhost/api/test-configs?projectUid=${fixture.projectUid}&status=active&page=1&pageSize=20`,
+      fixture.viewerUid
+    );
+    const allRes = await listConfigs(allReq);
+    expect(allRes.status).toBe(200);
+    const all = await allRes.json();
+    expect(all.total).toBe(2);
+    expect(all.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          configUid: created.item.configUid,
+          platformQuery: {
+            version: 1,
+            source: 'latest_plan_prompt',
+            importedFromRunId: 'intent-run-platform-1',
+            testType: 'browser_e2e',
+            runnerType: 'playwright_runner',
+            testCaseId: 'tc_platform_1',
+            testSpecId: 'ts_platform_1',
+            verificationContractId: 'vc_platform_1',
+            artifactKinds: ['scenario_card', 'final_result', 'attempt_trace'],
+            imported: true,
+            platformTagged: true,
+          },
+        }),
+        expect.objectContaining({
+          configUid: legacyImported.configUid,
+          platformQuery: {
+            version: 1,
+            source: 'latest_plan_prompt',
+            importedFromRunId: 'intent-run-platform-legacy-1',
+            testType: '',
+            runnerType: '',
+            testCaseId: '',
+            testSpecId: '',
+            verificationContractId: '',
+            artifactKinds: [],
+            imported: true,
+            platformTagged: false,
+          },
+        }),
+      ])
+    );
+    expect(all.platformIndex).toEqual({
+      scopeCount: 2,
+      importedCount: 2,
+      platformTaggedCount: 1,
+      bySource: [{ source: 'latest_plan_prompt', count: 2 }],
+      byTestCaseId: [{ id: 'tc_platform_1', count: 1 }],
+      byTestSpecId: [{ id: 'ts_platform_1', count: 1 }],
+      byVerificationContractId: [{ id: 'vc_platform_1', count: 1 }],
+    });
+    expect(all.platformSummary).toEqual({
+      scopeCount: 2,
+      importedCount: 2,
+      platformTaggedCount: 1,
+      byTestType: [{ testType: 'browser_e2e', count: 1 }],
+      byRunnerType: [{ runnerType: 'playwright_runner', count: 1 }],
+      byArtifactKind: [
+        { artifactKind: 'attempt_trace', count: 1 },
+        { artifactKind: 'final_result', count: 1 },
+        { artifactKind: 'scenario_card', count: 1 },
+      ],
+    });
+
+    const filteredReq = createActorRequest(
+      `http://localhost/api/test-configs?projectUid=${fixture.projectUid}&status=active&page=1&pageSize=20&platformTestType=browser_e2e&platformRunnerType=playwright_runner&platformArtifactKind=attempt_trace`,
+      fixture.viewerUid
+    );
+    const filteredRes = await listConfigs(filteredReq);
+    expect(filteredRes.status).toBe(200);
+    const filtered = await filteredRes.json();
+    expect(filtered.total).toBe(1);
+    expect(filtered.items[0]).toMatchObject({
+      configUid: created.item.configUid,
+      latestPlanImportedTestType: 'browser_e2e',
+      latestPlanImportedRunnerType: 'playwright_runner',
+      latestPlanImportedTestCaseId: 'tc_platform_1',
+      latestPlanImportedTestSpecId: 'ts_platform_1',
+      latestPlanImportedVerificationContractId: 'vc_platform_1',
+      latestPlanImportedArtifactKinds: ['scenario_card', 'final_result', 'attempt_trace'],
+      platformQuery: {
+        version: 1,
+        source: 'latest_plan_prompt',
+        importedFromRunId: 'intent-run-platform-1',
+        testType: 'browser_e2e',
+        runnerType: 'playwright_runner',
+        testCaseId: 'tc_platform_1',
+        testSpecId: 'ts_platform_1',
+        verificationContractId: 'vc_platform_1',
+        artifactKinds: ['scenario_card', 'final_result', 'attempt_trace'],
+        imported: true,
+        platformTagged: true,
+      },
+    });
+    expect(filtered.platformSummary).toEqual({
+      scopeCount: 1,
+      importedCount: 1,
+      platformTaggedCount: 1,
+      byTestType: [{ testType: 'browser_e2e', count: 1 }],
+      byRunnerType: [{ runnerType: 'playwright_runner', count: 1 }],
+      byArtifactKind: [
+        { artifactKind: 'attempt_trace', count: 1 },
+        { artifactKind: 'final_result', count: 1 },
+        { artifactKind: 'scenario_card', count: 1 },
+      ],
+    });
+    expect(filtered.platformIndex).toEqual({
+      scopeCount: 1,
+      importedCount: 1,
+      platformTaggedCount: 1,
+      bySource: [{ source: 'latest_plan_prompt', count: 1 }],
+      byTestCaseId: [{ id: 'tc_platform_1', count: 1 }],
+      byTestSpecId: [{ id: 'ts_platform_1', count: 1 }],
+      byVerificationContractId: [{ id: 'vc_platform_1', count: 1 }],
+    });
+
+    const combinedContractIdReq = createActorRequest(
+      `http://localhost/api/test-configs?projectUid=${fixture.projectUid}&status=active&page=1&pageSize=20&platformContractIdType=test_case&platformContractId=tc_platform_1`,
+      fixture.viewerUid
+    );
+    const combinedContractIdRes = await listConfigs(combinedContractIdReq);
+    expect(combinedContractIdRes.status).toBe(200);
+    const combinedContractIdFiltered = await combinedContractIdRes.json();
+    expect(combinedContractIdFiltered.total).toBe(1);
+    expect(combinedContractIdFiltered.items[0]).toMatchObject({
+      configUid: created.item.configUid,
+      latestPlanImportedTestCaseId: 'tc_platform_1',
+    });
+    expect(combinedContractIdFiltered.platformSummary).toEqual({
+      scopeCount: 1,
+      importedCount: 1,
+      platformTaggedCount: 1,
+      byTestType: [{ testType: 'browser_e2e', count: 1 }],
+      byRunnerType: [{ runnerType: 'playwright_runner', count: 1 }],
+      byArtifactKind: [
+        { artifactKind: 'attempt_trace', count: 1 },
+        { artifactKind: 'final_result', count: 1 },
+        { artifactKind: 'scenario_card', count: 1 },
+      ],
+    });
+    expect(combinedContractIdFiltered.platformIndex).toEqual({
+      scopeCount: 1,
+      importedCount: 1,
+      platformTaggedCount: 1,
+      bySource: [{ source: 'latest_plan_prompt', count: 1 }],
+      byTestCaseId: [{ id: 'tc_platform_1', count: 1 }],
+      byTestSpecId: [{ id: 'ts_platform_1', count: 1 }],
+      byVerificationContractId: [{ id: 'vc_platform_1', count: 1 }],
+    });
+
+    const legacyContractIdReq = createActorRequest(
+      `http://localhost/api/test-configs?projectUid=${fixture.projectUid}&status=active&page=1&pageSize=20&platformTestCaseId=tc_platform_1&platformTestSpecId=ts_platform_1&platformVerificationContractId=vc_platform_1`,
+      fixture.viewerUid
+    );
+    const legacyContractIdRes = await listConfigs(legacyContractIdReq);
+    expect(legacyContractIdRes.status).toBe(200);
+    const legacyContractIdFiltered = await legacyContractIdRes.json();
+    expect(legacyContractIdFiltered.total).toBe(1);
+    expect(legacyContractIdFiltered.items[0]).toMatchObject({
+      configUid: created.item.configUid,
+      latestPlanImportedTestCaseId: 'tc_platform_1',
+      latestPlanImportedTestSpecId: 'ts_platform_1',
+      latestPlanImportedVerificationContractId: 'vc_platform_1',
+    });
+
+    const mismatchReq = createActorRequest(
+      `http://localhost/api/test-configs?projectUid=${fixture.projectUid}&status=active&page=1&pageSize=20&platformArtifactKind=verification_plan`,
+      fixture.viewerUid
+    );
+    const mismatchRes = await listConfigs(mismatchReq);
+    expect(mismatchRes.status).toBe(200);
+    const mismatch = await mismatchRes.json();
+    expect(mismatch.total).toBe(0);
+    expect(mismatch.items).toEqual([]);
+    expect(mismatch.platformSummary).toEqual({
+      scopeCount: 0,
+      importedCount: 0,
+      platformTaggedCount: 0,
+      byTestType: [],
+      byRunnerType: [],
+      byArtifactKind: [],
+    });
+    expect(mismatch.platformIndex).toEqual({
+      scopeCount: 0,
+      importedCount: 0,
+      platformTaggedCount: 0,
+      bySource: [],
+      byTestCaseId: [],
+      byTestSpecId: [],
+      byVerificationContractId: [],
+    });
   });
 
   it('rejects scenario task creation for viewer role', async () => {

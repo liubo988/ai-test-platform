@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "presets": [
+    {
+      "presetId": "vitest_unit",
+      "displayName": "Vitest Unit",
+      "commandKind": "node_script",
+      "entryPath": "node_modules/vitest/vitest.mjs",
+      "args": ["run"],
+      "targetPolicy": {
+        "mode": "unit_test_spec",
+        "defaultTargets": ["tests/unit"],
+        "maxTargets": 12
+      }
+    },
+    {
+      "presetId": "tsc_build",
+      "displayName": "TypeScript Build",
+      "commandKind": "node_script",
+      "entryPath": "node_modules/typescript/bin/tsc",
+      "args": ["-p", "tsconfig.json"],
+      "targetPolicy": {
+        "mode": "none",
+        "defaultTargets": [],
+        "maxTargets": 0
+      }
+    },
+    {
+      "presetId": "doc_links",
+      "displayName": "Doc Links Check",
+      "commandKind": "node_script",
+      "entryPath": "scripts/check-doc-links.mjs",
+      "args": [],
+      "targetPolicy": {
+        "mode": "none",
+        "defaultTargets": [],
+        "maxTargets": 0
+      }
+    }
+  ]
+}

@@ -11,6 +11,8 @@ vi.mock('@/lib/db/repository', () => ({
 
 vi.mock('@/lib/intent-project-knowledge', () => ({
   createIntentProjectKnowledgeAuditEntry: vi.fn(),
+  getIntentProjectKnowledgeBackupDir: vi.fn(),
+  getIntentProjectKnowledgePath: vi.fn(),
   restoreIntentProjectKnowledgeBackup: vi.fn(),
   writeIntentProjectKnowledgeAuditEntry: vi.fn(),
 }));
@@ -31,6 +33,8 @@ import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { insertProjectActivityLog } from '@/lib/db/repository';
 import {
   createIntentProjectKnowledgeAuditEntry,
+  getIntentProjectKnowledgeBackupDir,
+  getIntentProjectKnowledgePath,
   restoreIntentProjectKnowledgeBackup,
   writeIntentProjectKnowledgeAuditEntry,
 } from '@/lib/intent-project-knowledge';
@@ -76,6 +80,18 @@ const auditEntry = {
 describe('intent project knowledge backup restore route', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getIntentProjectKnowledgePath).mockImplementation(
+      ((projectUid = '') =>
+        projectUid
+          ? `reports/intent-e2e/projects/${projectUid}/intent-e2e.project-knowledge.json`
+          : 'intent-e2e.project-knowledge.json') as never
+    );
+    vi.mocked(getIntentProjectKnowledgeBackupDir).mockImplementation(
+      ((projectUid = '') =>
+        projectUid
+          ? `reports/intent-e2e/projects/${projectUid}/intent-e2e.project-knowledge.backups`
+          : 'reports/intent-e2e.project-knowledge.backups') as never
+    );
     vi.mocked(restoreIntentProjectKnowledgeBackup).mockResolvedValue({
       restoredFrom: 'reports/intent-e2e.project-knowledge.backups/backup.json',
       writtenTo: 'intent-e2e.project-knowledge.json',
@@ -102,7 +118,11 @@ describe('intent project knowledge backup restore route', () => {
     });
     const res = await POST(req);
 
-    expect(restoreIntentProjectKnowledgeBackup).toHaveBeenCalledWith('reports/intent-e2e.project-knowledge.backups/backup.json');
+    expect(restoreIntentProjectKnowledgeBackup).toHaveBeenCalledWith(
+      'reports/intent-e2e.project-knowledge.backups/backup.json',
+      'intent-e2e.project-knowledge.json',
+      'reports/intent-e2e.project-knowledge.backups'
+    );
     expect(createIntentProjectKnowledgeAuditEntry).toHaveBeenCalledWith(
       expect.objectContaining({
         operation: 'restore',
@@ -180,6 +200,11 @@ describe('intent project knowledge backup restore route', () => {
 
     expect(ensureDbBootstrap).toHaveBeenCalledTimes(1);
     expect(requireProjectRole).toHaveBeenCalledWith(req, 'proj_1', ['owner', 'editor'], '当前操作者没有权限回滚项目知识规则');
+    expect(restoreIntentProjectKnowledgeBackup).toHaveBeenCalledWith(
+      'reports/intent-e2e.project-knowledge.backups/backup.json',
+      'reports/intent-e2e/projects/proj_1/intent-e2e.project-knowledge.json',
+      'reports/intent-e2e/projects/proj_1/intent-e2e.project-knowledge.backups'
+    );
     expect(insertProjectActivityLog).toHaveBeenCalledWith(
       expect.objectContaining({
         projectUid: 'proj_1',

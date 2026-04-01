@@ -16,6 +16,44 @@ import {
   cloneIntentExecutionStructuredPatch,
   cloneIntentExecutionStructuredRepairOutput,
 } from '@/lib/intent-execution-artifacts';
+import {
+  buildIntentE2ECiCdReport,
+  cloneIntentE2ECiCdReport,
+  normalizeIntentE2ECiCdReport,
+} from '@/lib/intent-e2e-cicd-report';
+import { cloneIntentE2ERunArtifactIndex } from '@/lib/intent-e2e-run-artifacts';
+import {
+  clonePlatformArtifactContractAsset,
+  clonePlatformTestCaseAsset,
+  clonePlatformTestSpecAsset,
+  clonePlatformVerificationContractAsset,
+  DEFAULT_INTENT_E2E_RUNNER_TYPE,
+  DEFAULT_INTENT_E2E_TEST_TYPE,
+  normalizePlatformRunnerType,
+  normalizePlatformTestType,
+  resolvePlatformTestAssetBundle,
+  type PlatformRunnerType,
+  type PlatformTestType,
+} from '@/lib/test-platform-asset-model';
+import {
+  buildIntentE2ERunRequestFingerprint,
+  cloneIntentE2ERunControl,
+  compareIntentE2ERunPriority,
+  resolveIntentE2ERunControl,
+  type IntentE2ERunPriority,
+  type ResolvedIntentE2ERunControl,
+} from '@/lib/intent-e2e-run-control';
+import {
+  cloneIntentE2ERuntimeGovernance,
+  normalizeIntentE2ERuntimeGovernance,
+  type IntentE2ERuntimeGovernance,
+} from '@/lib/intent-e2e-runtime-governance';
+import {
+  cloneIntentE2ESystemOnboardingSummary,
+  resolveIntentE2ECiCdProfile,
+  type IntentE2ECiCdProfile,
+  type IntentE2ESystemOnboardingManifestSummary,
+} from '@/lib/intent-e2e-system-onboarding';
 import type { RepairObservationReport } from '@/lib/test-generator';
 
 export type IntentE2ERunStatus = 'created' | 'running' | 'passed' | 'failed' | 'canceled';
@@ -25,6 +63,10 @@ export interface IntentE2ERunRequestSummary {
   targetUrl: string;
   attachmentCount: number;
   hasAuth: boolean;
+  systemOnboarding?: IntentE2ESystemOnboardingManifestSummary;
+  cicdProfile: IntentE2ECiCdProfile;
+  runControl?: ResolvedIntentE2ERunControl;
+  runtimeGovernance?: IntentE2ERuntimeGovernance;
   llm: {
     provider: string;
     model: string;
@@ -35,8 +77,29 @@ export interface IntentE2ERunRequestSummary {
   };
 }
 
+export interface IntentE2ERunTaskPlatformState {
+  requestFingerprint: string;
+  priority: IntentE2ERunPriority;
+  timeoutMs: number;
+  retryLimit: number;
+  retryCount: number;
+  retryReasons: string[];
+  replayOfRunId: string;
+  replayRootRunId: string;
+  replaySequence: number;
+  queuedAt?: string;
+  dequeuedAt?: string;
+  queueWaitMs?: number;
+  queuePosition?: number;
+  flaky: boolean;
+  flakyReason: string;
+  flakyPeerRunIds: string[];
+}
+
 export interface IntentE2ERunRecord {
   runId: string;
+  testType?: PlatformTestType;
+  runnerType?: PlatformRunnerType;
   status: IntentE2ERunStatus;
   stage: IntentE2EStreamStage | 'created';
   createdAt: string;
@@ -44,6 +107,7 @@ export interface IntentE2ERunRecord {
   startedAt?: string;
   endedAt?: string;
   request: IntentE2ERunRequestSummary;
+  taskPlatform: IntentE2ERunTaskPlatformState;
   events: IntentE2EStreamEvent[];
   result: IntentE2ERunResult | null;
   error: string | null;
@@ -65,13 +129,20 @@ interface IntentE2ERunInternalRecord {
   state: IntentE2ERunRecord;
   projectUid: string;
   moduleUid: string;
+  request: IntentE2ERunRequest;
   abortController: AbortController;
   listeners: Set<(event: IntentE2EStreamEvent) => void>;
-  completionPromise: Promise<void> | null;
+  completionPromise: Promise<void>;
+  resolveCompletion: () => void;
+  executionPromise: Promise<void> | null;
+  completionResolved: boolean;
   persistenceQueue: Promise<void>;
+  executionTimeout: ReturnType<typeof setTimeout> | null;
+  timedOut: boolean;
 }
 
 const RUNS = new Map<string, IntentE2ERunInternalRecord>();
+const RUN_QUEUE: string[] = [];
 const COMPLETED_TTL_MS = 30 * 60 * 1000;
 const MAX_RUN_COUNT = 60;
 const RUN_RECOVERY_STALE_MS = 5 * 60 * 1000;
@@ -90,12 +161,79 @@ function createAbortError(message = '当前自动测试已取消'): Error {
   return error;
 }
 
+function resolveConcurrentLimit(envName: string, defaultValue: number, maxValue: number): number {
+  const raw = Number(process.env[envName]);
+  if (!Number.isFinite(raw) || raw <= 0) return defaultValue;
+  return Math.min(maxValue, Math.max(1, Math.floor(raw)));
+}
+
+function resolveGlobalConcurrentLimit(): number {
+  return resolveConcurrentLimit('INTENT_E2E_MAX_CONCURRENT_RUNS', 2, 8);
+}
+
+function resolveProjectConcurrentLimit(): number {
+  return resolveConcurrentLimit('INTENT_E2E_PROJECT_MAX_CONCURRENT_RUNS', 1, 4);
+}
+
+function cloneTaskPlatformState(state: IntentE2ERunTaskPlatformState): IntentE2ERunTaskPlatformState {
+  return {
+    requestFingerprint: state.requestFingerprint,
+    priority: state.priority,
+    timeoutMs: state.timeoutMs,
+    retryLimit: state.retryLimit,
+    retryCount: state.retryCount,
+    retryReasons: [...state.retryReasons],
+    replayOfRunId: state.replayOfRunId,
+    replayRootRunId: state.replayRootRunId,
+    replaySequence: state.replaySequence,
+    ...(state.queuedAt ? { queuedAt: state.queuedAt } : {}),
+    ...(state.dequeuedAt ? { dequeuedAt: state.dequeuedAt } : {}),
+    ...(typeof state.queueWaitMs === 'number' ? { queueWaitMs: state.queueWaitMs } : {}),
+    ...(typeof state.queuePosition === 'number' ? { queuePosition: state.queuePosition } : {}),
+    flaky: state.flaky,
+    flakyReason: state.flakyReason,
+    flakyPeerRunIds: [...state.flakyPeerRunIds],
+  };
+}
+
+function buildTaskPlatformState(request: IntentE2ERunRequest): IntentE2ERunTaskPlatformState {
+  const runControl = resolveIntentE2ERunControl(request.runControl);
+
+  return {
+    requestFingerprint: buildIntentE2ERunRequestFingerprint({
+      input: request.input,
+      targetUrl: request.targetUrl,
+      projectUid: request.projectUid,
+      moduleUid: request.moduleUid,
+      auth: request.auth,
+      runtimeGovernance: request.runtimeGovernance,
+    }),
+    priority: runControl.priority,
+    timeoutMs: runControl.timeoutMs,
+    retryLimit: runControl.retryLimit,
+    retryCount: 0,
+    retryReasons: [],
+    replayOfRunId: runControl.replayOfRunId,
+    replayRootRunId: '',
+    replaySequence: 0,
+    flaky: false,
+    flakyReason: '',
+    flakyPeerRunIds: [],
+  };
+}
+
 function buildRequestSummary(request: IntentE2ERunRequest): IntentE2ERunRequestSummary {
+  const runControl = cloneIntentE2ERunControl(request.runControl);
+
   return {
     input: request.input.trim(),
     targetUrl: request.targetUrl?.trim() || '',
     attachmentCount: request.attachments?.length || 0,
     hasAuth: Boolean(request.auth?.loginUrl || request.auth?.username || request.auth?.password || request.auth?.loginDescription),
+    systemOnboarding: cloneIntentE2ESystemOnboardingSummary(request.systemOnboarding),
+    cicdProfile: resolveIntentE2ECiCdProfile(request.cicdProfile),
+    ...(runControl ? { runControl: resolveIntentE2ERunControl(runControl) } : {}),
+    runtimeGovernance: cloneIntentE2ERuntimeGovernance(request.runtimeGovernance),
     llm: {
       provider: request.llmConfig?.provider || 'openai',
       model: request.llmConfig?.model || '',
@@ -110,11 +248,28 @@ function buildRequestSummary(request: IntentE2ERunRequest): IntentE2ERunRequestS
 function cloneRunState(state: IntentE2ERunRecord): IntentE2ERunRecord {
   return {
     ...state,
-    request: { ...state.request, llm: { ...state.request.llm } },
+    request: {
+      ...state.request,
+      systemOnboarding: cloneIntentE2ESystemOnboardingSummary(state.request.systemOnboarding),
+      cicdProfile: state.request.cicdProfile,
+      runControl: state.request.runControl ? { ...state.request.runControl } : undefined,
+      runtimeGovernance: cloneIntentE2ERuntimeGovernance(state.request.runtimeGovernance),
+      llm: { ...state.request.llm },
+    },
+    taskPlatform: cloneTaskPlatformState(state.taskPlatform),
     events: state.events.map((event) => ({ ...event })),
+    testType: normalizePlatformTestType(state.testType) || DEFAULT_INTENT_E2E_TEST_TYPE,
+    runnerType: normalizePlatformRunnerType(state.runnerType) || DEFAULT_INTENT_E2E_RUNNER_TYPE,
     result: state.result
       ? {
           ...state.result,
+          testType: normalizePlatformTestType(state.result.testType) || DEFAULT_INTENT_E2E_TEST_TYPE,
+          runnerType: normalizePlatformRunnerType(state.result.runnerType) || DEFAULT_INTENT_E2E_RUNNER_TYPE,
+          testCase: clonePlatformTestCaseAsset(state.result.testCase) || null,
+          testSpec: clonePlatformTestSpecAsset(state.result.testSpec) || null,
+          verificationContract: clonePlatformVerificationContractAsset(state.result.verificationContract) || null,
+          artifactContract: clonePlatformArtifactContractAsset(state.result.artifactContract) || null,
+          ciReport: cloneIntentE2ECiCdReport(state.result.ciReport) || null,
           resolvedUrls: state.result.resolvedUrls
             ? {
                 targetUrl: state.result.resolvedUrls.targetUrl,
@@ -233,6 +388,18 @@ function cloneRunState(state: IntentE2ERunRecord): IntentE2ERunRecord {
                 suggestedHelpers: [...state.result.knowledge.suggestedHelpers],
               }
             : state.result.knowledge ?? null,
+          assetReadiness: state.result.assetReadiness
+            ? {
+                ...state.result.assetReadiness,
+                reasons: [...state.result.assetReadiness.reasons],
+              }
+            : state.result.assetReadiness ?? null,
+          qualitySplit: state.result.qualitySplit
+            ? {
+                ...state.result.qualitySplit,
+              }
+            : state.result.qualitySplit ?? null,
+          artifactIndex: cloneIntentE2ERunArtifactIndex(state.result.artifactIndex) || null,
           knowledgeCandidates: (state.result.knowledgeCandidates || []).map((candidate) => ({
             candidateId: candidate.candidateId,
             source: candidate.source,
@@ -381,9 +548,17 @@ function normalizeLoadedRunState(snapshot: IntentE2ERunSnapshotRecord): IntentE2
     candidate?.request && typeof candidate.request === 'object' && !Array.isArray(candidate.request)
       ? candidate.request
       : null;
+  const requestRunControlCandidate =
+    requestCandidate?.runControl && typeof requestCandidate.runControl === 'object' && !Array.isArray(requestCandidate.runControl)
+      ? requestCandidate.runControl
+      : null;
   const llmCandidate =
     requestCandidate?.llm && typeof requestCandidate.llm === 'object' && !Array.isArray(requestCandidate.llm)
       ? requestCandidate.llm
+      : null;
+  const taskPlatformCandidate =
+    candidate?.taskPlatform && typeof candidate.taskPlatform === 'object' && !Array.isArray(candidate.taskPlatform)
+      ? (candidate.taskPlatform as Partial<IntentE2ERunTaskPlatformState>)
       : null;
 
   const status = isKnownRunStatus(candidate?.status) ? candidate.status : snapshot.status;
@@ -391,9 +566,123 @@ function normalizeLoadedRunState(snapshot: IntentE2ERunSnapshotRecord): IntentE2
     typeof candidate?.stage === 'string' && candidate.stage.trim()
       ? (candidate.stage.trim() as IntentE2ERunRecord['stage'])
       : ((snapshot.stage || 'created') as IntentE2ERunRecord['stage']);
+  const requestInput = typeof requestCandidate?.input === 'string' ? requestCandidate.input : snapshot.requestInput;
+  const requestTargetUrl = typeof requestCandidate?.targetUrl === 'string' ? requestCandidate.targetUrl : snapshot.targetUrl;
+  const resultCandidate =
+    candidate?.result && typeof candidate.result === 'object' && !Array.isArray(candidate.result)
+      ? (candidate.result as IntentE2ERunResult)
+      : null;
+  const resolvedPlatformAssets = resultCandidate
+    ? resolvePlatformTestAssetBundle({
+        testType: resultCandidate.testType || candidate?.testType,
+        runnerType: resultCandidate.runnerType || candidate?.runnerType,
+        testCase: resultCandidate.testCase,
+        testSpec: resultCandidate.testSpec,
+        verificationContract: resultCandidate.verificationContract,
+        artifactContract: resultCandidate.artifactContract,
+        projectUid: snapshot.projectUid,
+        moduleUid: snapshot.moduleUid || '',
+        requestInput,
+        scenarioCard: resultCandidate.scenarioCard,
+        description: resultCandidate.description,
+        targetUrl: resultCandidate.targetUrl || requestTargetUrl,
+        scenarioEntryUrl: resultCandidate.resolvedUrls?.scenarioEntryUrl,
+        executionPlan: resultCandidate.executionPlan,
+        verificationPlan: resultCandidate.verificationPlan,
+        compiledTemplate: resultCandidate.compiledTemplate,
+      })
+    : null;
+  const normalizedResult = resultCandidate
+    ? {
+        ...resultCandidate,
+        testType: resolvedPlatformAssets?.testType || normalizePlatformTestType(resultCandidate.testType) || DEFAULT_INTENT_E2E_TEST_TYPE,
+        runnerType:
+          resolvedPlatformAssets?.runnerType ||
+          normalizePlatformRunnerType(resultCandidate.runnerType) ||
+          DEFAULT_INTENT_E2E_RUNNER_TYPE,
+        testCase: resolvedPlatformAssets?.testCase || null,
+        testSpec: resolvedPlatformAssets?.testSpec || null,
+        verificationContract: resolvedPlatformAssets?.verificationContract || null,
+        artifactContract: resolvedPlatformAssets?.artifactContract || null,
+        artifactIndex: cloneIntentE2ERunArtifactIndex(resultCandidate.artifactIndex) || null,
+        ciReport: normalizeIntentE2ECiCdReport(resultCandidate.ciReport) || null,
+      }
+    : null;
+  const normalizedTestType =
+    normalizePlatformTestType(candidate?.testType) ||
+    normalizedResult?.testType ||
+    DEFAULT_INTENT_E2E_TEST_TYPE;
+  const normalizedRunnerType =
+    normalizePlatformRunnerType(candidate?.runnerType) ||
+    normalizedResult?.runnerType ||
+    DEFAULT_INTENT_E2E_RUNNER_TYPE;
+  const normalizedRuntimeGovernance = normalizeIntentE2ERuntimeGovernance(requestCandidate?.runtimeGovernance);
+  const normalizedRunControl = requestRunControlCandidate ? resolveIntentE2ERunControl(requestRunControlCandidate) : undefined;
+  const normalizedSystemOnboarding = cloneIntentE2ESystemOnboardingSummary(
+    requestCandidate?.systemOnboarding as IntentE2ESystemOnboardingManifestSummary | undefined
+  );
+  const fallbackTaskPlatform = buildTaskPlatformState({
+    input: requestInput,
+    targetUrl: requestTargetUrl,
+    projectUid: snapshot.projectUid,
+    moduleUid: snapshot.moduleUid || '',
+    runtimeGovernance: normalizedRuntimeGovernance,
+    ...(normalizedRunControl ? { runControl: normalizedRunControl } : {}),
+  });
+  const normalizedTaskPlatform: IntentE2ERunTaskPlatformState = {
+    ...fallbackTaskPlatform,
+    ...(typeof taskPlatformCandidate?.requestFingerprint === 'string' && taskPlatformCandidate.requestFingerprint.trim()
+      ? { requestFingerprint: taskPlatformCandidate.requestFingerprint.trim() }
+      : {}),
+    ...(taskPlatformCandidate?.priority ? { priority: taskPlatformCandidate.priority } : {}),
+    ...(typeof taskPlatformCandidate?.timeoutMs === 'number' && Number.isFinite(taskPlatformCandidate.timeoutMs)
+      ? { timeoutMs: Math.max(30_000, Math.floor(taskPlatformCandidate.timeoutMs)) }
+      : {}),
+    ...(typeof taskPlatformCandidate?.retryLimit === 'number' && Number.isFinite(taskPlatformCandidate.retryLimit)
+      ? { retryLimit: Math.max(0, Math.floor(taskPlatformCandidate.retryLimit)) }
+      : {}),
+    ...(typeof taskPlatformCandidate?.retryCount === 'number' && Number.isFinite(taskPlatformCandidate.retryCount)
+      ? { retryCount: Math.max(0, Math.floor(taskPlatformCandidate.retryCount)) }
+      : {}),
+    retryReasons: Array.isArray(taskPlatformCandidate?.retryReasons)
+      ? taskPlatformCandidate.retryReasons.filter((candidate): candidate is string => typeof candidate === 'string')
+      : fallbackTaskPlatform.retryReasons,
+    replayOfRunId:
+      typeof taskPlatformCandidate?.replayOfRunId === 'string'
+        ? taskPlatformCandidate.replayOfRunId.trim()
+        : fallbackTaskPlatform.replayOfRunId,
+    replayRootRunId:
+      typeof taskPlatformCandidate?.replayRootRunId === 'string' && taskPlatformCandidate.replayRootRunId.trim()
+        ? taskPlatformCandidate.replayRootRunId.trim()
+        : fallbackTaskPlatform.replayRootRunId || snapshot.runId,
+    replaySequence:
+      typeof taskPlatformCandidate?.replaySequence === 'number' && Number.isFinite(taskPlatformCandidate.replaySequence)
+        ? Math.max(0, Math.floor(taskPlatformCandidate.replaySequence))
+        : fallbackTaskPlatform.replaySequence,
+    ...(typeof taskPlatformCandidate?.queuedAt === 'string' && taskPlatformCandidate.queuedAt.trim()
+      ? { queuedAt: taskPlatformCandidate.queuedAt.trim() }
+      : {}),
+    ...(typeof taskPlatformCandidate?.dequeuedAt === 'string' && taskPlatformCandidate.dequeuedAt.trim()
+      ? { dequeuedAt: taskPlatformCandidate.dequeuedAt.trim() }
+      : {}),
+    ...(typeof taskPlatformCandidate?.queueWaitMs === 'number' && Number.isFinite(taskPlatformCandidate.queueWaitMs)
+      ? { queueWaitMs: Math.max(0, Math.floor(taskPlatformCandidate.queueWaitMs)) }
+      : {}),
+    ...(typeof taskPlatformCandidate?.queuePosition === 'number' && Number.isFinite(taskPlatformCandidate.queuePosition)
+      ? { queuePosition: Math.max(1, Math.floor(taskPlatformCandidate.queuePosition)) }
+      : {}),
+    flaky: Boolean(taskPlatformCandidate?.flaky),
+    flakyReason:
+      typeof taskPlatformCandidate?.flakyReason === 'string' ? taskPlatformCandidate.flakyReason.trim() : fallbackTaskPlatform.flakyReason,
+    flakyPeerRunIds: Array.isArray(taskPlatformCandidate?.flakyPeerRunIds)
+      ? taskPlatformCandidate.flakyPeerRunIds.filter((candidate): candidate is string => typeof candidate === 'string')
+      : fallbackTaskPlatform.flakyPeerRunIds,
+  };
 
   return {
     runId: typeof candidate?.runId === 'string' && candidate.runId.trim() ? candidate.runId : snapshot.runId,
+    testType: normalizedTestType,
+    runnerType: normalizedRunnerType,
     status,
     stage,
     createdAt: typeof candidate?.createdAt === 'string' && candidate.createdAt ? candidate.createdAt : snapshot.createdAt,
@@ -401,13 +690,17 @@ function normalizeLoadedRunState(snapshot: IntentE2ERunSnapshotRecord): IntentE2
     startedAt: typeof candidate?.startedAt === 'string' && candidate.startedAt ? candidate.startedAt : snapshot.startedAt || undefined,
     endedAt: typeof candidate?.endedAt === 'string' && candidate.endedAt ? candidate.endedAt : snapshot.endedAt || undefined,
     request: {
-      input: typeof requestCandidate?.input === 'string' ? requestCandidate.input : snapshot.requestInput,
-      targetUrl: typeof requestCandidate?.targetUrl === 'string' ? requestCandidate.targetUrl : snapshot.targetUrl,
+      input: requestInput,
+      targetUrl: requestTargetUrl,
       attachmentCount:
         typeof requestCandidate?.attachmentCount === 'number' && Number.isFinite(requestCandidate.attachmentCount)
           ? Math.max(0, Math.floor(requestCandidate.attachmentCount))
           : 0,
       hasAuth: typeof requestCandidate?.hasAuth === 'boolean' ? requestCandidate.hasAuth : false,
+      ...(normalizedSystemOnboarding ? { systemOnboarding: normalizedSystemOnboarding } : {}),
+      cicdProfile: resolveIntentE2ECiCdProfile(requestCandidate?.cicdProfile),
+      ...(normalizedRunControl ? { runControl: normalizedRunControl } : {}),
+      runtimeGovernance: normalizedRuntimeGovernance,
       llm: {
         provider: typeof llmCandidate?.provider === 'string' ? llmCandidate.provider : 'openai',
         model: typeof llmCandidate?.model === 'string' ? llmCandidate.model : '',
@@ -423,11 +716,9 @@ function normalizeLoadedRunState(snapshot: IntentE2ERunSnapshotRecord): IntentE2
             : null,
       },
     },
+    taskPlatform: normalizedTaskPlatform,
     events: Array.isArray(candidate?.events) ? (candidate.events as IntentE2EStreamEvent[]) : [],
-    result:
-      candidate?.result && typeof candidate.result === 'object' && !Array.isArray(candidate.result)
-        ? (candidate.result as IntentE2ERunResult)
-        : null,
+    result: normalizedResult,
     error:
       typeof candidate?.error === 'string'
         ? candidate.error
@@ -526,6 +817,13 @@ function pruneExpiredRuns(): void {
   for (const [runId, record] of RUNS.entries()) {
     if (!isTerminalStatus(record.state.status) || !record.state.endedAt) continue;
     if (now - new Date(record.state.endedAt).getTime() > COMPLETED_TTL_MS) {
+      if (record.executionTimeout) {
+        clearTimeout(record.executionTimeout);
+      }
+      const queueIndex = RUN_QUEUE.indexOf(runId);
+      if (queueIndex >= 0) {
+        RUN_QUEUE.splice(queueIndex, 1);
+      }
       RUNS.delete(runId);
     }
   }
@@ -539,7 +837,91 @@ function pruneExpiredRuns(): void {
   for (const [runId, record] of ordered) {
     if (RUNS.size <= MAX_RUN_COUNT) break;
     if (!isTerminalStatus(record.state.status)) continue;
+    if (record.executionTimeout) {
+      clearTimeout(record.executionTimeout);
+    }
+    const queueIndex = RUN_QUEUE.indexOf(runId);
+    if (queueIndex >= 0) {
+      RUN_QUEUE.splice(queueIndex, 1);
+    }
     RUNS.delete(runId);
+  }
+
+  syncQueuedRunPositions();
+}
+
+function syncQueuedRunPositions(): void {
+  for (const [index, runId] of RUN_QUEUE.entries()) {
+    const record = RUNS.get(runId);
+    if (!record) continue;
+    record.state.taskPlatform.queuePosition = index + 1;
+  }
+}
+
+function removeRunFromQueue(runId: string): void {
+  const index = RUN_QUEUE.indexOf(runId);
+  if (index >= 0) {
+    RUN_QUEUE.splice(index, 1);
+  }
+  const record = RUNS.get(runId);
+  if (record) {
+    delete record.state.taskPlatform.queuePosition;
+  }
+  syncQueuedRunPositions();
+}
+
+function getActiveRunRecords(): IntentE2ERunInternalRecord[] {
+  return [...RUNS.values()].filter((record) => record.state.status === 'running' && !isTerminalStatus(record.state.status));
+}
+
+function canLaunchRun(record: IntentE2ERunInternalRecord): boolean {
+  const activeRecords = getActiveRunRecords();
+  if (activeRecords.length >= resolveGlobalConcurrentLimit()) {
+    return false;
+  }
+
+  const projectUid = record.projectUid;
+  if (projectUid) {
+    const activeProjectCount = activeRecords.filter((candidate) => candidate.projectUid === projectUid).length;
+    if (activeProjectCount >= resolveProjectConcurrentLimit()) {
+      return false;
+    }
+  }
+
+  return !activeRecords.some(
+    (candidate) =>
+      candidate.state.runId !== record.state.runId &&
+      candidate.projectUid === record.projectUid &&
+      candidate.state.taskPlatform.requestFingerprint === record.state.taskPlatform.requestFingerprint
+  );
+}
+
+function resolveQueueMessage(record: IntentE2ERunInternalRecord): string {
+  const activeRecords = getActiveRunRecords();
+  if (activeRecords.length >= resolveGlobalConcurrentLimit()) {
+    return '当前全局并发配额已满，任务已进入队列等待执行…';
+  }
+
+  if (record.projectUid) {
+    const activeProjectCount = activeRecords.filter((candidate) => candidate.projectUid === record.projectUid).length;
+    if (activeProjectCount >= resolveProjectConcurrentLimit()) {
+      return '当前项目并发配额已满，任务已进入队列等待执行…';
+    }
+  }
+
+  return '检测到同签名运行仍在执行，当前任务已串行化隔离并进入队列…';
+}
+
+function markCompletionResolved(record: IntentE2ERunInternalRecord): void {
+  if (record.completionResolved) return;
+  record.completionResolved = true;
+  record.resolveCompletion();
+}
+
+function clearRunExecutionTimeout(record: IntentE2ERunInternalRecord): void {
+  if (record.executionTimeout) {
+    clearTimeout(record.executionTimeout);
+    record.executionTimeout = null;
   }
 }
 
@@ -549,8 +931,11 @@ function updateRunStateFromEvent(record: IntentE2ERunInternalRecord, event: Inte
 
   if (event.type === 'stage') {
     record.state.stage = event.stage;
-    if (!record.state.startedAt && event.stage !== 'received') {
+    if (!record.state.startedAt && event.stage !== 'received' && event.stage !== 'queued') {
       record.state.startedAt = record.state.updatedAt;
+    }
+    if (event.stage === 'queued' && !record.state.taskPlatform.queuedAt) {
+      record.state.taskPlatform.queuedAt = record.state.updatedAt;
     }
     if (event.stage === 'canceled') {
       record.state.status = 'canceled';
@@ -562,6 +947,9 @@ function updateRunStateFromEvent(record: IntentE2ERunInternalRecord, event: Inte
 
   if (event.type === 'final_result') {
     record.state.result = event.result;
+    record.state.testType = normalizePlatformTestType(event.result.testType) || record.state.testType || DEFAULT_INTENT_E2E_TEST_TYPE;
+    record.state.runnerType =
+      normalizePlatformRunnerType(event.result.runnerType) || record.state.runnerType || DEFAULT_INTENT_E2E_RUNNER_TYPE;
     record.state.stage = 'completed';
     record.state.status = event.result.finalResult.success ? 'passed' : 'failed';
     record.state.error = event.result.finalResult.error || null;
@@ -595,29 +983,317 @@ function appendRunEvent(record: IntentE2ERunInternalRecord, event: IntentE2EStre
   notifyRunListeners(record, event);
 }
 
+function queueRunForExecution(record: IntentE2ERunInternalRecord, message: string): void {
+  if (!RUN_QUEUE.includes(record.state.runId)) {
+    RUN_QUEUE.push(record.state.runId);
+  }
+  RUN_QUEUE.sort((leftRunId, rightRunId) => {
+    const left = RUNS.get(leftRunId);
+    const right = RUNS.get(rightRunId);
+    if (!left || !right) return 0;
+
+    const priorityDiff = compareIntentE2ERunPriority(left.state.taskPlatform.priority, right.state.taskPlatform.priority);
+    if (priorityDiff !== 0) return priorityDiff;
+
+    return toTimestampMs(left.state.createdAt) - toTimestampMs(right.state.createdAt);
+  });
+  syncQueuedRunPositions();
+  appendRunEvent(record, {
+    type: 'stage',
+    stage: 'queued',
+    message,
+  });
+}
+
+function resolveRetryReason(result?: IntentE2ERunResult | null, runtimeErrorMessage?: string): string {
+  if (result?.qualitySplit?.bucket === 'env_blocked') {
+    return '环境阻塞，允许整轮重试';
+  }
+
+  const message = `${result?.finalResult?.error || runtimeErrorMessage || ''}`.trim();
+  if (/\btimeout\b|timed out|service unavailable|temporarily unavailable|network error|fetch failed|econnreset|socket hang up/i.test(message)) {
+    return '检测到暂态超时/网络异常，允许整轮重试';
+  }
+
+  return '';
+}
+
+async function persistExternalRunState(runId: string, state: IntentE2ERunRecord): Promise<void> {
+  const snapshot = await getIntentE2ERunSnapshotByRunId(runId);
+  if (!snapshot) return;
+  await upsertIntentE2ERunSnapshot(buildRunSnapshot(state, snapshot.projectUid, snapshot.moduleUid || ''));
+}
+
+async function markRunReplayPeerFlaky(record: IntentE2ERunInternalRecord): Promise<void> {
+  const peerRunId = record.state.taskPlatform.replayOfRunId;
+  if (!peerRunId || !isTerminalStatus(record.state.status)) return;
+
+  const peerInMemory = RUNS.get(peerRunId);
+  const peerState = peerInMemory ? cloneRunState(peerInMemory.state) : await loadIntentE2ERun(peerRunId);
+  if (!peerState || !isTerminalStatus(peerState.status) || peerState.status === record.state.status) {
+    return;
+  }
+
+  record.state.taskPlatform.flaky = true;
+  record.state.taskPlatform.flakyReason = 'replay_outcome_changed';
+  record.state.taskPlatform.flakyPeerRunIds = [...new Set([...record.state.taskPlatform.flakyPeerRunIds, peerRunId])];
+
+  const updatedPeer = cloneRunState(peerState);
+  updatedPeer.taskPlatform.flaky = true;
+  updatedPeer.taskPlatform.flakyReason = 'replay_outcome_changed';
+  updatedPeer.taskPlatform.flakyPeerRunIds = [...new Set([...(updatedPeer.taskPlatform.flakyPeerRunIds || []), record.state.runId])];
+
+  if (peerInMemory) {
+    peerInMemory.state = updatedPeer;
+    void queueRunPersistence(peerInMemory);
+  } else {
+    await persistExternalRunState(peerRunId, updatedPeer);
+  }
+}
+
+async function reconcileRunFlakyState(record: IntentE2ERunInternalRecord): Promise<void> {
+  await markRunReplayPeerFlaky(record);
+
+  if (!record.state.taskPlatform.flaky && isTerminalStatus(record.state.status)) {
+    const sameFingerprintStatuses = [...RUNS.values()]
+      .filter(
+        (candidate) =>
+          candidate.state.runId !== record.state.runId &&
+          candidate.projectUid === record.projectUid &&
+          candidate.state.taskPlatform.requestFingerprint === record.state.taskPlatform.requestFingerprint &&
+          isTerminalStatus(candidate.state.status)
+      )
+      .map((candidate) => candidate.state.status);
+    if (sameFingerprintStatuses.length > 0 && sameFingerprintStatuses.some((status) => status !== record.state.status)) {
+      record.state.taskPlatform.flaky = true;
+      record.state.taskPlatform.flakyReason = 'outcome_oscillation';
+      record.state.taskPlatform.flakyPeerRunIds = [
+        ...new Set(
+          [
+            ...record.state.taskPlatform.flakyPeerRunIds,
+            ...[...RUNS.values()]
+              .filter(
+                (candidate) =>
+                  candidate.state.runId !== record.state.runId &&
+                  candidate.projectUid === record.projectUid &&
+                  candidate.state.taskPlatform.requestFingerprint === record.state.taskPlatform.requestFingerprint &&
+                  isTerminalStatus(candidate.state.status) &&
+                  candidate.state.status !== record.state.status
+              )
+              .map((candidate) => candidate.state.runId),
+          ].filter(Boolean)
+        ),
+      ];
+    }
+  }
+}
+
+async function launchRunExecution(record: IntentE2ERunInternalRecord): Promise<void> {
+  removeRunFromQueue(record.state.runId);
+  record.state.status = 'running';
+  record.state.startedAt = record.state.startedAt || nowIso();
+  record.state.updatedAt = record.state.startedAt;
+  record.state.taskPlatform.dequeuedAt = record.state.updatedAt;
+  record.state.taskPlatform.queueWaitMs = record.state.taskPlatform.queuedAt
+    ? Math.max(0, toTimestampMs(record.state.updatedAt) - toTimestampMs(record.state.taskPlatform.queuedAt))
+    : 0;
+  clearRunExecutionTimeout(record);
+  record.timedOut = false;
+  appendRunEvent(record, {
+    type: 'stage',
+    stage: 'received',
+    message: '请求已进入服务端运行注册表，正在启动自动测试…',
+  });
+
+  record.executionTimeout = setTimeout(() => {
+    record.timedOut = true;
+    if (!record.abortController.signal.aborted) {
+      record.abortController.abort(createAbortError(`任务平台运行超时 (${record.state.taskPlatform.timeoutMs}ms)，已停止本次自动测试`));
+    }
+  }, record.state.taskPlatform.timeoutMs);
+
+  record.executionPromise = (async () => {
+    try {
+      for (let platformAttempt = 0; platformAttempt <= record.state.taskPlatform.retryLimit; platformAttempt += 1) {
+        let terminalResult: IntentE2ERunResult | null = null;
+        let runtimeErrorMessage = '';
+        let bufferedCompletedStage: Extract<IntentE2EStreamEvent, { type: 'stage' }> | null = null;
+
+        try {
+          const result = await runIntentDrivenE2EStream(
+            record.request,
+            async (event) => {
+              if (event.type === 'stage' && event.stage === 'completed') {
+                bufferedCompletedStage = event;
+                return;
+              }
+
+              if (event.type === 'final_result') {
+                terminalResult = event.result;
+                return;
+              }
+
+              if (event.type === 'error') {
+                runtimeErrorMessage = event.message;
+                return;
+              }
+
+              appendRunEvent(record, event);
+            },
+            {
+              signal: record.abortController.signal,
+              runId: record.state.runId,
+            }
+          );
+          terminalResult = result;
+        } catch (error: unknown) {
+          if (record.abortController.signal.aborted || isAbortError(error)) {
+            if (record.timedOut) {
+              appendRunEvent(record, {
+                type: 'error',
+                message: `任务平台运行超时 (${record.state.taskPlatform.timeoutMs}ms)，已停止本次自动测试`,
+              });
+            } else if (!isTerminalStatus(record.state.status)) {
+              appendRunEvent(record, {
+                type: 'stage',
+                stage: 'canceled',
+                message: error instanceof Error ? error.message : '当前自动测试已取消',
+              });
+            }
+            return;
+          }
+
+          runtimeErrorMessage = error instanceof Error ? error.message : 'AI 意图驱动 E2E 执行失败';
+        }
+
+        const retryReason = resolveRetryReason(terminalResult, runtimeErrorMessage);
+        if (retryReason && record.state.taskPlatform.retryCount < record.state.taskPlatform.retryLimit) {
+          record.state.taskPlatform.retryCount += 1;
+          record.state.taskPlatform.retryReasons.push(retryReason);
+          appendRunEvent(record, {
+            type: 'stage',
+            stage: 'received',
+            message: `平台判定可重试：${retryReason}；正在启动第 ${record.state.taskPlatform.retryCount + 1} 次整轮运行…`,
+          });
+          continue;
+        }
+
+        if (terminalResult) {
+          if (record.request.systemOnboarding || record.request.cicdProfile) {
+            try {
+              terminalResult = {
+                ...terminalResult,
+                ciReport: await buildIntentE2ECiCdReport({
+                  runId: record.state.runId,
+                  projectUid: record.projectUid,
+                  moduleUid: record.moduleUid,
+                  requestInput: record.request.input,
+                  targetUrl: record.request.targetUrl || terminalResult.targetUrl,
+                  status: terminalResult.finalResult.success ? 'passed' : 'failed',
+                  createdAt: record.state.createdAt,
+                  updatedAt: record.state.updatedAt,
+                  startedAt: record.state.startedAt,
+                  endedAt: record.state.endedAt,
+                  result: terminalResult,
+                  systemOnboarding: record.request.systemOnboarding,
+                  cicdProfile: record.request.cicdProfile,
+                }),
+              };
+            } catch (error: unknown) {
+              console.error('[intent-e2e-run-registry] build ci report failed', record.state.runId, error);
+            }
+          }
+          if (bufferedCompletedStage) {
+            appendRunEvent(record, bufferedCompletedStage);
+          }
+          appendRunEvent(record, {
+            type: 'final_result',
+            result: terminalResult,
+          });
+        } else {
+          appendRunEvent(record, {
+            type: 'error',
+            message: runtimeErrorMessage || 'AI 意图驱动 E2E 执行失败',
+          });
+        }
+        return;
+      }
+    } finally {
+      clearRunExecutionTimeout(record);
+      record.state.updatedAt = nowIso();
+      if (!record.state.endedAt && isTerminalStatus(record.state.status)) {
+        record.state.endedAt = record.state.updatedAt;
+      }
+      await reconcileRunFlakyState(record);
+      await queueRunPersistence(record);
+      record.executionPromise = null;
+      markCompletionResolved(record);
+      pruneExpiredRuns();
+      void scheduleQueuedRuns();
+    }
+  })();
+}
+
+async function scheduleQueuedRuns(): Promise<void> {
+  syncQueuedRunPositions();
+
+  while (true) {
+    const nextRunId = RUN_QUEUE.find((candidateRunId) => {
+      const candidateRecord = RUNS.get(candidateRunId);
+      return candidateRecord ? canLaunchRun(candidateRecord) : false;
+    });
+    if (!nextRunId) break;
+
+    const record = RUNS.get(nextRunId);
+    if (!record) {
+      removeRunFromQueue(nextRunId);
+      continue;
+    }
+
+    await launchRunExecution(record);
+  }
+}
+
 export function createIntentE2ERun(request: IntentE2ERunRequest): IntentE2ERunRecord {
   pruneExpiredRuns();
 
   const createdAt = nowIso();
   const runId = `intent-run-${randomUUID()}`;
+  let resolveCompletion = () => {};
+  const completionPromise = new Promise<void>((resolve) => {
+    resolveCompletion = resolve;
+  });
+  const taskPlatform = buildTaskPlatformState(request);
+  const replaySource = taskPlatform.replayOfRunId ? RUNS.get(taskPlatform.replayOfRunId)?.state.taskPlatform : null;
+  taskPlatform.replayRootRunId = replaySource?.replayRootRunId || taskPlatform.replayOfRunId || runId;
+  taskPlatform.replaySequence = replaySource ? replaySource.replaySequence + 1 : taskPlatform.replayOfRunId ? 1 : 0;
   const record: IntentE2ERunInternalRecord = {
     state: {
       runId,
+      testType: DEFAULT_INTENT_E2E_TEST_TYPE,
+      runnerType: DEFAULT_INTENT_E2E_RUNNER_TYPE,
       status: 'created',
       stage: 'created',
       createdAt,
       updatedAt: createdAt,
       request: buildRequestSummary(request),
+      taskPlatform,
       events: [],
       result: null,
       error: null,
     },
     projectUid: request.projectUid?.trim() || '',
     moduleUid: request.moduleUid?.trim() || '',
+    request,
     abortController: new AbortController(),
     listeners: new Set(),
-    completionPromise: null,
+    completionPromise,
+    resolveCompletion,
+    executionPromise: null,
+    completionResolved: false,
     persistenceQueue: Promise.resolve(),
+    executionTimeout: null,
+    timedOut: false,
   };
 
   RUNS.set(runId, record);
@@ -627,6 +1303,7 @@ export function createIntentE2ERun(request: IntentE2ERunRequest): IntentE2ERunRe
 
 export function getIntentE2ERun(runId: string): IntentE2ERunRecord | null {
   pruneExpiredRuns();
+  syncQueuedRunPositions();
   const record = RUNS.get(runId);
   if (!record) return null;
   return cloneRunRecord(record);
@@ -676,6 +1353,19 @@ export function cancelIntentE2ERun(runId: string): { ok: boolean; status?: Inten
     return { ok: false, status: record.state.status, message: '当前运行已结束，无法再次停止' };
   }
 
+  if (record.state.stage === 'queued' || record.state.status === 'created') {
+    removeRunFromQueue(runId);
+    appendRunEvent(record, {
+      type: 'stage',
+      stage: 'canceled',
+      message: '已取消排队中的自动测试任务',
+    });
+    clearRunExecutionTimeout(record);
+    void queueRunPersistence(record);
+    markCompletionResolved(record);
+    return { ok: true, status: record.state.status };
+  }
+
   if (!record.abortController.signal.aborted) {
     record.abortController.abort(createAbortError('已停止当前自动测试'));
   }
@@ -688,7 +1378,7 @@ export function waitForIntentE2ERunCompletion(runId: string): Promise<void> {
   if (!record) {
     return Promise.reject(new Error('运行不存在'));
   }
-  return (record.completionPromise || Promise.resolve()).then(() => record.persistenceQueue);
+  return record.completionPromise.then(() => record.persistenceQueue);
 }
 
 export function waitForIntentE2ERunPersistence(runId: string): Promise<void> {
@@ -705,58 +1395,44 @@ export function startIntentE2ERun(runId: string, request: IntentE2ERunRequest): 
     throw new Error('运行不存在，无法启动');
   }
 
-  if (record.completionPromise) {
+  if (record.executionPromise || isTerminalStatus(record.state.status)) {
+    return cloneRunRecord(record);
+  }
+  if (record.state.stage === 'queued' && RUN_QUEUE.includes(runId)) {
     return cloneRunRecord(record);
   }
 
   record.projectUid = record.projectUid || request.projectUid?.trim() || '';
   record.moduleUid = record.moduleUid || request.moduleUid?.trim() || '';
-  record.state.status = 'running';
-  record.state.startedAt = nowIso();
-  record.state.updatedAt = record.state.startedAt;
-  appendRunEvent(record, {
-    type: 'stage',
-    stage: 'received',
-    message: '请求已进入服务端运行注册表，正在启动自动测试…',
-  });
+  record.request = request;
+  record.state.request = buildRequestSummary(request);
+  record.state.taskPlatform = {
+    ...record.state.taskPlatform,
+    ...buildTaskPlatformState(request),
+    replayRootRunId: record.state.taskPlatform.replayRootRunId || runId,
+    replaySequence: record.state.taskPlatform.replaySequence,
+    retryCount: record.state.taskPlatform.retryCount,
+    retryReasons: [...record.state.taskPlatform.retryReasons],
+    flaky: record.state.taskPlatform.flaky,
+    flakyReason: record.state.taskPlatform.flakyReason,
+    flakyPeerRunIds: [...record.state.taskPlatform.flakyPeerRunIds],
+  };
 
-  record.completionPromise = (async () => {
-    try {
-      await runIntentDrivenE2EStream(
-        request,
-        async (event) => {
-          appendRunEvent(record, event);
-        },
-        { signal: record.abortController.signal }
-      );
-    } catch (error: unknown) {
-      if (record.abortController.signal.aborted || isAbortError(error)) {
-        if (!isTerminalStatus(record.state.status)) {
-          appendRunEvent(record, {
-            type: 'stage',
-            stage: 'canceled',
-            message: error instanceof Error ? error.message : '当前自动测试已取消',
-          });
-        }
-      } else {
-        appendRunEvent(record, {
-          type: 'error',
-          message: error instanceof Error ? error.message : 'AI 意图驱动 E2E 执行失败',
-        });
-      }
-    } finally {
-      record.state.updatedAt = nowIso();
-      if (!record.state.endedAt && isTerminalStatus(record.state.status)) {
-        record.state.endedAt = record.state.updatedAt;
-      }
-      await queueRunPersistence(record);
-      pruneExpiredRuns();
-    }
-  })();
+  if (canLaunchRun(record)) {
+    void launchRunExecution(record);
+  } else {
+    queueRunForExecution(record, resolveQueueMessage(record));
+  }
 
   return cloneRunRecord(record);
 }
 
 export function resetIntentE2ERunRegistry(): void {
+  RUN_QUEUE.splice(0, RUN_QUEUE.length);
+  for (const record of RUNS.values()) {
+    if (record.executionTimeout) {
+      clearTimeout(record.executionTimeout);
+    }
+  }
   RUNS.clear();
 }

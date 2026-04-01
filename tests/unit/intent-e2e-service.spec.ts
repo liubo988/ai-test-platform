@@ -1,12 +1,20 @@
+import fs from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { runIntentDrivenE2EStream, type IntentE2EStreamEvent } from '@/lib/ai/intent-e2e-service';
 import { getIntentE2ERecipePerformanceMap, getIntentE2ERulePerformanceMap, getIntentE2EStarterHelpers } from '@/lib/ai/intent-e2e-insights';
+import { getIntentProjectOnboardingPath, readIntentProjectOnboardingStatus } from '@/lib/intent-project-onboarding';
+import { getIntentProjectKnowledgePath } from '@/lib/intent-project-knowledge';
 import { analyzePage, precheckPageAccess } from '@/lib/page-analyzer';
 import { executeTest } from '@/lib/test-executor';
 import { generateTest, repairTest, resolveIntentPromptPlanningContext, type GenerateEvent } from '@/lib/test-generator';
 import { getLLMRuntimeConfig } from '@/lib/llm/provider-config';
 import { buildGenerateInputFromScenarioCard, generateScenarioCard } from '@/lib/ai/scenario-card';
-import { listRelevantIntentRepairHints, recordIntentRepairFailure, recordIntentRepairResolution } from '@/lib/ai/intent-repair-memory';
+import {
+  getIntentRepairMemoryPath,
+  listRelevantIntentRepairHints,
+  recordIntentRepairFailure,
+  recordIntentRepairResolution,
+} from '@/lib/ai/intent-repair-memory';
 
 vi.mock('@/lib/page-analyzer', () => ({
   analyzePage: vi.fn(),
@@ -38,7 +46,17 @@ vi.mock('@/lib/ai/scenario-card', () => ({
   buildGenerateInputFromScenarioCard: vi.fn(),
 }));
 
+vi.mock('@/lib/intent-project-onboarding', () => ({
+  getIntentProjectOnboardingPath: vi.fn(),
+  readIntentProjectOnboardingStatus: vi.fn(),
+}));
+
+vi.mock('@/lib/intent-project-knowledge', () => ({
+  getIntentProjectKnowledgePath: vi.fn(),
+}));
+
 vi.mock('@/lib/ai/intent-repair-memory', () => ({
+  getIntentRepairMemoryPath: vi.fn(),
   listRelevantIntentRepairHints: vi.fn(),
   recordIntentRepairFailure: vi.fn(),
   recordIntentRepairResolution: vi.fn(),
@@ -99,6 +117,7 @@ const recordedFailureHint = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.restoreAllMocks();
   vi.mocked(getIntentE2ERecipePerformanceMap).mockResolvedValue({
     'auth.unified-login': {
       runCount: 8,
@@ -179,6 +198,36 @@ beforeEach(() => {
   vi.mocked(listRelevantIntentRepairHints).mockResolvedValue([]);
   vi.mocked(recordIntentRepairFailure).mockResolvedValue(recordedFailureHint as any);
   vi.mocked(recordIntentRepairResolution).mockResolvedValue();
+  vi.mocked(getIntentProjectOnboardingPath).mockImplementation((projectUid?: string) =>
+    projectUid ? `reports/intent-e2e/projects/${projectUid}/intent-e2e.project-onboarding.json` : ''
+  );
+  vi.mocked(readIntentProjectOnboardingStatus).mockImplementation((projectUid?: string) => ({
+    projectUid: projectUid || '',
+    path: projectUid ? `reports/intent-e2e/projects/${projectUid}/intent-e2e.project-onboarding.json` : '',
+    exists: Boolean(projectUid),
+    ready: Boolean(projectUid),
+    missingFields: [],
+    manifest: projectUid
+      ? {
+          version: 1,
+          baseUrl: 'https://example.com',
+          loginEntry: '/login',
+          targetUrlFamilies: ['/checkout'],
+          stableIdentifierHints: ['orderId'],
+          keyResponsePatterns: ['POST /api/order'],
+          defaultListOwnershipHints: ['我的数据'],
+          detailEntryHints: ['查看'],
+          goldFlows: ['创建订单并回查'],
+        }
+      : null,
+  }));
+  vi.mocked(getIntentProjectKnowledgePath).mockImplementation((projectUid?: string) =>
+    projectUid ? `reports/intent-e2e/projects/${projectUid}/intent-e2e.project-knowledge.json` : 'intent-e2e.project-knowledge.json'
+  );
+  vi.mocked(getIntentRepairMemoryPath).mockImplementation((projectUid?: string) =>
+    projectUid ? `reports/intent-e2e/projects/${projectUid}/intent-e2e-repair-memory.json` : 'reports/intent-e2e-repair-memory.json'
+  );
+  vi.spyOn(fs, 'existsSync').mockReturnValue(true);
   vi.mocked(repairTest).mockReturnValue(toAsyncGenerator([]));
   vi.mocked(resolveIntentPromptPlanningContext).mockReturnValue({
     dsl: {
@@ -360,6 +409,9 @@ describe('intent-e2e-service stream', () => {
     expect(result.attempts).toHaveLength(1);
     expect(result.attempts[0].sessionId).toMatch(/^intent-/);
     expect(result.attempts[0].code).toContain('page.goto');
+    expect(vi.mocked(executeTest)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toContain("test('checkout'");
+    expect(vi.mocked(executeTest).mock.calls[0]?.[1]).toMatch(/^intent-/);
     expect(result.executionPlan).toMatchObject({
       compiler: 'deterministic_dsl_v1',
       mode: 'scenario',
@@ -404,6 +456,72 @@ describe('intent-e2e-service stream', () => {
         },
       ],
     });
+    expect(result.assetReadiness).toEqual({
+      status: 'ready',
+      projectUid: '',
+      knowledgeMatchCount: 1,
+      reasons: ['global_scope'],
+    });
+    expect(result.qualitySplit).toEqual({
+      bucket: 'passed',
+      blocked: false,
+      qualityEligible: true,
+      blockerKind: '',
+    });
+    expect(result.testType).toBe('browser_e2e');
+    expect(result.runnerType).toBe('playwright_runner');
+    expect(result.testCase).toMatchObject({
+      schemaVersion: 1,
+      source: 'intent_e2e',
+      title: '结算成功页',
+      projectUid: '',
+      moduleUid: '',
+      tags: ['browser_e2e', 'task_mode:scenario'],
+      typeFields: {
+        taskMode: 'scenario',
+        entryUrl: 'https://example.com/checkout',
+        targetUrl: 'https://example.com/checkout',
+        successCriteriaCount: 1,
+      },
+    });
+    expect(result.testSpec).toMatchObject({
+      schemaVersion: 1,
+      source: 'intent_e2e',
+      summary: '打开结算页并提交',
+      targetUrl: 'https://example.com/checkout',
+      scenarioEntryUrl: 'https://example.com/checkout',
+      stepCount: 1,
+      compiledSlotCount: 2,
+      hasStructuredPlan: true,
+      typeFields: {
+        taskMode: 'scenario',
+        matchedRecipeSlugs: [],
+      },
+    });
+    expect(result.verificationContract).toMatchObject({
+      schemaVersion: 1,
+      source: 'intent_e2e',
+      expectedOutcome: '看到成功页面',
+      requiredCheckCount: 1,
+      checkKinds: ['response'],
+      stableIdentifiers: [],
+      typeFields: {
+        verificationPlanAvailable: true,
+        policyNotes: [],
+      },
+    });
+    expect(result.artifactContract).toMatchObject({
+      schemaVersion: 1,
+      source: 'intent_e2e',
+      artifactKinds: ['scenario_card', 'execution_plan', 'verification_plan', 'compiled_template', 'attempt_trace', 'final_result'],
+      supportsStreaming: true,
+      typeFields: {
+        browserSession: true,
+        compiledTemplate: true,
+        structuredPatch: true,
+        repairObservation: true,
+      },
+    });
     expect(result.attempts[0].helperUsage).toEqual({
       usedHelpers: ['__e2e.waitForApiResponse'],
       usedSuggestedHelpers: ['__e2e.waitForApiResponse'],
@@ -436,6 +554,7 @@ describe('intent-e2e-service stream', () => {
     expect(vi.mocked(resolveIntentPromptPlanningContext)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(resolveIntentPromptPlanningContext).mock.calls[0]?.[3]).toEqual({
       auth: undefined,
+      projectUid: '',
       recipePerformanceBySlug: {
         'auth.unified-login': {
           runCount: 8,
@@ -633,6 +752,9 @@ describe('intent-e2e-service stream', () => {
       url: 'https://example.com/#/business/businesslist',
       title: 'Business List',
     });
+    expect(result.verificationContract?.typeFields.policyNotes).toEqual([
+      '前置检查策略：创建型流程允许列表页空态绕过 data_missing 阻断，继续确认是否存在可用新建入口。',
+    ]);
     expect(vi.mocked(generateTest).mock.calls[0]?.[3]).toMatchObject({
       scenarioEntryUrl: 'https://example.com/#/business/businesslist',
     });
@@ -644,6 +766,127 @@ describe('intent-e2e-service stream', () => {
       analyzeUrl: 'https://example.com/#/business/businesslist',
       description: '从商机列表进入创建页并完成保存。',
     });
+  });
+
+  it('bypasses data_missing precheck for create flows that create directly on the list page', async () => {
+    vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 0 } as any);
+    vi.mocked(generateScenarioCard).mockResolvedValueOnce({
+      card: {
+        version: 1,
+        title: '在商机列表页直接新建并保存',
+        taskMode: 'scenario',
+        targetUrl: 'https://example.com/#/business/businesslist',
+        featureDescription: '在商机列表页点击新建，填写表单并保存。',
+        flowDefinition: {
+          version: 1,
+          entryUrl: 'https://example.com/#/business/businesslist',
+          sharedVariables: ['businessId'],
+          expectedOutcome: '新建商机保存成功',
+          cleanupNotes: '',
+          steps: [
+            {
+              stepUid: 'step_1',
+              stepType: 'ui',
+              title: '打开商机列表',
+              target: 'https://example.com/#/business/businesslist',
+              instruction: '打开商机列表页并点击新建。',
+              expectedResult: '出现创建商机表单或弹窗。',
+              extractVariable: '',
+            },
+            {
+              stepUid: 'step_2',
+              stepType: 'ui',
+              title: '填写并保存新建商机',
+              target: '创建商机表单',
+              instruction: '填写必填项并点击保存。',
+              expectedResult: '保存成功。',
+              extractVariable: 'businessId',
+            },
+          ],
+        },
+        successCriteria: ['创建成功', '保存成功'],
+        visualAnchors: ['商机列表', '新建商机'],
+        notes: ['创建入口位于列表页本身'],
+      },
+      llmMeta: {
+        provider: 'openai',
+        model: 'chat-gpt5.4',
+        visionEnabled: true,
+        attachmentCount: 1,
+      },
+    });
+    vi.mocked(buildGenerateInputFromScenarioCard).mockReturnValue({
+      targetUrl: 'https://example.com/#/business/businesslist',
+      description: '在商机列表页直接新建并保存。',
+      context: {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://example.com/#/business/businesslist',
+        scenarioSummary: '商机列表 -> 新建商机 -> 保存',
+        expectedOutcome: '创建成功',
+        successCriteria: ['创建成功'],
+        sharedVariables: ['businessId'],
+        cleanupNotes: '',
+      },
+    });
+    vi.mocked(precheckPageAccess).mockResolvedValue({
+      url: 'https://example.com/#/business/businesslist',
+      finalUrl: 'https://example.com/#/business/businesslist',
+      title: 'Business List',
+      storageState: { cookies: [], origins: [] },
+    } as any);
+    vi.mocked(analyzePage).mockResolvedValue({
+      url: 'https://example.com/#/business/businesslist',
+      title: 'Business List',
+      bodyTextExcerpt: '暂无数据，但可点击新建',
+      buttons: [],
+      links: [],
+      forms: [],
+      images: [],
+      frames: [],
+    } as any);
+    vi.mocked(generateTest).mockReturnValue(
+      toAsyncGenerator([
+        {
+          type: 'complete',
+          content:
+            "test('business-create-inline', async ({ page }) => { await page.goto('https://example.com/#/business/businesslist'); });",
+        },
+      ])
+    );
+    vi.mocked(executeTest).mockResolvedValue({
+      success: true,
+      duration: 360,
+      steps: [
+        {
+          title: '打开商机列表并点击新建',
+          status: 'passed',
+          duration: 180,
+          at: '2026-03-31T05:00:00.000Z',
+        },
+      ],
+      error: null,
+    } as never);
+
+    const result = await runIntentDrivenE2EStream({
+      input: '在商机列表页直接新建并保存',
+    });
+
+    expect(result.finalResult.success).toBe(true);
+    expect(result.resolvedUrls).toEqual({
+      targetUrl: 'https://example.com/#/business/businesslist',
+      scenarioEntryUrl: 'https://example.com/#/business/businesslist',
+      precheckUrl: 'https://example.com/#/business/businesslist',
+      analyzeUrl: 'https://example.com/#/business/businesslist',
+    });
+    expect(vi.mocked(precheckPageAccess)).toHaveBeenCalledWith('https://example.com/#/business/businesslist', undefined, {
+      ignoreFailureClasses: ['data_missing'],
+    });
+    expect(vi.mocked(analyzePage)).toHaveBeenCalledWith('https://example.com/#/business/businesslist', undefined, {
+      storageState: { cookies: [], origins: [] },
+    });
+    expect(result.verificationContract?.typeFields.policyNotes).toEqual([
+      '前置检查策略：创建型流程允许列表页空态绕过 data_missing 阻断，继续确认是否存在可用新建入口。',
+    ]);
   });
 
   it('builds structured success knowledge candidates from successful verification checks', async () => {
@@ -1202,6 +1445,7 @@ describe('intent-e2e-service stream', () => {
     const result = await runIntentDrivenE2EStream(
       {
         input: '访问结算页并提交，最终看到成功页',
+        projectUid: 'proj_1',
       },
       (event) => {
         events.push(event);
@@ -1214,6 +1458,63 @@ describe('intent-e2e-service stream', () => {
     expect(result.finalFailureTriage).toMatchObject({
       failureClass: 'permission_blocked',
       repairable: false,
+    });
+    expect(result.assetReadiness).toEqual({
+      status: 'ready',
+      projectUid: 'proj_1',
+      onboardingPath: 'reports/intent-e2e/projects/proj_1/intent-e2e.project-onboarding.json',
+      knowledgePath: 'reports/intent-e2e/projects/proj_1/intent-e2e.project-knowledge.json',
+      repairMemoryPath: 'reports/intent-e2e/projects/proj_1/intent-e2e-repair-memory.json',
+      hasOnboarding: true,
+      onboardingReady: true,
+      hasKnowledgeAsset: true,
+      hasRepairMemoryAsset: true,
+      knowledgeMatchCount: 0,
+      reasons: [],
+    });
+    expect(result.qualitySplit).toEqual({
+      bucket: 'permission_blocked',
+      blocked: true,
+      qualityEligible: false,
+      blockerKind: 'permission',
+    });
+    expect(result.testType).toBe('browser_e2e');
+    expect(result.runnerType).toBe('playwright_runner');
+    expect(result.testCase).toMatchObject({
+      projectUid: 'proj_1',
+      moduleUid: '',
+      typeFields: {
+        taskMode: 'scenario',
+        entryUrl: 'https://example.com/checkout',
+        targetUrl: 'https://example.com/checkout',
+        successCriteriaCount: 1,
+      },
+    });
+    expect(result.testSpec).toMatchObject({
+      targetUrl: 'https://example.com/checkout',
+      scenarioEntryUrl: 'https://example.com/checkout',
+      stepCount: 0,
+      compiledSlotCount: 0,
+      hasStructuredPlan: false,
+    });
+    expect(result.verificationContract).toMatchObject({
+      expectedOutcome: '看到成功页面',
+      requiredCheckCount: 0,
+      checkKinds: [],
+      stableIdentifiers: [],
+      typeFields: {
+        verificationPlanAvailable: false,
+      },
+    });
+    expect(result.artifactContract).toMatchObject({
+      artifactKinds: ['scenario_card', 'attempt_trace', 'final_result'],
+      supportsStreaming: true,
+      typeFields: {
+        browserSession: true,
+        compiledTemplate: false,
+        structuredPatch: true,
+        repairObservation: true,
+      },
     });
     expect(vi.mocked(analyzePage)).not.toHaveBeenCalled();
     expect(vi.mocked(generateTest)).not.toHaveBeenCalled();
@@ -1232,6 +1533,174 @@ describe('intent-e2e-service stream', () => {
           success: false,
         }),
       }),
+    });
+  });
+
+  it('returns asset_missing readiness when project onboarding or knowledge assets are absent', async () => {
+    vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 0 } as any);
+    vi.mocked(readIntentProjectOnboardingStatus).mockImplementation((projectUid?: string) =>
+      projectUid === 'proj_cold'
+        ? {
+            projectUid: 'proj_cold',
+            path: 'reports/intent-e2e/projects/proj_cold/intent-e2e.project-onboarding.json',
+            exists: false,
+            ready: false,
+            missingFields: ['manifest'],
+            manifest: null,
+          }
+        : {
+            projectUid: projectUid || '',
+            path: projectUid ? `reports/intent-e2e/projects/${projectUid}/intent-e2e.project-onboarding.json` : '',
+            exists: Boolean(projectUid),
+            ready: Boolean(projectUid),
+            missingFields: [],
+            manifest: projectUid
+              ? {
+                  version: 1,
+                  baseUrl: 'https://example.com',
+                  loginEntry: '/login',
+                  targetUrlFamilies: ['/checkout'],
+                  stableIdentifierHints: ['orderId'],
+                  keyResponsePatterns: ['POST /api/order'],
+                  defaultListOwnershipHints: ['我的数据'],
+                  detailEntryHints: ['查看'],
+                  goldFlows: ['创建订单并回查'],
+                }
+              : null,
+          }
+    );
+    vi.spyOn(fs, 'existsSync').mockImplementation((filePath: fs.PathLike) => {
+      const normalized = String(filePath);
+      if (normalized.includes('proj_cold/intent-e2e.project-knowledge.json')) return false;
+      if (normalized.includes('proj_cold/intent-e2e-repair-memory.json')) return false;
+      return true;
+    });
+    vi.mocked(generateTest).mockReturnValue(
+      toAsyncGenerator([{ type: 'complete', content: "test('checkout', async ({ page }) => { await page.goto('https://example.com/checkout'); });" }])
+    );
+    vi.mocked(executeTest).mockResolvedValue({
+      success: true,
+      duration: 120,
+      steps: [{ title: '打开结算页', status: 'passed', duration: 120, at: '2026-03-16T09:00:00.000Z' }],
+      error: null,
+    } as any);
+
+    const result = await runIntentDrivenE2EStream({
+      input: '访问结算页并提交，最终看到成功页',
+      projectUid: 'proj_cold',
+    });
+
+    expect(result.finalResult.success).toBe(true);
+    expect(result.assetReadiness).toEqual({
+      status: 'asset_missing',
+      projectUid: 'proj_cold',
+      onboardingPath: 'reports/intent-e2e/projects/proj_cold/intent-e2e.project-onboarding.json',
+      knowledgePath: 'reports/intent-e2e/projects/proj_cold/intent-e2e.project-knowledge.json',
+      repairMemoryPath: 'reports/intent-e2e/projects/proj_cold/intent-e2e-repair-memory.json',
+      hasOnboarding: false,
+      onboardingReady: false,
+      hasKnowledgeAsset: false,
+      hasRepairMemoryAsset: false,
+      knowledgeMatchCount: 1,
+      reasons: ['onboarding_manifest_missing', 'project_knowledge_missing', 'repair_memory_missing'],
+    });
+  });
+
+  it('returns no_hit readiness when project assets are ready but this run matches no knowledge rules', async () => {
+    vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 0 } as any);
+    vi.mocked(resolveIntentPromptPlanningContext).mockReturnValueOnce({
+      dsl: {
+        version: 1,
+        taskMode: 'scenario',
+        targetUrl: 'https://example.com/checkout',
+        summary: '打开结算页并提交',
+        globalRules: [],
+        preferredPrimitives: [],
+        outputContract: [],
+        steps: [],
+      },
+      executionPlan: {
+        version: 1,
+        compiler: 'deterministic_dsl_v1',
+        mode: 'scenario',
+        entryUrl: 'https://example.com/checkout',
+        summary: '打开结算页并提交',
+        expectedOutcome: '看到成功页面',
+        sharedVariables: ['orderId'],
+        globalRules: [],
+        preferredPrimitives: [],
+        outputContract: [],
+        steps: [
+          {
+            planStepUid: 'plan_step_1',
+            scenarioStepUid: 'step_checkout',
+            stepType: 'ui',
+            title: '打开结算页',
+            target: 'https://example.com/checkout',
+            goal: '进入结算页并等待页面就绪',
+            allowedActions: ['navigate', 'wait_for_response'],
+            preferredHelpers: ['__e2e.waitForApiResponse'],
+            requiredAssertions: ['成功页出现“提交成功”'],
+            extractVariable: 'orderId',
+            sharedVariables: ['orderId'],
+            dependsOnPlanStepUids: [],
+          },
+        ],
+      },
+      verificationPlan: {
+        version: 1,
+        strategy: 'deterministic_verification_v1',
+        expectedOutcome: '看到成功页面',
+        cleanupNotes: '',
+        checks: [
+          {
+            checkUid: 'verify_success_1',
+            kind: 'response',
+            source: 'success_criteria',
+            title: '成功标准 1',
+            instruction: '成功页出现“提交成功”',
+            preferredHelpers: ['__e2e.waitForApiResponse'],
+            relatedPlanStepUids: ['plan_step_1'],
+            required: true,
+          },
+        ],
+      },
+      starterHelpers: [],
+      knowledge: {
+        version: 1,
+        profilePath: 'reports/intent-e2e/projects/proj_nohit/intent-e2e.project-knowledge.json',
+        matches: [],
+        capabilitySlugs: [],
+      },
+    } as any);
+    vi.mocked(generateTest).mockReturnValue(
+      toAsyncGenerator([{ type: 'complete', content: "test('checkout', async ({ page }) => { await page.goto('https://example.com/checkout'); });" }])
+    );
+    vi.mocked(executeTest).mockResolvedValue({
+      success: true,
+      duration: 120,
+      steps: [{ title: '打开结算页', status: 'passed', duration: 120, at: '2026-03-16T09:00:00.000Z' }],
+      error: null,
+    } as any);
+
+    const result = await runIntentDrivenE2EStream({
+      input: '访问结算页并提交，最终看到成功页',
+      projectUid: 'proj_nohit',
+    });
+
+    expect(result.finalResult.success).toBe(true);
+    expect(result.assetReadiness).toEqual({
+      status: 'no_hit',
+      projectUid: 'proj_nohit',
+      onboardingPath: 'reports/intent-e2e/projects/proj_nohit/intent-e2e.project-onboarding.json',
+      knowledgePath: 'reports/intent-e2e/projects/proj_nohit/intent-e2e.project-knowledge.json',
+      repairMemoryPath: 'reports/intent-e2e/projects/proj_nohit/intent-e2e-repair-memory.json',
+      hasOnboarding: true,
+      onboardingReady: true,
+      hasKnowledgeAsset: true,
+      hasRepairMemoryAsset: true,
+      knowledgeMatchCount: 0,
+      reasons: ['knowledge_no_hit'],
     });
   });
 
@@ -1421,6 +1890,7 @@ describe('intent-e2e-service stream', () => {
     const result = await runIntentDrivenE2EStream(
       {
         input: '访问结算页并提交，最终看到成功页',
+        projectUid: 'proj_1',
       },
       (event) => {
         events.push(event);
@@ -1456,6 +1926,12 @@ describe('intent-e2e-service stream', () => {
       repairable: true,
     });
     expect(result.finalFailureTriage).toBeNull();
+    expect(result.qualitySplit).toEqual({
+      bucket: 'passed',
+      blocked: false,
+      qualityEligible: true,
+      blockerKind: '',
+    });
     expect(vi.mocked(repairTest)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(analyzePage)).toHaveBeenCalledTimes(2);
     expect(vi.mocked(analyzePage).mock.calls[1]).toEqual([
@@ -1498,13 +1974,16 @@ describe('intent-e2e-service stream', () => {
       executionError: 'locator not found',
       observationTags: expect.arrayContaining(['obs-page-surface']),
     });
+    expect(vi.mocked(listRelevantIntentRepairHints).mock.calls[0]?.[2]).toEqual({ projectUid: 'proj_1' });
     expect(vi.mocked(recordIntentRepairFailure)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(recordIntentRepairFailure).mock.calls[0]?.[1]).toEqual({ projectUid: 'proj_1' });
     expect(vi.mocked(recordIntentRepairResolution)).toHaveBeenCalledWith(
       expect.objectContaining({
         clusterIds: ['irm-recorded'],
         targetUrl: 'https://example.com/checkout',
         description: '打开结算页并提交，最终验证成功页可见。',
-      })
+      }),
+      { projectUid: 'proj_1' }
     );
 
     expect(events.some((event) => event.type === 'stage' && event.stage === 'repairing')).toBe(true);
@@ -1512,6 +1991,42 @@ describe('intent-e2e-service stream', () => {
     expect(events.filter((event) => event.type === 'attempt_result')).toHaveLength(2);
     expect(events.some((event) => event.type === 'attempt_log' && event.log.message.includes('历史相似修复记忆'))).toBe(true);
     expect(events.some((event) => event.type === 'attempt_log' && event.log.message === 'repair run ok')).toBe(true);
+  });
+
+  it('blocks mutating runs when runtime governance omits the fixture contract', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        auth: {
+          loginUrl: 'https://login.example.com',
+          username: 'owner@example.com',
+          password: 'secret',
+          loginDescription: '统一密码登录',
+        },
+        runtimeGovernance: {
+          environmentProfile: 'test',
+          credential: {
+            source: 'request',
+            secretRef: 'vault://checkout/owner',
+            sessionMode: 'isolated',
+          },
+        },
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(false);
+    expect(result.attempts).toHaveLength(0);
+    expect(result.finalResult.error).toContain('fixture contract');
+    expect(vi.mocked(precheckPageAccess)).not.toHaveBeenCalled();
+    expect(vi.mocked(analyzePage)).not.toHaveBeenCalled();
+    expect(events.some((event) => event.type === 'stage' && event.stage === 'prechecking' && event.message.includes('治理'))).toBe(
+      true
+    );
   });
 
   it('stops self-heal early for non-repairable environment failures', async () => {
@@ -1565,6 +2080,12 @@ describe('intent-e2e-service stream', () => {
       failureClass: 'env_transient',
       repairable: false,
     });
+    expect(result.qualitySplit).toEqual({
+      bucket: 'env_blocked',
+      blocked: true,
+      qualityEligible: false,
+      blockerKind: 'environment',
+    });
     expect(vi.mocked(repairTest)).not.toHaveBeenCalled();
     expect(vi.mocked(listRelevantIntentRepairHints)).not.toHaveBeenCalled();
     expect(vi.mocked(recordIntentRepairFailure)).not.toHaveBeenCalled();
@@ -1615,6 +2136,12 @@ describe('intent-e2e-service stream', () => {
     expect(result.finalFailureTriage).toMatchObject({
       failureClass: 'repair_stagnated',
       repairable: false,
+    });
+    expect(result.qualitySplit).toEqual({
+      bucket: 'model_quality',
+      blocked: false,
+      qualityEligible: true,
+      blockerKind: '',
     });
     expect(result.finalResult.error).toContain('修复停滞');
     expect(vi.mocked(repairTest)).toHaveBeenCalledTimes(2);

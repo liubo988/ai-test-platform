@@ -27,5 +27,3 @@ audit-package-*
 .next-demo/*
 tmp/*.png
 tmp/generate-order-after-confirm.png
-tests/*
-tests/unit/*

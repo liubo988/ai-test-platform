@@ -11,10 +11,12 @@ import {
   type IntentE2EInsightRollbackCandidate,
 } from './ai/intent-e2e-insights';
 import {
+  getIntentProjectKnowledgeBackupDir,
   getIntentProjectKnowledgePath,
   getIntentProjectKnowledgeProfile,
   listIntentProjectKnowledgeAuditEntries,
   mergeIntentProjectKnowledgeRules,
+  resolveProjectScopedIntentAssetStorage,
   type IntentProjectKnowledgeMergedCandidateMeta,
   type IntentProjectKnowledgeProfileComparison,
   type IntentProjectKnowledgeMergeSummary,
@@ -234,12 +236,17 @@ function normalizeScopeValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function resolveDraftPath(): string {
-  return process.env.INTENT_E2E_PROJECT_KNOWLEDGE_DRAFT_PATH?.trim() || DEFAULT_DRAFT_PATH;
+function resolveDraftPath(projectUid = ''): string {
+  return resolveProjectScopedIntentAssetStorage({
+    projectUid,
+    legacyPath: process.env.INTENT_E2E_PROJECT_KNOWLEDGE_DRAFT_PATH?.trim() || DEFAULT_DRAFT_PATH,
+    projectFileName: 'intent-e2e.project-knowledge.draft.json',
+    legacyFallback: false,
+  }).writePath;
 }
 
-export function getIntentProjectKnowledgeDraftPath(): string {
-  const filePath = resolveDraftPath();
+export function getIntentProjectKnowledgeDraftPath(projectUid = ''): string {
+  const filePath = resolveDraftPath(projectUid);
   const relative = path.relative(process.cwd(), filePath);
   return !relative || relative.startsWith('..') ? filePath : relative;
 }
@@ -1393,14 +1400,17 @@ export async function generateIntentProjectKnowledgeDraft(
     moduleUid: normalizeScopeValue(options.moduleUid),
   };
 
-  const clusters = await listIntentRepairMemoryClusters();
+  const clusters = await listIntentRepairMemoryClusters(thresholds.projectUid);
   const passedRunSnapshots = await listIntentE2ERunSnapshots(buildSuccessfulRunSnapshotQuery(thresholds)).catch(
     () => [] as IntentE2ERunSnapshotRecord[]
   );
-  const existingProfile = getIntentProjectKnowledgeProfile();
-  const sourceMemoryPath = getIntentRepairMemoryPath();
-  const targetKnowledgePath = getIntentProjectKnowledgePath();
-  const outputPath = getIntentProjectKnowledgeDraftPath();
+  const existingProfile = getIntentProjectKnowledgeProfile(thresholds.projectUid);
+  const sourceMemoryPath = getIntentRepairMemoryPath(thresholds.projectUid);
+  const targetKnowledgePath = getIntentProjectKnowledgePath(thresholds.projectUid, {
+    mode: 'write',
+    legacyFallback: false,
+  });
+  const outputPath = getIntentProjectKnowledgeDraftPath(thresholds.projectUid);
   const { eligible, groups } = buildClustersGroups(clusters, thresholds);
   const scopedPassedRunSnapshots = selectSuccessfulRunSnapshotsForDraft(passedRunSnapshots, thresholds);
   const successfulRunGroups = buildSuccessfulRunCandidateGroups(scopedPassedRunSnapshots);
@@ -1544,7 +1554,7 @@ export async function generateIntentProjectKnowledgeDraft(
 
 export async function writeIntentProjectKnowledgeDraft(
   draft: IntentProjectKnowledgeDraft,
-  outputPath = resolveDraftPath()
+  outputPath = draft.outputPath || resolveDraftPath(draft.thresholds.projectUid)
 ): Promise<string> {
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
   await fs.writeFile(outputPath, JSON.stringify(draft, null, 2), 'utf8');
@@ -1579,7 +1589,16 @@ export async function mergeIntentProjectKnowledgeDraftCandidates(
   candidateIds: string[] = []
 ): Promise<MergeIntentProjectKnowledgeDraftCandidatesResult> {
   const { missingCandidateIds, coveredCandidates, mergeCandidates } = resolveIntentProjectKnowledgeDraftCandidateSelection(draft, candidateIds);
-  const mergeResult = await mergeIntentProjectKnowledgeRules(mergeCandidates.map((candidate) => candidate.rule));
+  const mergeResult = await mergeIntentProjectKnowledgeRules(
+    mergeCandidates.map((candidate) => candidate.rule),
+    draft.targetKnowledgePath ||
+      getIntentProjectKnowledgePath(draft.thresholds.projectUid, {
+        mode: 'write',
+        legacyFallback: false,
+      }),
+    getIntentProjectKnowledgeBackupDir(draft.thresholds.projectUid),
+    getIntentProjectKnowledgeProfile(draft.thresholds.projectUid)
+  );
   const addedRuleIdSet = new Set(mergeResult.addedRuleIds);
 
   return {

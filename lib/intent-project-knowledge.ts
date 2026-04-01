@@ -15,6 +15,10 @@ import {
   type IntentProjectKnowledgeMergeSelectionSummary as SharedIntentProjectKnowledgeAuditSelectionSummary,
 } from './intent-project-knowledge-merge-provenance';
 import {
+  normalizeIntentE2ERolloutPolicyDecision,
+  type IntentE2ERolloutPolicyDecision,
+} from './intent-e2e-rollout-policy';
+import {
   normalizeIntentSuccessfulRunKnowledgePromotionReceipt,
   summarizeIntentSuccessfulRunKnowledgePromotionReceiptObservation,
   type IntentSuccessfulRunKnowledgePromotionReceipt,
@@ -289,6 +293,7 @@ export interface IntentProjectKnowledgeAuditMeta {
   selectionSummary?: IntentProjectKnowledgeAuditSelectionSummary;
   preflightSummary?: IntentProjectKnowledgeAuditPreflightSummary;
   mergeReceipts?: IntentProjectKnowledgeAuditNotice[];
+  rolloutPolicyDecision?: IntentE2ERolloutPolicyDecision;
   successfulRunKnowledgePromotionReceipt?: IntentSuccessfulRunKnowledgePromotionReceipt;
   restoredFrom?: string;
   projectActivityLogged?: boolean;
@@ -334,14 +339,38 @@ export interface ResolveIntentProjectKnowledgeInput {
 
 export interface ResolveIntentProjectKnowledgeOptions {
   rulePerformanceById?: Record<string, IntentProjectKnowledgeRulePerformance>;
+  projectUid?: string | null;
 }
 
 const DEFAULT_PROJECT_KNOWLEDGE_PATH = path.join(process.cwd(), 'intent-e2e.project-knowledge.json');
 const DEFAULT_PROJECT_KNOWLEDGE_BACKUP_DIR = path.join(process.cwd(), 'reports', 'intent-e2e.project-knowledge.backups');
 const DEFAULT_PROJECT_KNOWLEDGE_AUDIT_PATH = path.join(process.cwd(), 'reports', 'intent-e2e.project-knowledge.audit.jsonl');
+const DEFAULT_PROJECT_ASSET_ROOT = path.join(process.cwd(), 'reports', 'intent-e2e', 'projects');
 
 let cachePath = '';
 let cacheProfile: IntentProjectKnowledgeProfile | null = null;
+
+type IntentProjectKnowledgePathMode = 'read' | 'write';
+
+interface IntentProjectKnowledgePathOptions {
+  mode?: IntentProjectKnowledgePathMode;
+  projectUid?: string | null;
+  legacyFallback?: boolean;
+}
+
+export interface ResolveProjectScopedIntentAssetStorageOptions {
+  projectUid?: string | null;
+  legacyPath: string;
+  projectFileName: string;
+  legacyFallback?: boolean;
+}
+
+export interface ProjectScopedIntentAssetStorage {
+  projectUid: string;
+  readPath: string;
+  writePath: string;
+  usingLegacyFallback: boolean;
+}
 
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
   const seen = new Set<string>();
@@ -361,6 +390,73 @@ function normalizeStringArray(raw: unknown): string[] {
   return Array.isArray(raw)
     ? uniqueStrings(raw.map((item) => (typeof item === 'string' ? item : '')))
     : [];
+}
+
+export function normalizeIntentProjectUid(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+export function sanitizeIntentProjectAssetSegment(value: string): string {
+  const normalized = normalizeIntentProjectUid(value).replace(/[^a-zA-Z0-9._-]+/g, '-');
+  return normalized.replace(/-+/g, '-').replace(/^-|-$/g, '') || 'default';
+}
+
+export function resolveIntentProjectAssetRoot(): string {
+  return process.env.INTENT_E2E_PROJECT_ASSET_ROOT?.trim() || DEFAULT_PROJECT_ASSET_ROOT;
+}
+
+export function resolveProjectScopedIntentAssetPath(projectUid: string, fileName: string): string {
+  return path.join(resolveIntentProjectAssetRoot(), sanitizeIntentProjectAssetSegment(projectUid), fileName);
+}
+
+export function resolveProjectScopedIntentAssetStorage(
+  options: ResolveProjectScopedIntentAssetStorageOptions
+): ProjectScopedIntentAssetStorage {
+  const projectUid = normalizeIntentProjectUid(options.projectUid);
+
+  if (!projectUid) {
+    return {
+      projectUid: '',
+      readPath: options.legacyPath,
+      writePath: options.legacyPath,
+      usingLegacyFallback: false,
+    };
+  }
+
+  const projectPath = resolveProjectScopedIntentAssetPath(projectUid, options.projectFileName);
+  const allowLegacyFallback = options.legacyFallback !== false;
+  const usingLegacyFallback = allowLegacyFallback && !fs.existsSync(projectPath);
+
+  return {
+    projectUid,
+    readPath: usingLegacyFallback ? options.legacyPath : projectPath,
+    writePath: projectPath,
+    usingLegacyFallback,
+  };
+}
+
+function resolveProjectScopedKnowledgePath(projectUid: string): string {
+  return resolveProjectScopedIntentAssetPath(projectUid, 'intent-e2e.project-knowledge.json');
+}
+
+function resolveProjectScopedKnowledgeBackupDir(projectUid: string): string {
+  return resolveProjectScopedIntentAssetPath(projectUid, 'intent-e2e.project-knowledge.backups');
+}
+
+function resolveProjectKnowledgeStorage(options: IntentProjectKnowledgePathOptions = {}) {
+  const legacyPath = process.env.INTENT_E2E_PROJECT_KNOWLEDGE_PATH?.trim() || DEFAULT_PROJECT_KNOWLEDGE_PATH;
+  const legacyBackupDir = process.env.INTENT_E2E_PROJECT_KNOWLEDGE_BACKUP_DIR?.trim() || DEFAULT_PROJECT_KNOWLEDGE_BACKUP_DIR;
+  const storage = resolveProjectScopedIntentAssetStorage({
+    projectUid: options.projectUid,
+    legacyPath,
+    projectFileName: 'intent-e2e.project-knowledge.json',
+    legacyFallback: options.legacyFallback,
+  });
+
+  return {
+    ...storage,
+    backupDir: storage.projectUid ? resolveProjectScopedKnowledgeBackupDir(storage.projectUid) : legacyBackupDir,
+  };
 }
 
 function normalizeStepTypes(raw: unknown): IntentActionStepType[] {
@@ -668,6 +764,7 @@ function normalizeIntentProjectKnowledgeAuditMeta(raw: unknown): IntentProjectKn
     selectionSummary: normalizeIntentProjectKnowledgeAuditSelectionSummary(source.selectionSummary),
     preflightSummary: normalizeIntentProjectKnowledgeAuditPreflightSummary(source.preflightSummary),
     mergeReceipts: normalizeIntentProjectKnowledgeAuditNoticeArray(source.mergeReceipts),
+    rolloutPolicyDecision: normalizeIntentE2ERolloutPolicyDecision(source.rolloutPolicyDecision),
     successfulRunKnowledgePromotionReceipt:
       normalizeIntentSuccessfulRunKnowledgePromotionReceipt(source.successfulRunKnowledgePromotionReceipt) || undefined,
     restoredFrom: typeof source.restoredFrom === 'string' ? source.restoredFrom.trim() : undefined,
@@ -702,24 +799,28 @@ function normalizeIntentProjectKnowledgeAuditEntry(raw: unknown): IntentProjectK
   };
 }
 
-function resolveProjectKnowledgePath(): string {
-  return process.env.INTENT_E2E_PROJECT_KNOWLEDGE_PATH?.trim() || DEFAULT_PROJECT_KNOWLEDGE_PATH;
+function resolveProjectKnowledgePath(options: IntentProjectKnowledgePathOptions = {}): string {
+  const storage = resolveProjectKnowledgeStorage(options);
+  return options.mode === 'write' ? storage.writePath : storage.readPath;
 }
 
-function resolveProjectKnowledgeBackupDir(): string {
-  return process.env.INTENT_E2E_PROJECT_KNOWLEDGE_BACKUP_DIR?.trim() || DEFAULT_PROJECT_KNOWLEDGE_BACKUP_DIR;
+function resolveProjectKnowledgeBackupDir(projectUid = ''): string {
+  return resolveProjectKnowledgeStorage({ mode: 'write', projectUid, legacyFallback: false }).backupDir;
 }
 
 function resolveProjectKnowledgeAuditPath(): string {
   return process.env.INTENT_E2E_PROJECT_KNOWLEDGE_AUDIT_PATH?.trim() || DEFAULT_PROJECT_KNOWLEDGE_AUDIT_PATH;
 }
 
-export function getIntentProjectKnowledgePath(): string {
-  return toDisplayPath(resolveProjectKnowledgePath());
+export function getIntentProjectKnowledgePath(
+  projectUid = '',
+  options: Omit<IntentProjectKnowledgePathOptions, 'projectUid'> = {}
+): string {
+  return toDisplayPath(resolveProjectKnowledgePath({ ...options, projectUid }));
 }
 
-export function getIntentProjectKnowledgeBackupDir(): string {
-  return toDisplayPath(resolveProjectKnowledgeBackupDir());
+export function getIntentProjectKnowledgeBackupDir(projectUid = ''): string {
+  return toDisplayPath(resolveProjectKnowledgeBackupDir(projectUid));
 }
 
 export function getIntentProjectKnowledgeAuditPath(): string {
@@ -746,8 +847,7 @@ function normalizeCount(value: unknown): number {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
 }
 
-function loadIntentProjectKnowledgeProfile(): IntentProjectKnowledgeProfile {
-  const knowledgePath = resolveProjectKnowledgePath();
+function loadIntentProjectKnowledgeProfile(knowledgePath = resolveProjectKnowledgePath()): IntentProjectKnowledgeProfile {
   if (cacheProfile && cachePath === knowledgePath) {
     return cacheProfile;
   }
@@ -1080,7 +1180,11 @@ export function resolveIntentProjectKnowledge(
   input: ResolveIntentProjectKnowledgeInput,
   options: ResolveIntentProjectKnowledgeOptions = {}
 ): IntentProjectKnowledgeResolution {
-  const profile = loadIntentProjectKnowledgeProfile();
+  const knowledgePath = resolveProjectKnowledgePath({
+    projectUid: options.projectUid,
+    legacyFallback: true,
+  });
+  const profile = loadIntentProjectKnowledgeProfile(knowledgePath);
   const matches = profile.rules
     .map((rule) => matchRule(rule, input))
     .filter((item): item is IntentProjectKnowledgeMatchResult => Boolean(item))
@@ -1091,7 +1195,7 @@ export function resolveIntentProjectKnowledge(
 
   return {
     version: 1,
-    profilePath: toDisplayPath(resolveProjectKnowledgePath()),
+    profilePath: toDisplayPath(knowledgePath),
     matches: activeMatches,
     deprioritizedMatches,
     capabilitySlugs: uniqueStrings(activeMatches.flatMap((item) => item.capabilitySlugs)),
@@ -1127,8 +1231,16 @@ export function applyIntentProjectKnowledgeToDsl(
   };
 }
 
-export function getIntentProjectKnowledgeProfile(): IntentProjectKnowledgeProfile {
-  const profile = loadIntentProjectKnowledgeProfile();
+export function getIntentProjectKnowledgeProfile(
+  projectUid = '',
+  options: Pick<IntentProjectKnowledgePathOptions, 'legacyFallback'> = {}
+): IntentProjectKnowledgeProfile {
+  const profile = loadIntentProjectKnowledgeProfile(
+    resolveProjectKnowledgePath({
+      projectUid,
+      legacyFallback: options.legacyFallback,
+    })
+  );
   return {
     version: 1,
     rules: profile.rules.map((rule) => ({
@@ -1373,6 +1485,15 @@ function buildIntentProjectKnowledgeAuditDetail(
       : '',
     meta.preflightSummary ? `结构化预检 ${meta.preflightSummary.itemCount} 项` : '',
     meta.mergeReceipts && meta.mergeReceipts.length > 0 ? `结构化回执 ${meta.mergeReceipts.length} 条` : '',
+    meta.rolloutPolicyDecision
+      ? `Rollout ${meta.rolloutPolicyDecision.recommendedStage} -> ${meta.rolloutPolicyDecision.effectiveStage}（${meta.rolloutPolicyDecision.appliedMode}）`
+      : '',
+    meta.rolloutPolicyDecision && meta.rolloutPolicyDecision.benchmarkBound
+      ? `Benchmark 绑定：${meta.rolloutPolicyDecision.benchmarkUid || '已绑定'}`
+      : '',
+    meta.rolloutPolicyDecision && meta.rolloutPolicyDecision.receipts.length > 0
+      ? `Rollout 回执 ${meta.rolloutPolicyDecision.receipts.length} 条`
+      : '',
     successfulRunPromotionSummary,
   ].filter(Boolean);
 
@@ -1449,10 +1570,12 @@ export function renderIntentProjectKnowledgeMergeDiff(summary: IntentProjectKnow
   return lines.join('\n');
 }
 
-async function backupIntentProjectKnowledgeFile(targetPath = resolveProjectKnowledgePath()): Promise<string | null> {
+async function backupIntentProjectKnowledgeFile(
+  targetPath = resolveProjectKnowledgePath({ mode: 'write' }),
+  backupDir = resolveProjectKnowledgeBackupDir()
+): Promise<string | null> {
   try {
     const raw = await fsPromises.readFile(targetPath, 'utf8');
-    const backupDir = resolveProjectKnowledgeBackupDir();
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const backupPath = path.join(backupDir, `${stamp}-${path.basename(targetPath)}`);
     await fsPromises.mkdir(path.dirname(backupPath), { recursive: true });
@@ -1468,7 +1591,7 @@ async function backupIntentProjectKnowledgeFile(targetPath = resolveProjectKnowl
 
 export async function writeIntentProjectKnowledgeProfile(
   profile: IntentProjectKnowledgeProfile,
-  outputPath = resolveProjectKnowledgePath()
+  outputPath = resolveProjectKnowledgePath({ mode: 'write' })
 ): Promise<string> {
   const normalizedProfile = normalizeProfile(profile);
   await fsPromises.mkdir(path.dirname(outputPath), { recursive: true });
@@ -1480,10 +1603,12 @@ export async function writeIntentProjectKnowledgeProfile(
 
 export async function mergeIntentProjectKnowledgeRules(
   rules: IntentProjectKnowledgeRule[],
-  outputPath = resolveProjectKnowledgePath()
+  outputPath = resolveProjectKnowledgePath({ mode: 'write' }),
+  backupDir = resolveProjectKnowledgeBackupDir(),
+  baseProfile = loadIntentProjectKnowledgeProfile(outputPath)
 ): Promise<MergeIntentProjectKnowledgeRulesResult> {
-  const profile = getIntentProjectKnowledgeProfile();
-  const mergedRules = [...profile.rules];
+  const currentProfile = baseProfile;
+  const mergedRules = [...currentProfile.rules];
   const seenRuleIds = new Set(mergedRules.map((rule) => rule.id));
   const addedRuleIds: string[] = [];
   const skippedRuleIds: string[] = [];
@@ -1506,11 +1631,11 @@ export async function mergeIntentProjectKnowledgeRules(
     version: 1,
     rules: mergedRules,
   };
-  const summary = buildIntentProjectKnowledgeMergeSummary(profile, nextProfile, addedRules);
-  const comparison = buildIntentProjectKnowledgeProfileComparison(profile, nextProfile);
+  const summary = buildIntentProjectKnowledgeMergeSummary(currentProfile, nextProfile, addedRules);
+  const comparison = buildIntentProjectKnowledgeProfileComparison(currentProfile, nextProfile);
   const dedupedSkippedRuleIds = uniqueStrings(skippedRuleIds);
   const diffPreview = renderIntentProjectKnowledgeMergeDiff(summary, dedupedSkippedRuleIds);
-  const backupPath = addedRuleIds.length > 0 ? await backupIntentProjectKnowledgeFile(outputPath) : null;
+  const backupPath = addedRuleIds.length > 0 ? await backupIntentProjectKnowledgeFile(outputPath, backupDir) : null;
   const writtenTo = addedRuleIds.length > 0 ? await writeIntentProjectKnowledgeProfile(nextProfile, outputPath) : toDisplayPath(outputPath);
 
   return {
@@ -1527,7 +1652,7 @@ export async function mergeIntentProjectKnowledgeRules(
 
 export async function listIntentProjectKnowledgeBackups(
   limit = 12,
-  outputPath = resolveProjectKnowledgePath(),
+  outputPath = resolveProjectKnowledgePath({ mode: 'write' }),
   backupDir = resolveProjectKnowledgeBackupDir()
 ): Promise<ListIntentProjectKnowledgeBackupsResult> {
   const normalizedLimit = Math.max(1, Math.floor(limit || 12));
@@ -1568,10 +1693,10 @@ export async function listIntentProjectKnowledgeBackups(
 
 export async function restoreIntentProjectKnowledgeBackup(
   backupPath: string | null | undefined,
-  outputPath = resolveProjectKnowledgePath(),
+  outputPath = resolveProjectKnowledgePath({ mode: 'write' }),
   backupDir = resolveProjectKnowledgeBackupDir()
 ): Promise<RestoreIntentProjectKnowledgeBackupResult> {
-  const currentProfile = getIntentProjectKnowledgeProfile();
+  const currentProfile = loadIntentProjectKnowledgeProfile(outputPath);
   const backups = await listIntentProjectKnowledgeBackups(50, outputPath, backupDir);
   const selectedDisplayPath = backupPath?.trim() || backups.backups[0]?.path || '';
   if (!selectedDisplayPath) {
@@ -1586,7 +1711,7 @@ export async function restoreIntentProjectKnowledgeBackup(
 
   const raw = await fsPromises.readFile(absoluteBackupPath, 'utf8');
   const restoredProfile = normalizeProfile(JSON.parse(raw));
-  const backupCreated = await backupIntentProjectKnowledgeFile(outputPath);
+  const backupCreated = await backupIntentProjectKnowledgeFile(outputPath, backupDir);
   const writtenTo = await writeIntentProjectKnowledgeProfile(restoredProfile, outputPath);
   const comparison = buildIntentProjectKnowledgeProfileComparison(currentProfile, restoredProfile);
 

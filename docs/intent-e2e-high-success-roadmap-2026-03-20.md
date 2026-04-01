@@ -12977,6 +12977,15 @@
 - 当前结果：
   - 同 payload 已连续两次 rerun 都被同一个 precheck `page.goto` timeout 挡住
   - 当前还没有新的 clean `attempt1` 证据，无法确认“最终提交按钮 scope fallback”是否已退出真实 first-pass 主失败链
+- 当前阶段状态：
+  - R0：已完成
+  - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
+  - R2：已完成（当前 roadmap scope）
+  - R3：进行中（第三十四刀已落地，但当前复验仍被 precheck `page.goto` timeout 挡住）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：待开始
 - 风险 / 未完成：
   - 当前阻塞已从“代码未对齐”变成“真实验证窗口未打开”
   - 如果继续卡在 precheck，后续任何新的代码扩展都没有验证价值
@@ -13094,6 +13103,11 @@
     - terminal failure 为 `env_transient`
       - `page.goto: net::ERR_NETWORK_CHANGED`
     - 这些都不是本轮首要修复目标
+- 验证：
+  - 最新有效 live rerun：
+    - 请求体：`/tmp/intent-e2e-r3-step-scope-request.json`
+    - 输出：`/tmp/intent-e2e-r3-row-locator-rerun-2.json`
+    - `attempt1` 失败已前移到 `Step 2: 填写前三个表单并跳过附件表单`
 - 当前结果：
   - 当前需要继续推进的最小真实缺口已经收敛为：
     - `Step 2` 某个枚举字段（从轨迹看高度疑似 `性别`）被脚本按 Antd Select 处理
@@ -14078,6 +14092,14 @@
     - `curl -I --max-time 15 -sS https://uat-service.yikaiye.com/`
     - 返回：
       - `curl: (28) Connection timed out after 15002 milliseconds`
+- 验证：
+  - 有效 fresh rerun：
+    - `intent-run-daa08ead-eac4-46e1-b6ed-6f92b80ebcd9`
+    - `request.hasAuth=true`
+    - 失败固定在 `prechecking -> page.goto Timeout 30000ms exceeded`
+  - 环境探针：
+    - `curl -I --max-time 15 -sS https://uat-service.yikaiye.com/`
+    - `curl: (28) Connection timed out after 15002 milliseconds`
 - 当前结果：
   - 本轮 live rerun 没有跑到首轮生成 / 执行阶段，因此还不能用来验证 `/#\/business\/(businesslist|detail)(\/|$)/` 修复是否已在线上样本生效
   - 当前证据更接近“测试环境从本机不可达 / 首包连通异常”，不是新的 R3 代码签名回归

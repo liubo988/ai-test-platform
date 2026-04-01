@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  getIntentRepairMemoryPath,
   listRelevantIntentRepairHints,
   recordIntentRepairFailure,
   recordIntentRepairResolution,
@@ -12,16 +13,20 @@ import {
 
 let tempDir = '';
 let memoryFile = '';
+let projectAssetRoot = '';
 
 beforeEach(async () => {
   tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'intent-repair-memory-'));
   memoryFile = path.join(tempDir, 'intent-e2e-repair-memory.json');
+  projectAssetRoot = path.join(tempDir, 'projects');
   process.env.INTENT_E2E_REPAIR_MEMORY_PATH = memoryFile;
+  process.env.INTENT_E2E_PROJECT_ASSET_ROOT = projectAssetRoot;
   resetIntentRepairMemoryCache();
 });
 
 afterEach(async () => {
   delete process.env.INTENT_E2E_REPAIR_MEMORY_PATH;
+  delete process.env.INTENT_E2E_PROJECT_ASSET_ROOT;
   resetIntentRepairMemoryCache();
   if (tempDir) {
     await fs.rm(tempDir, { recursive: true, force: true });
@@ -59,6 +64,42 @@ describe('intent repair memory', () => {
     expect(hints[0].tags).toContain('obs-anchor-missing');
     expect(saved.clusters).toHaveLength(1);
     expect(saved.clusters[0].clusterId).toBe(first.clusterId);
+  });
+
+  it('falls back to legacy memory for project reads but writes subsequent project updates into project-scoped files', async () => {
+    const failureInput = {
+      targetUrl: 'https://uat.example.com/#/business/businesslist',
+      pageTitle: '商机列表',
+      description: '创建商机并生成订单',
+      executionError: 'Error: 未找到行操作：查看',
+      previousCode: "await __e2e.clickAntdRowAction(page, targetRow, '查看');",
+      recentEvents: ['INFO createOrder success'],
+    };
+
+    const first = await recordIntentRepairFailure(failureInput);
+    const projectUid = 'proj alpha';
+    const projectMemoryPath = path.join(projectAssetRoot, 'proj-alpha', 'intent-e2e-repair-memory.json');
+
+    expect(getIntentRepairMemoryPath(projectUid)).toBe(memoryFile);
+    expect(
+      getIntentRepairMemoryPath(projectUid, {
+        mode: 'write',
+        legacyFallback: false,
+      })
+    ).toBe(projectMemoryPath);
+
+    const fallbackHints = await listRelevantIntentRepairHints(failureInput, 3, { projectUid });
+    await recordIntentRepairFailure(failureInput, { projectUid });
+    const projectHints = await listRelevantIntentRepairHints(failureInput, 3, { projectUid });
+
+    const legacySaved = JSON.parse(await fs.readFile(memoryFile, 'utf8')) as { clusters: Array<{ seenCount: number }> };
+    const projectSaved = JSON.parse(await fs.readFile(projectMemoryPath, 'utf8')) as { clusters: Array<{ seenCount: number }> };
+
+    expect(fallbackHints[0]?.clusterId).toBe(first.clusterId);
+    expect(projectHints[0]?.seenCount).toBe(2);
+    expect(legacySaved.clusters[0]?.seenCount).toBe(1);
+    expect(projectSaved.clusters[0]?.seenCount).toBe(2);
+    expect(getIntentRepairMemoryPath(projectUid)).toBe(projectMemoryPath);
   });
 
   it('stores successful strategies and renders concise memory hints', async () => {

@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "manifests": [
+    {
+      "manifestId": "vendor_portal_staging",
+      "displayName": "Vendor Portal Staging",
+      "systemProfile": {
+        "systemKey": "vendor_portal",
+        "displayName": "供应商门户 Staging",
+        "baseUrl": "https://vendor.example.test",
+        "entryUrl": "https://vendor.example.test/login",
+        "targetUrlFamilies": [
+          "https://vendor.example.test/login",
+          "https://vendor.example.test/orders*",
+          "https://vendor.example.test/vendors*"
+        ],
+        "notes": [
+          "非当前系统接入样板：供应商门户 browser_e2e onboarding contract"
+        ]
+      },
+      "testType": "browser_e2e",
+      "runnerType": "playwright_runner",
+      "envProfile": "staging",
+      "credentialReference": {
+        "source": "project",
+        "secretRef": "project://vendor-portal/auth/default",
+        "accountRef": "account://project/vendor-portal/shared-browser",
+        "sessionMode": "shared"
+      },
+      "fixtureStrategy": {
+        "strategy": "setup_cleanup",
+        "setupRef": "fixture://vendor-portal/order/setup",
+        "cleanupRef": "fixture://vendor-portal/order/cleanup",
+        "owner": "owner://qa/vendor-portal",
+        "idempotencyKey": "vendor-order-smoke"
+      },
+      "benchmarkBinding": {
+        "mode": "project_default",
+        "comparedLabel": "vendor-portal-current",
+        "releaseCandidate": "vendor-portal-staging"
+      }
+    }
+  ]
+}

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import BrowserView from '@/components/BrowserView';
+import { readExecutionEntryNavigationTargets } from '@/lib/execution-entry-navigation';
 import type {
   IntentProjectKnowledgeMergeCandidateSource as IntentProjectKnowledgeDraftCandidateSource,
   IntentProjectKnowledgeMergeFeedbackStatus,
@@ -238,6 +239,38 @@ type IntentKnowledgeSummary = {
   starterAssets?: IntentResolvedStarterAsset[];
 };
 
+type IntentAssetReadinessStatus = 'ready' | 'asset_missing' | 'no_hit';
+
+type IntentAssetReadiness = {
+  status: IntentAssetReadinessStatus;
+  projectUid: string;
+  onboardingPath?: string;
+  knowledgePath?: string;
+  repairMemoryPath?: string;
+  hasOnboarding?: boolean;
+  onboardingReady?: boolean;
+  hasKnowledgeAsset?: boolean;
+  hasRepairMemoryAsset?: boolean;
+  knowledgeMatchCount: number;
+  reasons: string[];
+};
+
+type IntentQualityBucket =
+  | 'passed'
+  | 'auth_blocked'
+  | 'permission_blocked'
+  | 'env_blocked'
+  | 'data_blocked'
+  | 'model_quality'
+  | 'canceled';
+
+type IntentQualitySplit = {
+  bucket: IntentQualityBucket;
+  blocked: boolean;
+  qualityEligible: boolean;
+  blockerKind: 'auth' | 'permission' | 'environment' | 'data' | '';
+};
+
 type IntentResolvedUrls = {
   targetUrl: string;
   scenarioEntryUrl: string;
@@ -245,7 +278,76 @@ type IntentResolvedUrls = {
   analyzeUrl: string;
 };
 
+type IntentPlatformTestType = 'browser_e2e' | 'api_flow' | 'repo_test' | 'contract_check';
+type IntentPlatformRunnerType = 'playwright_runner' | 'http_runner' | 'repo_test_runner' | 'contract_runner';
+
+type IntentPlatformTestCaseAsset = {
+  schemaVersion: 1;
+  source: 'intent_e2e';
+  caseId: string;
+  title: string;
+  description: string;
+  projectUid: string;
+  moduleUid: string;
+  tags: string[];
+  typeFields: {
+    taskMode: 'page' | 'scenario';
+    entryUrl: string;
+    targetUrl: string;
+    successCriteriaCount: number;
+  };
+};
+
+type IntentPlatformTestSpecAsset = {
+  schemaVersion: 1;
+  source: 'intent_e2e';
+  specId: string;
+  summary: string;
+  targetUrl: string;
+  scenarioEntryUrl: string;
+  stepCount: number;
+  compiledSlotCount: number;
+  hasStructuredPlan: boolean;
+  typeFields: {
+    taskMode: 'page' | 'scenario';
+    matchedRecipeSlugs: string[];
+  };
+};
+
+type IntentPlatformVerificationContractAsset = {
+  schemaVersion: 1;
+  source: 'intent_e2e';
+  contractId: string;
+  expectedOutcome: string;
+  requiredCheckCount: number;
+  checkKinds: string[];
+  stableIdentifiers: string[];
+  typeFields: {
+    verificationPlanAvailable: boolean;
+    policyNotes: string[];
+  };
+};
+
+type IntentPlatformArtifactContractAsset = {
+  schemaVersion: 1;
+  source: 'intent_e2e';
+  artifactKinds: string[];
+  supportsStreaming: boolean;
+  typeFields: {
+    browserSession: boolean;
+    compiledTemplate: boolean;
+    structuredPatch: boolean;
+    repairObservation: boolean;
+  };
+};
+
 type IntentRunResult = {
+  testType?: IntentPlatformTestType;
+  runnerType?: IntentPlatformRunnerType;
+  testCase?: IntentPlatformTestCaseAsset | null;
+  testSpec?: IntentPlatformTestSpecAsset | null;
+  verificationContract?: IntentPlatformVerificationContractAsset | null;
+  artifactContract?: IntentPlatformArtifactContractAsset | null;
   scenarioCard: ScenarioCard;
   executionPlan?: ExecutionPlan;
   verificationPlan?: VerificationPlan;
@@ -260,6 +362,8 @@ type IntentRunResult = {
   resolvedUrls?: IntentResolvedUrls;
   description: string;
   knowledge?: IntentKnowledgeSummary | null;
+  assetReadiness?: IntentAssetReadiness | null;
+  qualitySplit?: IntentQualitySplit | null;
   attempts: IntentAttempt[];
   finalResult: TestResult;
   finalFailureTriage?: IntentFailureTriage | null;
@@ -269,6 +373,8 @@ type IntentRunStatus = 'created' | 'running' | 'passed' | 'failed' | 'canceled';
 
 type IntentRunRecord = {
   runId: string;
+  testType?: IntentPlatformTestType;
+  runnerType?: IntentPlatformRunnerType;
   status: IntentRunStatus;
   stage: Exclude<IntentStreamStage, 'idle'> | 'created';
   createdAt: string;
@@ -321,7 +427,19 @@ type IntentDraftLaunchDetail = {
   llmConfig: Record<string, unknown>;
 };
 
-type IntentStreamStage = 'idle' | 'received' | 'planning' | 'prechecking' | 'analyzing' | 'generating' | 'executing' | 'repairing' | 'completed' | 'canceled' | 'error';
+type IntentStreamStage =
+  | 'idle'
+  | 'queued'
+  | 'received'
+  | 'planning'
+  | 'prechecking'
+  | 'analyzing'
+  | 'generating'
+  | 'executing'
+  | 'repairing'
+  | 'completed'
+  | 'canceled'
+  | 'error';
 
 type IntentStreamEvent =
   | {
@@ -632,16 +750,30 @@ type IntentE2EInsightsSummary = {
   repairedPassRate: number;
   terminalPassRate: number;
   passRate: number;
+  modelQualityEligibleRuns: number;
+  modelQualityPassRate: number;
+  modelQualityFailureRuns: number;
+  modelQualityFailureRate: number;
+  blockedRuns: number;
+  blockedRate: number;
   knowledgeHitRuns: number;
   knowledgeHitRate: number;
   suggestedHelperReuseRuns: number;
   suggestedHelperReuseRate: number;
   authBlockRuns: number;
   authBlockRate: number;
+  permissionBlockedRuns: number;
+  permissionBlockedRate: number;
   envBlockRuns: number;
   envBlockRate: number;
+  dataBlockedRuns: number;
+  dataBlockedRate: number;
   assertionFailureRuns: number;
   assertionFailureRate: number;
+  assetMissingRuns: number;
+  assetMissingRate: number;
+  noHitRuns: number;
+  noHitRate: number;
 };
 
 type IntentE2EScenarioFamily = 'page_task' | 'simple_scenario' | 'complex_enterprise_flow' | 'unknown';
@@ -979,6 +1111,9 @@ type IntentE2EInsightRecentTraceVerifierResult = {
 type IntentE2EInsightRecentTrace = {
   traceVersion: 1;
   runId: string;
+  testType: IntentPlatformTestType;
+  runnerType: IntentPlatformRunnerType;
+  verificationPolicyNotes: string[];
   projectUid: string;
   status: 'passed' | 'failed' | 'canceled';
   finishedAt: string;
@@ -1001,6 +1136,8 @@ type IntentE2EInsightRecentTrace = {
   structuredPatchAttempted: boolean;
   targetedRepairAttempted: boolean;
   knowledgeHit: boolean;
+  assetReadiness: IntentAssetReadiness;
+  qualitySplit: IntentQualitySplit;
   matchedRecipeSlugs: string[];
   matchedRuleIds: string[];
   matchedRuleTitles: string[];
@@ -1277,6 +1414,23 @@ type IntentE2EInsightProbationRule = {
   recommendation: string;
 };
 
+type IntentProjectRuntimeGovernanceIssue = {
+  code: string;
+  message: string;
+};
+
+type IntentProjectRuntimeGovernanceStatus = {
+  projectUid: string;
+  path: string;
+  exists: boolean;
+  valid: boolean;
+  ready: boolean;
+  hasEnvironmentProfile: boolean;
+  hasCredentialDefaults: boolean;
+  hasFixtureDefaults: boolean;
+  issues: IntentProjectRuntimeGovernanceIssue[];
+};
+
 type IntentE2EInsightsResponse = {
   scope: {
     projectUid: string;
@@ -1344,6 +1498,7 @@ type IntentE2EInsightsResponse = {
     latestRepairObservationVerifierCheckUids: string[];
   };
   suppressedStarterHelperGovernanceSummary?: IntentE2EInsightSuppressedStarterHelperGovernanceSummary;
+  runtimeGovernanceStatus?: IntentProjectRuntimeGovernanceStatus;
   error?: string;
 };
 
@@ -1358,7 +1513,7 @@ type InsightWorkbenchTab = {
 
 type HeroSummaryView = 'entry' | 'auth' | 'learning';
 
-type WorkbenchRailView = 'overview' | 'live' | 'context' | 'governance' | 'compile' | 'workspace';
+type WorkbenchRailView = 'overview' | 'live' | 'context' | 'workbench' | 'governance' | 'compile' | 'workspace';
 
 type WorkbenchDetailView = 'scenario' | 'compile' | 'attempts';
 
@@ -1419,7 +1574,14 @@ type WorkspacePersistItem = {
   updatedConfig: boolean;
   importedStatus: 'passed' | 'failed';
   workspacePath: string;
+  workspaceQueryPath?: string;
+  workspaceHistoryPath?: string;
   runPath: string;
+  executionContext?: {
+    runPath: string;
+    workspacePath: string;
+    workspaceHistoryPath: string;
+  } | null;
 };
 
 type StarterAssetPromotionReceiptSummary = {
@@ -1498,7 +1660,7 @@ type IntentLaunchLlmOverride = Partial<
 
 type FeedItem = {
   id: string;
-  tone: 'info' | 'success' | 'error';
+  tone: 'info' | 'success' | 'warning' | 'error';
   text: string;
 };
 
@@ -1518,6 +1680,7 @@ type StreamState = {
 
 const STAGE_COPY: Record<IntentStreamStage, string> = {
   idle: '等待你开始新的自动测试。',
+  queued: '当前任务正在队列中等待并发配额。',
   received: '请求已收到，正在启动 AI E2E 流程…',
   planning: '正在把自然语言整理成 ScenarioCard…',
   prechecking: '正在执行目标页面前置检查（页面可达性 / 登录态）…',
@@ -1701,6 +1864,8 @@ function feedToneClass(tone: FeedItem['tone']): string {
   switch (tone) {
     case 'success':
       return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'warning':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
     case 'error':
       return 'border-rose-200 bg-rose-50 text-rose-700';
     default:
@@ -1712,6 +1877,8 @@ function feedToneConsoleDotClass(tone: FeedItem['tone']): string {
   switch (tone) {
     case 'success':
       return 'bg-emerald-400';
+    case 'warning':
+      return 'bg-amber-400';
     case 'error':
       return 'bg-rose-400';
     default:
@@ -1719,10 +1886,38 @@ function feedToneConsoleDotClass(tone: FeedItem['tone']): string {
   }
 }
 
+function feedToneConsoleSurfaceClass(tone: FeedItem['tone']): string {
+  switch (tone) {
+    case 'success':
+      return 'border-emerald-200/90 bg-emerald-50/78';
+    case 'warning':
+      return 'border-amber-200/90 bg-amber-50/82';
+    case 'error':
+      return 'border-rose-200/90 bg-rose-50/84';
+    default:
+      return 'border-[#e7dbcc] bg-white/90';
+  }
+}
+
+function feedToneConsoleLabelClass(tone: FeedItem['tone']): string {
+  switch (tone) {
+    case 'success':
+      return 'border-emerald-200 bg-emerald-100 text-emerald-700';
+    case 'warning':
+      return 'border-amber-200 bg-amber-100 text-amber-700';
+    case 'error':
+      return 'border-rose-200 bg-rose-100 text-rose-700';
+    default:
+      return 'border-[#ddd1c2] bg-[#f8f2ea] text-[#7b684d]';
+  }
+}
+
 function feedToneConsoleLabel(tone: FeedItem['tone']): string {
   switch (tone) {
     case 'success':
       return 'SUCCESS';
+    case 'warning':
+      return 'WARN';
     case 'error':
       return 'ERROR';
     default:
@@ -1769,6 +1964,176 @@ function intentFailureClassLabel(failureClass: IntentFailureTriage['failureClass
 
 function intentFailureTone(triage: IntentFailureTriage): string {
   return triage.repairable ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-rose-200 bg-rose-50 text-rose-800';
+}
+
+function normalizeIntentQualityBucket(value: unknown): IntentQualityBucket | '' {
+  switch (value) {
+    case 'passed':
+    case 'auth_blocked':
+    case 'permission_blocked':
+    case 'env_blocked':
+    case 'data_blocked':
+    case 'model_quality':
+    case 'canceled':
+      return value;
+    default:
+      return '';
+  }
+}
+
+function resolveIntentQualitySplit(input: {
+  status: 'passed' | 'failed' | 'canceled';
+  failureClass?: string | null;
+}): IntentQualitySplit {
+  const failureClass = typeof input.failureClass === 'string' ? input.failureClass.trim() : '';
+
+  if (input.status === 'passed') {
+    return {
+      bucket: 'passed',
+      blocked: false,
+      qualityEligible: true,
+      blockerKind: '',
+    };
+  }
+
+  switch (failureClass) {
+    case 'auth_failed':
+      return {
+        bucket: 'auth_blocked',
+        blocked: true,
+        qualityEligible: false,
+        blockerKind: 'auth',
+      };
+    case 'permission_blocked':
+      return {
+        bucket: 'permission_blocked',
+        blocked: true,
+        qualityEligible: false,
+        blockerKind: 'permission',
+      };
+    case 'env_transient':
+      return {
+        bucket: 'env_blocked',
+        blocked: true,
+        qualityEligible: false,
+        blockerKind: 'environment',
+      };
+    case 'data_missing':
+      return {
+        bucket: 'data_blocked',
+        blocked: true,
+        qualityEligible: false,
+        blockerKind: 'data',
+      };
+    default:
+      if (input.status === 'canceled') {
+        return {
+          bucket: 'canceled',
+          blocked: false,
+          qualityEligible: false,
+          blockerKind: '',
+        };
+      }
+
+      return {
+        bucket: 'model_quality',
+        blocked: false,
+        qualityEligible: true,
+        blockerKind: '',
+      };
+  }
+}
+
+function normalizeIntentQualitySplit(
+  value: IntentQualitySplit | null | undefined,
+  fallback: {
+    status: 'passed' | 'failed' | 'canceled';
+    failureClass?: string | null;
+  }
+): IntentQualitySplit {
+  const bucket = normalizeIntentQualityBucket(value?.bucket);
+  if (!bucket) {
+    return resolveIntentQualitySplit(fallback);
+  }
+
+  return {
+    bucket,
+    blocked: typeof value?.blocked === 'boolean' ? value.blocked : bucket.endsWith('_blocked'),
+    qualityEligible:
+      typeof value?.qualityEligible === 'boolean' ? value.qualityEligible : bucket === 'passed' || bucket === 'model_quality',
+    blockerKind:
+      value?.blockerKind ||
+      (bucket === 'auth_blocked'
+        ? 'auth'
+        : bucket === 'permission_blocked'
+          ? 'permission'
+          : bucket === 'env_blocked'
+            ? 'environment'
+            : bucket === 'data_blocked'
+              ? 'data'
+              : ''),
+  };
+}
+
+function intentQualitySplitTone(split: IntentQualitySplit): string {
+  switch (split.bucket) {
+    case 'passed':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'auth_blocked':
+    case 'permission_blocked':
+    case 'env_blocked':
+    case 'data_blocked':
+      return 'border-amber-200 bg-amber-50 text-amber-800';
+    case 'canceled':
+      return 'border-slate-200 bg-slate-100 text-slate-600';
+    default:
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+  }
+}
+
+function intentQualitySplitLabel(split: IntentQualitySplit): string {
+  switch (split.bucket) {
+    case 'passed':
+      return '模型通过';
+    case 'auth_blocked':
+      return '认证阻塞';
+    case 'permission_blocked':
+      return '权限阻塞';
+    case 'env_blocked':
+      return '环境阻塞';
+    case 'data_blocked':
+      return '数据阻塞';
+    case 'canceled':
+      return '已取消';
+    default:
+      return '模型质量';
+  }
+}
+
+function intentPlatformTestTypeLabel(value?: IntentPlatformTestType): string {
+  switch (value) {
+    case 'api_flow':
+      return 'API Flow';
+    case 'repo_test':
+      return 'Repo Test';
+    case 'contract_check':
+      return 'Contract Check';
+    default:
+      return 'Browser E2E';
+  }
+}
+
+function intentPlatformRunnerTypeLabel(value?: IntentPlatformRunnerType): string {
+  switch (value) {
+    case 'http_runner':
+      return 'HTTP Runner';
+    case 'repo_test_runner':
+      return 'Repo Runner';
+    case 'contract_runner':
+      return 'Contract Runner';
+    default:
+      return 'Playwright Runner';
+  }
 }
 
 function stepTone(status: StepResult['status']): string {
@@ -1872,6 +2237,96 @@ function intentRunStatusTone(status: IntentRunStatus | IntentE2EInsightRecentTra
     default:
       return 'border-slate-200 bg-slate-100 text-slate-600';
   }
+}
+
+function intentAssetReadinessLabel(status: IntentAssetReadinessStatus): string {
+  switch (status) {
+    case 'asset_missing':
+      return '资产缺失';
+    case 'no_hit':
+      return '未命中';
+    case 'ready':
+    default:
+      return '已就绪';
+  }
+}
+
+function intentAssetReadinessTone(status: IntentAssetReadinessStatus): string {
+  switch (status) {
+    case 'asset_missing':
+      return 'border-amber-200 bg-amber-50 text-amber-800';
+    case 'no_hit':
+      return 'border-sky-200 bg-sky-50 text-sky-700';
+    case 'ready':
+    default:
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  }
+}
+
+function intentAssetReadinessReasonLabel(reason: string): string {
+  switch (reason) {
+    case 'global_scope':
+      return '当前为全局作用域';
+    case 'onboarding_manifest_missing':
+      return '缺少 onboarding manifest';
+    case 'onboarding_manifest_invalid':
+      return 'onboarding manifest 格式无效';
+    case 'onboarding_baseUrl_missing':
+      return 'onboarding 缺少 baseUrl';
+    case 'onboarding_loginEntry_missing':
+      return 'onboarding 缺少 loginEntry';
+    case 'onboarding_targetUrlFamilies_missing':
+      return 'onboarding 缺少 targetUrlFamilies';
+    case 'onboarding_stableIdentifierHints_missing':
+      return 'onboarding 缺少 stableIdentifierHints';
+    case 'onboarding_keyResponsePatterns_missing':
+      return 'onboarding 缺少 keyResponsePatterns';
+    case 'onboarding_defaultListOwnershipHints_missing':
+      return 'onboarding 缺少 defaultListOwnershipHints';
+    case 'onboarding_detailEntryHints_missing':
+      return 'onboarding 缺少 detailEntryHints';
+    case 'onboarding_goldFlows_missing':
+      return 'onboarding 缺少 goldFlows';
+    case 'project_knowledge_missing':
+      return '缺少项目知识文件';
+    case 'repair_memory_missing':
+      return '缺少项目 repair memory';
+    case 'knowledge_no_hit':
+      return '本次未命中知识规则';
+    default:
+      return reason || '—';
+  }
+}
+
+function summarizeIntentAssetReadinessReasons(readiness: IntentAssetReadiness | null | undefined, limit = 3): string {
+  if (!readiness?.reasons?.length) return '—';
+  return summarizeTextList(readiness.reasons.map(intentAssetReadinessReasonLabel), limit);
+}
+
+function intentProjectRuntimeGovernanceTone(status: IntentProjectRuntimeGovernanceStatus | null | undefined): string {
+  if (!status) return 'border-slate-200 bg-slate-50 text-slate-700';
+  if (status.ready) return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  if (!status.valid) return 'border-rose-200 bg-rose-50 text-rose-700';
+  return 'border-amber-200 bg-amber-50 text-amber-800';
+}
+
+function intentProjectRuntimeGovernanceLabel(status: IntentProjectRuntimeGovernanceStatus | null | undefined): string {
+  if (!status) return '未检查';
+  if (status.ready) return '已就绪';
+  if (!status.exists) return '缺 manifest';
+  if (!status.valid) return 'manifest 无效';
+  return `${status.issues.length} 项待补`;
+}
+
+function summarizeIntentProjectRuntimeGovernanceCoverage(
+  status: IntentProjectRuntimeGovernanceStatus | null | undefined
+): string {
+  if (!status) return '—';
+  return [
+    `environment ${status.hasEnvironmentProfile ? '已声明' : '缺失'}`,
+    `credential ${status.hasCredentialDefaults ? '已声明' : '未声明'}`,
+    `fixture ${status.hasFixtureDefaults ? '已声明' : '未声明'}`,
+  ].join(' · ');
 }
 
 function insightVerificationIntentTone(intent: IntentE2EInsightVerificationIntent): string {
@@ -2751,6 +3206,17 @@ function normalizeRunResult(result: IntentRunResult): IntentRunResult {
           starterAssets: result.knowledge.starterAssets || [],
         }
       : result.knowledge,
+    assetReadiness: result.assetReadiness
+      ? {
+          ...result.assetReadiness,
+          reasons: result.assetReadiness.reasons || [],
+        }
+      : result.assetReadiness,
+    qualitySplit: result.qualitySplit
+      ? {
+          ...result.qualitySplit,
+        }
+      : result.qualitySplit,
     attempts: result.attempts.map((attempt) => normalizeIntentAttempt(attempt, 'completed')),
     finalResult: {
       ...result.finalResult,
@@ -2976,7 +3442,7 @@ function applyIntentStreamEvent(state: StreamState, event: IntentStreamEvent): S
               `#${event.attempt} slot patch：${summarizeTextList(normalizedEvent.structuredPatch.returnedSlotUids, 3)}`
             )
           : normalizedEvent.type === 'error' && normalizedEvent.content.trim()
-          ? pushFeed(state.feed, `#${event.attempt} 生成报错：${normalizedEvent.content.trim()}`, 'error')
+          ? pushFeed(state.feed, `#${event.attempt} 生成报错：${normalizedEvent.content.trim()}`, 'warning')
           : state.feed;
 
       return {
@@ -2999,7 +3465,7 @@ function applyIntentStreamEvent(state: StreamState, event: IntentStreamEvent): S
           triage: attempt.triage || null,
           status: 'running',
         })),
-        feed: pushFeed(state.feed, `#${event.attempt} ${event.step.status.toUpperCase()} ${event.step.title}`, event.step.status === 'failed' ? 'error' : 'info'),
+        feed: pushFeed(state.feed, `#${event.attempt} ${event.step.status.toUpperCase()} ${event.step.title}`, event.step.status === 'failed' ? 'warning' : 'info'),
       };
     }
 
@@ -3015,7 +3481,7 @@ function applyIntentStreamEvent(state: StreamState, event: IntentStreamEvent): S
         })),
         feed:
           event.log.level.toLowerCase() === 'error'
-            ? pushFeed(state.feed, `#${event.attempt} ${event.log.message}`, 'error')
+            ? pushFeed(state.feed, `#${event.attempt} ${event.log.message}`, 'warning')
             : state.feed,
       };
     }
@@ -3044,7 +3510,7 @@ function applyIntentStreamEvent(state: StreamState, event: IntentStreamEvent): S
           `第 ${event.attempt} 次尝试${event.result.success ? '通过' : '失败'}${
             event.result.success ? '' : event.triage ? `（${intentFailureClassLabel(event.triage.failureClass)}）` : ''
           }${event.result.error ? `：${event.result.error}` : ''}`,
-          event.result.success ? 'success' : 'error'
+          event.result.success ? 'success' : 'warning'
         ),
       };
     }
@@ -3213,6 +3679,15 @@ function hydrateStreamStateFromRunRecord(run: IntentRunRecord): StreamState {
       stage: 'received',
       message: '请求已创建，等待服务端启动自动测试…',
       feed: pushFeed(state.feed, '请求已创建，等待服务端启动自动测试…'),
+    };
+  }
+
+  if (run.stage === 'queued' && state.stage === 'idle') {
+    return {
+      ...state,
+      stage: 'queued',
+      message: STAGE_COPY.queued,
+      feed: pushFeed(state.feed, STAGE_COPY.queued),
     };
   }
 
@@ -3518,7 +3993,7 @@ export default function IntentE2EWorkbench({
   const [result, setResult] = useState<IntentRunResult | null>(null);
   const [streamState, setStreamState] = useState<StreamState>(() => createEmptyStreamState());
   const [activeRunId, setActiveRunId] = useState('');
-  const [workbenchCollapsed, setWorkbenchCollapsed] = useState(() => !embedded && launchedFromIntentDraft);
+  const [workbenchCollapsed, setWorkbenchCollapsed] = useState(false);
   const [restoreChecked, setRestoreChecked] = useState(false);
   const [knowledgeDraftMinSeenCount, setKnowledgeDraftMinSeenCount] = useState(2);
   const [knowledgeDraftMinResolvedCount, setKnowledgeDraftMinResolvedCount] = useState(1);
@@ -3589,6 +4064,10 @@ export default function IntentE2EWorkbench({
   const launchLlmOverrideRef = useRef<IntentLaunchLlmOverride | null>(null);
   const inputHelpPopoverRef = useRef<HTMLDivElement | null>(null);
   const collapseContextRef = useRef('');
+  const workspaceSaveNavigation = useMemo(
+    () => (workspaceSaveResult ? readExecutionEntryNavigationTargets(workspaceSaveResult) : null),
+    [workspaceSaveResult]
+  );
 
   const displayScenarioCard = result?.scenarioCard ?? streamState.scenarioCard;
   const displayExecutionPlan = result?.executionPlan ?? null;
@@ -3598,8 +4077,26 @@ export default function IntentE2EWorkbench({
   const displayAttempts = result?.attempts ?? streamState.attempts;
   const displayFinalResult = result?.finalResult ?? streamState.finalResult;
   const displayFinalFailureTriage = result?.finalFailureTriage ?? streamState.finalFailureTriage;
+  const displayTerminalStatus = displayFinalResult
+    ? displayFinalResult.success
+      ? 'passed'
+      : streamState.stage === 'canceled'
+        ? 'canceled'
+        : 'failed'
+    : null;
+  const displayQualitySplit = useMemo(
+    () =>
+      displayTerminalStatus
+        ? normalizeIntentQualitySplit(result?.qualitySplit, {
+            status: displayTerminalStatus,
+            failureClass: displayFinalFailureTriage?.failureClass,
+          })
+        : null,
+    [displayFinalFailureTriage?.failureClass, displayTerminalStatus, result?.qualitySplit]
+  );
   const displayLlmMeta = result?.llmMeta ?? streamState.llmMeta;
   const displayKnowledge = result?.knowledge ?? null;
+  const displayAssetReadiness = result?.assetReadiness ?? null;
   const displayTargetUrl = result?.targetUrl ?? streamState.targetUrl;
   const displayResolvedUrls = result?.resolvedUrls ?? streamState.resolvedUrls;
   const browserAttempt = [...displayAttempts].reverse().find((attempt) => Boolean(attempt.sessionId)) || null;
@@ -3871,6 +4368,28 @@ export default function IntentE2EWorkbench({
                 starterHelperFailureSummary.highFailureCandidateCount > 0
                   ? 'border border-rose-200 bg-rose-50 text-rose-700'
                   : 'border border-sky-200 bg-sky-50 text-sky-700',
+            },
+            {
+              key: 'cold-start',
+              title: '冷启动信号',
+              value:
+                insights.summary.assetMissingRuns > 0
+                  ? `${insights.summary.assetMissingRuns} 次缺资产`
+                  : insights.summary.noHitRuns > 0
+                    ? `${insights.summary.noHitRuns} 次 no-hit`
+                    : '资产已就绪',
+              detail:
+                insights.summary.assetMissingRuns > 0
+                  ? `缺资产 ${formatRatePercent(insights.summary.assetMissingRate)} · no-hit ${formatRatePercent(insights.summary.noHitRate)}`
+                  : insights.summary.noHitRuns > 0
+                    ? `knowledge no-hit ${formatRatePercent(insights.summary.noHitRate)}，优先补项目规则或 onboarding。`
+                    : '最近样本里没有新的冷启动缺口进入主失败口径。',
+              toneClassName:
+                insights.summary.assetMissingRuns > 0
+                  ? 'border border-amber-200 bg-amber-50 text-amber-800'
+                  : insights.summary.noHitRuns > 0
+                    ? 'border border-sky-200 bg-sky-50 text-sky-700'
+                    : 'border border-emerald-200 bg-emerald-50 text-emerald-700',
             },
           ]
         : [],
@@ -4181,7 +4700,7 @@ export default function IntentE2EWorkbench({
       {
         key: 'live',
         label: '实时画面',
-        description: '左侧盯浏览器画面，右侧同步看阶段推进、修复动作和最新诊断。',
+        description: '左侧持续看实时日志，右侧集中看浏览器画面和本轮会话信息。',
         countLabel: browserSessionId ? `${streamState.feed.length} 条动态` : '等待浏览器',
       },
       {
@@ -4209,6 +4728,12 @@ export default function IntentE2EWorkbench({
     ];
 
     if (!embedded) {
+      tabs.push({
+        key: 'workbench',
+        label: 'Intent Workbench',
+        description: '把任务目标、入口 URL、参考图和启动按钮集中放到右侧，需要时再展开编辑。',
+        countLabel: `${input.trim() ? '目标已写' : '待写目标'} · ${attachments.length} 图`,
+      });
       tabs.push({
         key: 'governance',
         label: '治理学习',
@@ -4252,11 +4777,13 @@ export default function IntentE2EWorkbench({
     displayFinalResult,
     embedded,
     embeddedProjectAuth?.authRequired,
+    input,
     insights,
     knowledgeDraftPreview,
     llmConfig.provider,
     running,
     streamState.feed.length,
+    attachments.length,
     workspaceSaveResult,
   ]);
   const activeRailTab = railTabs.find((item) => item.key === railView) ?? railTabs[0];
@@ -4357,7 +4884,7 @@ export default function IntentE2EWorkbench({
     }
 
     return {
-      toneClassName: 'border-slate-200 bg-slate-50/92 text-slate-600',
+      toneClassName: 'border-[#e5d7c7] bg-[#f7efe4] text-[#6e5b45]',
       title: '等待启动',
       detail: '开始自动测试后，这里会持续显示最新阶段、修复动作和关键诊断。',
       indicatorClassName: 'h-2.5 w-2.5 rounded-full bg-slate-300 animate-pulse',
@@ -4365,6 +4892,274 @@ export default function IntentE2EWorkbench({
     };
   }, [canceling, currentStageText, displayAttempts.length, displayFinalResult, running, showCanceledState]);
   const showCollapsedWorkbenchRail = !embedded && workbenchCollapsed;
+  const intentWorkbenchFormId = 'intent-e2e-launch-form';
+
+  const renderIntentWorkbenchEditor = ({
+    subtitle,
+    showCollapseControl = false,
+    showReturnLink = false,
+    submitOutsideForm = false,
+  }: {
+    subtitle: string;
+    showCollapseControl?: boolean;
+    showReturnLink?: boolean;
+    submitOutsideForm?: boolean;
+  }) => {
+    const submitButtonProps = submitOutsideForm ? { form: intentWorkbenchFormId } : {};
+
+    return (
+      <div className="space-y-4">
+        <section className="intent-e2e-hero relative overflow-hidden rounded-[32px] border border-black/5 bg-[linear-gradient(135deg,rgba(255,255,255,0.98),rgba(251,248,242,0.96)_54%,rgba(243,246,249,0.95))] px-5 py-5 text-slate-950 shadow-[0_24px_60px_rgba(44,37,28,0.08)] md:px-6 md:py-6">
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute -right-12 -top-12 h-48 w-48 rounded-full bg-[radial-gradient(circle,rgba(214,225,241,0.5),rgba(214,225,241,0)_70%)] blur-2xl"
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute left-10 top-0 h-36 w-36 rounded-full bg-[radial-gradient(circle,rgba(255,242,223,0.8),rgba(255,242,223,0)_72%)] blur-2xl"
+          />
+          <div className="relative space-y-4">
+            <div className="space-y-4">
+              <div className="min-w-0">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#8c7656]">Intent Workbench</p>
+                  <div className="flex items-center gap-2">
+                    {showCollapseControl && (
+                      <button
+                        type="button"
+                        onClick={() => setWorkbenchCollapsed(true)}
+                        className="inline-flex h-9 items-center justify-center rounded-full border border-[#d7d0c5] bg-white/88 px-3 text-[12px] text-slate-600 shadow-[0_8px_22px_rgba(44,37,28,0.06)] transition hover:border-[#c6baaa] hover:text-slate-900"
+                        title="收起"
+                      >
+                        收起
+                      </button>
+                    )}
+                    {showReturnLink && (
+                      <Link
+                        href="/"
+                        title="返回项目"
+                        className="inline-flex h-9 items-center justify-center rounded-full border border-[#d7d0c5] bg-white/88 px-3.5 text-[12px] text-slate-600 shadow-[0_8px_22px_rgba(44,37,28,0.06)] transition hover:border-[#c6baaa] hover:text-slate-900"
+                      >
+                        返回项目
+                      </Link>
+                    )}
+                  </div>
+                </div>
+                <h2 className="mt-3 text-[21px] font-semibold leading-[1.16] tracking-[-0.05em] text-slate-950 md:text-[27px] xl:text-[28px]">
+                  讲清任务，AI 自动规划、执行与修复
+                </h2>
+                <p className="mt-2.5 text-[13px] leading-6 text-slate-600 md:text-[14px]">{subtitle}</p>
+              </div>
+
+              <div className="space-y-2.5">
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="submit"
+                    {...submitButtonProps}
+                    disabled={running || configLoading}
+                    className="inline-flex h-10 min-w-0 items-center justify-center rounded-[18px] bg-[#1f1a15] px-3 text-[11px] font-medium text-white shadow-[0_14px_28px_rgba(34,27,20,0.18)] transition hover:bg-[#171310] disabled:cursor-not-allowed disabled:bg-slate-400"
+                  >
+                    {running ? (canceling ? '正在停止…' : 'AI 正在自动执行…') : '开始自动测试'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={stopIntentTest}
+                    disabled={!running || !activeRunId || canceling}
+                    className="inline-flex h-10 min-w-0 items-center justify-center rounded-[18px] border border-[#ead7b6] bg-[#fbf3e8]/92 px-3 text-[11px] font-medium text-[#8d6330] transition hover:bg-[#f8ebd8] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {canceling ? '停止中…' : '停止当前测试'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => clearExecutionState()}
+                    disabled={running}
+                    className="inline-flex h-10 min-w-0 items-center justify-center rounded-[18px] border border-[#ddd5ca] bg-white/78 px-3 text-[11px] font-medium text-slate-700 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    清空结果
+                  </button>
+                </div>
+
+                <div className="overflow-hidden rounded-[24px] border border-[#e8ddd0] bg-white/42">
+                  <div className="grid gap-px bg-[#e8ddd0] sm:grid-cols-3">
+                    {heroSummaryTabs.map((item) => {
+                      const active = item.key === activeHeroSummaryTab.key;
+
+                      return (
+                        <button
+                          key={item.key}
+                          type="button"
+                          aria-pressed={active}
+                          onClick={() => setHeroSummaryView(item.key)}
+                          className={`px-3.5 py-3 text-left transition ${
+                            active
+                              ? 'bg-[#fbf7ef] text-slate-950'
+                              : 'bg-[rgba(255,255,255,0.38)] text-slate-600 hover:bg-white/72'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className={`text-[10px] uppercase tracking-[0.16em] ${active ? 'text-[#8c7656]' : 'text-slate-400'}`}>
+                              {item.label}
+                            </span>
+                            <span className={`h-2.5 w-2.5 rounded-full ${active ? 'bg-[#9a7341]' : 'bg-slate-300'}`} />
+                          </div>
+                          <p className="mt-1.5 text-[13px] font-semibold leading-5 text-current">{item.summary}</p>
+                          <p className="mt-1 text-[11px] leading-5 text-slate-500">{item.detail}</p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <section className="rounded-[30px] border border-white/80 bg-white/52 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.88)] backdrop-blur-[2px] md:p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#e7dfd3] pb-3">
+                <div>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-[#8c7656]">Task Brief</p>
+                  <p className="mt-1 text-sm font-medium text-slate-900">把这次任务一次写完整</p>
+                </div>
+                <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">
+                  目标 / 入口 / 参考图
+                </span>
+              </div>
+
+              <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.08fr)_minmax(320px,0.92fr)]">
+                <div className="rounded-[24px] border border-[#e7dfd3] bg-white/72 p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label htmlFor="intent-e2e-input" className="text-xs font-medium tracking-[0.08em] text-slate-400">
+                      测试目标
+                    </label>
+                    <div ref={inputHelpPopoverRef} className="relative">
+                      <button
+                        type="button"
+                        aria-label="查看填写提示"
+                        aria-expanded={inputHelpOpen}
+                        aria-controls="intent-e2e-input-help"
+                        onClick={() => setInputHelpOpen((current) => !current)}
+                        className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-white text-[11px] font-medium text-slate-500 transition hover:border-slate-300 hover:text-slate-900"
+                      >
+                        ?
+                      </button>
+                      {inputHelpOpen && (
+                        <div
+                          id="intent-e2e-input-help"
+                          className="absolute left-0 top-full z-30 mt-2 w-[300px] rounded-[18px] border border-slate-200 bg-white p-3.5 text-left shadow-[0_16px_36px_rgba(15,23,42,0.14)]"
+                          role="dialog"
+                          aria-label="填写提示"
+                        >
+                          <p className="text-sm font-medium text-slate-900">建议只写“业务结果”，不要写点击脚本</p>
+                          <div className="mt-2.5 space-y-1.5 text-xs leading-6 text-slate-600">
+                            <p>目标动作：登录 / 搜索 / 新建 / 提交 / 下单</p>
+                            <p>成功标准：页面文案 / URL / 列表状态 / 接口成功</p>
+                            <p>复杂页面：补一张成功态或关键表单截图，帮助模型理解页面结构。</p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <textarea
+                    id="intent-e2e-input"
+                    value={input}
+                    onChange={(targetEvent) => setInput(targetEvent.target.value)}
+                    rows={embedded ? 2 : 4}
+                    placeholder="例如：登录后台后创建一个商机，保存成功后看到新建记录，并且列表中状态为待跟进。"
+                    className="mt-3 min-h-[208px] w-full rounded-[22px] border border-[#dfd8ce] bg-white/86 px-4 py-3.5 text-sm leading-6 text-slate-900 shadow-[inset_0_1px_0_rgba(255,255,255,0.94),0_8px_18px_rgba(90,72,44,0.03)] outline-none transition placeholder:text-slate-400 focus:border-[#c9bba7] xl:min-h-[280px]"
+                  />
+                </div>
+
+                <div className="space-y-4">
+                  <div className="rounded-[24px] border border-[#e7dfd3] bg-white/72 p-4">
+                    <label className="block">
+                      <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">Target URL</span>
+                      <input
+                        value={targetUrl}
+                        onChange={(targetEvent) => setTargetUrl(targetEvent.target.value)}
+                        placeholder="https://example.com/checkout"
+                        className="mt-2.5 h-11 w-full rounded-2xl border border-[#ddd2c4] bg-white/84 px-4 text-sm text-slate-800 outline-none transition focus:border-[#c9bba7]"
+                      />
+                      <p className="mt-2 text-[11px] leading-5 text-slate-500">尽量给真实入口，能减少 AI 在多层导航里的试探。</p>
+                    </label>
+                  </div>
+
+                  <div className="rounded-[24px] border border-[#e7dfd3] bg-white/72 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">截图 / 参考图</p>
+                        <p className="mt-1 text-[11px] leading-5 text-slate-500">补目标页、关键区域或成功态即可。</p>
+                      </div>
+                      <label className="inline-flex h-9 cursor-pointer items-center justify-center rounded-full border border-[#ddd2c4] bg-white/88 px-3.5 text-xs text-slate-700 transition hover:bg-white">
+                        上传图片
+                        <input type="file" accept="image/*" multiple onChange={handleAttachmentChange} className="hidden" />
+                      </label>
+                    </div>
+
+                    {!llmConfig.visionEnabled && attachments.length > 0 && (
+                      <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+                        当前已关闭 Vision，图片会保存在表单里，但不会发送给模型。
+                      </div>
+                    )}
+
+                    {attachments.length === 0 ? (
+                      <div className="mt-3 rounded-[20px] border border-dashed border-[#d8cfc1] bg-white/62 px-4 py-4 text-center text-[13px] text-slate-400">
+                        还没有上传图片；复杂页面建议补一张成功态或关键表单截图。
+                      </div>
+                    ) : (
+                      <div className="mt-3 space-y-3">
+                        {attachments.map((attachment) => (
+                          <article key={attachment.id} className="overflow-hidden rounded-[20px] border border-[#ddd4c8] bg-white/92 shadow-[0_8px_20px_rgba(15,23,42,0.03)]">
+                            <img src={attachment.dataUrl} alt={attachment.name} className="h-28 w-full object-cover" />
+                            <div className="space-y-2.5 p-3.5">
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <p className="text-sm font-medium text-slate-900">{attachment.name}</p>
+                                  <p className="mt-1 text-xs text-slate-500">用于辅助理解页面结构或成功态。</p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => removeAttachment(attachment.id)}
+                                  className="rounded-full border border-[#ddd2c4] bg-white px-3 py-1 text-[11px] text-slate-600 transition hover:bg-slate-50"
+                                >
+                                  删除
+                                </button>
+                              </div>
+                              <label className="block">
+                                <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">用途备注</span>
+                                <input
+                                  value={attachment.purpose}
+                                  onChange={(targetEvent) => updateAttachmentPurpose(attachment.id, targetEvent.target.value)}
+                                  placeholder="例如：预期成功页；关键表单区域；目标按钮位置"
+                                  className="mt-2 h-10 w-full rounded-2xl border border-[#ddd2c4] bg-[#fbf7f0] px-4 text-sm text-slate-800 outline-none transition focus:border-[#c9bba7]"
+                                />
+                              </label>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        {(runError || restoreNotice) && (
+          <div className="space-y-3">
+            {runError && (
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                {runError}
+              </div>
+            )}
+            {restoreNotice && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                {restoreNotice}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   useEffect(() => {
     if (collapseContextRef.current === collapsePreferenceContextKey) {
@@ -4372,8 +5167,8 @@ export default function IntentE2EWorkbench({
     }
 
     collapseContextRef.current = collapsePreferenceContextKey;
-    setWorkbenchCollapsed(!embedded && launchedFromIntentDraft);
-  }, [collapsePreferenceContextKey, embedded, launchedFromIntentDraft]);
+    setWorkbenchCollapsed(false);
+  }, [collapsePreferenceContextKey]);
 
   useEffect(() => {
     if (!inputHelpOpen) {
@@ -6375,12 +7170,16 @@ export default function IntentE2EWorkbench({
             embedded
               ? 'mt-3 lg:grid-cols-[minmax(0,1fr)_350px]'
               : showCollapsedWorkbenchRail
-                ? 'mt-1 xl:h-full xl:min-h-0 xl:grid-cols-[72px_minmax(0,1fr)] xl:items-stretch'
-                : 'mt-1 xl:h-full xl:min-h-0 xl:grid-cols-[minmax(320px,27%)_minmax(0,73%)] xl:items-stretch'
+                ? 'mt-1 xl:h-full xl:min-h-0 xl:grid-cols-[84px_minmax(0,1fr)] xl:items-stretch'
+                : 'mt-1 xl:h-full xl:min-h-0 xl:grid-cols-[minmax(320px,24%)_minmax(0,76%)] xl:items-stretch'
           }`}
         >
-          <form onSubmit={runIntentTest} className={embedded ? 'space-y-4' : 'xl:h-full xl:min-h-0'}>
-            {showCollapsedWorkbenchRail ? (
+          <form id={intentWorkbenchFormId} onSubmit={runIntentTest} className={embedded ? 'space-y-4' : 'xl:h-full xl:min-h-0'}>
+            {embedded ? (
+              renderIntentWorkbenchEditor({
+                subtitle: '左侧输入任务，右侧查看执行、上下文与治理。',
+              })
+            ) : showCollapsedWorkbenchRail ? (
               <section className="intent-e2e-hero relative overflow-hidden rounded-[26px] border border-black/5 bg-[linear-gradient(135deg,rgba(255,255,255,0.98),rgba(251,248,242,0.96)_54%,rgba(243,246,249,0.95))] px-2.5 py-3 text-slate-950 shadow-[0_24px_60px_rgba(44,37,28,0.08)] xl:h-full">
                 <div
                   aria-hidden="true"
@@ -6389,16 +7188,11 @@ export default function IntentE2EWorkbench({
                 <div className="relative flex h-full flex-col items-center justify-between">
                   <div className="flex w-full flex-col items-center gap-3">
                     <span className="inline-flex h-10 w-10 items-center justify-center rounded-[20px] bg-[#1f1a15] text-[11px] font-semibold uppercase tracking-[0.2em] text-white shadow-[0_14px_28px_rgba(31,26,21,0.18)]">
-                      IW
+                      LOG
                     </span>
-                    <div className="flex flex-col items-center gap-1.5">
-                      <span className="inline-flex min-h-5 items-center justify-center rounded-full border border-[#decaa7] bg-[#fbf3e6] px-2 text-[9px] font-medium tracking-[0.16em] text-[#8c7656]">
-                        {launchedFromIntentDraft ? '草稿' : '输入'}
-                      </span>
-                      <span className="inline-flex min-h-5 items-center justify-center rounded-full border border-white/80 bg-white/86 px-2 text-[9px] font-medium tracking-[0.12em] text-slate-500">
-                        展示
-                      </span>
-                    </div>
+                    <span className={`rounded-full border px-2 py-1 text-[9px] font-medium ${railStatusBadge.className}`}>
+                      {railStatusBadge.label}
+                    </span>
                     {(runError || restoreNotice) && (
                       <span
                         title={runError || restoreNotice}
@@ -6414,14 +7208,22 @@ export default function IntentE2EWorkbench({
                       type="button"
                       onClick={() => setWorkbenchCollapsed(false)}
                       className="inline-flex h-11 w-11 items-center justify-center rounded-[18px] bg-[#1f1a15] text-[11px] font-medium leading-4 text-white shadow-[0_12px_24px_rgba(31,26,21,0.16)] transition hover:bg-[#171310]"
-                      title="展开左栏"
+                      title="展开日志"
                     >
                       展开
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRailView('workbench')}
+                      className="inline-flex h-11 w-11 items-center justify-center rounded-[18px] border border-[#d7d0c5] bg-white/88 text-[10px] leading-4 text-slate-600 shadow-[0_10px_22px_rgba(44,37,28,0.05)] transition hover:border-[#c6baaa] hover:text-slate-900"
+                      title="编辑任务"
+                    >
+                      任务
                     </button>
                     <Link
                       href="/"
                       className="inline-flex h-11 w-11 items-center justify-center rounded-[18px] border border-[#d7d0c5] bg-white/88 text-[11px] leading-4 text-slate-600 shadow-[0_10px_22px_rgba(44,37,28,0.05)] transition hover:border-[#c6baaa] hover:text-slate-900"
-                      title="返回项目中心"
+                      title="返回项目"
                     >
                       返回
                     </Link>
@@ -6429,252 +7231,149 @@ export default function IntentE2EWorkbench({
                 </div>
               </section>
             ) : (
-            <section className="intent-e2e-hero intent-e2e-scroll relative overflow-hidden rounded-[32px] border border-black/5 bg-[linear-gradient(135deg,rgba(255,255,255,0.98),rgba(251,248,242,0.96)_54%,rgba(243,246,249,0.95))] px-5 py-5 text-slate-950 shadow-[0_24px_60px_rgba(44,37,28,0.08)] md:px-6 md:py-6 xl:h-full xl:overflow-y-auto xl:overscroll-contain">
-              <div
-                aria-hidden="true"
-                className="pointer-events-none absolute -right-12 -top-12 h-48 w-48 rounded-full bg-[radial-gradient(circle,rgba(214,225,241,0.5),rgba(214,225,241,0)_70%)] blur-2xl"
-              />
-              <div
-                aria-hidden="true"
-                className="pointer-events-none absolute left-10 top-0 h-36 w-36 rounded-full bg-[radial-gradient(circle,rgba(255,242,223,0.8),rgba(255,242,223,0)_72%)] blur-2xl"
-              />
-              <div className="relative space-y-4">
-                <div className="space-y-4">
-                  <div className="min-w-0">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#8c7656]">Intent Workbench</p>
-                      {!embedded && (
+              <section className="intent-e2e-feed-panel relative overflow-hidden rounded-[32px] border border-black/5 bg-[linear-gradient(135deg,rgba(255,255,255,0.98),rgba(251,248,242,0.96)_54%,rgba(243,246,249,0.95))] px-5 py-5 text-slate-950 shadow-[0_24px_60px_rgba(44,37,28,0.08)] md:px-6 md:py-6 xl:flex xl:h-full xl:min-h-0 xl:flex-col">
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute -right-12 top-6 h-44 w-44 rounded-full bg-[radial-gradient(circle,rgba(214,225,241,0.52),rgba(214,225,241,0)_70%)] blur-2xl"
+                />
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute left-8 top-0 h-32 w-32 rounded-full bg-[radial-gradient(circle,rgba(255,242,223,0.82),rgba(255,242,223,0)_72%)] blur-2xl"
+                />
+                <div className="relative flex min-h-0 flex-1 flex-col">
+                  <div className="shrink-0">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#8c7656]">Live Console</p>
+                        <h2 className="mt-3 text-[21px] font-semibold leading-[1.16] tracking-[-0.05em] text-slate-950 md:text-[27px]">
+                          实时日志
+                        </h2>
+                      </div>
+                      <div className="flex flex-col items-end gap-2">
+                        <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${railStatusBadge.className}`}>
+                          {railStatusBadge.label}
+                        </span>
                         <div className="flex items-center gap-2">
                           <button
                             type="button"
+                            onClick={() => setRailView('workbench')}
+                            className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-full border border-[#d7d0c5] bg-white/88 px-3.5 text-[12px] text-slate-600 shadow-[0_8px_22px_rgba(44,37,28,0.06)] transition hover:border-[#c6baaa] hover:text-slate-900"
+                          >
+                            编辑任务
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => setWorkbenchCollapsed(true)}
-                            className="inline-flex h-9 items-center justify-center rounded-full border border-[#d7d0c5] bg-white/88 px-3 text-[12px] text-slate-600 shadow-[0_8px_22px_rgba(44,37,28,0.06)] transition hover:border-[#c6baaa] hover:text-slate-900"
-                            title="收起"
+                            className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-full border border-[#d7d0c5] bg-white/88 px-3 text-[12px] text-slate-600 shadow-[0_8px_22px_rgba(44,37,28,0.06)] transition hover:border-[#c6baaa] hover:text-slate-900"
+                            title="收起左栏"
                           >
                             收起
                           </button>
-                          <Link
-                            href="/"
-                            title="返回项目"
-                            className="inline-flex h-9 items-center justify-center rounded-full border border-[#d7d0c5] bg-white/88 px-3.5 text-[12px] text-slate-600 shadow-[0_8px_22px_rgba(44,37,28,0.06)] transition hover:border-[#c6baaa] hover:text-slate-900"
-                          >
-                            返回项目
-                          </Link>
                         </div>
-                      )}
-                    </div>
-                    <h2 className="mt-3 text-[21px] font-semibold leading-[1.16] tracking-[-0.05em] text-slate-950 md:text-[27px] xl:text-[28px]">
-                      讲清任务，AI 自动规划、执行与修复
-                    </h2>
-                    <p className="mt-2.5 text-[13px] leading-6 text-slate-600 md:text-[14px]">
-                      左侧输入任务，右侧查看执行、上下文与治理。
-                    </p>
-                  </div>
-
-                  <div className="space-y-2.5">
-                    <div className="grid grid-cols-3 gap-2">
-                      <button
-                        type="submit"
-                        disabled={running || configLoading}
-                        className="inline-flex h-10 min-w-0 items-center justify-center rounded-[18px] bg-[#1f1a15] px-3 text-[11px] font-medium text-white shadow-[0_14px_28px_rgba(34,27,20,0.18)] transition hover:bg-[#171310] disabled:cursor-not-allowed disabled:bg-slate-400"
-                      >
-                        {running ? (canceling ? '正在停止…' : 'AI 正在自动执行…') : '开始自动测试'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={stopIntentTest}
-                        disabled={!running || !activeRunId || canceling}
-                        className="inline-flex h-10 min-w-0 items-center justify-center rounded-[18px] border border-[#ead7b6] bg-[#fbf3e8]/92 px-3 text-[11px] font-medium text-[#8d6330] transition hover:bg-[#f8ebd8] disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {canceling ? '停止中…' : '停止当前测试'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => clearExecutionState()}
-                        disabled={running}
-                        className="inline-flex h-10 min-w-0 items-center justify-center rounded-[18px] border border-[#ddd5ca] bg-white/78 px-3 text-[11px] font-medium text-slate-700 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        清空结果
-                      </button>
-                    </div>
-
-                    <div className="overflow-hidden rounded-[24px] border border-[#e8ddd0] bg-white/42">
-                      <div className="grid gap-px bg-[#e8ddd0] sm:grid-cols-3">
-                        {heroSummaryTabs.map((item) => {
-                          const active = item.key === activeHeroSummaryTab.key;
-
-                          return (
-                            <button
-                              key={item.key}
-                              type="button"
-                              aria-pressed={active}
-                              onClick={() => setHeroSummaryView(item.key)}
-                              className={`px-3.5 py-3 text-left transition ${
-                                active
-                                  ? 'bg-[#fbf7ef] text-slate-950'
-                                  : 'bg-[rgba(255,255,255,0.38)] text-slate-600 hover:bg-white/72'
-                              }`}
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <span className={`text-[10px] uppercase tracking-[0.16em] ${active ? 'text-[#8c7656]' : 'text-slate-400'}`}>
-                                  {item.label}
-                                </span>
-                                <span className={`h-2.5 w-2.5 rounded-full ${active ? 'bg-[#9a7341]' : 'bg-slate-300'}`} />
-                              </div>
-                              <p className="mt-1.5 text-[13px] font-semibold leading-5 text-current">{item.summary}</p>
-                              <p className="mt-1 text-[11px] leading-5 text-slate-500">{item.detail}</p>
-                            </button>
-                          );
-                        })}
                       </div>
                     </div>
-                  </div>
-                </div>
 
-                <section className="rounded-[30px] border border-white/80 bg-white/52 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.88)] backdrop-blur-[2px] md:p-5">
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#e7dfd3] pb-3">
-                    <div>
-                      <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-[#8c7656]">Task Brief</p>
-                      <p className="mt-1 text-sm font-medium text-slate-900">把这次任务一次写完整</p>
+                    <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                      <span className="rounded-full border border-[#ded4c7] bg-white/76 px-3 py-1 text-slate-700">{liveAttemptValue}</span>
+                      <span className="rounded-full border border-[#ded4c7] bg-white/76 px-3 py-1">累计 {displayAttempts.length} 次尝试</span>
+                      <span className="rounded-full border border-[#ded4c7] bg-white/76 px-3 py-1">最近 {streamState.feed.length} 条</span>
                     </div>
-                    <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">
-                      目标 / 入口 / 参考图
-                    </span>
                   </div>
 
-                  <div className="mt-4 space-y-4">
-                    <div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <label htmlFor="intent-e2e-input" className="text-xs font-medium tracking-[0.08em] text-slate-400">
-                          测试目标
-                        </label>
-                        <div ref={inputHelpPopoverRef} className="relative">
-                          <button
-                            type="button"
-                            aria-label="查看填写提示"
-                            aria-expanded={inputHelpOpen}
-                            aria-controls="intent-e2e-input-help"
-                            onClick={() => setInputHelpOpen((current) => !current)}
-                            className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-white text-[11px] font-medium text-slate-500 transition hover:border-slate-300 hover:text-slate-900"
-                          >
-                            ?
-                          </button>
-                          {inputHelpOpen && (
+                  <div className="mt-4 flex min-h-[480px] flex-1 flex-col overflow-hidden rounded-[24px] border border-[#e2d8ca] bg-[linear-gradient(180deg,rgba(255,252,247,0.98),rgba(248,242,234,0.96))] shadow-[inset_0_1px_0_rgba(255,255,255,0.92),0_18px_36px_rgba(91,73,47,0.08)] xl:min-h-0">
+                    <div className={`shrink-0 border-b px-4 py-3.5 ${liveLogStatus.toneClassName}`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex min-w-0 items-center gap-2.5">
+                            <span className={liveLogStatus.indicatorClassName} />
+                            <p className="truncate text-[13px] font-medium">{liveLogStatus.title}</p>
+                          </div>
+                          <p className="mt-2 text-[11px] leading-5 opacity-80">{liveLogStatus.detail}</p>
+                        </div>
+                        <span className="rounded-full border border-black/5 bg-white/78 px-2.5 py-1 text-[10px] font-medium tracking-[0.14em] text-current">
+                          {liveLogStatus.badgeLabel}
+                        </span>
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-[#8b775c]">
+                        <span className="rounded-full border border-black/5 bg-white/80 px-2.5 py-1 text-[#6d5b46]">
+                          {liveAttemptValue}
+                        </span>
+                        <span>累计 {displayAttempts.length} 次</span>
+                        <span>最近 {streamState.feed.length} 条</span>
+                      </div>
+                    </div>
+
+                    {liveFeedItems.length > 0 ? (
+                      <>
+                        <div className="grid shrink-0 grid-cols-[auto_1fr] gap-x-3 border-b border-[#e7dccf] bg-white/60 px-4 py-2 text-[10px] uppercase tracking-[0.18em] text-[#9a8668]">
+                          <span>级别</span>
+                          <span>Log Stream</span>
+                        </div>
+                        <div
+                          aria-live="polite"
+                          className="intent-e2e-scroll min-h-0 flex-1 overflow-y-auto bg-[linear-gradient(180deg,rgba(255,250,245,0.8),rgba(249,244,238,0.96))] px-3 py-2 xl:overscroll-contain"
+                        >
+                          {liveFeedItems.map((item, index) => (
                             <div
-                              id="intent-e2e-input-help"
-                              className="absolute left-0 top-full z-30 mt-2 w-[300px] rounded-[18px] border border-slate-200 bg-white p-3.5 text-left shadow-[0_16px_36px_rgba(15,23,42,0.14)]"
-                              role="dialog"
-                              aria-label="填写提示"
+                              key={item.id}
+                              className={`mb-2 grid grid-cols-[auto_1fr] gap-x-3 rounded-[18px] border px-3 py-3 shadow-[0_8px_18px_rgba(89,72,48,0.04)] last:mb-0 ${
+                                feedToneConsoleSurfaceClass(item.tone)
+                              } ${index === 0 ? 'ring-1 ring-[#d8c29f]/70' : ''}
+                              `}
                             >
-                              <p className="text-sm font-medium text-slate-900">建议只写“业务结果”，不要写点击脚本</p>
-                              <div className="mt-2.5 space-y-1.5 text-xs leading-6 text-slate-600">
-                                <p>目标动作：登录 / 搜索 / 新建 / 提交 / 下单</p>
-                                <p>成功标准：页面文案 / URL / 列表状态 / 接口成功</p>
-                                <p>复杂页面：补一张成功态或关键表单截图，帮助模型理解页面结构。</p>
+                              <div className="flex flex-col items-center pt-1.5">
+                                <span className={`h-2.5 w-2.5 rounded-full ${feedToneConsoleDotClass(item.tone)}`} />
+                              </div>
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span
+                                    className={`rounded-full border px-2 py-0.5 font-mono text-[10px] tracking-[0.16em] ${feedToneConsoleLabelClass(
+                                      item.tone
+                                    )}`}
+                                  >
+                                    {feedToneConsoleLabel(item.tone)}
+                                  </span>
+                                  {index === 0 && (
+                                    <span className="rounded-full border border-[#dbc7aa] bg-[#f7ecdd] px-2 py-0.5 text-[10px] font-medium text-[#8c7656]">
+                                      LATEST
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="mt-1.5 text-[12px] leading-6 text-slate-700">{item.text}</p>
                               </div>
                             </div>
-                          )}
-                        </div>
-                      </div>
-                      <textarea
-                        id="intent-e2e-input"
-                        value={input}
-                        onChange={(targetEvent) => setInput(targetEvent.target.value)}
-                        rows={embedded ? 2 : 4}
-                        placeholder="例如：登录后台后创建一个商机，保存成功后看到新建记录，并且列表中状态为待跟进。"
-                        className="mt-2.5 w-full rounded-[22px] border border-[#dfd8ce] bg-white/86 px-4 py-3.5 text-sm leading-6 text-slate-900 shadow-[inset_0_1px_0_rgba(255,255,255,0.94),0_8px_18px_rgba(90,72,44,0.03)] outline-none transition placeholder:text-slate-400 focus:border-[#c9bba7]"
-                      />
-                    </div>
-
-                    <div className="border-t border-[#e7dfd3] pt-4">
-                      <label className="block">
-                        <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">Target URL</span>
-                        <input
-                          value={targetUrl}
-                          onChange={(targetEvent) => setTargetUrl(targetEvent.target.value)}
-                          placeholder="https://example.com/checkout"
-                          className="mt-2.5 h-11 w-full rounded-2xl border border-[#ddd2c4] bg-white/84 px-4 text-sm text-slate-800 outline-none transition focus:border-[#c9bba7]"
-                        />
-                        <p className="mt-2 text-[11px] leading-5 text-slate-500">尽量给真实入口，能减少 AI 在多层导航里的试探。</p>
-                      </label>
-                    </div>
-
-                    <div className="border-t border-[#e7dfd3] pt-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">截图 / 参考图</p>
-                          <p className="mt-1 text-[11px] leading-5 text-slate-500">补目标页、关键区域或成功态即可。</p>
-                        </div>
-                        <label className="inline-flex h-9 cursor-pointer items-center justify-center rounded-full border border-[#ddd2c4] bg-white/88 px-3.5 text-xs text-slate-700 transition hover:bg-white">
-                          上传图片
-                          <input type="file" accept="image/*" multiple onChange={handleAttachmentChange} className="hidden" />
-                        </label>
-                      </div>
-
-                      {!llmConfig.visionEnabled && attachments.length > 0 && (
-                        <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
-                          当前已关闭 Vision，图片会保存在表单里，但不会发送给模型。
-                        </div>
-                      )}
-
-                      {attachments.length === 0 ? (
-                        <div className="mt-3 rounded-[20px] border border-dashed border-[#d8cfc1] bg-white/62 px-4 py-4 text-center text-[13px] text-slate-400">
-                          还没有上传图片；复杂页面建议补一张成功态或关键表单截图。
-                        </div>
-                      ) : (
-                        <div className="mt-3 space-y-3">
-                          {attachments.map((attachment) => (
-                            <article key={attachment.id} className="overflow-hidden rounded-[20px] border border-[#ddd4c8] bg-white/92 shadow-[0_8px_20px_rgba(15,23,42,0.03)]">
-                              <img src={attachment.dataUrl} alt={attachment.name} className="h-28 w-full object-cover" />
-                              <div className="space-y-2.5 p-3.5">
-                                <div className="flex items-start justify-between gap-3">
-                                  <div>
-                                    <p className="text-sm font-medium text-slate-900">{attachment.name}</p>
-                                    <p className="mt-1 text-xs text-slate-500">用于辅助理解页面结构或成功态。</p>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => removeAttachment(attachment.id)}
-                                    className="rounded-full border border-[#ddd2c4] bg-white px-3 py-1 text-[11px] text-slate-600 transition hover:bg-slate-50"
-                                  >
-                                    删除
-                                  </button>
-                                </div>
-                                <label className="block">
-                                  <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">用途备注</span>
-                                  <input
-                                    value={attachment.purpose}
-                                    onChange={(targetEvent) => updateAttachmentPurpose(attachment.id, targetEvent.target.value)}
-                                    placeholder="例如：预期成功页；关键表单区域；目标按钮位置"
-                                    className="mt-2 h-10 w-full rounded-2xl border border-[#ddd2c4] bg-[#fbf7f0] px-4 text-sm text-slate-800 outline-none transition focus:border-[#c9bba7]"
-                                  />
-                                </label>
-                              </div>
-                            </article>
                           ))}
                         </div>
-                      )}
-                    </div>
-                  </div>
-                </section>
-
-                {(runError || restoreNotice) && (
-                  <div className="space-y-3">
-                    {runError && (
-                      <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                        {runError}
-                      </div>
-                    )}
-                    {restoreNotice && (
-                      <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                        {restoreNotice}
+                      </>
+                    ) : (
+                      <div className="flex min-h-0 flex-1 items-center justify-center bg-[linear-gradient(180deg,rgba(255,251,246,0.82),rgba(249,244,238,0.96))] px-5 py-6 text-center">
+                        <div className="max-w-[250px]">
+                          <p className="text-sm font-medium text-slate-700">日志流准备中</p>
+                          <p className="mt-2 text-xs leading-6 text-slate-500">
+                            执行开始后，这里会持续显示最新阶段、修复动作和诊断信息。
+                          </p>
+                        </div>
                       </div>
                     )}
                   </div>
-                )}
 
-              </div>
-            </section>
+                  <div className="mt-3 flex items-center justify-between gap-3 text-[11px] text-slate-500">
+                    <Link
+                      href="/"
+                      className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-full border border-[#d7d0c5] bg-white/88 px-3.5 text-[12px] text-slate-600 shadow-[0_8px_22px_rgba(44,37,28,0.06)] transition hover:border-[#c6baaa] hover:text-slate-900"
+                    >
+                      返回项目
+                    </Link>
+                    <button
+                      type="button"
+                      onClick={() => setRailView('live')}
+                      className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-full border border-[#d7d0c5] bg-white/88 px-3.5 text-[12px] text-slate-600 shadow-[0_8px_22px_rgba(44,37,28,0.06)] transition hover:border-[#c6baaa] hover:text-slate-900"
+                    >
+                      查看画面
+                    </button>
+                  </div>
+                </div>
+              </section>
             )}
 
             {contextPortalHost &&
@@ -7259,7 +7958,7 @@ export default function IntentE2EWorkbench({
                           </div>
                         </div>
 
-                        <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                        <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-6">
                           <div className="rounded-2xl border border-emerald-200 bg-white/90 px-4 py-4">
                             <p className="text-[11px] uppercase tracking-[0.16em] text-emerald-600">pass rate</p>
                             <p className="mt-2 text-2xl font-semibold text-emerald-900">{formatRatePercent(insights.summary.passRate)}</p>
@@ -7275,13 +7974,29 @@ export default function IntentE2EWorkbench({
                             <p className="mt-2 text-2xl font-semibold text-cyan-900">{formatRatePercent(insights.summary.repairedPassRate)}</p>
                             <p className="mt-1 text-[11px] text-cyan-700">修复后通过 {insights.summary.repairedPassRuns} 次。</p>
                           </div>
+                          <div className="rounded-2xl border border-rose-200 bg-white/90 px-4 py-4">
+                            <p className="text-[11px] uppercase tracking-[0.16em] text-rose-600">model quality</p>
+                            <p className="mt-2 text-2xl font-semibold text-rose-900">
+                              {formatRatePercent(insights.summary.modelQualityPassRate)}
+                            </p>
+                            <p className="mt-1 text-[11px] text-rose-700">
+                              可比较样本 {insights.summary.modelQualityEligibleRuns} 次 · 失败 {insights.summary.modelQualityFailureRuns} 次。
+                            </p>
+                          </div>
+                          <div className="rounded-2xl border border-amber-200 bg-white/90 px-4 py-4">
+                            <p className="text-[11px] uppercase tracking-[0.16em] text-amber-600">blocked split</p>
+                            <p className="mt-2 text-2xl font-semibold text-amber-900">{formatRatePercent(insights.summary.blockedRate)}</p>
+                            <p className="mt-1 text-[11px] text-amber-700">
+                              auth/perm {insights.summary.authBlockRuns} · env/data {insights.summary.envBlockRuns}
+                            </p>
+                          </div>
                           <div className="rounded-2xl border border-violet-200 bg-white/90 px-4 py-4">
                             <p className="text-[11px] uppercase tracking-[0.16em] text-violet-600">helper reuse</p>
                             <p className="mt-2 text-2xl font-semibold text-violet-900">
                               {formatRatePercent(insights.summary.suggestedHelperReuseRate)}
                             </p>
                             <p className="mt-1 text-[11px] text-violet-700">
-                              知识命中 {formatRatePercent(insights.summary.knowledgeHitRate)}。
+                              知识命中 {formatRatePercent(insights.summary.knowledgeHitRate)} · 缺资产 {formatRatePercent(insights.summary.assetMissingRate)} · no-hit {formatRatePercent(insights.summary.noHitRate)}。
                             </p>
                           </div>
                         </div>
@@ -7333,6 +8048,48 @@ export default function IntentE2EWorkbench({
                       </div>
 
                       <div className="space-y-3">
+                        {insights.runtimeGovernanceStatus && (
+                          <div className="rounded-3xl border border-slate-200 bg-slate-50 px-4 py-4">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div>
+                                <p className="font-medium text-slate-900">项目治理接入</p>
+                                <p className="mt-1 text-xs leading-5 text-slate-500">
+                                  把 environment / credential / fixture manifest 的缺口提前暴露，避免等到 run blocker 才发现。
+                                </p>
+                              </div>
+                              <span
+                                className={`rounded-full border px-3 py-1 text-[11px] font-medium ${intentProjectRuntimeGovernanceTone(
+                                  insights.runtimeGovernanceStatus
+                                )}`}
+                              >
+                                {intentProjectRuntimeGovernanceLabel(insights.runtimeGovernanceStatus)}
+                              </span>
+                            </div>
+
+                            <div className="mt-3 rounded-2xl border border-white/80 bg-white px-3 py-3 text-[11px] leading-5 text-slate-600">
+                              <p>scope：{insights.runtimeGovernanceStatus.projectUid}</p>
+                              <p className="mt-1 break-all">manifest：{insights.runtimeGovernanceStatus.path || '—'}</p>
+                              <p className="mt-1">
+                                coverage：{summarizeIntentProjectRuntimeGovernanceCoverage(insights.runtimeGovernanceStatus)}
+                              </p>
+                            </div>
+
+                            <div className="mt-3 space-y-2">
+                              {insights.runtimeGovernanceStatus.issues.length > 0 ? (
+                                insights.runtimeGovernanceStatus.issues.map((issue) => (
+                                  <div key={issue.code} className="rounded-2xl border border-white/80 bg-white px-3 py-3">
+                                    <p className="text-xs leading-6 text-slate-600">{issue.message}</p>
+                                  </div>
+                                ))
+                              ) : (
+                                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-xs leading-6 text-emerald-800">
+                                  当前 project runtime governance manifest 校验通过，运行前不会再因默认治理声明缺失而静默漂移。
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
                         <div className="rounded-3xl border border-slate-200 bg-slate-50 px-4 py-4">
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <p className="font-medium text-slate-900">当前优先动作</p>
@@ -7910,6 +8667,19 @@ export default function IntentE2EWorkbench({
                                     <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${intentRunStatusTone(item.status)}`}>
                                       {intentRunStatusLabel(item.status)}
                                     </span>
+                                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-600">
+                                      {intentPlatformTestTypeLabel(item.testType)}
+                                    </span>
+                                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-600">
+                                      {intentPlatformRunnerTypeLabel(item.runnerType)}
+                                    </span>
+                                    <span
+                                      className={`rounded-full border px-3 py-1 text-[11px] font-medium ${intentQualitySplitTone(
+                                        item.qualitySplit
+                                      )}`}
+                                    >
+                                      {intentQualitySplitLabel(item.qualitySplit)}
+                                    </span>
                                     {item.verificationIntent !== 'unknown' && (
                                       <span
                                         className={`rounded-full border px-3 py-1 text-[11px] font-medium ${insightVerificationIntentTone(
@@ -7927,6 +8697,15 @@ export default function IntentE2EWorkbench({
                                     {!item.firstPassSucceeded && item.repairedSucceeded && (
                                       <span className="rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1 text-[11px] font-medium text-cyan-700">
                                         修复通过
+                                      </span>
+                                    )}
+                                    {(item.assetReadiness.status === 'asset_missing' || item.assetReadiness.status === 'no_hit') && (
+                                      <span
+                                        className={`rounded-full border px-3 py-1 text-[11px] font-medium ${intentAssetReadinessTone(
+                                          item.assetReadiness.status
+                                        )}`}
+                                      >
+                                        {intentAssetReadinessLabel(item.assetReadiness.status)}
                                       </span>
                                     )}
                                   </div>
@@ -7951,6 +8730,9 @@ export default function IntentE2EWorkbench({
                                       : '未命中'}
                                   </p>
                                   <p className="mt-1 text-[11px] text-slate-500">规则 {item.matchedRuleIds.length} 条</p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    readiness：{intentAssetReadinessLabel(item.assetReadiness.status)} · {summarizeIntentAssetReadinessReasons(item.assetReadiness, 2)}
+                                  </p>
                                   <p className="mt-1 break-all text-[11px] text-slate-500">
                                     Starter：{summarizeTextList(item.matchedStarterHelpers, 2)}
                                   </p>
@@ -7989,6 +8771,9 @@ export default function IntentE2EWorkbench({
                                   <p className="mt-2 text-xs leading-5 text-slate-700">
                                     {item.status === 'passed' ? '终态通过' : insightFailureClassLabel(item.failureClass)}
                                   </p>
+                                  <p className="mt-1 text-[11px] text-slate-500">
+                                    quality：{intentQualitySplitLabel(item.qualitySplit)}
+                                  </p>
                                   <p className="mt-1 break-all text-[11px] text-slate-500">
                                     grader：{item.finalGraderResult.summary}
                                   </p>
@@ -8000,6 +8785,11 @@ export default function IntentE2EWorkbench({
                                   {item.verifierResult.expectedOutcome ? (
                                     <p className="mt-1 break-all text-[11px] text-slate-500">
                                       期望：{item.verifierResult.expectedOutcome}
+                                    </p>
+                                  ) : null}
+                                  {item.verificationPolicyNotes.length > 0 ? (
+                                    <p className="mt-1 break-all text-[11px] text-slate-500">
+                                      policy：{summarizeTextList(item.verificationPolicyNotes, 2)}
                                     </p>
                                   ) : null}
                                   {item.status !== 'passed' && item.finalGraderResult.repairable !== null ? (
@@ -10122,13 +10912,9 @@ export default function IntentE2EWorkbench({
               <div className="border-b border-[#ddd5ca] bg-[linear-gradient(180deg,rgba(250,247,241,0.98),rgba(242,238,231,0.94))] px-5 py-5">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#8c7656]">Execution</p>
-                    <p className="mt-2 text-[17px] font-semibold tracking-[-0.03em] text-slate-950">执行与反馈中心</p>
+                    <p className="text-[17px] font-semibold tracking-[-0.03em] text-slate-950">执行与反馈中心</p>
                     <p className="mt-2 max-w-sm text-xs leading-6 text-slate-500">{activeRailTab.description}</p>
                   </div>
-                  <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${railStatusBadge.className}`}>
-                    {railStatusBadge.label}
-                  </span>
                 </div>
 
                 <div className="mt-4 overflow-x-auto pb-1">
@@ -10198,12 +10984,30 @@ export default function IntentE2EWorkbench({
                   <div className={`rounded-2xl border px-4 py-4 ${statusPillTone(displayFinalResult.success)}`}>
                     <div className="flex items-center justify-between gap-3">
                       <div>
-                        <p className="text-sm font-medium">{displayFinalResult.success ? '测试通过' : '测试失败'}</p>
+                        <p className="text-sm font-medium">
+                          {displayTerminalStatus === 'canceled' ? '测试已取消' : displayFinalResult.success ? '测试通过' : '测试失败'}
+                        </p>
                         <p className="mt-1 text-xs opacity-80">
                           共执行 {displayAttempts.length} 次尝试 · 最终耗时 {formatDuration(displayFinalResult.duration)}
                         </p>
+                        <p className="mt-2 text-[11px] opacity-80">
+                          {intentPlatformTestTypeLabel(result?.testType)} · {intentPlatformRunnerTypeLabel(result?.runnerType)}
+                        </p>
                       </div>
-                      <span className="rounded-full border px-3 py-1 text-xs font-medium">{displayFinalResult.success ? 'PASS' : 'FAIL'}</span>
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        {displayQualitySplit && (
+                          <span
+                            className={`rounded-full border px-3 py-1 text-[11px] font-medium ${intentQualitySplitTone(
+                              displayQualitySplit
+                            )}`}
+                          >
+                            {intentQualitySplitLabel(displayQualitySplit)}
+                          </span>
+                        )}
+                        <span className="rounded-full border px-3 py-1 text-xs font-medium">
+                          {displayTerminalStatus === 'canceled' ? 'CANCELED' : displayFinalResult.success ? 'PASS' : 'FAIL'}
+                        </span>
+                      </div>
                     </div>
                   </div>
 
@@ -10243,7 +11047,7 @@ export default function IntentE2EWorkbench({
                 </div>
               ) : (
                 <div className="mt-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-sm text-slate-400">
-                  还没有执行结果。填写左侧表单后点击“开始自动测试”。
+                  还没有执行结果。填写 Intent Workbench 后点击“开始自动测试”。
                 </div>
               )}
 
@@ -10253,6 +11057,43 @@ export default function IntentE2EWorkbench({
                   <p className="mt-2 break-all text-xs leading-6 text-slate-600">
                     {displayLlmMeta.provider} / {displayLlmMeta.model} · vision {displayLlmMeta.visionEnabled ? 'on' : 'off'} · 输入图片 {displayLlmMeta.attachmentCount} 张
                   </p>
+                </div>
+              )}
+
+              {displayAssetReadiness && displayAssetReadiness.projectUid && (
+                <div className="mt-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-medium text-slate-900">项目冷启动资产</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">把 onboarding、项目知识和 repair memory 的 readiness 单独拎出来，避免继续混进纯模型失败。</p>
+                    </div>
+                    <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${intentAssetReadinessTone(displayAssetReadiness.status)}`}>
+                      {intentAssetReadinessLabel(displayAssetReadiness.status)}
+                    </span>
+                  </div>
+
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-400">readiness</p>
+                      <p className="mt-2 text-sm font-medium text-slate-900">
+                        onboarding {displayAssetReadiness.onboardingReady ? 'ready' : displayAssetReadiness.hasOnboarding ? 'incomplete' : 'missing'} ·
+                        knowledge {displayAssetReadiness.hasKnowledgeAsset ? 'ready' : 'missing'} ·
+                        repair {displayAssetReadiness.hasRepairMemoryAsset ? 'ready' : 'missing'}
+                      </p>
+                      <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                        命中规则 {displayAssetReadiness.knowledgeMatchCount} 条 · {summarizeIntentAssetReadinessReasons(displayAssetReadiness, 3)}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-400">project scope</p>
+                      <p className="mt-2 text-sm font-medium text-slate-900">{displayAssetReadiness.projectUid}</p>
+                      <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                        onboarding：{displayAssetReadiness.onboardingPath || '—'}
+                      </p>
+                      <p className="mt-1 text-[11px] leading-5 text-slate-500">knowledge：{displayAssetReadiness.knowledgePath || '—'}</p>
+                      <p className="mt-1 text-[11px] leading-5 text-slate-500">repair memory：{displayAssetReadiness.repairMemoryPath || '—'}</p>
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -10323,6 +11164,23 @@ export default function IntentE2EWorkbench({
                       </p>
                     </div>
                     <div ref={setContextPortalHost} className="space-y-4" />
+                  </div>
+                )}
+
+                {railView === 'workbench' && !embedded && (
+                  <div className="space-y-4">
+                    <div className="intent-e2e-detail-launcher rounded-[26px] border border-black/5 bg-white/92 p-4 shadow-[0_12px_28px_rgba(44,37,28,0.06)]">
+                      <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">Intent Workbench</p>
+                      <p className="mt-1.5 text-base font-semibold tracking-[-0.02em] text-slate-950">任务描述、入口与参考图</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">
+                        任务输入收进右侧标签页，左侧改成持续日志位；需要修改任务时，不再回到整块左栏。
+                      </p>
+                    </div>
+                    {renderIntentWorkbenchEditor({
+                      subtitle: '目标描述、入口 URL、参考图和启动控制都集中在这里，左侧改成实时日志控制台。',
+                      showReturnLink: true,
+                      submitOutsideForm: true,
+                    })}
                   </div>
                 )}
 
@@ -10441,16 +11299,24 @@ export default function IntentE2EWorkbench({
                         </p>
                         <div className="mt-3 flex flex-wrap gap-2">
                           <Link
-                            href={workspaceSaveResult.workspacePath}
+                            href={workspaceSaveNavigation?.workspacePath || workspaceSaveResult.workspacePath}
                             className="inline-flex h-8 items-center justify-center rounded-xl border border-current/20 bg-white/70 px-3 text-xs font-medium transition hover:bg-white"
                           >
-                            打开项目工作台
+                            打开聚焦任务
                           </Link>
+                          {workspaceSaveNavigation?.hasWorkspaceHistoryPath && (
+                            <Link
+                              href={workspaceSaveNavigation.workspaceHistoryPath || workspaceSaveNavigation.workspacePath}
+                              className="inline-flex h-8 items-center justify-center rounded-xl border border-current/20 bg-white/70 px-3 text-xs font-medium transition hover:bg-white"
+                            >
+                              工作台执行历史
+                            </Link>
+                          )}
                           <Link
-                            href={workspaceSaveResult.runPath}
+                            href={workspaceSaveNavigation?.runPath || workspaceSaveResult.runPath}
                             className="inline-flex h-8 items-center justify-center rounded-xl border border-current/20 bg-white/70 px-3 text-xs font-medium transition hover:bg-white"
                           >
-                            查看执行历史
+                            执行详情
                           </Link>
                         </div>
                       </div>
@@ -10811,12 +11677,11 @@ export default function IntentE2EWorkbench({
                 )}
 
                 {railView === 'live' && (
-                  <div className="grid gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(270px,0.74fr)] xl:items-stretch">
+                  <div className="space-y-4">
                     <div className="intent-e2e-browser-stage overflow-hidden rounded-[28px] border border-black/5 bg-[linear-gradient(180deg,rgba(252,249,243,0.97),rgba(245,241,233,0.96))] px-4 py-4 shadow-[0_18px_44px_rgba(44,37,28,0.08)] xl:flex xl:min-h-0 xl:flex-col">
                       <div className="flex items-center justify-between gap-3">
                         <div>
-                          <p className="text-sm font-medium text-slate-900">浏览器实时画面</p>
-                          <p className="mt-1 text-xs leading-5 text-slate-500">
+                          <p className="text-xs leading-5 text-slate-500">
                             {browserSessionId
                               ? `当前展示第 ${browserAttempt?.attempt || '-'} 次尝试的实时浏览器画面${running ? '，执行中会持续刷新。' : '，已保留最后一帧。'}`
                               : '执行开始后会自动连接当前尝试的浏览器画面。'}
@@ -10842,11 +11707,11 @@ export default function IntentE2EWorkbench({
                             hideHeader
                             compact
                             className="rounded-[28px] border border-[#24272d]/90 bg-[#101216] p-3.5 shadow-[0_22px_60px_rgba(15,23,42,0.28)]"
-                            viewportClassName="aspect-video min-h-[280px] rounded-[22px] md:min-h-[320px]"
+                            viewportClassName="aspect-video min-h-[300px] rounded-[22px] md:min-h-[340px] xl:min-h-[420px]"
                           />
                         ) : (
                           <div className="overflow-hidden rounded-[28px] border border-[#24272d]/90 bg-[#101216] p-3.5 shadow-[0_22px_60px_rgba(15,23,42,0.28)]">
-                            <div className="relative aspect-video min-h-[280px] overflow-hidden rounded-[22px] border border-white/10 bg-[#06080b] md:min-h-[320px]">
+                            <div className="relative aspect-video min-h-[300px] overflow-hidden rounded-[22px] border border-white/10 bg-[#06080b] md:min-h-[340px] xl:min-h-[420px]">
                               <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-between bg-gradient-to-b from-black/55 to-transparent px-4 py-3">
                                 <div className="flex items-center gap-2">
                                   <span className="h-2.5 w-2.5 rounded-full bg-[#ffb86c]" />
@@ -10866,90 +11731,6 @@ export default function IntentE2EWorkbench({
                             </div>
                           </div>
                         )}
-                      </div>
-                    </div>
-
-                    <div className="space-y-4 xl:flex xl:min-h-0 xl:flex-col xl:items-start">
-                      <div className="intent-e2e-feed-panel overflow-hidden rounded-[26px] border border-slate-200 bg-white px-4 py-4 shadow-[0_12px_28px_rgba(44,37,28,0.06)] xl:flex xl:w-full xl:flex-none xl:flex-col">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-medium text-slate-900">实时日志</p>
-                            <p className="mt-1 text-[11px] leading-5 text-slate-500">阶段、修复、诊断统一放在这一个控制台里。</p>
-                          </div>
-                          <div className="text-right text-[11px] text-slate-400">
-                            <p>最新在上</p>
-                            <p className="mt-1">最近 {streamState.feed.length} 条</p>
-                          </div>
-                        </div>
-
-                        <div className="mt-3 flex h-[476px] min-h-[476px] flex-col overflow-hidden rounded-[24px] border border-[#1a1f26] bg-[#0d1116] shadow-[inset_0_1px_0_rgba(255,255,255,0.03),0_18px_36px_rgba(15,23,42,0.18)] md:h-[510px] md:min-h-[510px] xl:h-[578px] xl:min-h-[578px]">
-                          <div className="shrink-0 border-b border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0))] px-4 py-3.5">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="flex min-w-0 items-center gap-2.5">
-                                  <span className={liveLogStatus.indicatorClassName} />
-                                  <p className="truncate text-[13px] font-medium text-slate-100">{liveLogStatus.title}</p>
-                                </div>
-                                <p className="mt-2 text-[11px] leading-5 text-slate-400">{liveLogStatus.detail}</p>
-                              </div>
-                              <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-medium tracking-[0.14em] text-slate-200">
-                                {liveLogStatus.badgeLabel}
-                              </span>
-                            </div>
-                            <div className="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
-                              <span className="rounded-full border border-white/10 bg-white/[0.05] px-2.5 py-1 text-slate-300">
-                                {liveAttemptValue}
-                              </span>
-                              <span>累计 {displayAttempts.length} 次</span>
-                              <span>最近 {streamState.feed.length} 条</span>
-                            </div>
-                          </div>
-
-                          {liveFeedItems.length > 0 ? (
-                            <>
-                              <div className="grid shrink-0 grid-cols-[auto_1fr] gap-x-3 border-b border-white/10 px-4 py-2 text-[10px] uppercase tracking-[0.18em] text-slate-500">
-                                <span>级别</span>
-                                <span>Log Stream</span>
-                              </div>
-                              <div aria-live="polite" className="intent-e2e-scroll min-h-0 flex-1 overflow-y-auto px-3 py-1.5 xl:overscroll-contain">
-                                {liveFeedItems.map((item, index) => (
-                                  <div
-                                    key={item.id}
-                                    className={`grid grid-cols-[auto_1fr] gap-x-3 border-b border-white/5 px-1 py-3 last:border-b-0 ${
-                                      index === 0 ? 'bg-white/[0.02]' : ''
-                                    }`}
-                                  >
-                                    <div className="flex flex-col items-center pt-1.5">
-                                      <span className={`h-2 w-2 rounded-full ${feedToneConsoleDotClass(item.tone)}`} />
-                                    </div>
-                                    <div className="min-w-0">
-                                      <div className="flex flex-wrap items-center gap-2">
-                                        <span className="font-mono text-[10px] tracking-[0.16em] text-slate-500">
-                                          {feedToneConsoleLabel(item.tone)}
-                                        </span>
-                                        {index === 0 && (
-                                          <span className="rounded-full border border-sky-400/20 bg-sky-400/10 px-2 py-0.5 text-[10px] font-medium text-sky-200">
-                                            LATEST
-                                          </span>
-                                        )}
-                                      </div>
-                                      <p className="mt-1 text-[12px] leading-6 text-slate-200">{item.text}</p>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </>
-                          ) : (
-                            <div className="flex min-h-0 flex-1 items-center justify-center px-5 py-6 text-center">
-                              <div className="max-w-[250px]">
-                                <p className="text-sm font-medium text-slate-300">日志流准备中</p>
-                                <p className="mt-2 text-xs leading-6 text-slate-500">
-                                  执行开始后，这里会持续显示最新阶段、修复动作和诊断信息。
-                                </p>
-                              </div>
-                            </div>
-                          )}
-                        </div>
                       </div>
                     </div>
                   </div>

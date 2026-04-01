@@ -45,6 +45,14 @@ describe('POST /api/test-plans/[planUid]/execute', () => {
     } as never);
     vi.mocked(executePlan).mockResolvedValue({
       executionUid: 'exec_1',
+      runPath: '/runs/exec_1',
+      workspacePath: '/projects/proj_1?module=mod_1',
+      workspaceHistoryPath: '/projects/proj_1?module=mod_1&historyConfigUid=cfg_1',
+      executionContext: {
+        runPath: '/runs/exec_1',
+        workspacePath: '/projects/proj_1?module=mod_1',
+        workspaceHistoryPath: '/projects/proj_1?module=mod_1&historyConfigUid=cfg_1',
+      },
     } as never);
 
     const req = new NextRequest('http://localhost/api/test-plans/plan_1/execute', {
@@ -64,6 +72,16 @@ describe('POST /api/test-plans/[planUid]/execute', () => {
     });
     expect(applyActorCookie).toHaveBeenCalledTimes(1);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ executionUid: 'exec_1' });
+    expect(await res.json()).toEqual({
+      executionUid: 'exec_1',
+      runPath: '/runs/exec_1',
+      workspacePath: '/projects/proj_1?module=mod_1',
+      workspaceHistoryPath: '/projects/proj_1?module=mod_1&historyConfigUid=cfg_1',
+      executionContext: {
+        runPath: '/runs/exec_1',
+        workspacePath: '/projects/proj_1?module=mod_1',
+        workspaceHistoryPath: '/projects/proj_1?module=mod_1&historyConfigUid=cfg_1',
+      },
+    });
   });
 });

@@ -2,6 +2,14 @@ import type { NextRequest } from 'next/server';
 import type { IntentE2ERunRequest } from '@/lib/ai/intent-e2e-service';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { getModuleByUid, getProjectByUid } from '@/lib/db/repository';
+import {
+  buildIntentE2EProjectAccountRef,
+  buildIntentE2EProjectCredentialRef,
+  buildIntentE2EProjectFixtureOwnerRef,
+  mergeIntentE2ERuntimeGovernance,
+  shouldEnforceIntentE2ERuntimeGovernance,
+} from '@/lib/intent-e2e-runtime-governance';
+import { resolveIntentProjectRuntimeGovernance } from '@/lib/intent-project-runtime-governance';
 import { requireProjectRole } from '@/lib/server/project-actor';
 
 function normalizeOptionalString(value: unknown): string {
@@ -48,6 +56,55 @@ function mergeIntentRequestAuth(
   return merged.loginUrl || merged.username || merged.password || merged.loginDescription ? merged : undefined;
 }
 
+function buildProjectCredentialGovernance(
+  runtimeGovernance: IntentE2ERunRequest['runtimeGovernance'],
+  project: NonNullable<Awaited<ReturnType<typeof getProjectByUid>>>,
+  mergedAuth: IntentE2ERunRequest['auth']
+): IntentE2ERunRequest['runtimeGovernance'] {
+  const projectPassword = project.loginPasswordPlain || '';
+  const resolvedPassword = mergedAuth?.password || '';
+  if (!projectPassword || resolvedPassword !== projectPassword) {
+    return runtimeGovernance;
+  }
+
+  const shouldDeriveCredentialOwnershipDefaults = shouldEnforceIntentE2ERuntimeGovernance(runtimeGovernance);
+
+  return mergeIntentE2ERuntimeGovernance(runtimeGovernance, {
+    credential: {
+      source: 'project',
+      secretRef: buildIntentE2EProjectCredentialRef(project.projectUid),
+      ...(shouldDeriveCredentialOwnershipDefaults && !runtimeGovernance?.credential?.accountRef
+        ? { accountRef: buildIntentE2EProjectAccountRef(project.projectUid, project.loginUsername || mergedAuth?.username || '') }
+        : {}),
+      ...(shouldDeriveCredentialOwnershipDefaults && !runtimeGovernance?.credential?.sessionMode ? { sessionMode: 'shared' } : {}),
+    },
+  });
+}
+
+function applyProjectFixtureOwnershipGovernance(
+  runtimeGovernance: IntentE2ERunRequest['runtimeGovernance'],
+  projectUid: string,
+  actorUserUid: string
+): IntentE2ERunRequest['runtimeGovernance'] {
+  const fixture = runtimeGovernance?.fixture;
+  if (!fixture || fixture.owner) {
+    return runtimeGovernance;
+  }
+
+  const hasFixtureContract = Boolean(
+    (fixture.strategy && fixture.strategy !== 'none') || fixture.setupRef || fixture.cleanupRef || fixture.idempotencyKey
+  );
+  if (!hasFixtureContract) {
+    return runtimeGovernance;
+  }
+
+  return mergeIntentE2ERuntimeGovernance(runtimeGovernance, {
+    fixture: {
+      owner: buildIntentE2EProjectFixtureOwnerRef(projectUid, actorUserUid),
+    },
+  });
+}
+
 export async function resolveIntentE2EProjectAuth(
   req: NextRequest,
   request: IntentE2ERunRequest
@@ -85,6 +142,12 @@ export async function resolveIntentE2EProjectAuth(
   if (!project) {
     throw new Error('项目不存在');
   }
+  const mergedRuntimeGovernance = resolveIntentProjectRuntimeGovernance(projectUid, request.runtimeGovernance);
+  const governanceWithOwnershipDefaults = applyProjectFixtureOwnershipGovernance(
+    mergedRuntimeGovernance,
+    projectUid,
+    actor.userUid
+  );
 
   if (project.authRequired) {
     const mergedAuth = mergeIntentRequestAuth(request, project);
@@ -95,6 +158,7 @@ export async function resolveIntentE2EProjectAuth(
         projectUid,
         moduleUid: moduleUid || undefined,
         auth: mergedAuth,
+        runtimeGovernance: buildProjectCredentialGovernance(governanceWithOwnershipDefaults, project, mergedAuth),
       },
     };
   }
@@ -104,6 +168,7 @@ export async function resolveIntentE2EProjectAuth(
       ...request,
       projectUid,
       moduleUid: moduleUid || undefined,
+      runtimeGovernance: governanceWithOwnershipDefaults,
     },
     actorUserUid: actor.userUid,
   };

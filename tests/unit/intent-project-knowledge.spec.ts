@@ -6,6 +6,9 @@ import { buildIntentActionDSL } from '@/lib/intent-action-dsl';
 import {
   applyIntentProjectKnowledgeToDsl,
   createIntentProjectKnowledgeAuditEntry,
+  getIntentProjectKnowledgeBackupDir,
+  getIntentProjectKnowledgePath,
+  getIntentProjectKnowledgeProfile,
   listIntentProjectKnowledgeBackups,
   listIntentProjectKnowledgeAuditEntries,
   mergeIntentProjectKnowledgeRules,
@@ -19,19 +22,23 @@ import {
 let tempDir = '';
 let knowledgeFile = '';
 let auditFile = '';
+let projectAssetRoot = '';
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'intent-project-knowledge-'));
   knowledgeFile = path.join(tempDir, 'project-knowledge.json');
   auditFile = path.join(tempDir, 'project-knowledge.audit.jsonl');
+  projectAssetRoot = path.join(tempDir, 'projects');
   process.env.INTENT_E2E_PROJECT_KNOWLEDGE_PATH = knowledgeFile;
   process.env.INTENT_E2E_PROJECT_KNOWLEDGE_AUDIT_PATH = auditFile;
+  process.env.INTENT_E2E_PROJECT_ASSET_ROOT = projectAssetRoot;
   resetIntentProjectKnowledgeCache();
 });
 
 afterEach(() => {
   delete process.env.INTENT_E2E_PROJECT_KNOWLEDGE_PATH;
   delete process.env.INTENT_E2E_PROJECT_KNOWLEDGE_AUDIT_PATH;
+  delete process.env.INTENT_E2E_PROJECT_ASSET_ROOT;
   resetIntentProjectKnowledgeCache();
   if (tempDir) {
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -420,6 +427,150 @@ describe('intent-project-knowledge', () => {
       target: 'page',
       urlIncludes: '/customer/profile/',
     });
+  });
+
+  it('uses project-scoped knowledge files for writes while keeping legacy fallback as the initial read baseline', async () => {
+    fs.writeFileSync(
+      knowledgeFile,
+      JSON.stringify(
+        {
+          version: 1,
+          rules: [
+            {
+              id: 'custom.checkout-submit',
+              title: '结算提交页',
+              match: { urlIncludes: ['/checkout'] },
+              promptNotes: ['先等接口成功'],
+              capabilitySlugs: ['assert.wait-for-api-response'],
+              addGlobalRules: [],
+              addPreferredPrimitives: [],
+              addOutputContract: [],
+              stepPatches: [],
+            },
+          ],
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const projectUid = 'proj alpha';
+    const projectKnowledgePath = path.join(projectAssetRoot, 'proj-alpha', 'intent-e2e.project-knowledge.json');
+    const projectBackupDir = path.join(projectAssetRoot, 'proj-alpha', 'intent-e2e.project-knowledge.backups');
+
+    expect(getIntentProjectKnowledgePath(projectUid)).toBe(knowledgeFile);
+    expect(
+      getIntentProjectKnowledgePath(projectUid, {
+        mode: 'write',
+        legacyFallback: false,
+      })
+    ).toBe(projectKnowledgePath);
+    expect(getIntentProjectKnowledgeBackupDir(projectUid)).toBe(projectBackupDir);
+    expect(getIntentProjectKnowledgeProfile(projectUid).rules.map((rule) => rule.id)).toEqual(['custom.checkout-submit']);
+
+    const mergeResult = await mergeIntentProjectKnowledgeRules(
+      [
+        {
+          id: 'custom.orders-list',
+          title: '订单列表',
+          match: { urlIncludes: ['/orders'] },
+          promptNotes: ['优先等待列表渲染'],
+          capabilitySlugs: ['assert.wait-for-table-ready'],
+          addGlobalRules: [],
+          addPreferredPrimitives: [],
+          addOutputContract: [],
+          stepPatches: [],
+        },
+      ],
+      getIntentProjectKnowledgePath(projectUid, {
+        mode: 'write',
+        legacyFallback: false,
+      }),
+      getIntentProjectKnowledgeBackupDir(projectUid),
+      getIntentProjectKnowledgeProfile(projectUid)
+    );
+
+    const projectProfile = JSON.parse(fs.readFileSync(projectKnowledgePath, 'utf8')) as { rules: Array<{ id: string }> };
+    const legacyProfile = JSON.parse(fs.readFileSync(knowledgeFile, 'utf8')) as { rules: Array<{ id: string }> };
+
+    expect(mergeResult.backupPath).toBeNull();
+    expect(mergeResult.writtenTo).toBe(projectKnowledgePath);
+    expect(mergeResult.comparison.before.ruleCount).toBe(1);
+    expect(mergeResult.comparison.after.ruleCount).toBe(2);
+    expect(mergeResult.comparison.addedRuleIds).toEqual(['custom.orders-list']);
+    expect(projectProfile.rules.map((rule) => rule.id)).toEqual(['custom.checkout-submit', 'custom.orders-list']);
+    expect(legacyProfile.rules.map((rule) => rule.id)).toEqual(['custom.checkout-submit']);
+    expect(getIntentProjectKnowledgePath(projectUid)).toBe(projectKnowledgePath);
+  });
+
+  it('backs up and restores project-scoped knowledge files without touching the legacy file', async () => {
+    const projectUid = 'proj_alpha';
+    const projectKnowledgePath = getIntentProjectKnowledgePath(projectUid, {
+      mode: 'write',
+      legacyFallback: false,
+    });
+    const projectBackupDir = getIntentProjectKnowledgeBackupDir(projectUid);
+
+    fs.mkdirSync(path.dirname(projectKnowledgePath), { recursive: true });
+    fs.writeFileSync(
+      projectKnowledgePath,
+      JSON.stringify(
+        {
+          version: 1,
+          rules: [
+            {
+              id: 'custom.checkout-submit',
+              title: '结算提交页',
+              match: { urlIncludes: ['/checkout'] },
+              promptNotes: ['先等接口成功'],
+              capabilitySlugs: ['assert.wait-for-api-response'],
+              addGlobalRules: [],
+              addPreferredPrimitives: [],
+              addOutputContract: [],
+              stepPatches: [],
+            },
+          ],
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const mergeResult = await mergeIntentProjectKnowledgeRules(
+      [
+        {
+          id: 'custom.orders-list',
+          title: '订单列表',
+          match: { urlIncludes: ['/orders'] },
+          promptNotes: ['优先等待列表渲染'],
+          capabilitySlugs: ['assert.wait-for-table-ready'],
+          addGlobalRules: [],
+          addPreferredPrimitives: [],
+          addOutputContract: [],
+          stepPatches: [],
+        },
+      ],
+      projectKnowledgePath,
+      projectBackupDir,
+      getIntentProjectKnowledgeProfile(projectUid, { legacyFallback: false })
+    );
+
+    const backups = await listIntentProjectKnowledgeBackups(12, projectKnowledgePath, projectBackupDir);
+    const restored = await restoreIntentProjectKnowledgeBackup(mergeResult.backupPath, projectKnowledgePath, projectBackupDir);
+    const projectProfile = JSON.parse(fs.readFileSync(projectKnowledgePath, 'utf8')) as { rules: Array<{ id: string }> };
+
+    expect(mergeResult.backupPath).toBeTruthy();
+    expect(backups.backups.length).toBeGreaterThan(0);
+    expect(backups.backups[0].path).toBe(mergeResult.backupPath);
+    expect(restored.restoredFrom).toBe(mergeResult.backupPath);
+    expect(restored.backupCreated).toContain(projectBackupDir);
+    expect(restored.comparison.before.ruleCount).toBe(2);
+    expect(restored.comparison.after.ruleCount).toBe(1);
+    expect(restored.comparison.removedRuleIds).toEqual(['custom.orders-list']);
+    expect(projectProfile.rules.map((rule) => rule.id)).toEqual(['custom.checkout-submit']);
+    expect(fs.existsSync(knowledgeFile)).toBe(false);
   });
 
   it('lists backups and restores the selected backup into the live profile', async () => {

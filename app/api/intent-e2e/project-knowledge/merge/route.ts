@@ -6,6 +6,7 @@ import {
   createIntentProjectKnowledgeAuditEntry,
   writeIntentProjectKnowledgeAuditEntry,
 } from '@/lib/intent-project-knowledge';
+import { evaluateIntentE2ERolloutPolicyDecision } from '@/lib/intent-e2e-rollout-policy';
 import type {
   IntentProjectKnowledgeMergeCandidateSource,
   IntentProjectKnowledgeMergeFeedbackStatus,
@@ -72,6 +73,14 @@ function normalizeAcknowledgedRiskCandidateIds(value: unknown): string[] {
 
 function normalizeProjectUid(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeBoolean(value: unknown): boolean {
+  return value === true;
 }
 
 function mergeActionType(addedRuleCount: number): string {
@@ -484,6 +493,10 @@ export async function POST(req: NextRequest) {
     const candidateIds = normalizeCandidateIds(payload.candidateIds);
     const overrideCandidateIds = normalizeOverrideCandidateIds(payload.overrideCandidateIds);
     const acknowledgedRiskCandidateIds = normalizeAcknowledgedRiskCandidateIds(payload.acknowledgedRiskCandidateIds);
+    const rolloutOverride = normalizeBoolean(payload.rolloutOverride);
+    const rolloutOverrideReason = normalizeString(payload.rolloutOverrideReason);
+    const rolloutCanaryAcknowledged = normalizeBoolean(payload.rolloutCanaryAcknowledged);
+    const rolloutCanaryLabel = normalizeString(payload.rolloutCanaryLabel);
     let actorUserUid = '';
     let actorLabel = 'system';
 
@@ -517,6 +530,21 @@ export async function POST(req: NextRequest) {
       requiredRiskAcknowledgementCandidateIds
     );
     const preflightSummary = buildPreflightSummary(selection, selectionSummary);
+    const insights = await getIntentE2EInsights({
+      projectUid,
+      runLimit: 50,
+      auditLimit: 20,
+    });
+    const rolloutPolicyDecision = await evaluateIntentE2ERolloutPolicyDecision({
+      projectUid,
+      selectedRuleIds: selectionSummary.selectedRuleIds,
+      rolloutStrategy: insights.rolloutStrategy,
+      rollbackCandidates: insights.rollbackCandidates,
+      rolloutOverride,
+      rolloutOverrideReason,
+      rolloutCanaryAcknowledged,
+      rolloutCanaryLabel,
+    });
     const missingRequiredOverrideCandidateIds = requiredOverrideCandidateIds.filter((candidateId) => !overrideCandidateIds.includes(candidateId));
     if (missingRequiredOverrideCandidateIds.length > 0) {
       return NextResponse.json(
@@ -524,6 +552,7 @@ export async function POST(req: NextRequest) {
           error: `本次选择包含 ${missingRequiredOverrideCandidateIds.length} 条已自动降权候选，需显式确认 override 后才能合并：${missingRequiredOverrideCandidateIds.join(' / ')}`,
           selectionSummary,
           preflightSummary,
+          rolloutPolicyDecision,
           mergeReceipts: [],
         },
         { status: 409 }
@@ -538,6 +567,19 @@ export async function POST(req: NextRequest) {
           error: `本次选择包含 ${missingAcknowledgedRiskCandidateIds.length} 条观察期候选，需显式确认风险后才能合并：${missingAcknowledgedRiskCandidateIds.join(' / ')}`,
           selectionSummary,
           preflightSummary,
+          rolloutPolicyDecision,
+          mergeReceipts: [],
+        },
+        { status: 409 }
+      );
+    }
+    if (!rolloutPolicyDecision.allowMerge) {
+      return NextResponse.json(
+        {
+          error: `${rolloutPolicyDecision.summary}${rolloutPolicyDecision.recommendation ? ` ${rolloutPolicyDecision.recommendation}` : ''}`.trim(),
+          selectionSummary,
+          preflightSummary,
+          rolloutPolicyDecision,
           mergeReceipts: [],
         },
         { status: 409 }
@@ -577,21 +619,11 @@ export async function POST(req: NextRequest) {
       mergeResult,
     });
     const nextDraft = mergeResult.addedRuleIds.length > 0 ? await generateIntentProjectKnowledgeDraft(options) : draft;
-    let guardrailSummary: ProjectKnowledgeMergeGuardrailSummary | null = null;
-    try {
-      const insights = await getIntentE2EInsights({
-        projectUid,
-        runLimit: 50,
-        auditLimit: 20,
-      });
-      guardrailSummary = buildMergeGuardrailSummary(
-        mergeResult.addedRuleIds,
-        insights.rollbackCandidates,
-        insights.riskLifecycleRules
-      );
-    } catch {
-      // Guardrail evaluation is best-effort and must not block merge.
-    }
+    const guardrailSummary = buildMergeGuardrailSummary(
+      mergeResult.addedRuleIds,
+      insights.rollbackCandidates,
+      insights.riskLifecycleRules
+    );
     const guardrailWarning = guardrailSummary?.message || undefined;
     const baseMergeReceipts = buildMergeReceipts(
       warnings,
@@ -627,6 +659,7 @@ export async function POST(req: NextRequest) {
         selectionSummary,
         preflightSummary,
         mergeReceipts: baseMergeReceipts,
+        rolloutPolicyDecision,
         successfulRunKnowledgePromotionReceipt: successfulRunKnowledgePromotionReceipt || undefined,
       },
     });
@@ -666,6 +699,7 @@ export async function POST(req: NextRequest) {
             selectionSummary,
             preflightSummary,
             mergeReceipts: baseMergeReceipts,
+            rolloutPolicyDecision,
             successfulRunKnowledgePromotionReceipt: successfulRunKnowledgePromotionReceipt || undefined,
           },
         });
@@ -735,10 +769,15 @@ export async function POST(req: NextRequest) {
       selectionSummary,
       preflightSummary,
       mergeReceipts,
+      rolloutPolicyDecision,
       successfulRunKnowledgePromotionReceipt: successfulRunKnowledgePromotionReceipt || undefined,
       auditWarning: warnings.length > 0 ? warnings.join('；') : undefined,
       overrideWarning,
       riskAcknowledgementWarning,
+      rolloutWarning:
+        rolloutPolicyDecision.appliedMode === 'full_release' && rolloutPolicyDecision.receipts.length === 0
+          ? undefined
+          : rolloutPolicyDecision.summary,
       guardrailWarning,
     });
 

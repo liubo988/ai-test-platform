@@ -214,6 +214,10 @@ function pickFieldStableIdentifier(label: string, stableIdentifiers: string[]): 
   return stableIdentifiers.find((candidate) => labelsLikelyMatch(candidate, label)) || '';
 }
 
+function buildGenericStatusJsonPaths(): string[] {
+  return ['status', 'statusName', 'statusText', 'state', 'stateName', 'stateText', 'displayStatus', 'progress.displayStatus'];
+}
+
 function buildGenericFieldJsonPaths(label: string, stableIdentifiers: string[]): string[] {
   const normalizedLabel = String(label || '').trim();
   const matchedStableIdentifier = pickFieldStableIdentifier(normalizedLabel, stableIdentifiers);
@@ -227,9 +231,7 @@ function buildGenericFieldJsonPaths(label: string, stableIdentifiers: string[]):
     /(手机号|手机号码|电话|mobile|phone)/i.test(normalizedLabel)
       ? ['mobile', 'phone', 'telephone', 'tel', 'contactPhone', 'contactMobile', 'mobilePhone']
       : null,
-    /(状态|status|state)/i.test(normalizedLabel)
-      ? ['status', 'statusName', 'statusText', 'state', 'stateName', 'stateText', 'displayStatus']
-      : null,
+    /(状态|status|state)/i.test(normalizedLabel) ? buildGenericStatusJsonPaths() : null,
     /(创建时间|创建日期|createdat|createtime|createdtime)/i.test(normalizedLabel)
       ? ['createdAt', 'createTime', 'createdTime', 'createDate', 'createdDate', 'gmtCreate']
       : null,

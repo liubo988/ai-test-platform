@@ -1,5 +1,8 @@
 import type { ScenarioAttachment } from '@/lib/ai/scenario-card';
 import type { IntentE2ERunRequest } from '@/lib/ai/intent-e2e-service';
+import { normalizeIntentE2ERunControl } from '@/lib/intent-e2e-run-control';
+import { normalizeIntentE2ERuntimeGovernance } from '@/lib/intent-e2e-runtime-governance';
+import { normalizeIntentE2ECiCdProfile } from '@/lib/intent-e2e-system-onboarding';
 import type { LLMRuntimeOverrides } from '@/lib/llm/provider-config';
 import type { AuthConfig } from '@/lib/page-analyzer';
 
@@ -82,8 +85,12 @@ export function normalizeIntentE2ERequestBody(body: unknown): IntentE2ERunReques
     targetUrl: typeof record.targetUrl === 'string' ? record.targetUrl.trim() : '',
     projectUid: typeof record.projectUid === 'string' ? record.projectUid.trim() : '',
     moduleUid: typeof record.moduleUid === 'string' ? record.moduleUid.trim() : '',
+    onboardingManifestId: typeof record.onboardingManifestId === 'string' ? record.onboardingManifestId.trim() : '',
+    cicdProfile: normalizeIntentE2ECiCdProfile(record.cicdProfile),
     auth: normalizeAuth(record.auth),
     attachments: normalizeAttachments(record.attachments),
     llmConfig: normalizeLlmConfig(record.llmConfig),
+    runControl: normalizeIntentE2ERunControl(record.runControl),
+    runtimeGovernance: normalizeIntentE2ERuntimeGovernance(record.runtimeGovernance),
   };
 }

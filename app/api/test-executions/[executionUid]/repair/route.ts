@@ -61,7 +61,10 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ executionU
           planUid: repaired.planUid,
           planVersion: repaired.planVersion,
           executionUid: repaired.executionUid,
-          runPath: `/runs/${repaired.executionUid}`,
+          runPath: repaired.runPath,
+          workspacePath: repaired.workspacePath,
+          workspaceHistoryPath: repaired.workspaceHistoryPath,
+          executionContext: repaired.executionContext,
         },
         { status: 201 }
       ),

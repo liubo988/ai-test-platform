@@ -32,6 +32,26 @@ import {
   type IntentVerificationFailurePressureSummary,
 } from '@/lib/intent-verification-failure-pressure-summary';
 import { summarizeIntentExecutionRepairObservationArtifact } from '@/lib/intent-execution-artifacts';
+import type { IntentE2EAssetReadiness, IntentE2EAssetReadinessStatus } from '@/lib/ai/intent-e2e-service';
+import {
+  isIntentE2EBlockedQualityBucket,
+  normalizeIntentE2EQualitySplit,
+  type IntentE2EQualityBucket,
+  type IntentE2EQualitySplit,
+} from '@/lib/intent-e2e-quality-split';
+import {
+  DEFAULT_INTENT_E2E_RUNNER_TYPE,
+  DEFAULT_INTENT_E2E_TEST_TYPE,
+  normalizePlatformRunnerType,
+  normalizePlatformTestType,
+  type PlatformRunnerType,
+  type PlatformTestType,
+} from '@/lib/test-platform-asset-model';
+import {
+  readIntentProjectRuntimeGovernanceStatus,
+  type IntentProjectRuntimeGovernanceIssue,
+  type IntentProjectRuntimeGovernanceStatus,
+} from '@/lib/intent-project-runtime-governance';
 
 export interface IntentE2EInsightPassMetrics {
   firstPassPassedRuns: number;
@@ -50,16 +70,30 @@ export interface IntentE2EInsightSummary extends IntentE2EInsightPassMetrics {
   failedRuns: number;
   canceledRuns: number;
   passRate: number;
+  modelQualityEligibleRuns: number;
+  modelQualityPassRate: number;
+  modelQualityFailureRuns: number;
+  modelQualityFailureRate: number;
+  blockedRuns: number;
+  blockedRate: number;
   knowledgeHitRuns: number;
   knowledgeHitRate: number;
   suggestedHelperReuseRuns: number;
   suggestedHelperReuseRate: number;
   authBlockRuns: number;
   authBlockRate: number;
+  permissionBlockedRuns: number;
+  permissionBlockedRate: number;
   envBlockRuns: number;
   envBlockRate: number;
+  dataBlockedRuns: number;
+  dataBlockedRate: number;
   assertionFailureRuns: number;
   assertionFailureRate: number;
+  assetMissingRuns: number;
+  assetMissingRate: number;
+  noHitRuns: number;
+  noHitRate: number;
 }
 
 export interface IntentE2EInsightRuleStat {
@@ -438,6 +472,9 @@ export interface IntentE2EInsightRecentTraceVerifierResult {
 export interface IntentE2EInsightRecentTrace {
   traceVersion: 1;
   runId: string;
+  testType: PlatformTestType;
+  runnerType: PlatformRunnerType;
+  verificationPolicyNotes: string[];
   projectUid: string;
   status: 'passed' | 'failed' | 'canceled';
   finishedAt: string;
@@ -460,6 +497,8 @@ export interface IntentE2EInsightRecentTrace {
   structuredPatchAttempted: boolean;
   targetedRepairAttempted: boolean;
   knowledgeHit: boolean;
+  assetReadiness: IntentE2EAssetReadiness;
+  qualitySplit: IntentE2EQualitySplit;
   matchedRecipeSlugs: string[];
   matchedRuleIds: string[];
   matchedRuleTitles: string[];
@@ -766,6 +805,18 @@ export interface IntentE2EInsightMergeProvenanceStat {
   supportingAuditIds: string[];
 }
 
+export interface IntentE2EInsightProjectRuntimeGovernanceStatus {
+  projectUid: string;
+  path: string;
+  exists: boolean;
+  valid: boolean;
+  ready: boolean;
+  hasEnvironmentProfile: boolean;
+  hasCredentialDefaults: boolean;
+  hasFixtureDefaults: boolean;
+  issues: IntentProjectRuntimeGovernanceIssue[];
+}
+
 export interface IntentE2EInsightsResult {
   scope: {
     projectUid: string;
@@ -798,6 +849,7 @@ export interface IntentE2EInsightsResult {
   starterHelperFailurePressureSummary?: IntentVerificationFailurePressureSummary;
   suppressedStarterHelperFailurePressureSummary?: IntentVerificationFailurePressureSummary;
   suppressedStarterHelperGovernanceSummary?: IntentE2EInsightSuppressedStarterHelperGovernanceSummary;
+  runtimeGovernanceStatus?: IntentE2EInsightProjectRuntimeGovernanceStatus;
 }
 
 interface BuildIntentE2EInsightsOptions {
@@ -805,10 +857,14 @@ interface BuildIntentE2EInsightsOptions {
   runLimit?: number;
   auditLimit?: number;
   nowMs?: number;
+  runtimeGovernanceStatus?: IntentE2EInsightProjectRuntimeGovernanceStatus;
 }
 
-interface InsightRunRecord {
+export interface IntentE2EInsightRunRecord {
   runId: string;
+  testType: PlatformTestType;
+  runnerType: PlatformRunnerType;
+  verificationPolicyNotes: string[];
   projectUid: string;
   moduleUid: string;
   status: 'passed' | 'failed' | 'canceled';
@@ -828,6 +884,8 @@ interface InsightRunRecord {
   compiledSlotCount: number;
   compiledSlotUids: string[];
   matchedRecipeSlugs: string[];
+  assetReadiness: IntentE2EAssetReadiness;
+  qualitySplit: IntentE2EQualitySplit;
   matchedRuleIds: string[];
   matchedRuleTitles: string[];
   matchedStarterHelpers: string[];
@@ -846,6 +904,8 @@ interface InsightRunRecord {
   failureClass: string;
   attempts: IntentE2EInsightRecentTraceAttempt[];
 }
+
+type InsightRunRecord = IntentE2EInsightRunRecord;
 
 interface InsightCapabilityVerificationRecord {
   executionUid: string;
@@ -877,6 +937,46 @@ function uniqueStrings(values: Array<string | null | undefined>): string[] {
   }
 
   return items;
+}
+
+function normalizeIntentE2EAssetReadinessStatus(value: unknown): IntentE2EAssetReadinessStatus {
+  return value === 'asset_missing' || value === 'no_hit' || value === 'ready' ? value : 'ready';
+}
+
+function normalizeIntentE2EAssetReadiness(
+  raw: unknown,
+  fallback: {
+    projectUid: string;
+    knowledgeMatchCount: number;
+  }
+): IntentE2EAssetReadiness {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
+  const fallbackStatus: IntentE2EAssetReadinessStatus =
+    fallback.projectUid && fallback.knowledgeMatchCount <= 0 ? 'no_hit' : 'ready';
+  const status = normalizeIntentE2EAssetReadinessStatus(source?.status);
+
+  return {
+    status: source ? status : fallbackStatus,
+    projectUid:
+      typeof source?.projectUid === 'string' && source.projectUid.trim()
+        ? source.projectUid.trim()
+        : fallback.projectUid,
+    onboardingPath: typeof source?.onboardingPath === 'string' && source.onboardingPath.trim() ? source.onboardingPath.trim() : undefined,
+    knowledgePath: typeof source?.knowledgePath === 'string' && source.knowledgePath.trim() ? source.knowledgePath.trim() : undefined,
+    repairMemoryPath:
+      typeof source?.repairMemoryPath === 'string' && source.repairMemoryPath.trim()
+        ? source.repairMemoryPath.trim()
+        : undefined,
+    hasOnboarding: typeof source?.hasOnboarding === 'boolean' ? source.hasOnboarding : undefined,
+    onboardingReady: typeof source?.onboardingReady === 'boolean' ? source.onboardingReady : undefined,
+    hasKnowledgeAsset: typeof source?.hasKnowledgeAsset === 'boolean' ? source.hasKnowledgeAsset : undefined,
+    hasRepairMemoryAsset: typeof source?.hasRepairMemoryAsset === 'boolean' ? source.hasRepairMemoryAsset : undefined,
+    knowledgeMatchCount:
+      typeof source?.knowledgeMatchCount === 'number' && Number.isFinite(source.knowledgeMatchCount)
+        ? Math.max(0, Math.floor(source.knowledgeMatchCount))
+        : fallback.knowledgeMatchCount,
+    reasons: Array.isArray(source?.reasons) ? uniqueStrings(source.reasons as string[]) : source ? [] : fallbackStatus === 'no_hit' ? ['knowledge_no_hit'] : fallback.projectUid ? [] : ['global_scope'],
+  };
 }
 
 function toPercent(numerator: number, denominator: number): number {
@@ -1528,12 +1628,26 @@ function buildPassMetrics(runs: InsightRunRecord[]): IntentE2EInsightPassMetrics
   };
 }
 
-const AUTH_BLOCK_FAILURE_CLASSES = new Set(['auth_failed', 'permission_blocked']);
-const ENV_BLOCK_FAILURE_CLASSES = new Set(['env_transient', 'data_missing']);
 const ASSERTION_FAILURE_CLASSES = new Set(['assertion_too_strict']);
+const AUTH_BLOCK_QUALITY_BUCKETS = new Set<IntentE2EQualityBucket>(['auth_blocked', 'permission_blocked']);
+const ENV_BLOCK_QUALITY_BUCKETS = new Set<IntentE2EQualityBucket>(['env_blocked', 'data_blocked']);
+const PERMISSION_BLOCK_QUALITY_BUCKETS = new Set<IntentE2EQualityBucket>(['permission_blocked']);
+const DATA_BLOCK_QUALITY_BUCKETS = new Set<IntentE2EQualityBucket>(['data_blocked']);
+const MODEL_QUALITY_FAILURE_BUCKETS = new Set<IntentE2EQualityBucket>(['model_quality']);
 
 function countRunsByFailureClasses(runs: InsightRunRecord[], failureClasses: ReadonlySet<string>): number {
   return runs.filter((run) => failureClasses.has(run.failureClass)).length;
+}
+
+function countRunsByQualityBuckets(
+  runs: InsightRunRecord[],
+  buckets: ReadonlySet<IntentE2EQualityBucket>
+): number {
+  return runs.filter((run) => buckets.has(run.qualitySplit.bucket)).length;
+}
+
+function isIntentE2EModelQualityEligibleBucket(bucket: IntentE2EQualityBucket): boolean {
+  return bucket === 'passed' || bucket === 'model_quality';
 }
 
 function getAuditMergedCandidateSources(audit: IntentProjectKnowledgeAuditEntry): string[] {
@@ -2116,6 +2230,8 @@ function normalizeTerminalRun(snapshot: IntentE2ERunSnapshotRecord): InsightRunR
         result?: {
           scenarioCard?: unknown;
           description?: unknown;
+          assetReadiness?: unknown;
+          qualitySplit?: unknown;
           executionPlan?: {
             matchedRecipeSlugs?: unknown;
           } | null;
@@ -2179,6 +2295,17 @@ function normalizeTerminalRun(snapshot: IntentE2ERunSnapshotRecord): InsightRunR
       })
     : {};
   const result = state.result && typeof state.result === 'object' ? state.result : null;
+  const resultPlatformMeta = result as
+    | {
+        testType?: unknown;
+        runnerType?: unknown;
+        verificationContract?: {
+          typeFields?: {
+            policyNotes?: unknown;
+          } | null;
+        } | null;
+      }
+    | null;
   const scenarioCard =
     result?.scenarioCard && typeof result.scenarioCard === 'object' && !Array.isArray(result.scenarioCard)
       ? (result.scenarioCard as {
@@ -2234,6 +2361,15 @@ function normalizeTerminalRun(snapshot: IntentE2ERunSnapshotRecord): InsightRunR
       ? (result.verificationPlan.matchedRecipeSlugs as string[])
       : []),
   ]);
+  const matchedRuleIds = Array.isArray(knowledge?.matchedRuleIds) ? uniqueStrings(knowledge?.matchedRuleIds as string[]) : [];
+  const matchedRuleTitles = Array.isArray(knowledge?.matchedRuleTitles) ? uniqueStrings(knowledge?.matchedRuleTitles as string[]) : [];
+  const assetReadiness = normalizeIntentE2EAssetReadiness(
+    result?.assetReadiness,
+    {
+      projectUid: snapshot.projectUid,
+      knowledgeMatchCount: matchedRuleIds.length,
+    }
+  );
   const matchedStarterHelpers =
     knowledge &&
     typeof knowledge === 'object' &&
@@ -2322,10 +2458,32 @@ function normalizeTerminalRun(snapshot: IntentE2ERunSnapshotRecord): InsightRunR
   const verificationPlanPayload: {
     expectedOutcome?: unknown;
     checks?: unknown;
+    policyNotes?: unknown;
   } | null =
     result?.verificationPlan && typeof result.verificationPlan === 'object' && !Array.isArray(result.verificationPlan)
       ? result.verificationPlan
       : null;
+  const verificationPolicyNotes = uniqueStrings([
+    ...(resultPlatformMeta?.verificationContract?.typeFields &&
+    Array.isArray(resultPlatformMeta.verificationContract.typeFields.policyNotes)
+      ? (resultPlatformMeta.verificationContract.typeFields.policyNotes as string[])
+      : []),
+    ...(Array.isArray(verificationPlanPayload?.policyNotes) ? (verificationPlanPayload?.policyNotes as string[]) : []),
+  ]);
+  const fallbackFailureClass =
+    snapshot.status === 'passed'
+      ? ''
+      : [...normalizedAttempts].reverse().find((attempt) => attempt.failureClass)?.failureClass || '';
+  const finalFailureClass =
+    result?.finalFailureTriage && typeof result.finalFailureTriage.failureClass === 'string'
+      ? result.finalFailureTriage.failureClass.trim()
+      : fallbackFailureClass;
+  const testType = normalizePlatformTestType(resultPlatformMeta?.testType) || DEFAULT_INTENT_E2E_TEST_TYPE;
+  const runnerType = normalizePlatformRunnerType(resultPlatformMeta?.runnerType) || DEFAULT_INTENT_E2E_RUNNER_TYPE;
+  const qualitySplit = normalizeIntentE2EQualitySplit(result?.qualitySplit, {
+    status: snapshot.status,
+    failureClass: finalFailureClass,
+  });
   const { finishedAt, finishedAtMs } = pickFinishedAt(snapshot);
   const firstAttempt = normalizedAttempts[0];
   const firstPassSucceeded =
@@ -2336,10 +2494,12 @@ function normalizeTerminalRun(snapshot: IntentE2ERunSnapshotRecord): InsightRunR
   const repairedSucceeded =
     snapshot.status === 'passed' &&
     normalizedAttempts.some((attempt) => attempt.kind === 'repair' && attempt.outcome === 'passed');
-  const fallbackFailureClass = snapshot.status === 'passed' ? '' : [...normalizedAttempts].reverse().find((attempt) => attempt.failureClass)?.failureClass || '';
 
   return {
     runId: snapshot.runId,
+    testType,
+    runnerType,
+    verificationPolicyNotes,
     projectUid: snapshot.projectUid,
     moduleUid: snapshot.moduleUid || '',
     status: snapshot.status,
@@ -2365,8 +2525,10 @@ function normalizeTerminalRun(snapshot: IntentE2ERunSnapshotRecord): InsightRunR
     compiledSlotCount: compiledSlotUids.length,
     compiledSlotUids,
     matchedRecipeSlugs,
-    matchedRuleIds: Array.isArray(knowledge?.matchedRuleIds) ? uniqueStrings(knowledge?.matchedRuleIds as string[]) : [],
-    matchedRuleTitles: Array.isArray(knowledge?.matchedRuleTitles) ? uniqueStrings(knowledge?.matchedRuleTitles as string[]) : [],
+    assetReadiness,
+    qualitySplit,
+    matchedRuleIds,
+    matchedRuleTitles,
     matchedStarterHelpers,
     suggestedHelpers: Array.isArray(knowledge?.suggestedHelpers) ? uniqueStrings(knowledge?.suggestedHelpers as string[]) : [],
     usedHelpers: uniqueStrings(normalizedAttempts.flatMap((item) => item.usedHelpers)),
@@ -2381,10 +2543,7 @@ function normalizeTerminalRun(snapshot: IntentE2ERunSnapshotRecord): InsightRunR
     }),
     finalGraderResult: buildTraceFinalGraderResult({
       status: snapshot.status,
-      failureClass:
-        result?.finalFailureTriage && typeof result.finalFailureTriage.failureClass === 'string'
-          ? result.finalFailureTriage.failureClass.trim()
-          : fallbackFailureClass,
+      failureClass: finalFailureClass,
       finalFailureSummary,
       repairable: finalFailureRepairable,
       finalResultError,
@@ -2397,12 +2556,15 @@ function normalizeTerminalRun(snapshot: IntentE2ERunSnapshotRecord): InsightRunR
         attempt.targetSlotUids.length > 0
     ),
     patchedSlotUids: uniqueStrings(normalizedAttempts.flatMap((attempt) => attempt.returnedSlotUids)),
-    failureClass:
-      result?.finalFailureTriage && typeof result.finalFailureTriage.failureClass === 'string'
-        ? result.finalFailureTriage.failureClass.trim()
-        : fallbackFailureClass,
+    failureClass: finalFailureClass,
     attempts: normalizedAttempts,
   };
+}
+
+export function normalizeIntentE2ETerminalRunSnapshot(
+  snapshot: IntentE2ERunSnapshotRecord
+): IntentE2EInsightRunRecord | null {
+  return normalizeTerminalRun(snapshot);
 }
 
 function buildRuleStats(runs: InsightRunRecord[]): IntentE2EInsightRuleStat[] {
@@ -3257,6 +3419,9 @@ function buildRecentTraceSummaries(runs: InsightRunRecord[], limit = 8): IntentE
       return {
         traceVersion: 1,
         runId: run.runId,
+        testType: run.testType,
+        runnerType: run.runnerType,
+        verificationPolicyNotes: [...run.verificationPolicyNotes],
         projectUid: run.projectUid,
         status: run.status,
         finishedAt: run.finishedAt,
@@ -3278,7 +3443,14 @@ function buildRecentTraceSummaries(runs: InsightRunRecord[], limit = 8): IntentE
         repairAttempted: run.attempts.some((attempt) => attempt.kind === 'repair'),
         structuredPatchAttempted: run.structuredPatchAttempted,
         targetedRepairAttempted: run.targetedRepairAttempted,
-        knowledgeHit: run.matchedRuleIds.length > 0,
+        knowledgeHit: run.assetReadiness.knowledgeMatchCount > 0 || run.matchedRuleIds.length > 0,
+        assetReadiness: {
+          ...run.assetReadiness,
+          reasons: [...run.assetReadiness.reasons],
+        },
+        qualitySplit: {
+          ...run.qualitySplit,
+        },
         matchedRecipeSlugs: [...run.matchedRecipeSlugs],
         matchedRuleIds: [...run.matchedRuleIds],
         matchedRuleTitles: [...run.matchedRuleTitles],
@@ -3944,6 +4116,19 @@ function buildEvaluationBaseline(runs: InsightRunRecord[]): IntentE2EEvaluationB
     selectionNote: '固定评测候选按 snapshot signature 聚类，优先保留高频、复杂、失败或依赖 repair 的真实业务流。',
     candidates: recommendedCandidates,
   };
+}
+
+export function buildIntentE2EEvaluationBaselineFromRuns(
+  runs: IntentE2EInsightRunRecord[]
+): IntentE2EEvaluationBaseline {
+  return buildEvaluationBaseline(runs);
+}
+
+export function buildIntentE2EEvaluationBaselineFromData(
+  runSnapshots: IntentE2ERunSnapshotRecord[]
+): IntentE2EEvaluationBaseline {
+  const terminalRuns = runSnapshots.map(normalizeTerminalRun).filter((item): item is InsightRunRecord => Boolean(item));
+  return buildEvaluationBaseline(terminalRuns);
 }
 
 function getStarterEligibleRuleSource(
@@ -5852,6 +6037,27 @@ export function buildIntentE2ERecipePerformanceMapFromData(
   }, {});
 }
 
+function toIntentE2EInsightProjectRuntimeGovernanceStatus(
+  status?: IntentProjectRuntimeGovernanceStatus | null
+): IntentE2EInsightProjectRuntimeGovernanceStatus | undefined {
+  if (!status?.projectUid) return undefined;
+
+  return {
+    projectUid: status.projectUid,
+    path: status.path,
+    exists: status.exists,
+    valid: status.valid,
+    ready: status.ready,
+    hasEnvironmentProfile: status.hasEnvironmentProfile,
+    hasCredentialDefaults: status.hasCredentialDefaults,
+    hasFixtureDefaults: status.hasFixtureDefaults,
+    issues: status.issues.map((issue) => ({
+      code: issue.code,
+      message: issue.message,
+    })),
+  };
+}
+
 export function buildIntentE2EInsightsFromData(
   runSnapshots: IntentE2ERunSnapshotRecord[],
   audits: IntentProjectKnowledgeAuditEntry[],
@@ -5866,11 +6072,20 @@ export function buildIntentE2EInsightsFromData(
   const passedRuns = terminalRuns.filter((run) => run.status === 'passed').length;
   const failedRuns = terminalRuns.filter((run) => run.status === 'failed').length;
   const canceledRuns = terminalRuns.filter((run) => run.status === 'canceled').length;
+  const blockedRuns = terminalRuns.filter((run) => isIntentE2EBlockedQualityBucket(run.qualitySplit.bucket)).length;
+  const modelQualityEligibleRuns = terminalRuns.filter((run) =>
+    isIntentE2EModelQualityEligibleBucket(run.qualitySplit.bucket)
+  ).length;
+  const modelQualityFailureRuns = countRunsByQualityBuckets(terminalRuns, MODEL_QUALITY_FAILURE_BUCKETS);
   const knowledgeHitRuns = terminalRuns.filter((run) => run.matchedRuleIds.length > 0).length;
   const suggestedHelperReuseRuns = terminalRuns.filter((run) => run.usedSuggestedHelpers.length > 0).length;
-  const authBlockRuns = countRunsByFailureClasses(terminalRuns, AUTH_BLOCK_FAILURE_CLASSES);
-  const envBlockRuns = countRunsByFailureClasses(terminalRuns, ENV_BLOCK_FAILURE_CLASSES);
+  const authBlockRuns = countRunsByQualityBuckets(terminalRuns, AUTH_BLOCK_QUALITY_BUCKETS);
+  const envBlockRuns = countRunsByQualityBuckets(terminalRuns, ENV_BLOCK_QUALITY_BUCKETS);
+  const permissionBlockedRuns = countRunsByQualityBuckets(terminalRuns, PERMISSION_BLOCK_QUALITY_BUCKETS);
+  const dataBlockedRuns = countRunsByQualityBuckets(terminalRuns, DATA_BLOCK_QUALITY_BUCKETS);
   const assertionFailureRuns = countRunsByFailureClasses(terminalRuns, ASSERTION_FAILURE_CLASSES);
+  const assetMissingRuns = terminalRuns.filter((run) => run.assetReadiness.status === 'asset_missing').length;
+  const noHitRuns = terminalRuns.filter((run) => run.assetReadiness.status === 'no_hit').length;
   const passMetrics = buildPassMetrics(terminalRuns);
   const probationRules = buildProbationRules(terminalRuns, audits, 6, 6);
   const allProbationRules = buildProbationRules(terminalRuns, audits, 6, Math.max(1, audits.length || 1));
@@ -5924,16 +6139,30 @@ export function buildIntentE2EInsightsFromData(
       canceledRuns,
       ...passMetrics,
       passRate: toPercent(passedRuns, terminalRuns.length),
+      modelQualityEligibleRuns,
+      modelQualityPassRate: toPercent(passedRuns, modelQualityEligibleRuns),
+      modelQualityFailureRuns,
+      modelQualityFailureRate: toPercent(modelQualityFailureRuns, modelQualityEligibleRuns),
+      blockedRuns,
+      blockedRate: toPercent(blockedRuns, terminalRuns.length),
       knowledgeHitRuns,
       knowledgeHitRate: toPercent(knowledgeHitRuns, terminalRuns.length),
       suggestedHelperReuseRuns,
       suggestedHelperReuseRate: toPercent(suggestedHelperReuseRuns, terminalRuns.length),
       authBlockRuns,
       authBlockRate: toPercent(authBlockRuns, terminalRuns.length),
+      permissionBlockedRuns,
+      permissionBlockedRate: toPercent(permissionBlockedRuns, terminalRuns.length),
       envBlockRuns,
       envBlockRate: toPercent(envBlockRuns, terminalRuns.length),
+      dataBlockedRuns,
+      dataBlockedRate: toPercent(dataBlockedRuns, terminalRuns.length),
       assertionFailureRuns,
       assertionFailureRate: toPercent(assertionFailureRuns, terminalRuns.length),
+      assetMissingRuns,
+      assetMissingRate: toPercent(assetMissingRuns, terminalRuns.length),
+      noHitRuns,
+      noHitRate: toPercent(noHitRuns, terminalRuns.length),
     },
     topRules: buildRuleStats(terminalRuns),
     topHelpers: buildHelperStats(terminalRuns),
@@ -5965,6 +6194,17 @@ export function buildIntentE2EInsightsFromData(
       Math.min(Math.max(4, runLimit), 8)
     ),
     evaluationBaseline,
+    ...(options.runtimeGovernanceStatus
+      ? {
+          runtimeGovernanceStatus: {
+            ...options.runtimeGovernanceStatus,
+            issues: options.runtimeGovernanceStatus.issues.map((issue) => ({
+              code: issue.code,
+              message: issue.message,
+            })),
+          },
+        }
+      : {}),
   };
 }
 
@@ -6020,6 +6260,9 @@ export async function getIntentE2EInsights(options: BuildIntentE2EInsightsOption
   const projectUid = options.projectUid?.trim() || '';
   const runLimit = Math.max(1, Math.min(200, Math.floor(options.runLimit || 50)));
   const auditLimit = Math.max(1, Math.min(50, Math.floor(options.auditLimit || 12)));
+  const runtimeGovernanceStatus = projectUid
+    ? toIntentE2EInsightProjectRuntimeGovernanceStatus(readIntentProjectRuntimeGovernanceStatus(projectUid))
+    : undefined;
   const [runs, audits, activityLogs, capabilities] = await Promise.all([
     listIntentE2ERunSnapshots({
       projectUid,
@@ -6035,6 +6278,7 @@ export async function getIntentE2EInsights(options: BuildIntentE2EInsightsOption
     projectUid,
     runLimit,
     auditLimit,
+    runtimeGovernanceStatus,
   }, activityLogs);
   const starterHelpersWithFeedback = attachIntentStarterHelperVerificationFeedback(result.starterHelpers, capabilities, activityLogs);
   const suppressedStarterHelpersWithFeedback = attachIntentSuppressedStarterHelperVerificationFeedback(

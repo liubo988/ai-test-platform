@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "presets": [
+    {
+      "presetId": "openapi_file",
+      "displayName": "OpenAPI File",
+      "contractKind": "openapi_document",
+      "targetPolicy": {
+        "mode": "contract_file",
+        "defaultTargets": [],
+        "maxTargets": 1
+      }
+    }
+  ]
+}

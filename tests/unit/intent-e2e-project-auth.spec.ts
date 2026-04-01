@@ -14,9 +14,15 @@ vi.mock('@/lib/server/project-actor', () => ({
   requireProjectRole: vi.fn(),
 }));
 
+vi.mock('@/lib/intent-project-runtime-governance', () => ({
+  resolveIntentProjectRuntimeGovernance: vi.fn((_projectUid: string, override?: Record<string, unknown>) => override),
+}));
+
 import { getModuleByUid } from '@/lib/db/repository';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { getProjectByUid } from '@/lib/db/repository';
+import { resolveIntentProjectRuntimeGovernance } from '@/lib/intent-project-runtime-governance';
+import { shouldEnforceIntentE2ERuntimeGovernance } from '@/lib/intent-e2e-runtime-governance';
 import { requireProjectRole } from '@/lib/server/project-actor';
 import { resolveIntentE2EProjectAuth } from '../../lib/server/intent-e2e-project-auth';
 
@@ -40,9 +46,10 @@ describe('intent-e2e-project-auth', () => {
       moduleUid: 'mod_1',
       projectUid: 'proj_1',
     } as never);
+    vi.mocked(resolveIntentProjectRuntimeGovernance).mockImplementation((_projectUid, override) => override as never);
   });
 
-  it('injects project auth when the request does not provide auth', async () => {
+  it('injects project auth without promoting legacy project runs into enforced governance', async () => {
     const req = new NextRequest('http://localhost/api/intent-e2e/runs');
     const result = await resolveIntentE2EProjectAuth(req, {
       input: '创建商机并校验状态',
@@ -57,6 +64,13 @@ describe('intent-e2e-project-auth', () => {
       password: 'project-secret',
       loginDescription: '统一密码登录',
     });
+    expect(result.request.runtimeGovernance).toEqual({
+      credential: {
+        source: 'project',
+        secretRef: 'project://proj_1/auth/default',
+      },
+    });
+    expect(shouldEnforceIntentE2ERuntimeGovernance(result.request.runtimeGovernance)).toBe(false);
   });
 
   it('fills missing auth fields from the project when the request provides only partial auth', async () => {
@@ -119,6 +133,156 @@ describe('intent-e2e-project-auth', () => {
       username: 'owner@example.com',
       password: 'override-secret',
       loginDescription: '统一密码登录',
+    });
+    expect(result.request.runtimeGovernance).toBeUndefined();
+  });
+
+  it('merges project credential ref into existing runtime governance without dropping env or fixture contract', async () => {
+    const req = new NextRequest('http://localhost/api/intent-e2e/runs');
+    const result = await resolveIntentE2EProjectAuth(req, {
+      input: '创建商机并校验状态',
+      projectUid: 'proj_1',
+      runtimeGovernance: {
+        environmentProfile: 'test',
+        fixture: {
+          strategy: 'setup_cleanup',
+          setupRef: 'fixture://crm/opportunity/setup',
+          cleanupRef: 'fixture://crm/opportunity/cleanup',
+          owner: 'qa-crm',
+          idempotencyKey: 'crm-opportunity-create',
+        },
+      },
+    });
+
+    expect(result.request.runtimeGovernance).toEqual({
+      environmentProfile: 'test',
+      credential: {
+        source: 'project',
+        secretRef: 'project://proj_1/auth/default',
+        accountRef: 'account://project/proj_1/owner%40example.com',
+        sessionMode: 'shared',
+      },
+      fixture: {
+        strategy: 'setup_cleanup',
+        setupRef: 'fixture://crm/opportunity/setup',
+        cleanupRef: 'fixture://crm/opportunity/cleanup',
+        owner: 'qa-crm',
+        idempotencyKey: 'crm-opportunity-create',
+      },
+    });
+  });
+
+  it('merges project-level governance defaults before stamping the project credential ref', async () => {
+    vi.mocked(resolveIntentProjectRuntimeGovernance).mockReturnValue({
+      environmentProfile: 'staging',
+      credential: {
+        accountRef: 'account://crm/shared-owner',
+        sessionMode: 'shared',
+      },
+      fixture: {
+        strategy: 'setup_cleanup',
+        setupRef: 'fixture://crm/opportunity/setup',
+        cleanupRef: 'fixture://crm/opportunity/cleanup',
+        owner: 'qa-crm',
+        idempotencyKey: 'crm-opportunity-shared',
+      },
+    } as never);
+
+    const req = new NextRequest('http://localhost/api/intent-e2e/runs');
+    const result = await resolveIntentE2EProjectAuth(req, {
+      input: '创建商机并校验状态',
+      projectUid: 'proj_1',
+    });
+
+    expect(result.request.runtimeGovernance).toEqual({
+      environmentProfile: 'staging',
+      credential: {
+        source: 'project',
+        secretRef: 'project://proj_1/auth/default',
+        accountRef: 'account://crm/shared-owner',
+        sessionMode: 'shared',
+      },
+      fixture: {
+        strategy: 'setup_cleanup',
+        setupRef: 'fixture://crm/opportunity/setup',
+        cleanupRef: 'fixture://crm/opportunity/cleanup',
+        owner: 'qa-crm',
+        idempotencyKey: 'crm-opportunity-shared',
+      },
+    });
+  });
+
+  it('applies project-level governance defaults even when the project does not require auth', async () => {
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_1',
+      authRequired: false,
+      loginUrl: '',
+      loginUsername: '',
+      loginPasswordPlain: '',
+      loginPasswordMasked: '',
+      loginDescription: '',
+    } as never);
+    vi.mocked(resolveIntentProjectRuntimeGovernance).mockReturnValue({
+      environmentProfile: 'test',
+      fixture: {
+        strategy: 'idempotent',
+        owner: 'qa-crm',
+        idempotencyKey: 'crm-dashboard-read',
+      },
+    } as never);
+
+    const req = new NextRequest('http://localhost/api/intent-e2e/runs');
+    const result = await resolveIntentE2EProjectAuth(req, {
+      input: '登录后查看首页额度信息',
+      projectUid: 'proj_1',
+    });
+
+    expect(result.request.runtimeGovernance).toEqual({
+      environmentProfile: 'test',
+      fixture: {
+        strategy: 'idempotent',
+        owner: 'qa-crm',
+        idempotencyKey: 'crm-dashboard-read',
+      },
+    });
+    expect(result.request.auth).toBeUndefined();
+  });
+
+  it('derives fixture owner from the actor when a project-scoped fixture contract omits owner', async () => {
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_1',
+      authRequired: false,
+      loginUrl: '',
+      loginUsername: '',
+      loginPasswordPlain: '',
+      loginPasswordMasked: '',
+      loginDescription: '',
+    } as never);
+    vi.mocked(resolveIntentProjectRuntimeGovernance).mockReturnValue({
+      environmentProfile: 'test',
+      fixture: {
+        strategy: 'setup_cleanup',
+        setupRef: 'fixture://crm/opportunity/setup',
+        cleanupRef: 'fixture://crm/opportunity/cleanup',
+        idempotencyKey: 'crm-opportunity-ownerless',
+      },
+    } as never);
+
+    const req = new NextRequest('http://localhost/api/intent-e2e/runs');
+    const result = await resolveIntentE2EProjectAuth(req, {
+      input: '创建商机并校验状态',
+      projectUid: 'proj_1',
+    });
+
+    expect(result.request.runtimeGovernance).toEqual({
+      environmentProfile: 'test',
+      fixture: {
+        strategy: 'setup_cleanup',
+        setupRef: 'fixture://crm/opportunity/setup',
+        cleanupRef: 'fixture://crm/opportunity/cleanup',
+        owner: 'owner://project/proj_1/members/usr_1',
+        idempotencyKey: 'crm-opportunity-ownerless',
+      },
     });
   });
 

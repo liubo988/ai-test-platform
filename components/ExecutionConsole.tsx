@@ -4,8 +4,21 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import BrowserView from '@/components/BrowserView';
+import ExecutionIntentImportPanel from '@/components/ExecutionIntentImportPanel';
+import ExecutionIntentImportStatusBadge from '@/components/ExecutionIntentImportStatusBadge';
+import ExecutionPresetBadgeRow from '@/components/ExecutionPresetBadgeRow';
+import {
+  buildExecutionItemWorkspaceLinkActions,
+  type ExecutionArtifactItem as ArtifactItem,
+  type ExecutionConversationItem as ConversationItem,
+  type ExecutionDetail,
+  type ExecutionEventItem as EventItem,
+} from '@/lib/execution-detail-contract';
+import { readExecutionEntryNavigationTargets } from '@/lib/execution-entry-navigation';
+import { formatExecutionMoment, summarizeExecutionTextList } from '@/lib/execution-detail-format';
+import { buildExecutionDetailPresetViewModel } from '@/lib/execution-detail-preset-view-model';
+import { executionConversationMessageTone, executionStatusTone } from '@/lib/execution-detail-tone';
 import { describeExecutionOutcome, type ExecutionOutcomeTone } from '@/lib/execution-outcome';
-import type { IntentImportStatus } from '@/lib/intent-e2e-import';
 import {
   buildIntentCapabilityPreset,
   buildIntentCapabilityWorkbenchHref,
@@ -16,108 +29,17 @@ import {
   pickLatestCapabilityVerificationExecutionObservationFromEvents,
   readCapabilityVerificationExecutionObservation,
 } from '@/lib/capability-verification-observation-cache';
-import { buildFlowSummary, type FlowDefinition, type TaskMode } from '@/lib/task-flow';
-
-type ExecutionStatus = 'queued' | 'running' | 'passed' | 'failed' | 'canceled';
-
-type ConversationItem = {
-  conversationUid: string;
-  role: 'system' | 'user' | 'assistant' | 'tool';
-  messageType: 'thinking' | 'code' | 'status' | 'error';
-  content: string;
-  createdAt: string;
-};
-
-type EventItem = {
-  eventType: string;
-  payload: unknown;
-  createdAt: string;
-};
-
-type ArtifactItem = {
-  artifactType: string;
-  storagePath: string;
-  meta: unknown;
-  createdAt: string;
-};
-
-type ExecutionDetail = {
-  execution: {
-    executionUid: string;
-    planUid: string;
-    configUid: string;
-    projectUid: string;
-    status: ExecutionStatus;
-    startedAt: string;
-    endedAt: string;
-    durationMs: number;
-    resultSummary: string;
-    errorMessage: string;
-    workerSessionId: string;
-    createdAt: string;
-  };
-  plan: {
-    planUid: string;
-    planTitle: string;
-    planVersion: number;
-    planSummary: string;
-  } | null;
-  config: {
-    configUid: string;
-    moduleUid: string;
-    name: string;
-    moduleName: string;
-    targetUrl: string;
-    featureDescription: string;
-    taskMode: TaskMode;
-    flowDefinition: FlowDefinition | null;
-    authSource: 'project' | 'task' | 'none';
-    loginDescription: string;
-  } | null;
-  project: {
-    projectUid: string;
-    name: string;
-    authRequired: boolean;
-    loginDescription: string;
-  } | null;
-  capabilityVerification: {
-    capabilityUid: string;
-    chainCapabilityUids: string[];
-    intent: 'verify' | 'review';
-    targetName: string;
-    strategyLabel: string;
-  } | null;
-  events: EventItem[];
-  conversations: ConversationItem[];
-  artifacts: ArtifactItem[];
-  intentImport: {
-    importedFromRunId: string;
-    importedStatus: IntentImportStatus | '';
-    importedAt: string;
-  } | null;
-};
-
-function statusTone(status: ExecutionStatus): string {
-  switch (status) {
-    case 'passed':
-      return 'bg-emerald-500/12 text-emerald-700 ring-emerald-500/20';
-    case 'failed':
-      return 'bg-rose-500/12 text-rose-700 ring-rose-500/20';
-    case 'running':
-      return 'bg-amber-500/12 text-amber-700 ring-amber-500/20';
-    case 'queued':
-      return 'bg-slate-500/12 text-slate-700 ring-slate-500/20';
-    default:
-      return 'bg-slate-100 text-slate-600 ring-slate-200';
-  }
-}
-
-function messageTone(kind: ConversationItem['messageType']): string {
-  if (kind === 'error') return 'border-rose-200 bg-rose-50 text-rose-800';
-  if (kind === 'status') return 'border-emerald-200 bg-emerald-50 text-emerald-800';
-  if (kind === 'thinking') return 'border-sky-200 bg-sky-50 text-sky-800';
-  return 'border-slate-200 bg-white text-slate-700';
-}
+import {
+  buildExecutionArtifactAnchorId,
+  buildExecutionWorkspacePresetBadges,
+  buildExecutionWorkspaceLinkActions,
+  findExecutionArtifactByConversationContext,
+  isExecutionArtifactFocused,
+  pickPreferredExecutionWorkspacePresetContext,
+  readExecutionArtifactAnchorIdFromHash,
+  readExecutionArtifactDownloadEntry,
+} from '@/lib/execution-workspace-link-contract';
+import { buildFlowSummary } from '@/lib/task-flow';
 
 function outcomeTone(tone: ExecutionOutcomeTone): string {
   switch (tone) {
@@ -145,31 +67,6 @@ function outcomeHintTone(tone: ExecutionOutcomeTone): string {
   }
 }
 
-function intentImportTone(status?: IntentImportStatus | '' | string): string {
-  return status === 'failed'
-    ? 'bg-amber-50 text-amber-800 ring-amber-200'
-    : 'bg-violet-50 text-violet-700 ring-violet-200';
-}
-
-function intentImportPanelTone(status?: IntentImportStatus | '' | string): string {
-  return status === 'failed'
-    ? 'border-amber-200 bg-amber-50 text-amber-900'
-    : 'border-violet-200 bg-violet-50 text-violet-900';
-}
-
-function intentImportLabel(status?: IntentImportStatus | '' | string): string {
-  if (status === 'failed') return 'Intent 导入失败';
-  if (status === 'passed') return 'Intent 导入通过';
-  return 'Intent 导入';
-}
-
-function formatMoment(value: string): string {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '-';
-  return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-}
-
 function renderEventLine(event: EventItem): string {
   const payload = (event.payload || {}) as Record<string, unknown>;
   if (event.eventType === 'step') {
@@ -184,13 +81,6 @@ function renderEventLine(event: EventItem): string {
   return JSON.stringify(event.payload);
 }
 
-function summarizeTextList(values: string[], limit = 2): string {
-  const items = values.map((item) => item.trim()).filter(Boolean);
-  if (items.length === 0) return '';
-  if (items.length <= limit) return items.join(' / ');
-  return `${items.slice(0, limit).join(' / ')} 等 ${items.length} 项`;
-}
-
 export default function ExecutionConsole({ executionUid }: { executionUid: string }) {
   const router = useRouter();
   const [detail, setDetail] = useState<ExecutionDetail | null>(null);
@@ -201,6 +91,7 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [error, setError] = useState('');
   const [actionNotice, setActionNotice] = useState('');
+  const [artifactFocusHash, setArtifactFocusHash] = useState('');
   const [showEvents, setShowEvents] = useState(false);
   const [repairing, setRepairing] = useState(false);
 
@@ -306,6 +197,18 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
   }, [executionUid]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const syncArtifactFocusHash = () => {
+      setArtifactFocusHash(window.location.hash || '');
+    };
+    syncArtifactFocusHash();
+    window.addEventListener('hashchange', syncArtifactFocusHash);
+    return () => {
+      window.removeEventListener('hashchange', syncArtifactFocusHash);
+    };
+  }, [executionUid]);
+
+  useEffect(() => {
     const es = new EventSource(`/api/test-executions/${executionUid}/stream`);
     es.onmessage = (evt) => {
       try {
@@ -386,6 +289,8 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
         summary: String(payload.summary || ''),
         nextExecutionUid: typeof payload.nextExecutionUid === 'string' ? payload.nextExecutionUid : '',
         nextRunPath: typeof payload.nextRunPath === 'string' ? payload.nextRunPath : '',
+        nextWorkspaceHistoryPath:
+          typeof payload.nextWorkspaceHistoryPath === 'string' ? payload.nextWorkspaceHistoryPath : '',
         remainingRetries: typeof payload.remainingRetries === 'number' ? payload.remainingRetries : null,
       };
     }
@@ -437,24 +342,21 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
       }),
     };
   }, [detail?.config, detail?.project]);
-
-  function downloadGeneratedSpec() {
-    if (!generatedSpec) return;
-    const meta = (generatedSpec.meta || {}) as Record<string, unknown>;
-    const content = typeof meta.content === 'string' ? meta.content : '';
-    if (!content) return;
-    const fileNameRaw =
-      (typeof meta.fileName === 'string' && meta.fileName) ||
-      generatedSpec.storagePath.split('/').pop() ||
-      `${executionUid}.spec.ts`;
-    const fileName = fileNameRaw.replace(/\s+/g, '-');
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  function downloadArtifactContent(artifact?: ArtifactItem | null) {
+    const entry = readExecutionArtifactDownloadEntry(artifact);
+    if (!entry) return;
+    const fileName = (entry.fileName || `${executionUid}.spec.ts`).replace(/\s+/g, '-');
+    const blob = new Blob([entry.content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
     anchor.download = fileName;
     anchor.click();
     URL.revokeObjectURL(url);
+  }
+
+  function downloadGeneratedSpec() {
+    downloadArtifactContent(generatedSpec);
   }
 
   async function launchAiRepair() {
@@ -487,7 +389,7 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
         throw new Error(json.error || '启动 AI 纠错失败');
       }
 
-      const runPath = json.runPath || (json.executionUid ? `/runs/${json.executionUid}` : '');
+      const runPath = readExecutionEntryNavigationTargets(json).runPath || (json.executionUid ? `/runs/${json.executionUid}` : '');
       setActionNotice(`AI 纠错已启动，正在打开新的修复运行 ${json.executionUid || ''}`.trim());
       if (runPath && typeof window !== 'undefined') {
         window.open(runPath, '_blank', 'noopener,noreferrer');
@@ -517,13 +419,22 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
     errorMessage: execution.errorMessage,
   });
   const canAiRepair = execution.status === 'failed' && executionOutcome.repairRecommended;
+  const {
+    executionContextLinkActions,
+    executionPresetBadges,
+    intentImportPresetBadges,
+    intentImportPresetDetails,
+    intentImportPresetActions,
+  } = buildExecutionDetailPresetViewModel(detail);
 
   return (
     <div className="space-y-5">
       <section className="rounded-[24px] border border-white/70 bg-white/78 px-5 py-4 shadow-[0_16px_48px_rgba(15,23,42,0.10)] backdrop-blur-xl">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ring-1 ${statusTone(execution.status)}`}>
+            <span
+              className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ring-1 ${executionStatusTone(execution.status, 'console')}`}
+            >
               {execution.status}
             </span>
             <h1 className="text-xl font-semibold tracking-[-0.03em] text-slate-950">执行工作台</h1>
@@ -536,9 +447,11 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
               </span>
             )}
             {detail.intentImport && (
-              <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ring-1 ${intentImportTone(detail.intentImport.importedStatus)}`}>
-                {intentImportLabel(detail.intentImport.importedStatus)}
-              </span>
+              <ExecutionIntentImportStatusBadge
+                status={detail.intentImport.importedStatus}
+                variant="console"
+                className="rounded-full px-2.5 py-0.5 text-[11px] font-medium ring-1"
+              />
             )}
             {execution.status === 'failed' && (
               <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ring-1 ${outcomeTone(executionOutcome.tone)}`}>
@@ -577,17 +490,39 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
           <p className="mt-2 text-sm leading-6 text-slate-500">{plan?.planSummary || execution.resultSummary}</p>
         )}
         {actionNotice && <p className="mt-2 text-xs text-blue-600">{actionNotice}</p>}
+        <ExecutionPresetBadgeRow badges={executionPresetBadges} />
+        {executionContextLinkActions.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {executionContextLinkActions.map((action) => (
+              <Link
+                key={`execution-context-${action.key}-${action.href}`}
+                href={action.href}
+                className="inline-flex h-8 items-center rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-medium text-slate-600 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700"
+              >
+                {action.label}
+              </Link>
+            ))}
+          </div>
+        )}
         {autoRepairFollowUp?.summary && (
           <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900">
             <p>{autoRepairFollowUp.summary}</p>
             {autoRepairFollowUp.nextRunPath && (
-              <div className="mt-2">
+              <div className="mt-2 flex flex-wrap gap-2">
                 <Link
                   href={autoRepairFollowUp.nextRunPath}
                   className="inline-flex h-8 items-center rounded-lg border border-amber-200 bg-white px-3 text-[11px] font-medium text-amber-700 transition hover:bg-amber-100"
                 >
                   查看自动修复后的新执行
                 </Link>
+                {autoRepairFollowUp.nextWorkspaceHistoryPath && (
+                  <Link
+                    href={autoRepairFollowUp.nextWorkspaceHistoryPath}
+                    className="inline-flex h-8 items-center rounded-lg border border-amber-200 bg-white px-3 text-[11px] font-medium text-amber-700 transition hover:bg-amber-100"
+                  >
+                    查看聚焦执行历史
+                  </Link>
+                )}
               </div>
             )}
           </div>
@@ -654,31 +589,94 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
                 )}
               </div>
               {detail.intentImport && (
-                <div className={`rounded-2xl border px-3.5 py-2.5 ${intentImportPanelTone(detail.intentImport.importedStatus)}`}>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="text-[10px] uppercase tracking-[0.18em] opacity-70">执行来源</p>
-                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${intentImportTone(detail.intentImport.importedStatus)}`}>
-                      {intentImportLabel(detail.intentImport.importedStatus)}
-                    </span>
-                  </div>
-                  <p className="mt-1.5 text-xs leading-5">
-                    这条执行历史由 Intent E2E 工作台导入生成，用于把自然语言测试结果沉淀到项目工作台。
-                  </p>
-                  <div className="mt-2 grid gap-2">
-                    <div className="rounded-xl border border-current/10 bg-white/70 px-3 py-2">
-                      <p className="text-[10px] uppercase tracking-[0.16em] opacity-60">来源 Run ID</p>
-                      <p className="mt-1 font-mono text-[11px] leading-5 break-all" title={detail.intentImport.importedFromRunId}>
-                        {detail.intentImport.importedFromRunId}
-                      </p>
-                    </div>
-                    {detail.intentImport.importedAt && (
-                      <p className="text-[11px] opacity-70">
-                        导入时间：{formatMoment(detail.intentImport.importedAt)}
-                      </p>
-                    )}
-                  </div>
-                </div>
+                <ExecutionIntentImportPanel
+                  status={detail.intentImport.importedStatus}
+                  panelClassName="rounded-2xl border px-3.5 py-2.5"
+                  title="执行来源"
+                  titleAs="p"
+                  titleClassName="text-[10px] uppercase tracking-[0.18em] opacity-70"
+                  badgeShapeClassName="rounded-full px-2 py-0.5 text-[10px] font-medium ring-1"
+                  badgeToneVariant="console"
+                  description="这条执行历史由 Intent E2E 工作台导入生成，用于把自然语言测试结果沉淀到项目工作台。"
+                  descriptionClassName="mt-1.5 text-xs leading-5"
+                  importedFromRunId={detail.intentImport.importedFromRunId}
+                  importedAtLabel={
+                    detail.intentImport.importedAt ? `导入时间：${formatExecutionMoment(detail.intentImport.importedAt)}` : ''
+                  }
+                  presetBadges={intentImportPresetBadges}
+                  presetDetails={intentImportPresetDetails}
+                  presetActions={intentImportPresetActions}
+                  summaryContainerClassName="mt-2 grid gap-2"
+                  summaryImportedAtClassName="text-[11px] opacity-70"
+                  actionKeyPrefix="intent-import"
+                  actionRowClassName="flex flex-wrap gap-2"
+                  actionLinkClassName="rounded-full border border-current/15 bg-white/80 px-2.5 py-1 text-[10px] font-medium transition hover:bg-white"
+                />
               )}
+              <div className="rounded-2xl border border-slate-200 bg-white px-3.5 py-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-slate-400">执行产物</p>
+                  <span className="text-[10px] text-slate-400">{artifacts.length} 条</span>
+                </div>
+                {artifacts.length === 0 ? (
+                  <p className="mt-1.5 text-xs text-slate-400">暂无产物</p>
+                ) : (
+                  <div className="mt-2 space-y-2">
+                    {artifacts.map((artifact, idx) => {
+                      const artifactLinkActions = buildExecutionItemWorkspaceLinkActions(artifact, artifact.meta);
+                      const effectiveArtifactLinkActions = artifactLinkActions.length > 0 ? artifactLinkActions : executionContextLinkActions;
+                      const artifactAnchorId = buildExecutionArtifactAnchorId(artifact.storagePath);
+                      const artifactPresetBadges = buildExecutionWorkspacePresetBadges(
+                        pickPreferredExecutionWorkspacePresetContext({
+                          executionContext: artifact.executionContext,
+                          nextExecutionContext: artifact.nextExecutionContext,
+                        })
+                      );
+                      const artifactFocused =
+                        Boolean(readExecutionArtifactAnchorIdFromHash(artifactFocusHash)) &&
+                        isExecutionArtifactFocused(artifact.storagePath, artifactFocusHash);
+                      return (
+                        <div
+                          key={`${artifact.storagePath}-${idx}`}
+                          id={artifactAnchorId}
+                          className={`scroll-mt-24 rounded-xl border px-3 py-2 transition ${
+                            artifactFocused
+                              ? 'border-sky-300 bg-sky-50 ring-2 ring-sky-100'
+                              : 'border-slate-200 bg-slate-50/70'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-[11px] font-medium text-slate-800">{artifact.artifactType}</p>
+                            <div className="flex items-center gap-2">
+                              {artifactFocused && (
+                                <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-medium text-sky-700">
+                                  已定位
+                                </span>
+                              )}
+                              <span className="text-[10px] text-slate-400">{formatExecutionMoment(artifact.createdAt)}</span>
+                            </div>
+                          </div>
+                          <p className="mt-1 break-all font-mono text-[10px] leading-5 text-slate-500">{artifact.storagePath}</p>
+                          <ExecutionPresetBadgeRow badges={artifactPresetBadges} />
+                          {effectiveArtifactLinkActions.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {effectiveArtifactLinkActions.map((action) => (
+                                <Link
+                                  key={`${artifact.storagePath}-${action.key}-${action.href}`}
+                                  href={action.href}
+                                  className="inline-flex h-7 items-center rounded-full border border-slate-200 bg-white px-2.5 text-[10px] font-medium text-slate-600 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700"
+                                >
+                                  {action.label}
+                                </Link>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
               {detail.capabilityVerification && effectiveCapabilityExecutionObservation?.latestRepairObservationSummary ? (
                 <div className="rounded-2xl border border-sky-200 bg-sky-50 px-3.5 py-2.5">
                   <p className="text-[10px] uppercase tracking-[0.18em] text-sky-500">能力验证上下文</p>
@@ -691,10 +689,10 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
                   <p className="mt-1 text-[11px] leading-5 text-slate-600">
                     最近关联 verifier observation：{effectiveCapabilityExecutionObservation.latestRepairObservationSummary}
                     {effectiveCapabilityExecutionObservation.latestRepairObservationVerifierCheckUids.length > 0
-                      ? ` · verifier ${summarizeTextList(effectiveCapabilityExecutionObservation.latestRepairObservationVerifierCheckUids, 2)}`
+                      ? ` · verifier ${summarizeExecutionTextList(effectiveCapabilityExecutionObservation.latestRepairObservationVerifierCheckUids, 2)}`
                       : ''}
                     {effectiveCapabilityExecutionObservation.latestRepairObservationAt
-                      ? ` · ${formatMoment(effectiveCapabilityExecutionObservation.latestRepairObservationAt)}`
+                      ? ` · ${formatExecutionMoment(effectiveCapabilityExecutionObservation.latestRepairObservationAt)}`
                       : ''}
                   </p>
                 </div>
@@ -787,17 +785,41 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
                 <span className="text-[11px] text-slate-500">{visibleEvents.length} 条</span>
               </div>
               <div className="max-h-[360px] space-y-1.5 overflow-y-auto pr-1">
-                {visibleEvents.map((event, index) => (
-                  <div key={`${event.createdAt}-${index}`} className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                    <div className="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-[0.16em] text-slate-400">
-                      <span>{event.eventType}</span>
-                      <span>{new Date(event.createdAt).toLocaleTimeString('zh-CN')}</span>
+                {visibleEvents.map((event, index) => {
+                  const eventLinkActions = buildExecutionItemWorkspaceLinkActions(event, event.payload);
+                  const effectiveEventLinkActions = eventLinkActions.length > 0 ? eventLinkActions : executionContextLinkActions;
+                  const eventPresetBadges = buildExecutionWorkspacePresetBadges(
+                    pickPreferredExecutionWorkspacePresetContext({
+                      executionContext: event.executionContext,
+                      nextExecutionContext: event.nextExecutionContext,
+                    })
+                  );
+                  return (
+                    <div key={`${event.createdAt}-${index}`} className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                      <div className="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-[0.16em] text-slate-400">
+                        <span>{event.eventType}</span>
+                        <span>{new Date(event.createdAt).toLocaleTimeString('zh-CN')}</span>
+                      </div>
+                      <p className="mt-1 whitespace-pre-wrap break-words text-[11px] leading-4 text-slate-700">
+                        {renderEventLine(event)}
+                      </p>
+                      <ExecutionPresetBadgeRow badges={eventPresetBadges} />
+                      {effectiveEventLinkActions.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {effectiveEventLinkActions.map((action) => (
+                            <Link
+                              key={`${event.createdAt}-${action.key}-${action.href}`}
+                              href={action.href}
+                              className="inline-flex h-7 items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 text-[10px] font-medium text-slate-600 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700"
+                            >
+                              {action.label}
+                            </Link>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                    <p className="mt-1 whitespace-pre-wrap break-words text-[11px] leading-4 text-slate-700">
-                      {renderEventLine(event)}
-                    </p>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </section>
           )}
@@ -813,15 +835,75 @@ export default function ExecutionConsole({ executionUid }: { executionUid: strin
 
             <div className="max-h-[480px] space-y-2 overflow-y-auto pr-1">
               {conversations.length === 0 && <p className="text-xs text-slate-400">暂无对话内容</p>}
-              {conversations.map((item) => (
-                <div key={item.conversationUid} className={`rounded-xl border px-3 py-2.5 text-xs shadow-[0_4px_12px_rgba(15,23,42,0.03)] ${messageTone(item.messageType)}`}>
-                  <div className="mb-1 flex items-center justify-between text-[10px] opacity-70">
-                    <span className="font-medium">{item.role}</span>
-                    <span>{new Date(item.createdAt).toLocaleTimeString('zh-CN')}</span>
+              {conversations.map((item) => {
+                const conversationLinkActions = buildExecutionWorkspaceLinkActions(item);
+                const conversationPresetBadges = buildExecutionWorkspacePresetBadges(
+                  pickPreferredExecutionWorkspacePresetContext({
+                    executionContext: item.executionContext,
+                    nextExecutionContext: item.nextExecutionContext,
+                  })
+                );
+                const matchedArtifact = findExecutionArtifactByConversationContext(artifacts, item.executionArtifactContext);
+                const artifactAnchorId = item.executionArtifactContext
+                  ? buildExecutionArtifactAnchorId(item.executionArtifactContext.storagePath)
+                  : '';
+                const downloadableArtifact = readExecutionArtifactDownloadEntry(matchedArtifact);
+                return (
+                  <div
+                    key={item.conversationUid}
+                    className={`rounded-xl border px-3 py-2.5 text-xs shadow-[0_4px_12px_rgba(15,23,42,0.03)] ${executionConversationMessageTone(item.messageType, 'console')}`}
+                  >
+                    <div className="mb-1 flex items-center justify-between text-[10px] opacity-70">
+                      <span className="font-medium">{item.role}</span>
+                      <span>{new Date(item.createdAt).toLocaleTimeString('zh-CN')}</span>
+                    </div>
+                    <p className="whitespace-pre-wrap break-words leading-5">{item.content}</p>
+                    <ExecutionPresetBadgeRow badges={conversationPresetBadges} />
+                    {item.executionArtifactContext && (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <span className="inline-flex h-7 items-center rounded-full border border-slate-200 bg-white px-2.5 text-[10px] font-medium text-slate-600">
+                          关联产物：{item.executionArtifactContext.fileName || item.executionArtifactContext.artifactType}
+                        </span>
+                        {matchedArtifact && artifactAnchorId && (
+                          <a
+                            href={`#${artifactAnchorId}`}
+                            onClick={() => {
+                              setArtifactFocusHash(`#${artifactAnchorId}`);
+                            }}
+                            className="inline-flex h-7 items-center rounded-full border border-slate-200 bg-white px-2.5 text-[10px] font-medium text-slate-600 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700"
+                          >
+                            查看关联产物
+                          </a>
+                        )}
+                        {item.executionArtifactContext.artifactType === 'generated_spec' && downloadableArtifact && matchedArtifact && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              downloadArtifactContent(matchedArtifact);
+                            }}
+                            className="inline-flex h-7 items-center rounded-full border border-slate-200 bg-white px-2.5 text-[10px] font-medium text-slate-600 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700"
+                          >
+                            下载关联脚本
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {conversationLinkActions.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {conversationLinkActions.map((action) => (
+                          <Link
+                            key={`${item.conversationUid}-${action.key}-${action.href}`}
+                            href={action.href}
+                            className="inline-flex h-7 items-center rounded-full border border-slate-200 bg-white px-2.5 text-[10px] font-medium text-slate-600 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700"
+                          >
+                            {action.label}
+                          </Link>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  <p className="whitespace-pre-wrap break-words leading-5">{item.content}</p>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </section>
         </div>

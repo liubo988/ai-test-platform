@@ -81,7 +81,17 @@ describe('POST /api/intent-e2e/runs/[runId]/workspace', () => {
       updatedConfig: false,
       importedStatus: 'passed',
       workspacePath: '/projects/proj_1?module=mod_1',
+      workspaceQueryPath:
+        '/projects/proj_1?module=mod_1&platformTestType=browser_e2e&platformRunnerType=playwright_runner',
+      workspaceHistoryPath:
+        '/projects/proj_1?module=mod_1&platformTestType=browser_e2e&platformRunnerType=playwright_runner&historyConfigUid=cfg_1&historyPlatformTestType=browser_e2e&historyPlatformRunnerType=playwright_runner',
       runPath: '/runs/exec_1',
+      executionContext: {
+        runPath: '/runs/exec_1',
+        workspacePath: '/projects/proj_1?module=mod_1&platformTestType=browser_e2e&platformRunnerType=playwright_runner',
+        workspaceHistoryPath:
+          '/projects/proj_1?module=mod_1&platformTestType=browser_e2e&platformRunnerType=playwright_runner&historyConfigUid=cfg_1&historyPlatformTestType=browser_e2e&historyPlatformRunnerType=playwright_runner',
+      },
     };
 
     vi.mocked(loadIntentE2ERun).mockResolvedValue(run as never);

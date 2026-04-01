@@ -4,7 +4,19 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import BrowserView from '@/components/BrowserView';
-import type { IntentImportStatus } from '@/lib/intent-e2e-import';
+import ExecutionIntentImportPanel from '@/components/ExecutionIntentImportPanel';
+import ExecutionIntentImportStatusBadge from '@/components/ExecutionIntentImportStatusBadge';
+import ExecutionPresetBadgeRow from '@/components/ExecutionPresetBadgeRow';
+import {
+  buildExecutionItemWorkspaceLinkActions,
+  type ExecutionArtifactItem as ArtifactItem,
+  type ExecutionConversationItem as ConversationItem,
+  type ExecutionDetail,
+  type ExecutionEventItem as EventItem,
+} from '@/lib/execution-detail-contract';
+import { formatExecutionMoment, summarizeExecutionTextList } from '@/lib/execution-detail-format';
+import { buildExecutionDetailPresetViewModel } from '@/lib/execution-detail-preset-view-model';
+import { executionConversationMessageTone, executionStatusTone } from '@/lib/execution-detail-tone';
 import {
   buildIntentCapabilityPreset,
   buildIntentCapabilityWorkbenchHref,
@@ -15,137 +27,16 @@ import {
   pickLatestCapabilityVerificationExecutionObservationFromEvents,
   readCapabilityVerificationExecutionObservation,
 } from '@/lib/capability-verification-observation-cache';
-import { type FlowDefinition, type TaskMode } from '@/lib/task-flow';
-
-type ExecutionStatus = 'queued' | 'running' | 'passed' | 'failed' | 'canceled';
-
-type ConversationItem = {
-  conversationUid: string;
-  role: 'system' | 'user' | 'assistant' | 'tool';
-  messageType: 'thinking' | 'code' | 'status' | 'error';
-  content: string;
-  createdAt: string;
-};
-
-type EventItem = {
-  eventType: string;
-  payload: unknown;
-  createdAt: string;
-};
-
-type ArtifactItem = {
-  artifactType: string;
-  storagePath: string;
-  meta: unknown;
-  createdAt: string;
-};
-
-type ExecutionDetail = {
-  execution: {
-    executionUid: string;
-    planUid: string;
-    configUid: string;
-    projectUid: string;
-    status: ExecutionStatus;
-    startedAt: string;
-    endedAt: string;
-    durationMs: number;
-    resultSummary: string;
-    errorMessage: string;
-    workerSessionId: string;
-    createdAt: string;
-  };
-  plan: {
-    planUid: string;
-    planTitle: string;
-    planVersion: number;
-    planSummary: string;
-  } | null;
-  config: {
-    configUid: string;
-    projectUid: string;
-    moduleUid: string;
-    moduleName: string;
-    name: string;
-    targetUrl: string;
-    featureDescription: string;
-    taskMode: TaskMode;
-    flowDefinition: FlowDefinition | null;
-    authSource: 'project' | 'task' | 'none';
-  } | null;
-  project: {
-    projectUid: string;
-    name: string;
-  } | null;
-  planCases: Array<{ caseUid: string; tier: string; caseName: string; expectedResult: string }>;
-  capabilityVerification: {
-    capabilityUid: string;
-    chainCapabilityUids: string[];
-    intent: 'verify' | 'review';
-    targetName: string;
-    strategyLabel: string;
-  } | null;
-  events: EventItem[];
-  conversations: ConversationItem[];
-  artifacts: ArtifactItem[];
-  intentImport: {
-    importedFromRunId: string;
-    importedStatus: IntentImportStatus | '';
-    importedAt: string;
-  } | null;
-};
-
-function statusTone(status: ExecutionStatus): string {
-  switch (status) {
-    case 'passed':
-      return 'bg-emerald-100 text-emerald-700';
-    case 'failed':
-      return 'bg-rose-100 text-rose-700';
-    case 'running':
-      return 'bg-amber-100 text-amber-700';
-    case 'queued':
-      return 'bg-zinc-100 text-zinc-700';
-    default:
-      return 'bg-zinc-200 text-zinc-700';
-  }
-}
-
-function messageTone(kind: ConversationItem['messageType']): string {
-  if (kind === 'error') return 'border-rose-200 bg-rose-50 text-rose-800';
-  if (kind === 'status') return 'border-emerald-200 bg-emerald-50 text-emerald-800';
-  if (kind === 'thinking') return 'border-sky-200 bg-sky-50 text-sky-800';
-  return 'border-zinc-200 bg-zinc-50 text-zinc-700';
-}
-
-function intentImportTone(status?: IntentImportStatus | '' | string): string {
-  return status === 'failed' ? 'bg-amber-100 text-amber-700' : 'bg-violet-100 text-violet-700';
-}
-
-function intentImportPanelTone(status?: IntentImportStatus | '' | string): string {
-  return status === 'failed'
-    ? 'border-amber-200 bg-amber-50 text-amber-900'
-    : 'border-violet-200 bg-violet-50 text-violet-900';
-}
-
-function intentImportLabel(status?: IntentImportStatus | '' | string): string {
-  if (status === 'failed') return 'Intent 导入失败';
-  if (status === 'passed') return 'Intent 导入通过';
-  return 'Intent 导入';
-}
-
-function formatMoment(value: string): string {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '-';
-  return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-}
-
-function summarizeTextList(values: string[], limit = 2): string {
-  const items = values.map((item) => item.trim()).filter(Boolean);
-  if (items.length === 0) return '';
-  if (items.length <= limit) return items.join(' / ');
-  return `${items.slice(0, limit).join(' / ')} 等 ${items.length} 项`;
-}
+import {
+  buildExecutionArtifactAnchorId,
+  buildExecutionWorkspacePresetBadges,
+  buildExecutionWorkspaceLinkActions,
+  findExecutionArtifactByConversationContext,
+  isExecutionArtifactFocused,
+  pickPreferredExecutionWorkspacePresetContext,
+  readExecutionArtifactAnchorIdFromHash,
+  readExecutionArtifactDownloadEntry,
+} from '@/lib/execution-workspace-link-contract';
 
 export default function ExecutionWorkbench({ executionUid }: { executionUid: string }) {
   const router = useRouter();
@@ -157,6 +48,7 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [error, setError] = useState('');
   const [actionNotice, setActionNotice] = useState('');
+  const [artifactFocusHash, setArtifactFocusHash] = useState('');
   const autoRepairFollowedRef = useRef('');
 
   const loadDetail = useCallback(async () => {
@@ -179,6 +71,18 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
 
   useEffect(() => {
     autoRepairFollowedRef.current = '';
+  }, [executionUid]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const syncArtifactFocusHash = () => {
+      setArtifactFocusHash(window.location.hash || '');
+    };
+    syncArtifactFocusHash();
+    window.addEventListener('hashchange', syncArtifactFocusHash);
+    return () => {
+      window.removeEventListener('hashchange', syncArtifactFocusHash);
+    };
   }, [executionUid]);
 
   useEffect(() => {
@@ -260,6 +164,8 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
         summary: String(payload.summary || ''),
         nextExecutionUid: typeof payload.nextExecutionUid === 'string' ? payload.nextExecutionUid : '',
         nextRunPath: typeof payload.nextRunPath === 'string' ? payload.nextRunPath : '',
+        nextWorkspaceHistoryPath:
+          typeof payload.nextWorkspaceHistoryPath === 'string' ? payload.nextWorkspaceHistoryPath : '',
         remainingRetries: typeof payload.remainingRetries === 'number' ? payload.remainingRetries : null,
       };
     }
@@ -294,7 +200,6 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
       }),
     };
   }, [detail?.config, detail?.project]);
-
   useEffect(() => {
     if (!autoRepairFollowUp?.nextRunPath || autoRepairFollowUp.status !== 'auto_repair_started') return;
     const followKey = `${executionUid}:${autoRepairFollowUp.nextExecutionUid || autoRepairFollowUp.nextRunPath}`;
@@ -312,23 +217,21 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
     return () => window.clearTimeout(timer);
   }, [autoRepairFollowUp, executionUid, router]);
 
-  const downloadGeneratedSpec = () => {
-    if (!generatedSpec) return;
-    const meta = (generatedSpec.meta || {}) as Record<string, unknown>;
-    const content = typeof meta.content === 'string' ? meta.content : '';
-    if (!content) return;
-    const fileNameRaw =
-      (typeof meta.fileName === 'string' && meta.fileName) ||
-      generatedSpec.storagePath.split('/').pop() ||
-      `${executionUid}.spec.ts`;
-    const fileName = fileNameRaw.replace(/\s+/g, '-');
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const downloadArtifactContent = (artifact?: ArtifactItem | null) => {
+    const entry = readExecutionArtifactDownloadEntry(artifact);
+    if (!entry) return;
+    const fileName = (entry.fileName || `${executionUid}.spec.ts`).replace(/\s+/g, '-');
+    const blob = new Blob([entry.content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = fileName;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const downloadGeneratedSpec = () => {
+    downloadArtifactContent(generatedSpec);
   };
 
   if (!detail) {
@@ -342,6 +245,13 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
   const { execution, plan, config, project, artifacts } = detail;
   const screencastActive = execution.status === 'queued' || execution.status === 'running';
   const generatedSpec = artifacts.find((item) => item.artifactType === 'generated_spec');
+  const {
+    executionContextLinkActions,
+    executionPresetBadges,
+    intentImportPresetBadges,
+    intentImportPresetDetails,
+    intentImportPresetActions,
+  } = buildExecutionDetailPresetViewModel(detail);
 
   return (
     <div className="space-y-4">
@@ -352,18 +262,36 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <h1 className="text-2xl font-semibold text-zinc-900">执行工作台</h1>
               {detail.intentImport && (
-                <span className={`rounded-md px-2.5 py-1 text-xs ${intentImportTone(detail.intentImport.importedStatus)}`}>
-                  {intentImportLabel(detail.intentImport.importedStatus)}
-                </span>
+                <ExecutionIntentImportStatusBadge
+                  status={detail.intentImport.importedStatus}
+                  variant="workbench"
+                  className="rounded-md px-2.5 py-1 text-xs"
+                />
               )}
             </div>
             <p className="mt-1 text-sm text-zinc-500">
               {project?.name ? `${project.name} / ` : ''}{config?.name || execution.executionUid}
             </p>
             {actionNotice && <p className="mt-2 text-xs text-blue-600">{actionNotice}</p>}
+            <ExecutionPresetBadgeRow badges={executionPresetBadges} />
+            {executionContextLinkActions.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {executionContextLinkActions.map((action) => (
+                  <Link
+                    key={`execution-context-${action.key}-${action.href}`}
+                    href={action.href}
+                    className="inline-flex items-center rounded-md border border-zinc-200 bg-zinc-50 px-2.5 py-1 text-[11px] font-medium text-zinc-700 transition hover:border-sky-200 hover:bg-white hover:text-sky-700"
+                  >
+                    {action.label}
+                  </Link>
+                ))}
+              </div>
+            )}
           </div>
           <div className="text-right">
-            <span className={`rounded-md px-2.5 py-1 text-xs ${statusTone(execution.status)}`}>{execution.status}</span>
+            <span className={`rounded-md px-2.5 py-1 text-xs ${executionStatusTone(execution.status, 'workbench')}`}>
+              {execution.status}
+            </span>
             <p className="mt-2 text-xs text-zinc-500">计划: {plan?.planTitle || execution.planUid}</p>
             <p className="text-xs text-zinc-400">版本: v{plan?.planVersion || '-'}</p>
           </div>
@@ -372,13 +300,21 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
           <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
             <p>{autoRepairFollowUp.summary}</p>
             {autoRepairFollowUp.nextRunPath && (
-              <div className="mt-2">
+              <div className="mt-2 flex flex-wrap gap-2">
                 <Link
                   href={autoRepairFollowUp.nextRunPath}
                   className="inline-flex items-center rounded-md border border-amber-200 bg-white px-2.5 py-1 text-[11px] font-medium text-amber-700 transition hover:bg-amber-100"
                 >
                   查看自动修复后的新执行
                 </Link>
+                {autoRepairFollowUp.nextWorkspaceHistoryPath && (
+                  <Link
+                    href={autoRepairFollowUp.nextWorkspaceHistoryPath}
+                    className="inline-flex items-center rounded-md border border-amber-200 bg-white px-2.5 py-1 text-[11px] font-medium text-amber-700 transition hover:bg-amber-100"
+                  >
+                    查看聚焦执行历史
+                  </Link>
+                )}
               </div>
             )}
           </div>
@@ -393,10 +329,10 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
             <p className="mt-1 leading-5">
               最近关联 verifier observation：{effectiveCapabilityExecutionObservation.latestRepairObservationSummary}
               {effectiveCapabilityExecutionObservation.latestRepairObservationVerifierCheckUids.length > 0
-                ? ` · verifier ${summarizeTextList(effectiveCapabilityExecutionObservation.latestRepairObservationVerifierCheckUids, 2)}`
+                ? ` · verifier ${summarizeExecutionTextList(effectiveCapabilityExecutionObservation.latestRepairObservationVerifierCheckUids, 2)}`
                 : ''}
               {effectiveCapabilityExecutionObservation.latestRepairObservationAt
-                ? ` · ${formatMoment(effectiveCapabilityExecutionObservation.latestRepairObservationAt)}`
+                ? ` · ${formatExecutionMoment(effectiveCapabilityExecutionObservation.latestRepairObservationAt)}`
                 : ''}
             </p>
           </div>
@@ -424,40 +360,101 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
           </div>
           <div className="max-h-[500px] space-y-2 overflow-y-auto pr-1">
             {conversations.length === 0 && <p className="text-sm text-zinc-400">暂无对话内容</p>}
-            {conversations.map((item) => (
-              <div key={item.conversationUid} className={`rounded-lg border px-3 py-2 text-sm ${messageTone(item.messageType)}`}>
-                <div className="mb-1 flex items-center justify-between text-xs opacity-70">
-                  <span>{item.role}</span>
-                  <span>{new Date(item.createdAt).toLocaleTimeString('zh-CN')}</span>
+            {conversations.map((item) => {
+              const conversationLinkActions = buildExecutionWorkspaceLinkActions(item);
+              const conversationPresetBadges = buildExecutionWorkspacePresetBadges(
+                pickPreferredExecutionWorkspacePresetContext({
+                  executionContext: item.executionContext,
+                  nextExecutionContext: item.nextExecutionContext,
+                })
+              );
+              const matchedArtifact = findExecutionArtifactByConversationContext(artifacts, item.executionArtifactContext);
+              const artifactAnchorId = item.executionArtifactContext
+                ? buildExecutionArtifactAnchorId(item.executionArtifactContext.storagePath)
+                : '';
+              const downloadableArtifact = readExecutionArtifactDownloadEntry(matchedArtifact);
+              return (
+                <div
+                  key={item.conversationUid}
+                  className={`rounded-lg border px-3 py-2 text-sm ${executionConversationMessageTone(item.messageType, 'workbench')}`}
+                >
+                  <div className="mb-1 flex items-center justify-between text-xs opacity-70">
+                    <span>{item.role}</span>
+                    <span>{new Date(item.createdAt).toLocaleTimeString('zh-CN')}</span>
+                  </div>
+                  <p className="whitespace-pre-wrap break-words">{item.content}</p>
+                  <ExecutionPresetBadgeRow badges={conversationPresetBadges} />
+                  {item.executionArtifactContext && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <span className="inline-flex items-center rounded-md border border-zinc-200 bg-white px-2 py-1 text-[11px] font-medium text-zinc-600">
+                        关联产物：{item.executionArtifactContext.fileName || item.executionArtifactContext.artifactType}
+                      </span>
+                      {matchedArtifact && artifactAnchorId && (
+                        <a
+                          href={`#${artifactAnchorId}`}
+                          onClick={() => {
+                            setArtifactFocusHash(`#${artifactAnchorId}`);
+                          }}
+                          className="inline-flex items-center rounded-md border border-zinc-200 bg-white px-2 py-1 text-[11px] font-medium text-zinc-600 transition hover:border-sky-200 hover:text-sky-700"
+                        >
+                          查看关联产物
+                        </a>
+                      )}
+                      {item.executionArtifactContext.artifactType === 'generated_spec' && downloadableArtifact && matchedArtifact && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            downloadArtifactContent(matchedArtifact);
+                          }}
+                          className="inline-flex items-center rounded-md border border-zinc-200 bg-white px-2 py-1 text-[11px] font-medium text-zinc-600 transition hover:border-sky-200 hover:text-sky-700"
+                        >
+                          下载关联脚本
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {conversationLinkActions.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {conversationLinkActions.map((action) => (
+                        <Link
+                          key={`${item.conversationUid}-${action.key}-${action.href}`}
+                          href={action.href}
+                          className="inline-flex items-center rounded-md border border-zinc-200 bg-white px-2 py-1 text-[11px] font-medium text-zinc-600 transition hover:border-sky-200 hover:text-sky-700"
+                        >
+                          {action.label}
+                        </Link>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <p className="whitespace-pre-wrap break-words">{item.content}</p>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
         <div className="space-y-4">
           {detail.intentImport && (
-            <div className={`rounded-2xl border p-5 shadow-[0_6px_20px_rgba(0,0,0,0.04)] ${intentImportPanelTone(detail.intentImport.importedStatus)}`}>
-              <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-base font-semibold">执行来源</h2>
-                <span className={`rounded-md px-2 py-1 text-[11px] ${intentImportTone(detail.intentImport.importedStatus)}`}>
-                  {intentImportLabel(detail.intentImport.importedStatus)}
-                </span>
-              </div>
-              <p className="mt-2 text-xs leading-5 opacity-80">
-                这条执行历史由 Intent E2E 工作台导入，用于把自然语言测试结果沉淀到项目工作台。
-              </p>
-              <div className="mt-3 rounded-xl border border-current/10 bg-white/70 px-3 py-2">
-                <p className="text-[10px] uppercase tracking-[0.16em] opacity-60">来源 Run ID</p>
-                <p className="mt-1 break-all font-mono text-[11px] leading-5" title={detail.intentImport.importedFromRunId}>
-                  {detail.intentImport.importedFromRunId}
-                </p>
-              </div>
-              {detail.intentImport.importedAt && (
-                <p className="mt-2 text-[11px] opacity-70">导入时间：{formatMoment(detail.intentImport.importedAt)}</p>
-              )}
-            </div>
+            <ExecutionIntentImportPanel
+              status={detail.intentImport.importedStatus}
+              panelClassName="rounded-2xl border p-5 shadow-[0_6px_20px_rgba(0,0,0,0.04)]"
+              title="执行来源"
+              titleAs="h2"
+              titleClassName="text-base font-semibold"
+              badgeShapeClassName="rounded-md px-2 py-1 text-[11px]"
+              badgeToneVariant="workbench"
+              description="这条执行历史由 Intent E2E 工作台导入，用于把自然语言测试结果沉淀到项目工作台。"
+              descriptionClassName="mt-2 text-xs leading-5 opacity-80"
+              importedFromRunId={detail.intentImport.importedFromRunId}
+              importedAtLabel={
+                detail.intentImport.importedAt ? `导入时间：${formatExecutionMoment(detail.intentImport.importedAt)}` : ''
+              }
+              presetBadges={intentImportPresetBadges}
+              presetDetails={intentImportPresetDetails}
+              presetActions={intentImportPresetActions}
+              actionKeyPrefix="intent-import"
+              actionRowClassName="mt-3 flex flex-wrap gap-2"
+              actionLinkClassName="rounded-md border border-current/15 bg-white/80 px-3 py-1.5 text-[11px] font-medium transition hover:bg-white"
+            />
           )}
 
           <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-[0_6px_20px_rgba(0,0,0,0.04)]">
@@ -471,12 +468,36 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
           <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-[0_6px_20px_rgba(0,0,0,0.04)]">
             <h2 className="mb-2 text-base font-semibold text-zinc-900">执行事件</h2>
             <div className="max-h-[240px] space-y-1 overflow-y-auto text-xs text-zinc-600">
-              {events.slice(-80).map((event, idx) => (
-                <div key={`${event.createdAt}-${idx}`} className="rounded border border-zinc-200 bg-zinc-50 px-2 py-1">
-                  <p className="font-medium text-zinc-700">[{event.eventType}] {new Date(event.createdAt).toLocaleTimeString('zh-CN')}</p>
-                  <p className="mt-0.5 break-all text-zinc-500">{JSON.stringify(event.payload)}</p>
-                </div>
-              ))}
+              {events.slice(-80).map((event, idx) => {
+                const eventLinkActions = buildExecutionItemWorkspaceLinkActions(event, event.payload);
+                const effectiveEventLinkActions = eventLinkActions.length > 0 ? eventLinkActions : executionContextLinkActions;
+                const eventPresetBadges = buildExecutionWorkspacePresetBadges(
+                  pickPreferredExecutionWorkspacePresetContext({
+                    executionContext: event.executionContext,
+                    nextExecutionContext: event.nextExecutionContext,
+                  })
+                );
+                return (
+                  <div key={`${event.createdAt}-${idx}`} className="rounded border border-zinc-200 bg-zinc-50 px-2 py-1">
+                    <p className="font-medium text-zinc-700">[{event.eventType}] {new Date(event.createdAt).toLocaleTimeString('zh-CN')}</p>
+                    <p className="mt-0.5 break-all text-zinc-500">{JSON.stringify(event.payload)}</p>
+                    <ExecutionPresetBadgeRow badges={eventPresetBadges} />
+                    {effectiveEventLinkActions.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {effectiveEventLinkActions.map((action) => (
+                          <Link
+                            key={`${event.createdAt}-${action.key}-${action.href}`}
+                            href={action.href}
+                            className="inline-flex items-center rounded-md border border-zinc-200 bg-white px-2 py-1 text-[11px] font-medium text-zinc-700 transition hover:border-sky-200 hover:text-sky-700"
+                          >
+                            {action.label}
+                          </Link>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -512,13 +533,56 @@ export default function ExecutionWorkbench({ executionUid }: { executionUid: str
         {artifacts.length === 0 && <p className="text-sm text-zinc-400">暂无产物</p>}
         {artifacts.length > 0 && (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {artifacts.map((artifact, idx) => (
-              <div key={`${artifact.storagePath}-${idx}`} className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-xs">
-                <p className="font-medium text-zinc-700">{artifact.artifactType}</p>
-                <p className="mt-1 break-all text-zinc-500">{artifact.storagePath}</p>
-                <p className="mt-1 text-zinc-400">{new Date(artifact.createdAt).toLocaleString('zh-CN')}</p>
-              </div>
-            ))}
+            {artifacts.map((artifact, idx) => {
+              const artifactLinkActions = buildExecutionItemWorkspaceLinkActions(artifact, artifact.meta);
+              const effectiveArtifactLinkActions = artifactLinkActions.length > 0 ? artifactLinkActions : executionContextLinkActions;
+              const artifactAnchorId = buildExecutionArtifactAnchorId(artifact.storagePath);
+              const artifactPresetBadges = buildExecutionWorkspacePresetBadges(
+                pickPreferredExecutionWorkspacePresetContext({
+                  executionContext: artifact.executionContext,
+                  nextExecutionContext: artifact.nextExecutionContext,
+                })
+              );
+              const artifactFocused =
+                Boolean(readExecutionArtifactAnchorIdFromHash(artifactFocusHash)) &&
+                isExecutionArtifactFocused(artifact.storagePath, artifactFocusHash);
+              return (
+                <div
+                  key={`${artifact.storagePath}-${idx}`}
+                  id={artifactAnchorId}
+                  className={`scroll-mt-24 rounded-lg border p-3 text-xs transition ${
+                    artifactFocused
+                      ? 'border-sky-300 bg-sky-50 ring-2 ring-sky-100'
+                      : 'border-zinc-200 bg-zinc-50'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-medium text-zinc-700">{artifact.artifactType}</p>
+                    {artifactFocused && (
+                      <span className="rounded-md bg-sky-100 px-2 py-0.5 text-[10px] font-medium text-sky-700">
+                        已定位
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-1 break-all text-zinc-500">{artifact.storagePath}</p>
+                  <p className="mt-1 text-zinc-400">{new Date(artifact.createdAt).toLocaleString('zh-CN')}</p>
+                  <ExecutionPresetBadgeRow badges={artifactPresetBadges} />
+                  {effectiveArtifactLinkActions.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {effectiveArtifactLinkActions.map((action) => (
+                        <Link
+                          key={`${artifact.storagePath}-${action.key}-${action.href}`}
+                          href={action.href}
+                          className="inline-flex items-center rounded-md border border-zinc-200 bg-white px-2 py-1 text-[11px] font-medium text-zinc-700 transition hover:border-sky-200 hover:text-sky-700"
+                        >
+                          {action.label}
+                        </Link>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </section>

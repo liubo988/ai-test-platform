@@ -8,8 +8,18 @@ import {
   parseCapabilityVerificationMarker,
 } from '@/lib/capability-verification';
 import { generateTest, repairTest, type GenerateEvent, type GenerateTestContext } from '@/lib/test-generator';
-import { executeTest, type TestResult } from '@/lib/test-executor';
+import { type TestResult } from '@/lib/test-executor';
 import { buildExecutionRepairBlockedMessage } from '@/lib/execution-outcome';
+import {
+  buildExecutionConversationArtifactSidecarsByUid,
+  buildExecutionConversationSidecarsBySummary,
+  buildExecutionWorkspaceContext,
+  buildExecutionWorkspaceLinkPayload,
+  hydrateExecutionWorkspaceContextWithFallback,
+  readExecutionWorkspaceContextSidecars,
+  resolveExecutionWorkspaceContextFromArtifactMeta,
+  type ExecutionWorkspaceContext,
+} from '@/lib/execution-workspace-link-contract';
 import {
   createExecution,
   createPlanCases,
@@ -32,9 +42,14 @@ import {
 } from '@/lib/db/repository';
 import { uid } from '@/lib/db/ids';
 import {
+  extractIntentImportPlatformSummaryFromArtifactMeta,
+  extractIntentImportPlatformSummaryFromPrompt,
   extractIntentImportRunIdFromArtifactMeta,
   extractIntentImportStatusFromArtifactMeta,
+  type IntentImportPlatformSummary,
 } from '@/lib/intent-e2e-import';
+import { resolveIntentRunnerAdapter, type IntentRunnerGeneratedArtifact } from '@/lib/intent-runner-adapter';
+import { buildWorkspacePlatformQueryPreset } from '@/lib/workspace-platform-query-preset';
 import { buildCoverageCasesFromTask } from '@/lib/plan-cases';
 import { analyzeRequirementCoverage } from '@/lib/project-knowledge';
 import { buildFlowSummary, collectScenarioSnapshotTargets, type FlowDefinition, type TaskMode } from '@/lib/task-flow';
@@ -120,6 +135,37 @@ function buildCapabilityVerificationAuditMeta(
 ): { capabilityVerification?: CapabilityVerificationExecutionContext } {
   const capabilityVerification = resolveCapabilityVerificationExecutionContext(featureDescription);
   return capabilityVerification ? { capabilityVerification } : {};
+}
+
+function resolvePlanExecutionRunner(generationPrompt: unknown): {
+  platformSummary: IntentImportPlatformSummary | null;
+  testType: IntentImportPlatformSummary['testType'];
+  runnerType: IntentImportPlatformSummary['runnerType'];
+} {
+  const platformSummary = extractIntentImportPlatformSummaryFromPrompt(generationPrompt);
+
+  return {
+    platformSummary,
+    testType: platformSummary?.testType || 'browser_e2e',
+    runnerType: platformSummary?.runnerType || 'playwright_runner',
+  };
+}
+
+function buildInheritedPlatformPromptSection(generationPrompt: unknown): string {
+  const platformSummary = extractIntentImportPlatformSummaryFromPrompt(generationPrompt);
+  if (!platformSummary) return '';
+
+  return [
+    `平台测试类型：${platformSummary.testType}`,
+    `平台执行器：${platformSummary.runnerType}`,
+    platformSummary.testCaseId ? `平台用例资产：${platformSummary.testCaseId}` : '',
+    platformSummary.testSpecId ? `平台规格资产：${platformSummary.testSpecId}` : '',
+    platformSummary.verificationContractId ? `平台验收契约：${platformSummary.verificationContractId}` : '',
+    ...platformSummary.verificationPolicyNotes.map((note) => `平台验收策略：${note}`),
+    platformSummary.artifactKinds.length ? `平台产物类型：${platformSummary.artifactKinds.join(' / ')}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 function extractCapabilityVerificationFromArtifactMeta(
@@ -208,6 +254,52 @@ export function classifyExecutionResult(result: TestResult) {
     conversationContent: `执行失败: ${result.error || 'unknown error'}（${failureSummary}）`,
     logMessage: `执行失败: ${result.error || 'unknown error'}，${failureSummary}`,
   };
+}
+
+function readRunnerArtifactMeta(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
+async function persistRunnerArtifacts(input: {
+  executionUid: string;
+  projectUid: string;
+  artifacts?: IntentRunnerGeneratedArtifact[];
+  workspaceLinkPayload: ReturnType<typeof buildExecutionWorkspaceLinkPayload>;
+  platformSummary: IntentImportPlatformSummary | null;
+  capabilityVerification?: CapabilityVerificationExecutionContext | null;
+}) {
+  if (!input.artifacts?.length) return;
+
+  for (const [index, artifact] of input.artifacts.entries()) {
+    const fileName = `${artifact.fileName || ''}`.trim() || `${artifact.artifactType}-${index + 1}.txt`;
+    const storagePath = `db://executions/${input.executionUid}/${Date.now()}-${index + 1}-${fileName}`;
+
+    await insertExecutionArtifact({
+      executionUid: input.executionUid,
+      projectUid: input.projectUid,
+      artifactType: artifact.artifactType,
+      storagePath,
+      meta: {
+        fileName,
+        content: artifact.content,
+        ...input.workspaceLinkPayload,
+        ...(input.platformSummary ? { platformMeta: input.platformSummary } : {}),
+        ...readRunnerArtifactMeta(artifact.meta),
+        ...(input.capabilityVerification ? { capabilityVerification: input.capabilityVerification } : {}),
+      },
+    });
+    await insertExecutionEvent(
+      input.executionUid,
+      'artifact',
+      {
+        type: artifact.artifactType,
+        path: storagePath,
+        name: fileName,
+      },
+      input.projectUid
+    );
+  }
 }
 
 async function analyzeSnapshotTargets(targets: string[], auth?: AuthConfig): Promise<PageSnapshot[]> {
@@ -571,6 +663,7 @@ export async function restoreHistoricalPlanAsLatest(
 
   const latestPlan = await getLatestPlanByConfigUid(config.configUid);
   const capabilityVerificationMeta = buildCapabilityVerificationAuditMeta(config.featureDescription || '');
+  const inheritedPlatformPrompt = buildInheritedPlatformPromptSection(sourcePlan.generationPrompt);
   if (latestPlan?.planUid === sourcePlan.planUid) {
     return {
       planUid: sourcePlan.planUid,
@@ -594,7 +687,9 @@ export async function restoreHistoricalPlanAsLatest(
       .filter(Boolean)
       .join(' '),
     generationModel: 'history-restore',
-    generationPrompt: `[history_restore] sourcePlan=${sourcePlan.planUid} v${sourcePlan.planVersion}`,
+    generationPrompt: [inheritedPlatformPrompt, `[history_restore] sourcePlan=${sourcePlan.planUid} v${sourcePlan.planVersion}`]
+      .filter(Boolean)
+      .join('\n\n'),
     generatedFiles:
       sourcePlan.generatedFiles.length > 0
         ? sourcePlan.generatedFiles
@@ -662,6 +757,10 @@ export async function repairExecution(
   planUid: string;
   planVersion: number;
   executionUid: string;
+  runPath: string;
+  workspacePath: string;
+  workspaceHistoryPath: string;
+  executionContext: ExecutionWorkspaceContext;
 }> {
   const execution = await getExecution(executionUid);
   if (!execution) throw new Error('执行任务不存在');
@@ -729,6 +828,7 @@ export async function repairExecution(
 
   const generatedFileName = `repair-${Date.now()}.spec.ts`;
   const latestPlan = await getLatestPlanByConfigUid(config.configUid);
+  const inheritedPlatformPrompt = buildInheritedPlatformPromptSection(plan.generationPrompt);
   const repairedPlan = await createTestPlan({
     projectUid: config.projectUid,
     configUid: config.configUid,
@@ -736,7 +836,9 @@ export async function repairExecution(
     planCode: repairedCode,
     planSummary: `基于失败执行 ${executionUid} 完成 AI 纠错，自动生成于 ${new Date().toLocaleString('zh-CN')}`,
     generationModel: runtimeConfig.model,
-    generationPrompt: [`[AI纠错] 原执行: ${executionUid}`, promptDescription].join('\n\n'),
+    generationPrompt: [inheritedPlatformPrompt, `[AI纠错] 原执行: ${executionUid}`, promptDescription]
+      .filter(Boolean)
+      .join('\n\n'),
     generatedFiles: [
       {
         name: generatedFileName,
@@ -802,6 +904,10 @@ export async function repairExecution(
     planUid: repairedPlan.planUid,
     planVersion: repairedPlan.planVersion,
     executionUid: rerun.executionUid,
+    runPath: rerun.runPath,
+    workspacePath: rerun.workspacePath,
+    workspaceHistoryPath: rerun.workspaceHistoryPath,
+    executionContext: rerun.executionContext,
   };
 }
 
@@ -814,17 +920,36 @@ export async function executePlan(
     autoRepairRemaining?: number;
     repairTriggerKind?: RepairTriggerKind;
   }
-): Promise<{ executionUid: string }> {
+): Promise<{
+  executionUid: string;
+  runPath: string;
+  workspacePath: string;
+  workspaceHistoryPath: string;
+  executionContext: ExecutionWorkspaceContext;
+}> {
   const plan = await getPlanByUid(planUid);
   if (!plan) throw new Error('测试计划不存在');
-
-  const existingRunning = await findRunningExecution(planUid);
-  if (existingRunning) {
-    return { executionUid: existingRunning };
-  }
+  const planRunner = resolvePlanExecutionRunner(plan.generationPrompt);
 
   const config = await getTestConfigByUid(plan.configUid);
   if (!config) throw new Error('计划关联配置不存在');
+  const existingRunning = await findRunningExecution(planUid);
+  if (existingRunning) {
+    const executionContext = buildExecutionWorkspaceContext({
+      executionUid: existingRunning,
+      configUid: config.configUid,
+      projectUid: config.projectUid,
+      moduleUid: config.moduleUid,
+      summary: planRunner.platformSummary,
+    });
+    return {
+      executionUid: existingRunning,
+      runPath: executionContext.runPath,
+      workspacePath: executionContext.workspacePath,
+      workspaceHistoryPath: executionContext.workspaceHistoryPath,
+      executionContext,
+    };
+  }
   const project = await getProjectByUid(config.projectUid);
   if (!project) throw new Error('计划关联项目不存在');
   const llmConfig = mergeLLMRuntimeOverrides(await getWorkspaceLLMRuntimeOverrides(), options?.llmConfig);
@@ -847,6 +972,14 @@ export async function executePlan(
     workerSessionId,
     triggerSource: 'manual',
   });
+  const executionContext = buildExecutionWorkspaceContext({
+    executionUid,
+    configUid: config.configUid,
+    projectUid: config.projectUid,
+    moduleUid: config.moduleUid,
+    summary: planRunner.platformSummary,
+  });
+  const workspaceLinkPayload = buildExecutionWorkspaceLinkPayload({ current: executionContext });
 
   await insertLlmConversation({
     projectUid: config.projectUid,
@@ -877,6 +1010,7 @@ export async function executePlan(
       planVersion: plan.planVersion,
       configUid: config.configUid,
       configName: config.name,
+      ...workspaceLinkPayload,
       triggerSource: 'manual',
       autoRepairRemaining,
       ...(repairTriggerKind ? { repairTriggerKind } : {}),
@@ -893,6 +1027,10 @@ export async function executePlan(
     configUid: config.configUid,
     configName: config.name,
     projectUid: config.projectUid,
+    executionContext,
+    testType: planRunner.testType,
+    runnerType: planRunner.runnerType,
+    platformSummary: planRunner.platformSummary,
     auth: buildAuthContext(project, config),
     actorLabel: options?.actorLabel,
     llmConfig,
@@ -901,7 +1039,13 @@ export async function executePlan(
     capabilityVerification: capabilityVerificationMeta.capabilityVerification || null,
   });
 
-  return { executionUid };
+  return {
+    executionUid,
+    runPath: executionContext.runPath,
+    workspacePath: executionContext.workspacePath,
+    workspaceHistoryPath: executionContext.workspaceHistoryPath,
+    executionContext,
+  };
 }
 
 export async function getExecutionDetail(executionUid: string) {
@@ -916,6 +1060,15 @@ export async function getExecutionDetail(executionUid: string) {
   const projectRecord = configRecord ? await getProjectByUid(configRecord.projectUid) : null;
   const config = configRecord ? (({ loginPasswordPlain: _ignored, ...rest }) => rest)(configRecord) : null;
   const project = projectRecord ? (({ loginPasswordPlain: _ignored, ...rest }) => rest)(projectRecord) : null;
+  const generatedSpecArtifact = artifacts.find((item) => item.artifactType === 'generated_spec') || null;
+  const executionContext = resolveExecutionWorkspaceContextFromArtifactMeta({
+    executionUid,
+    executionProjectUid: execution.projectUid,
+    configProjectUid: configRecord?.projectUid,
+    moduleUid: configRecord?.moduleUid,
+    configUid: execution.configUid,
+    generatedSpecArtifactMeta: generatedSpecArtifact?.meta,
+  });
   const importedArtifact =
     artifacts.find((item) => item.artifactType === 'generated_spec' && extractIntentImportRunIdFromArtifactMeta(item.meta)) || null;
   const importedFromRunId = importedArtifact ? extractIntentImportRunIdFromArtifactMeta(importedArtifact.meta) : '';
@@ -924,8 +1077,36 @@ export async function getExecutionDetail(executionUid: string) {
       ? extractIntentImportStatusFromArtifactMeta(importedArtifact.meta) ||
         (execution.status === 'passed' || execution.status === 'failed' ? execution.status : '')
       : '';
+  const importedPlatform = importedArtifact ? extractIntentImportPlatformSummaryFromArtifactMeta(importedArtifact.meta) : null;
+  const importedWorkspacePreset =
+    importedFromRunId && configRecord?.moduleUid
+      ? buildWorkspacePlatformQueryPreset({
+          projectUid: configRecord.projectUid || execution.projectUid,
+          moduleUid: configRecord.moduleUid,
+          configUid: execution.configUid,
+          summary: importedPlatform,
+        })
+      : null;
   const capabilityVerification =
     resolveCapabilityVerificationExecutionContext(configRecord?.featureDescription || '') || extractCapabilityVerificationFromArtifactMeta(artifacts);
+  const conversationSidecarsBySummary = buildExecutionConversationSidecarsBySummary(events);
+  const conversationArtifactSidecarsByUid = buildExecutionConversationArtifactSidecarsByUid(conversations, artifacts);
+  const eventItems = events.map((item) => {
+    const sidecars = readExecutionWorkspaceContextSidecars(item.payload);
+    return {
+      ...item,
+      executionContext: hydrateExecutionWorkspaceContextWithFallback(sidecars.executionContext, executionContext),
+      nextExecutionContext: sidecars.nextExecutionContext,
+    };
+  });
+  const artifactItems = artifacts.map((item) => {
+    const sidecars = readExecutionWorkspaceContextSidecars(item.meta);
+    return {
+      ...item,
+      executionContext: hydrateExecutionWorkspaceContextWithFallback(sidecars.executionContext, executionContext),
+      nextExecutionContext: sidecars.nextExecutionContext,
+    };
+  });
 
   return {
     execution,
@@ -933,15 +1114,33 @@ export async function getExecutionDetail(executionUid: string) {
     planCases,
     config,
     project,
+    executionContext,
     capabilityVerification,
-    events,
-    conversations,
-    artifacts,
+    events: eventItems,
+    conversations: conversations.map((item) => {
+      const conversationSidecar = conversationSidecarsBySummary.get(String(item.content || '').trim()) || null;
+      return {
+        ...item,
+        executionContext: hydrateExecutionWorkspaceContextWithFallback(conversationSidecar?.executionContext, executionContext),
+        nextExecutionContext: conversationSidecar?.nextExecutionContext || null,
+        executionEventContext: conversationSidecar?.executionEventContext || null,
+        executionArtifactContext: conversationArtifactSidecarsByUid.get(item.conversationUid) || null,
+      };
+    }),
+    artifacts: artifactItems,
     intentImport: importedFromRunId
       ? {
           importedFromRunId,
           importedStatus,
           importedAt: importedArtifact?.createdAt || '',
+          testType: importedPlatform?.testType,
+          runnerType: importedPlatform?.runnerType,
+          testCaseId: importedPlatform?.testCaseId,
+          testSpecId: importedPlatform?.testSpecId,
+          verificationContractId: importedPlatform?.verificationContractId,
+          artifactKinds: importedPlatform?.artifactKinds || [],
+          verificationPolicyNotes: importedPlatform?.verificationPolicyNotes || [],
+          workspacePreset: importedWorkspacePreset,
         }
       : null,
   };
@@ -960,6 +1159,10 @@ async function runExecutionInBackground(input: {
   configUid: string;
   configName: string;
   projectUid: string;
+  executionContext: ExecutionWorkspaceContext;
+  testType: IntentImportPlatformSummary['testType'];
+  runnerType: IntentImportPlatformSummary['runnerType'];
+  platformSummary: IntentImportPlatformSummary | null;
   auth?: { loginUrl?: string; username?: string; password?: string; loginDescription?: string };
   actorLabel?: string;
   llmConfig?: LLMRuntimeOverrides;
@@ -967,6 +1170,8 @@ async function runExecutionInBackground(input: {
   repairTriggerKind?: RepairTriggerKind | '';
   capabilityVerification?: CapabilityVerificationExecutionContext | null;
 }) {
+  const workspaceLinkPayload = buildExecutionWorkspaceLinkPayload({ current: input.executionContext });
+
   try {
     await insertLlmConversation({
       projectUid: input.projectUid,
@@ -977,7 +1182,14 @@ async function runExecutionInBackground(input: {
       content: `正在准备执行环境，计划 ${input.planUid}`,
     });
 
-    const result = await executeTest(input.planCode, input.workerSessionId, input.auth, {
+    const runnerAdapter = resolveIntentRunnerAdapter(input.testType, input.runnerType);
+    const result = await runnerAdapter.execute({
+      sessionId: input.workerSessionId,
+      code: input.planCode,
+      auth: input.auth,
+      testType: input.testType,
+      runnerType: input.runnerType,
+    }, {
       onFrame: ({ frameIndex, timestamp, approxBase64Bytes }) => {
         void insertExecutionEvent(input.executionUid, 'frame', {
           frameIndex,
@@ -1027,6 +1239,7 @@ async function runExecutionInBackground(input: {
         planTitle: input.planTitle,
         configUid: input.configUid,
         configName: input.configName,
+        ...workspaceLinkPayload,
         durationMs: result.duration,
         stepStats: outcome.stepStats,
         errorMessage: result.error || '',
@@ -1060,6 +1273,8 @@ async function runExecutionInBackground(input: {
         fileName: artifactFileName,
         content: input.planCode,
         success: outcome.status === 'passed',
+        ...workspaceLinkPayload,
+        ...(input.platformSummary ? { platformMeta: input.platformSummary } : {}),
         ...(input.capabilityVerification ? { capabilityVerification: input.capabilityVerification } : {}),
       },
     });
@@ -1068,6 +1283,14 @@ async function runExecutionInBackground(input: {
       path: `db://executions/${input.executionUid}/${artifactFileName}`,
       name: artifactFileName,
     }, input.projectUid);
+    await persistRunnerArtifacts({
+      executionUid: input.executionUid,
+      projectUid: input.projectUid,
+      artifacts: result.artifacts,
+      workspaceLinkPayload,
+      platformSummary: input.platformSummary,
+      capabilityVerification: input.capabilityVerification,
+    });
 
     if (outcome.status === 'failed' && input.autoRepairRemaining > 0) {
       const repairBlockedMessage = buildExecutionRepairBlockedMessage({
@@ -1082,6 +1305,7 @@ async function runExecutionInBackground(input: {
           status: 'auto_repair_skipped',
           at: new Date().toISOString(),
           summary: skippedSummary,
+          ...workspaceLinkPayload,
           remainingRetries: input.autoRepairRemaining,
         }, input.projectUid);
         await insertLlmConversation({
@@ -1098,6 +1322,7 @@ async function runExecutionInBackground(input: {
           status: 'auto_repair_pending',
           at: new Date().toISOString(),
           summary: pendingSummary,
+          ...workspaceLinkPayload,
           remainingRetries: input.autoRepairRemaining,
         }, input.projectUid);
         await insertLlmConversation({
@@ -1116,17 +1341,44 @@ async function runExecutionInBackground(input: {
             autoRepairRemaining: input.autoRepairRemaining - 1,
             repairTriggerKind: 'auto',
           });
+          const nextWorkspaceLinkPayload = buildExecutionWorkspaceLinkPayload({
+            current: input.executionContext,
+            next: repaired.executionContext,
+          });
           const startedSummary = `执行失败，已自动发起 AI 纠错并重跑。新执行 ${repaired.executionUid}，剩余自动修复 ${Math.max(0, input.autoRepairRemaining - 1)} 次。`;
           await insertExecutionEvent(input.executionUid, 'status', {
             status: 'auto_repair_started',
             at: new Date().toISOString(),
             summary: startedSummary,
+            ...nextWorkspaceLinkPayload,
             nextExecutionUid: repaired.executionUid,
             nextPlanUid: repaired.planUid,
             nextPlanVersion: repaired.planVersion,
-            nextRunPath: `/runs/${repaired.executionUid}`,
             remainingRetries: Math.max(0, input.autoRepairRemaining - 1),
           }, input.projectUid);
+          await insertProjectActivityLog({
+            projectUid: input.projectUid,
+            entityType: 'execution',
+            entityUid: input.executionUid,
+            actionType: 'execution_auto_repair_started',
+            actorLabel: input.actorLabel,
+            title: `自动发起 AI 纠错「${input.configName}」`,
+            detail: startedSummary,
+            meta: {
+              executionUid: input.executionUid,
+              planUid: input.planUid,
+              planTitle: input.planTitle,
+              configUid: input.configUid,
+              configName: input.configName,
+              ...nextWorkspaceLinkPayload,
+              nextExecutionUid: repaired.executionUid,
+              nextPlanUid: repaired.planUid,
+              nextPlanVersion: repaired.planVersion,
+              remainingRetries: Math.max(0, input.autoRepairRemaining - 1),
+              repairTriggerKind: 'auto',
+              ...(input.capabilityVerification ? { capabilityVerification: input.capabilityVerification } : {}),
+            },
+          });
           await insertLlmConversation({
             projectUid: input.projectUid,
             scene: 'plan_execution',
@@ -1142,6 +1394,7 @@ async function runExecutionInBackground(input: {
             status: 'auto_repair_failed',
             at: new Date().toISOString(),
             summary: failedSummary,
+            ...workspaceLinkPayload,
             remainingRetries: input.autoRepairRemaining,
           }, input.projectUid).catch(() => undefined);
           await insertLlmConversation({
@@ -1180,6 +1433,8 @@ async function runExecutionInBackground(input: {
         content: input.planCode,
         success: false,
         exception: true,
+        ...workspaceLinkPayload,
+        ...(input.platformSummary ? { platformMeta: input.platformSummary } : {}),
         ...(input.capabilityVerification ? { capabilityVerification: input.capabilityVerification } : {}),
       },
     }).catch(() => undefined);
@@ -1201,6 +1456,7 @@ async function runExecutionInBackground(input: {
         planTitle: input.planTitle,
         configUid: input.configUid,
         configName: input.configName,
+        ...workspaceLinkPayload,
         errorMessage: message,
         ...(input.repairTriggerKind ? { repairTriggerKind: input.repairTriggerKind } : {}),
         ...(input.capabilityVerification ? { capabilityVerification: input.capabilityVerification } : {}),

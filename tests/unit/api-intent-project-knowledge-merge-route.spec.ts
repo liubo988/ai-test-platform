@@ -15,6 +15,19 @@ vi.mock('@/lib/db/repository', () => ({
 
 vi.mock('@/lib/intent-project-knowledge', () => ({
   createIntentProjectKnowledgeAuditEntry: vi.fn(),
+  normalizeIntentProjectUid: vi.fn((value: unknown) => (typeof value === 'string' ? value.trim() : '')),
+  resolveProjectScopedIntentAssetPath: vi.fn((projectUid: string, fileName: string) =>
+    `reports/intent-e2e/projects/${projectUid}/${fileName}`
+  ),
+  resolveProjectScopedIntentAssetStorage: vi.fn((options: { projectUid?: string; legacyPath: string; projectFileName: string }) => {
+    const projectUid = typeof options.projectUid === 'string' ? options.projectUid.trim() : '';
+    return {
+      projectUid,
+      readPath: projectUid ? `reports/intent-e2e/projects/${projectUid}/${options.projectFileName}` : options.legacyPath,
+      writePath: projectUid ? `reports/intent-e2e/projects/${projectUid}/${options.projectFileName}` : options.legacyPath,
+      usingLegacyFallback: false,
+    };
+  }),
   writeIntentProjectKnowledgeAuditEntry: vi.fn(),
 }));
 
@@ -1181,5 +1194,228 @@ describe('intent project knowledge merge route', () => {
         ruleIds: ['business.rule-1'],
       }),
     ]);
+  });
+
+  it('blocks merge when rollout strategy is hold and rollout override is absent', async () => {
+    vi.mocked(getIntentE2EInsights).mockResolvedValue({
+      scope: {
+        projectUid: '',
+        runLimit: 50,
+        auditLimit: 20,
+      },
+      summary: {
+        totalRuns: 12,
+        passedRuns: 8,
+        failedRuns: 4,
+        canceledRuns: 0,
+        firstPassPassedRuns: 6,
+        firstPassPassRate: 50,
+        repairedPassRuns: 2,
+        repairedPassRate: 16.7,
+        terminalPassRate: 66.7,
+        passRate: 66.7,
+        knowledgeHitRuns: 8,
+        knowledgeHitRate: 66.7,
+        suggestedHelperReuseRuns: 6,
+        suggestedHelperReuseRate: 50,
+      },
+      topRules: [],
+      topHelpers: [],
+      starterHelpers: [],
+      scenarioFamilies: [],
+      failureClasses: [],
+      riskLifecycleRules: [],
+      probationRules: [],
+      rollbackCandidates: [
+        {
+          auditId: 'audit_rollback_gate_1',
+          occurredAt: '2026-03-31T09:00:00.000Z',
+          projectUid: '',
+          title: '近期 merge 已触发回滚候选',
+          backupPath: 'reports/intent-e2e.project-knowledge.backups/rollback.json',
+          addedRuleIds: ['business.rule-1'],
+          mergedCandidateSources: ['successful_run'],
+          mergedRunIds: ['run_1'],
+          mergedCandidates: [],
+          selectedCandidateFeedbackStatuses: [],
+          selectedRiskyCandidateIds: [],
+          appliedOverrideCandidateIds: [],
+          appliedOverrideCandidateFeedbackStatuses: [],
+          appliedAcknowledgedRiskCandidateIds: [],
+          appliedAcknowledgedRiskCandidateFeedbackStatuses: [],
+          beforeRuns: 4,
+          beforePassRate: 100,
+          beforeFirstPassRate: 100,
+          afterRuns: 4,
+          afterPassRate: 25,
+          afterFirstPassRate: 25,
+          passRateDelta: 75,
+          firstPassRateDelta: 75,
+          impactStatus: 'regressing',
+          recommendation: '建议先回滚',
+        },
+      ],
+      recentTraces: [],
+      evaluationBaseline: {
+        generatedFromRuns: 12,
+        candidateClusters: 3,
+        recommendedCount: 3,
+        recommendedFamilies: ['complex_enterprise_flow'],
+        selectionNote: '固定评测候选按 snapshot signature 聚类。',
+        candidates: [],
+      },
+      rolloutStrategy: {
+        generatedFromRuns: 12,
+        recommendedStage: 'hold',
+        summary: '当前命中 1 个阻断门禁，先暂停默认放量。',
+        recommendation: '先处理回滚风险。',
+        blockedCount: 1,
+        warningCount: 0,
+        readyCount: 3,
+        gates: [
+          {
+            gateId: 'rollout:rollback:blocked',
+            source: 'rollback_candidate',
+            status: 'blocked',
+            title: '存在明确回滚候选',
+            summary: '最近有 1 个 merge 已被识别为回滚候选。',
+            recommendation: '先回滚或修复。',
+            sourceRef: 'audit_rollback_gate_1',
+          },
+        ],
+      },
+    } as never);
+
+    const req = new NextRequest('http://localhost/api/intent-e2e/project-knowledge/merge', {
+      method: 'POST',
+      body: JSON.stringify({ candidateIds: ['candidate-1'] }),
+      headers: { 'content-type': 'application/json' },
+    });
+    const res = await POST(req);
+    const json = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(json.error).toContain('服务端暂停');
+    expect(json.rolloutPolicyDecision).toMatchObject({
+      recommendedStage: 'hold',
+      effectiveStage: 'hold',
+      allowMerge: false,
+      rolloutOverrideRequired: true,
+      receipts: [
+        expect.objectContaining({
+          kind: 'hold',
+        }),
+        expect.objectContaining({
+          kind: 'rollback',
+        }),
+      ],
+    });
+    expect(mergeIntentProjectKnowledgeDraftCandidates).not.toHaveBeenCalled();
+    expect(createIntentProjectKnowledgeAuditEntry).not.toHaveBeenCalled();
+  });
+
+  it('allows merge in small_batch mode after explicit canary acknowledgement and records rollout decision', async () => {
+    vi.mocked(getIntentE2EInsights).mockResolvedValue({
+      scope: {
+        projectUid: '',
+        runLimit: 50,
+        auditLimit: 20,
+      },
+      summary: {
+        totalRuns: 12,
+        passedRuns: 8,
+        failedRuns: 4,
+        canceledRuns: 0,
+        firstPassPassedRuns: 6,
+        firstPassPassRate: 50,
+        repairedPassRuns: 2,
+        repairedPassRate: 16.7,
+        terminalPassRate: 66.7,
+        passRate: 66.7,
+        knowledgeHitRuns: 8,
+        knowledgeHitRate: 66.7,
+        suggestedHelperReuseRuns: 6,
+        suggestedHelperReuseRate: 50,
+      },
+      topRules: [],
+      topHelpers: [],
+      starterHelpers: [],
+      scenarioFamilies: [],
+      failureClasses: [],
+      riskLifecycleRules: [],
+      probationRules: [],
+      rollbackCandidates: [],
+      recentTraces: [],
+      evaluationBaseline: {
+        generatedFromRuns: 12,
+        candidateClusters: 3,
+        recommendedCount: 3,
+        recommendedFamilies: ['complex_enterprise_flow'],
+        selectionNote: '固定评测候选按 snapshot signature 聚类。',
+        candidates: [],
+      },
+      rolloutStrategy: {
+        generatedFromRuns: 12,
+        recommendedStage: 'small_batch',
+        summary: '当前仍需按小流量灰度观察。',
+        recommendation: '继续观察 warning gates。',
+        blockedCount: 0,
+        warningCount: 1,
+        readyCount: 3,
+        gates: [
+          {
+            gateId: 'rollout:watchlist:warning',
+            source: 'regression_watchlist',
+            status: 'warning',
+            title: '仍有中风险 watchlist 需要观察',
+            summary: '最近还有 1 个中风险观察项。',
+            recommendation: '继续小流量灰度。',
+            sourceRef: 'watch_1',
+          },
+        ],
+      },
+    } as never);
+
+    const req = new NextRequest('http://localhost/api/intent-e2e/project-knowledge/merge', {
+      method: 'POST',
+      body: JSON.stringify({
+        candidateIds: ['candidate-1'],
+        rolloutCanaryAcknowledged: true,
+        rolloutCanaryLabel: 'canary-batch-a',
+      }),
+      headers: { 'content-type': 'application/json' },
+    });
+    const res = await POST(req);
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(createIntentProjectKnowledgeAuditEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        meta: expect.objectContaining({
+          rolloutPolicyDecision: expect.objectContaining({
+            recommendedStage: 'small_batch',
+            effectiveStage: 'small_batch',
+            allowMerge: true,
+            appliedMode: 'small_batch',
+            canaryAcknowledged: true,
+            canaryLabel: 'canary-batch-a',
+          }),
+        }),
+      })
+    );
+    expect(json.rolloutPolicyDecision).toMatchObject({
+      recommendedStage: 'small_batch',
+      effectiveStage: 'small_batch',
+      allowMerge: true,
+      appliedMode: 'small_batch',
+      canaryAcknowledged: true,
+      canaryLabel: 'canary-batch-a',
+      receipts: [
+        expect.objectContaining({
+          kind: 'small_batch',
+        }),
+      ],
+    });
+    expect(json.rolloutWarning).toContain('small_batch');
   });
 });

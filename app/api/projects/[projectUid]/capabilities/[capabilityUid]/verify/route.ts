@@ -66,7 +66,10 @@ export async function POST(
             planUid: repaired.planUid,
             planVersion: repaired.planVersion,
             executionUid: repaired.executionUid,
-            runPath: `/runs/${repaired.executionUid}`,
+            runPath: repaired.runPath,
+            workspacePath: repaired.workspacePath,
+            workspaceHistoryPath: repaired.workspaceHistoryPath,
+            executionContext: repaired.executionContext,
           },
           { status: 201 }
         ),
@@ -98,16 +101,19 @@ export async function POST(
 
     return applyActorCookie(
       NextResponse.json(
-        {
-          configUid: config.configUid,
-          planUid: plan.planUid,
-          planVersion: plan.planVersion,
-          executionUid: execution.executionUid,
-          runPath: `/runs/${execution.executionUid}`,
-        },
-        { status: 201 }
-      ),
-      actor.userUid
+          {
+            configUid: config.configUid,
+            planUid: plan.planUid,
+            planVersion: plan.planVersion,
+            executionUid: execution.executionUid,
+            runPath: execution.runPath,
+            workspacePath: execution.workspacePath,
+            workspaceHistoryPath: execution.workspaceHistoryPath,
+            executionContext: execution.executionContext,
+          },
+          { status: 201 }
+        ),
+        actor.userUid
     );
   } catch (error: unknown) {
     return toErrorResponse(error, '启动能力验证失败');
