@@ -112,6 +112,10 @@ function buildDefaultJsonRecordCollectionPaths(): string[] {
   ];
 }
 
+function buildGenericStatusJsonPaths(): string[] {
+  return ['status', 'statusName', 'statusText', 'state', 'stateName', 'stateText', 'displayStatus', 'progress.displayStatus'];
+}
+
 function buildSharedVariables(plan: IntentExecutionPlan): string[] {
   return uniqueStrings([
     ...plan.sharedVariables,
@@ -432,6 +436,23 @@ function buildPrimaryDetailUrlTemplate(variable: string): string {
   return `\`/detail/\${${accessor}}\``;
 }
 
+function rewriteDetailUrlPrimaryAccessor(
+  detailUrlExpression: string,
+  primaryAccessor: string,
+  primaryValueExpression: string
+): string {
+  const normalizedExpression = String(detailUrlExpression || '').trim();
+  if (!normalizedExpression || !primaryAccessor) {
+    return normalizedExpression;
+  }
+
+  const currentInterpolation = `\${${primaryAccessor}}`;
+  const nextInterpolation = `\${${primaryValueExpression}}`;
+  return normalizedExpression.includes(currentInterpolation)
+    ? normalizedExpression.split(currentInterpolation).join(nextInterpolation)
+    : normalizedExpression;
+}
+
 function inferDetailFieldLabels(check: IntentVerificationPlanCheck, relatedSteps: IntentExecutionPlanStep[]): string[] {
   const structuredFieldSpecs = uniqueStrings((check.fieldSpecs || []).map((spec) => spec.label));
   if (structuredFieldSpecs.length > 0) return structuredFieldSpecs;
@@ -557,9 +578,7 @@ function buildDetailFieldRecordJsonPaths(
     /(手机号|手机号码|电话|mobile|phone)/i.test(normalizedLabel)
       ? ['mobile', 'phone', 'telephone', 'tel', 'contactPhone', 'contactMobile', 'mobilePhone']
       : null,
-    /(状态|status|state)/i.test(normalizedLabel)
-      ? ['status', 'statusName', 'statusText', 'state', 'stateName', 'stateText', 'displayStatus']
-      : null,
+    /(状态|status|state)/i.test(normalizedLabel) ? buildGenericStatusJsonPaths() : null,
     /(创建时间|创建日期|createdat|createtime|createdtime)/i.test(normalizedLabel)
       ? ['createdAt', 'createTime', 'createdTime', 'createDate', 'createdDate', 'gmtCreate']
       : null,
@@ -805,11 +824,20 @@ function buildRowStatusFallbackLines(
 ): string[] {
   const statusPaths = buildDetailFieldRecordJsonPaths('状态', relatedSteps, check);
   const rowTextIdentifier = toSafeIdentifier(`${baseName}RowText`, `${baseName}RowText`);
+  const rowKeyIdentifier = toSafeIdentifier(`${baseName}RowKey`, `${baseName}RowKey`);
+  const derivedPrimaryIdentifier = toSafeIdentifier(`${baseName}DerivedPrimaryValue`, `${baseName}DerivedPrimaryValue`);
   const expectedStatusIdentifier = toSafeIdentifier(`${baseName}ExpectedStatus`, `${baseName}ExpectedStatus`);
   const expectedStatusAssertionIdentifier = toSafeIdentifier(
     `${baseName}ExpectedStatusAssertion`,
     `${baseName}ExpectedStatusAssertion`
   );
+  const detailUrlRequiresPrimary = Boolean(
+    detailUrlExpression && primaryAccessor && detailUrlExpression.includes(`\${${primaryAccessor}}`)
+  );
+  const detailUrlFallbackExpression =
+    detailUrlRequiresPrimary && primaryAccessor
+      ? rewriteDetailUrlPrimaryAccessor(detailUrlExpression, primaryAccessor, derivedPrimaryIdentifier)
+      : detailUrlExpression;
   const expectedStatusAssertionExpression =
     resolveDetailFieldExpectedExpression('状态', relatedSteps, check) || JSON.stringify('TODO_EXPECTED_状态');
   if (statusPaths.length === 0 && !expectedStatusAssertionExpression && detailFallbackLines.length === 0) {
@@ -835,10 +863,18 @@ function buildRowStatusFallbackLines(
       detailFallbackLines.length > 0
         ? detailFallbackLines.map((line) => `  ${line}`)
         : [
-            primaryAccessor
+            detailUrlRequiresPrimary
+              ? `  const ${rowKeyIdentifier} = await ${rowAccessor}.getAttribute('data-row-key').catch(() => '');`
+              : '',
+            detailUrlRequiresPrimary
+              ? `  const ${derivedPrimaryIdentifier} = ${primaryAccessor} || ((() => { const candidate = String(${rowKeyIdentifier} || '').trim(); return /^[A-Za-z0-9_-]{6,64}$/.test(candidate) && !/^1\\d{10}$/.test(candidate) ? candidate : ''; })()) || (((String(${rowTextIdentifier} || '').match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item))) || '');`
+              : '',
+            detailUrlRequiresPrimary
+              ? `  if (!${derivedPrimaryIdentifier}) throw new Error(${JSON.stringify('状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口')});`
+              : primaryAccessor
               ? `  if (!${primaryAccessor}) throw new Error(${JSON.stringify('状态证据缺失：列表行已命中，但缺少主键且未提供详情入口')});`
               : '',
-            detailUrlExpression ? `  await page.goto(${detailUrlExpression}, { waitUntil: 'domcontentloaded' });` : '',
+            detailUrlExpression ? `  await page.goto(${detailUrlFallbackExpression}, { waitUntil: 'domcontentloaded' });` : '',
             detailUrlExpression && detailReadyLocatorExpression ? `  await expect(${detailReadyLocatorExpression}).toBeVisible();` : '',
             ...(
               detailUrlExpression
@@ -1292,7 +1328,7 @@ function buildStepInstructions(step: IntentExecutionPlanStep): string[] {
     step.preferredHelpers.includes('__e2e.findAntdTableRow')
   ) {
     instructions.push(
-      `如果 ${primarySharedVariable} 已经作为共享稳定标识从响应里真实提取，优先写 const currentVisibleRow = ${toSharedAccessor(primarySharedVariable)} ? await (async () => { try { return await __e2e.findAntdTableRow(page, { hasTexts: [${toSharedAccessor(primarySharedVariable)}], timeoutMs: 1200 }); } catch { return null; } })() : null; const recordCheck = currentVisibleRow ? { primaryValue: ${toSharedAccessor(primarySharedVariable)}, mode: 'table_row', row: currentVisibleRow, response: null } : await __e2e.resolvePrimaryRecord(page, { primaryValue: ${toSharedAccessor(primarySharedVariable)}, listResponse, rowHasTexts: [${toSharedAccessor(primarySharedVariable)}, '辅助身份字段'], detailUrl }); 若列表检索控件已知，再显式补 keywordInput/searchButton；未知时可先省略，让 helper 自动探测可见搜索框和搜索按钮。对于“提交后回列表验收”这类场景，先短超时检查当前可见列表是否已经出现目标行，不要看到搜索框就立刻填值搜索；只有当前列表未命中时，才让 helper 保守做列表收敛轮询（例如传 maxLookupAttempts / retryIntervalMs）。列表命中后先把该行当作目标记录已命中的身份证据；如果预期状态没有出现在同一行可见文本 / 状态单元格，不要在这里硬失败，优先改读列表响应或详情字段。若 currentVisibleRow 已命中但后面还需要状态证据，而 recordCheck.response 会是 null，不要直接退化成开详情读裸状态字段；先补一跳只为拿结构化列表响应（例如 statusEvidenceRecordCheck = recordCheck.response ? recordCheck : currentVisibleRow ? await __e2e.resolvePrimaryRecord(page, { primaryValue: ${toSharedAccessor(primarySharedVariable)}, listResponse, rowHasTexts, maxLookupAttempts: 1, retryIntervalMs: 200, detailUrl }) : recordCheck），再从 statusEvidenceRecordCheck.response -> __e2e.pickJsonRecord(...) -> __e2e.pickJsonValue(...状态 paths...) 读取状态。未命中则直接回退详情页 / 详情抽屉，并优先用 __e2e.readDetailField(...) 做字段验收。`
+      `如果 ${primarySharedVariable} 已经作为共享稳定标识从响应里真实提取，优先写 const currentVisibleRow = ${toSharedAccessor(primarySharedVariable)} ? await (async () => { try { return await __e2e.findAntdTableRow(page, { hasTexts: [${toSharedAccessor(primarySharedVariable)}], timeoutMs: 1200 }); } catch { return null; } })() : null; const recordCheck = currentVisibleRow ? { primaryValue: ${toSharedAccessor(primarySharedVariable)}, mode: 'table_row', row: currentVisibleRow, response: null } : await __e2e.resolvePrimaryRecord(page, { primaryValue: ${toSharedAccessor(primarySharedVariable)}, listResponse, rowHasTexts: [${toSharedAccessor(primarySharedVariable)}, '辅助身份字段'], detailUrl }); 若列表检索控件已知，再显式补 keywordInput/searchButton；未知时可先省略，让 helper 自动探测可见搜索框和搜索按钮。一旦把 keywordInput/searchButton 传给 helper，就不要在同一分支先手写 keywordInput.fill(...) + searchButton.click() 再让 helper 重复搜索；helper 会自己负责检索，双重搜索很容易触发重复列表刷新或页面脚本异常。对于“提交后回列表验收”这类场景，先短超时检查当前可见列表是否已经出现目标行，不要看到搜索框就立刻填值搜索；只有当前列表未命中时，才让 helper 保守做列表收敛轮询（例如传 maxLookupAttempts / retryIntervalMs）。列表命中后先把该行当作目标记录已命中的身份证据；如果预期状态没有出现在同一行可见文本 / 状态单元格，不要在这里硬失败，优先改读列表响应或详情字段。若 currentVisibleRow 已命中但后面还需要状态证据，而 recordCheck.response 会是 null，不要直接退化成开详情读裸状态字段；先补一跳只为拿结构化列表响应（例如 statusEvidenceRecordCheck = recordCheck.response ? recordCheck : currentVisibleRow ? await __e2e.resolvePrimaryRecord(page, { primaryValue: ${toSharedAccessor(primarySharedVariable)}, listResponse, rowHasTexts, maxLookupAttempts: 1, retryIntervalMs: 200, detailUrl }) : recordCheck），再从 statusEvidenceRecordCheck.response -> __e2e.pickJsonRecord(...) -> __e2e.pickJsonValue(...状态 paths...) 读取状态。未命中则直接回退详情页 / 详情抽屉，并优先用 __e2e.readDetailField(...) 做字段验收。`
     );
     instructions.push(
       `如果 \`currentVisibleRow\` / \`recordCheck.row\` 已经由 helper 命中，不要紧接着再写 \`await expect(recordCheck.row).toContainText(primaryValue)\` 或 \`await expect(currentVisibleRow).toContainText(primaryValue)\` 去证明同一个身份；helper 命中本身已经是身份证据，这类重复断言很容易重新落回 \`locator(...).nth(...)\` 行漂移。若还需要行内可见文本，只做一次 \`const rowText = await recordCheck.row.innerText().catch(() => '')\` 的保守读取。`
@@ -1322,10 +1358,13 @@ function buildStepInstructions(step: IntentExecutionPlanStep): string[] {
     step.preferredHelpers.includes('__e2e.resolvePrimaryRecord')
   ) {
     instructions.push(
-      `如果当前共享变量 ${primarySharedVariable} 只是手机号/联系人这类 fallback 标识，也优先写 const currentVisibleRow = ${toSharedAccessor(primarySharedVariable)} ? await (async () => { try { return await __e2e.findAntdTableRow(page, { hasTexts: [${toSharedAccessor(primarySharedVariable)}], timeoutMs: 1200 }); } catch { return null; } })() : null; const recordCheck = currentVisibleRow ? { primaryValue: ${toSharedAccessor(primarySharedVariable)}, mode: 'table_row', row: currentVisibleRow, response: null } : await __e2e.resolvePrimaryRecord(page, { primaryValue: ${toSharedAccessor(primarySharedVariable)}, listResponse, rowHasTexts: [${toSharedAccessor(primarySharedVariable)}] }); 先短超时检查当前可见列表是否已经收敛，不要看到搜索框就立刻填值；只有当前列表未命中时，才让 helper 保守轮询列表收敛。若 currentVisibleRow 已命中但 recordCheck.response 为 null，而后面还需要状态证据，不要直接开详情读裸状态字段；先补一跳只为拿结构化列表响应（例如 maxLookupAttempts: 1、retryIntervalMs: 200），再从 statusEvidenceRecordCheck.response 读取状态。只有 helper 明确返回 not_found 且没有 detailUrl / detailEntry 时，才退回 __e2e.findAntdTableRow(...)。不要为 ${primarySharedVariable} 合成假的 detailUrl。`
+      `如果当前共享变量 ${primarySharedVariable} 只是手机号/联系人这类 fallback 标识，也优先写 const currentVisibleRow = ${toSharedAccessor(primarySharedVariable)} ? await (async () => { try { return await __e2e.findAntdTableRow(page, { hasTexts: [${toSharedAccessor(primarySharedVariable)}], timeoutMs: 1200 }); } catch { return null; } })() : null; const recordCheck = currentVisibleRow ? { primaryValue: ${toSharedAccessor(primarySharedVariable)}, mode: 'table_row', row: currentVisibleRow, response: null } : await __e2e.resolvePrimaryRecord(page, { primaryValue: ${toSharedAccessor(primarySharedVariable)}, listResponse, rowHasTexts: [${toSharedAccessor(primarySharedVariable)}] }); 先短超时检查当前可见列表是否已经收敛，不要看到搜索框就立刻填值；只有当前列表未命中时，才让 helper 保守轮询列表收敛。一旦把 keywordInput/searchButton 传给 helper，就不要再先手写 keywordInput.fill(...) + searchButton.click() 做预搜索；让 helper 独占这次检索，避免双重刷新。若 currentVisibleRow 已命中但 recordCheck.response 为 null，而后面还需要状态证据，不要直接开详情读裸状态字段；先补一跳只为拿结构化列表响应（例如 maxLookupAttempts: 1、retryIntervalMs: 200），再从 statusEvidenceRecordCheck.response 读取状态。只有 helper 明确返回 not_found 且没有 detailUrl / detailEntry 时，才退回 __e2e.findAntdTableRow(...)。不要为 ${primarySharedVariable} 合成假的 detailUrl。`
     );
     instructions.push(
       `如果 \`currentVisibleRow\` / \`recordCheck.row\` 已经由 helper 命中，不要再补 \`await expect(recordCheck.row).toContainText(${toSharedAccessor(primarySharedVariable)})\` 这类重复身份断言；helper 命中本身已经足够。若还需要可见文本，改成一次性的 \`innerText().catch(() => '')\` 读取，并在拿到列表响应 / 详情证据时优先继续走结构化链。`
+    );
+    instructions.push(
+      `如果 row 已命中、\`statusEvidenceRecordCheck.response\` 也已返回，但 \`matchedRecord\` 仍按 ${toSharedAccessor(primarySharedVariable)} 未命中，不要直接停在“列表响应未返回状态”。对商机列表这类 family，先在已命中分支里补 \`const rowKey = ((await recordCheck.row.getAttribute('data-row-key')) || '').trim()\`，再用当前 \`rowText\` 保守派生 \`const derivedBusinessId = ((/^[A-Za-z0-9_-]{6,64}$/.test(rowKey) && !/^1\\d{10}$/.test(rowKey)) ? rowKey : '') || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')\`，随后优先写 \`const matchedRecordByDerivedBusinessId = !matchedRecord && listJson && derivedBusinessId ? __e2e.pickJsonRecord(listJson, { label: 'derivedBusinessId', value: derivedBusinessId, paths: ['businessId', 'id'], required: false }) : null;\`，并把 \`matchedRecord || matchedRecordByDerivedBusinessId\` 当成状态来源；只有这条结构化回填仍为空时，才继续 detailUrl / detailEntry fallback。`
     );
     instructions.push(
       `如果你开始写 \`throw new Error('状态证据缺失：列表行已命中，但列表响应未返回状态')\`，不要直接结束；先补一跳 \`statusEvidenceRecordCheck\` 去拿结构化列表响应。只有当前链路已经明确给出 \`detailEntry / actionLabel / 详情标题 / detailReadyLocator\` 时，才允许再对 \`recordCheck.row\` 走 \`查看 -> 商机详情 -> readDetailField('状态')\`；否则不要臆造行操作。`
@@ -1353,6 +1392,7 @@ function buildStepInstructions(step: IntentExecutionPlanStep): string[] {
     );
     instructions.push('如需辅助收敛，只允许检查当前 URL 已回列表、可见搜索框或列表 ready，然后直接进入后续搜索 / 回查。');
     instructions.push('如果切换后马上要做列表回查，不要看到可见搜索框就立刻填关键词；先短超时检查当前可见列表是否已经出现主键 / 手机号对应记录，只有当前列表未命中时再触发关键词搜索。');
+    instructions.push('如果后续 assert / verification 已经会用 `__e2e.resolvePrimaryRecord(...)` 做回查，当前步骤不要再额外手写 `keywordInput.fill(...) + searchButton.click()`；把这一步收口成视角切换 + 列表 ready，让唯一一次检索留给后续 helper，或只复用已经缓存的 artifacts 响应。');
     instructions.push('只有脚本已经先确认当前不是目标视角、且这次切换请求本身就是必须消费的证据时，才允许在 helper 前注册 wait promise；更稳妥的是把后续搜索/回查接口当成最终列表证据。');
   }
   if (step.preferredHelpers.includes('__e2e.getFrame')) {
@@ -1380,6 +1420,10 @@ function buildVerificationHint(check: IntentVerificationPlanCheck, relatedSteps:
     : [];
   const detailFieldLabels = buildDefaultDetailFieldLabels(inferDetailFieldLabels(check, relatedSteps), sharedVariable);
   const detailFieldSummary = detailFieldLabels.join(' / ');
+  const fallbackDerivedBusinessIdHint =
+    sharedVariable && !looksLikeIntentStableIdentifierVariable(sharedVariable)
+      ? ` 若 row 已命中、列表响应也已返回，但 \`matchedRecord\` 仍按 ${toSharedAccessor(sharedVariable)} 未命中，不要直接抛“状态证据缺失”；对商机列表这类 family，先用 \`rowKey / rowText\` 保守派生 \`derivedBusinessId\`，再优先补 \`matchedRecordByDerivedBusinessId = !matchedRecord && listJson && derivedBusinessId ? __e2e.pickJsonRecord(listJson, { label: 'derivedBusinessId', value: derivedBusinessId, paths: ['businessId', 'id'], required: false }) : null\`，并把 \`matchedRecord || matchedRecordByDerivedBusinessId\` 当成状态来源。`
+      : '';
   const helperParamSummary = [
     check.recordLookup ? `recordLookup=${renderCheckRecordLookup(check, sharedVariable || '').detailUrl ? 'configured' : 'partial'}` : '',
     check.detailSurface ? `detailSurface=${renderCheckDetailSurface(check)}` : '',
@@ -1394,7 +1438,7 @@ function buildVerificationHint(check: IntentVerificationPlanCheck, relatedSteps:
         : '优先断言关键接口响应成功，不要只看模糊成功文案。';
     case 'table_row':
       return sharedVariable && shouldPreferResolvePrimaryRecord(check, relatedSteps, sharedVariable)
-        ? `优先用 ${toSharedAccessor(sharedVariable)} 这个共享稳定标识/唯一身份文本回查目标记录。对于“提交后回列表验收”这类收敛场景，不要看到搜索框就立刻填值；先短超时用 __e2e.findAntdTableRow(page, { hasTexts: [${toSharedAccessor(sharedVariable)}], timeoutMs: 1200 }) 检查当前可见列表是否已经命中，只有当前列表未命中时，才调用 __e2e.resolvePrimaryRecord(...) 触发关键词搜索。若已知列表检索控件，再显式传 keywordInput/searchButton；未知时优先省略，让 helper 自动探测。进入 helper 后再让它保守轮询几次列表结果（例如 maxLookupAttempts / retryIntervalMs），不要手写一次 search 后立刻失败。若列表命中，先把目标行当作已命中的身份凭证；不要紧接着再写 \`await expect(recordCheck.row).toContainText(primaryValue)\` 或 \`await expect(currentVisibleRow).toContainText(primaryValue)\` 去证明同一个身份，这类重复断言很容易把表格行重新打回 \`locator(...).nth(...)\` 漂移。若还需要行内文本，只做一次 \`row.innerText().catch(() => '')\` 的保守读取。若预期状态没有出现在该行可见文本 / 状态单元格，不要直接判死，而要优先读取 recordCheck.response -> __e2e.pickJsonRecord(...) -> 状态字段，再在必要时回退详情页 / 详情抽屉用 __e2e.readDetailField(...) 逐项校验 ${detailFieldSummary}。如果当前共享变量只是手机号/联系人这类 fallback 标识，不要额外合成假的 detailUrl；优先把它当作列表收敛主键，只有 detailUrl / detailEntry 已真实存在时再启用详情回退。${helperParamSummary ? ` 当前已结构化 helper 参数：${helperParamSummary}。` : ''}`
+        ? `优先用 ${toSharedAccessor(sharedVariable)} 这个共享稳定标识/唯一身份文本回查目标记录。对于“提交后回列表验收”这类收敛场景，不要看到搜索框就立刻填值；先短超时用 __e2e.findAntdTableRow(page, { hasTexts: [${toSharedAccessor(sharedVariable)}], timeoutMs: 1200 }) 检查当前可见列表是否已经命中，只有当前列表未命中时，才调用 __e2e.resolvePrimaryRecord(...) 触发关键词搜索。若已知列表检索控件，再显式传 keywordInput/searchButton；未知时优先省略，让 helper 自动探测。只要已经把 keywordInput/searchButton 传给 helper，就不要在外层再手写一次 fill + click 预搜索，否则很容易触发双重刷新。进入 helper 后再让它保守轮询几次列表结果（例如 maxLookupAttempts / retryIntervalMs），不要手写一次 search 后立刻失败。若列表命中，先把目标行当作已命中的身份凭证；不要紧接着再写 \`await expect(recordCheck.row).toContainText(primaryValue)\` 或 \`await expect(currentVisibleRow).toContainText(primaryValue)\` 去证明同一个身份，这类重复断言很容易把表格行重新打回 \`locator(...).nth(...)\` 漂移。若还需要行内文本，只做一次 \`row.innerText().catch(() => '')\` 的保守读取。若预期状态没有出现在该行可见文本 / 状态单元格，不要直接判死，而要优先读取 recordCheck.response -> __e2e.pickJsonRecord(...) -> 状态字段，再在必要时回退详情页 / 详情抽屉用 __e2e.readDetailField(...) 逐项校验 ${detailFieldSummary}。如果当前共享变量只是手机号/联系人这类 fallback 标识，不要额外合成假的 detailUrl；优先把它当作列表收敛主键，只有 detailUrl / detailEntry 已真实存在时再启用详情回退。${fallbackDerivedBusinessIdHint}${helperParamSummary ? ` 当前已结构化 helper 参数：${helperParamSummary}。` : ''}`
         : sharedVariable
         ? `若已提取共享变量，优先按 ${sharedVariable} 缩小检索范围，再用 __e2e.findAntdTableRow(...) 定位结果行。`
         : '优先先缩小检索范围，再用 __e2e.findAntdTableRow(...) 做最终列表验收。';

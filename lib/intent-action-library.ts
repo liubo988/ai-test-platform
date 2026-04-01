@@ -58,6 +58,8 @@ function renderJsStringArray(items: string[]): string {
   return `[${items.map((item) => JSON.stringify(item)).join(', ')}]`;
 }
 
+const BUSINESS_STATUS_JSON_PATHS = ['status', 'statusName', 'statusText', 'state', 'stateName', 'stateText', 'displayStatus', 'progress.displayStatus'];
+
 function looksLikePrimaryLoginTask(dsl: IntentActionDSL, auth?: AuthConfig): boolean {
   const loginUrl = String(auth?.loginUrl || '').trim().toLowerCase();
   if (!loginUrl) return false;
@@ -269,6 +271,8 @@ function createPrimaryRecordResolutionCapability(): IntentActionCapability {
       '先用 `__e2e.readJsonResponse(...)` + `__e2e.pickJsonValue(...)` 提取真实主键，再把主键传给 helper；不要继续手写姓名/手机号放宽匹配。',
       '这条链不只适用于 `businessId / orderId`；只要是共享稳定标识（如 `recordUid / customerCode / serialNo / bizNo`），都应该优先复用同一条回查骨架。',
       '如果刚切完“我创建的 / 我跟进的”或刚回到列表页，不要看到搜索框就立刻填值；先短超时用 `__e2e.findAntdTableRow(page, { hasTexts: [primaryValue], timeoutMs: 1200 })` 看当前可见列表是否已经收敛，只有当前列表未命中时才触发 `__e2e.resolvePrimaryRecord(...)` 的关键词搜索。',
+      '一旦决定把 `keywordInput / searchButton` 传给 `__e2e.resolvePrimaryRecord(...)`，就不要在同一分支先手写 `keywordInput.fill(...) + searchButton.click()` 再让 helper 重复搜索；helper 会自己负责这次检索，双重搜索很容易触发重复列表刷新甚至页面脚本报错。',
+      '如果前一个步骤只是为了切“我创建的 / 我跟进的”并顺手把列表响应存进 `artifacts[plan_step_x]`，后面的 `Step 6 / Verification` 就不要再对同一主值第二次 `fill + 搜索`；优先把前一个步骤收口成视角切换 + 列表 ready，让同一条 `resolvePrimaryRecord(...)` 独占这次检索。若历史脚本暂时保留了 `artifacts[plan_step_x]`，后面也只能复用这次 response，不要再起新的 `waitForApiResponse + fill + click`。',
       '如果共享稳定标识最终为空，不要把空字符串直接传给 helper；优先继续用手机号/联系人这类本次唯一文本调用 `__e2e.resolvePrimaryRecord(...)`（例如 `primaryValue=contactPhone`、`rowHasTexts=[contactPhone]`），让 helper 先保守轮询列表收敛；只有 helper 仍返回 `not_found` 且没有详情入口时，才退回 `__e2e.findAntdTableRow(...)` 的可见文本链。',
       '若列表检索控件已知，优先显式传 `keywordInput`、`searchButton`、`listResponse` 和 `rowHasTexts`；若未知，可先省略前两个参数，让 helper 自动探测可见搜索框和搜索按钮。',
       '如果列表行可能省略状态列、状态文本被折叠，`rowHasTexts` 优先传主键 + 联系人/手机号这类身份字段；不要把“新入库 / 已审核”这类状态文案当成硬前提。',
@@ -279,11 +283,14 @@ function createPrimaryRecordResolutionCapability(): IntentActionCapability {
       '如果 `recordCheck.response` 可用，优先继续 `await __e2e.readJsonResponse(recordCheck.response, { required: false })`，再用 `__e2e.pickJsonRecord(...)` 找到命中的列表记录，并为 `__e2e.readDetailField(...)` 提供 expected value。',
       '若目标行已经按主键 + 联系人/手机号命中，但状态没有出现在同一行可见文本 / 状态单元格，不要继续写 `expect(row).toContainText(\'新入库\')` 这类硬断言；保留该行作为身份证据，优先用 `recordCheck.response -> __e2e.pickJsonRecord(...) -> __e2e.pickJsonValue(...)` 读取状态，仍拿不到时再回退 `detailUrl / detailEntry + __e2e.readDetailField(...)`。',
       '如果 `currentVisibleRow` / `recordCheck.row` 已经由 helper 命中，不要紧接着再写 `await expect(recordCheck.row).toContainText(primaryValue)` 或 `await expect(currentVisibleRow).toContainText(contactPhone)` 这类重复身份断言；helper 命中本身已经是身份证据，这类重复断言很容易重新落回 `locator(...).nth(...)` 行漂移。若还需要行内文本，只做一次 `const rowText = await recordCheck.row.innerText().catch(() => \'\')` 的保守读取。',
-      '如果 `businessId` 为空、但 `currentVisibleRow` / `recordCheck.row` 已经稳定命中，且 `rowText` 里存在清晰的非手机号 6~12 位数字 ID，可只在这个已命中分支里保守派生 `const resolvedBusinessId = businessId || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || \'\')`；它只用于解锁 `detailUrl` / 详情页回退，不要在列表未命中前对整页文本猜主键。',
+      `如果 \`businessId\` 为空、但 \`currentVisibleRow\` / \`recordCheck.row\` 已经稳定命中，先尝试 \`const rowKey = ((await recordCheck.row.getAttribute('data-row-key')) || '').trim()\`，再保守派生 \`const resolvedBusinessId = businessId || ((/^[A-Za-z0-9_-]{6,64}$/.test(rowKey) && !/^1\\d{10}$/.test(rowKey)) ? rowKey : '') || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')\`；它只用于解锁 \`detailUrl\` / 详情页回退，不要在列表未命中前对整页文本猜主键。`,
       '如果 `currentVisibleRow` 已命中、但这条分支把 `recordCheck.response` 留成了 `null`，而后面又还需要状态证据，不要直接退化成“开详情 + 读裸状态字段”；保留当前行作为身份证据，但补一跳只为拿结构化列表响应（例如 `statusEvidenceRecordCheck = recordCheck.response ? recordCheck : currentVisibleRow ? await __e2e.resolvePrimaryRecord(..., { maxLookupAttempts: 1, retryIntervalMs: 200 }) : recordCheck`），再从 `statusEvidenceRecordCheck.response -> __e2e.pickJsonRecord(...) -> __e2e.pickJsonValue(...状态 paths...)` 读取状态。',
+      `状态 JSON path 不要只写到顶层枚举；至少覆盖 ${renderJsStringArray(BUSINESS_STATUS_JSON_PATHS)}。`,
       '如果列表响应和详情字段都拿不到状态，不要写 `expect(statusText || \'\').toContain(...)` 这类空串兜底断言；应直接抛出“状态证据缺失”类错误，让修复链看到真实缺口。',
       '如果共享稳定标识为空，但 fallback 行已经按手机号/联系人命中，也不要立刻在 fallback 分支里抛错；应优先复用这次列表查询响应，用手机号/联系人调用 `__e2e.pickJsonRecord(...)` 继续读取状态，再决定是否回退详情。',
       '如果 fallback 分支当前手里只有宽泛的 `listResponse: { urlIncludes: \'/business\', method: \'GET\' }`，不要把它当唯一结构化状态来源；row 已命中且 `resolvedBusinessId` 可得时，优先走 `detailUrl` / 详情页再读状态。',
+      '如果 fallback 行已经命中、`resolvedBusinessId` 也已经从 `data-row-key / rowText` 派生出来，先在同一份 `listJson` 上补 `__e2e.pickJsonRecord(..., { label: \'resolvedBusinessId\', value: resolvedBusinessId, paths: [\'businessId\', \'id\'] })` 这条主键回填，再决定是否开详情；不要在 `json record not found -> /business/detail/:id -> null.forEach` 这条链上反复重开详情。',
+      '商机创建 / 商机列表 family 在详情页里优先尝试 `商机进展` 字段，再回退通用 `状态`；不要只写一个 `readDetailField(page, { label: \'状态\' })` 就判定详情没有状态。',
       '即使共享稳定标识为空，只要 `recordCheck.row` 已命中且 `detailEntry` / 已知“查看”动作 / 详情标题 / `detailReadyLocator` 已经明确给出，也不要写 `else if (businessId) { await page.goto(...) } else { throw ... }`；这时可直接对 `recordCheck.row` 走 `__e2e.clickAntdRowAction(page, recordCheck.row, \'查看\')` + `__e2e.waitForVisibleAntdModal(...)` / `detailReadyLocator`，再读状态。',
       '如果当前页面没有明确 `detailEntry / actionLabel / 详情标题 / detailReadyLocator`，不要因为 row 已命中就默认假定存在“查看”行操作；若 `businessId` 非空可优先走 `detailUrl`，否则应保留当前行作为身份证据，并在结构化列表响应仍拿不到状态时抛出“状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口”。',
       '不要在 row 已命中时直接抛“无法从列表响应或详情获取状态”；必须先判断当前链路是否真的提供了详情入口，没有的话就按“未提供详情入口”的错误收口。',
@@ -331,15 +338,18 @@ function createPrimaryRecordResolutionCapability(): IntentActionCapability {
       '    : recordCheck;',
       "const listJson = statusEvidenceRecordCheck.response ? await __e2e.readJsonResponse(statusEvidenceRecordCheck.response, { required: false }) : null;",
       "const matchedRecord = listJson ? __e2e.pickJsonRecord(listJson, { label: businessId ? 'businessId' : 'contactPhone', value: businessId || contactPhone, paths: businessId ? ['businessId', 'id'] : ['mobile', 'phone', 'contactPhone', 'contactMobile'], required: false }) : null;",
-      "const expectedStatus = matchedRecord ? __e2e.pickJsonValue(matchedRecord, { label: '状态', paths: ['status', 'statusName', 'statusText', 'state', 'stateName', 'stateText', 'displayStatus'], required: false }) : '';",
+      `const expectedStatus = matchedRecord ? __e2e.pickJsonValue(matchedRecord, { label: '状态', paths: ${renderJsStringArray(BUSINESS_STATUS_JSON_PATHS)}, required: false }) : '';`,
       "if (recordCheck.mode === 'table_row' && recordCheck.row) {",
       "  const rowText = await recordCheck.row.innerText().catch(() => '');",
-      "  const resolvedBusinessId = businessId || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '');",
+      "  const rowKey = ((await recordCheck.row.getAttribute('data-row-key')) || '').trim();",
+      "  const resolvedBusinessId = businessId || ((/^[A-Za-z0-9_-]{6,64}$/.test(rowKey) && !/^1\\d{10}$/.test(rowKey)) ? rowKey : '') || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '');",
+      "  const matchedRecordByResolvedBusinessId = !matchedRecord && listJson && resolvedBusinessId ? __e2e.pickJsonRecord(listJson, { label: 'resolvedBusinessId', value: resolvedBusinessId, paths: ['businessId', 'id'], required: false }) : null;",
+      `  const resolvedExpectedStatus = expectedStatus || (matchedRecordByResolvedBusinessId ? __e2e.pickJsonValue(matchedRecordByResolvedBusinessId, { label: '状态', paths: ${renderJsStringArray(BUSINESS_STATUS_JSON_PATHS)}, required: false }) : '');`,
       "  if (/新入库/.test(rowText)) expect(rowText).toContain('新入库');",
-      "  else if (expectedStatus) expect(expectedStatus).toContain('新入库');",
+      "  else if (resolvedExpectedStatus) expect(resolvedExpectedStatus).toContain('新入库');",
       "  else if (resolvedBusinessId) {",
       "    await page.goto(`#/business/detail/${resolvedBusinessId}`, { waitUntil: 'domcontentloaded' });",
-      "    const statusText = await __e2e.readDetailField(page, { label: '状态', required: false });",
+      "    const statusText = await __e2e.readDetailField(page, { label: '商机进展', required: false }) || await __e2e.readDetailField(page, { label: '状态', required: false });",
       "    if (statusText) await expect(statusText).toContain('新入库');",
       "    else throw new Error('状态证据缺失：列表行已命中，但列表响应和详情字段都未返回状态');",
       '  } else {',
@@ -347,7 +357,7 @@ function createPrimaryRecordResolutionCapability(): IntentActionCapability {
       '  }',
       '} else {',
       "  await expect(page.locator('body')).toContainText(businessId || contactPhone);",
-      "  const statusText = await __e2e.readDetailField(page, { label: '状态', required: false });",
+      "  const statusText = await __e2e.readDetailField(page, { label: '商机进展', required: false }) || await __e2e.readDetailField(page, { label: '状态', required: false });",
       "  if (expectedStatus) {",
       "    if (!statusText) throw new Error('详情字段缺失：状态');",
       "    await expect(statusText).toContain(expectedStatus);",
@@ -453,6 +463,7 @@ function createSubmitStateCapability(): IntentActionCapability {
     implementationNotes: [
       '若存在关键接口，优先先注册 `__e2e.waitForApiResponse(...)` 再点击提交；`observeSubmitState` 负责接口之后的 UI 收敛，不替代接口等待。',
       '只对最终“保存 / 提交 / 确定 / 生成订单”主动作套用这条链；对中间步骤的“保存并继续 / 下一步”，如果接口名并不明确，优先点击后等待下一块表单标题、字段或步骤锚点出现，不要臆造宽泛 `/business` POST 等待。',
+      '多步向导里连续出现的 `保存并继续` 不能只因按钮仍然可见就连点推进；每次点击前都先确认当前步骤必填字段已经填写，且下一步专属锚点 / 字段已经出现。',
       '多步表单 / Ant Tabs 的最终“保存 / 提交”不要直接对整页 `page.getByRole(...).first()`；先收窄到当前可见步骤容器（如 `.ant-tabs-tabpane-active`、当前 Modal / Drawer 或当前表单块），先尝试定位 `/保\\s*存|提\\s*交|确\\s*定/i` 的最后一个主动作；如果当前 pane 内根本找不到这个最终主动作，再回退到更稳的页面级可见主动作链，并继续排除 `保存并继续` / `上一步`，不要把 selector 锁死在 `.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible` 这类单一路径；命中后再 `scrollIntoViewIfNeeded()`。',
       '如果已收窄到当前可见容器内的提交按钮，点击仍因标题 / section-head / sticky header 拦截 pointer events 超时，可只对这个 scoped button 使用 `click({ force: true })`；不要对整页模糊按钮直接 force click。',
       '优先传 `submitButton`；会关闭弹层时再补 `closeTitleIncludes` 或 `closeLocator`；会回列表/出现结果时优先补 `successLocator`，需要短窗口观察路由时再补 `urlIncludes`。',

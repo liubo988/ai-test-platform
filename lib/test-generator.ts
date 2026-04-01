@@ -73,6 +73,7 @@ export type GenerateEvent =
 
 export interface GenerateTestContext {
   taskMode?: 'page' | 'scenario';
+  projectUid?: string;
   scenarioEntryUrl?: string;
   scenarioSummary?: string;
   expectedOutcome?: string;
@@ -161,6 +162,7 @@ export interface RepairObservationReport {
 
 const ROOT = process.cwd();
 const BUSINESS_ID_JSON_PATHS = buildIntentSharedVariableJsonPaths('businessId');
+const BUSINESS_STATUS_JSON_PATHS = ['status', 'statusName', 'statusText', 'state', 'stateName', 'stateText', 'displayStatus', 'progress.displayStatus'];
 const ORDER_ID_JSON_PATHS = buildIntentSharedVariableJsonPaths('orderId');
 
 function renderJsStringArray(items: string[]): string {
@@ -415,6 +417,7 @@ export interface ResolveIntentPromptPlanningOptions {
   starterHelpers?: IntentE2EInsightStarterHelper[];
   auth?: AuthConfig;
   recipePerformanceBySlug?: Record<string, IntentRecipePerformanceFeedback>;
+  projectUid?: string;
 }
 
 type ResolvedStarterHelper = NonNullable<ResolvedPromptPlanningContext['starterHelpers']>[number];
@@ -444,6 +447,7 @@ export function resolveIntentPromptPlanningContext(
     description,
     dsl: snapshotHintedDsl,
   }, {
+    projectUid: options.projectUid || context?.projectUid,
     rulePerformanceById: options.rulePerformanceById,
   });
   const knowledgeAppliedDsl = applyIntentProjectKnowledgeToDsl(snapshotHintedDsl, knowledge);
@@ -1055,7 +1059,8 @@ export function buildSlotPatchPrompt(
   planning?: ResolvedPromptPlanningContext,
   repair?: RepairTestContext | null
 ): string {
-  const resolvedPlanning = planning || resolveIntentPromptPlanningContext(snapshot, description, context, { auth });
+  const resolvedPlanning =
+    planning || resolveIntentPromptPlanningContext(snapshot, description, context, { auth, projectUid: context?.projectUid });
   const basePrompt = repair
     ? buildRepairPrompt(snapshot, description, auth, edgeCases, existingExample, repair, context, resolvedPlanning)
     : buildPrompt(snapshot, description, auth, edgeCases, existingExample, context, resolvedPlanning);
@@ -1854,7 +1859,8 @@ export function buildPrompt(
   planning?: ResolvedPromptPlanningContext
 ): string {
   const parts: string[] = [];
-  const resolvedPlanning = planning || resolveIntentPromptPlanningContext(snapshot, description, context, { auth });
+  const resolvedPlanning =
+    planning || resolveIntentPromptPlanningContext(snapshot, description, context, { auth, projectUid: context?.projectUid });
 
   parts.push('你是一个 Playwright E2E 测试专家。请根据以下信息生成完整可执行的 Playwright 测试代码。');
   const verificationIntentSection = buildVerificationIntentSection(resolvedPlanning);
@@ -1948,6 +1954,7 @@ export function buildPrompt(
    - 目标是统一围绕“共享稳定标识”组织后续列表回查与详情校验，而不是把 helper 限死在 CRM 的 \`businessId / orderId\`。`);
   parts.push(`13. 对“已拿到 businessId / orderId，再回列表检索并在必要时回退详情”的验收链，优先直接复用：
    - 如果你刚切完“我创建的 / 我跟进的”或刚回到列表页，不要看到搜索框就立刻填值搜索；先短超时检查当前可见列表是否已经出现目标行，例如 \`const currentVisibleRow = primaryValue ? await (async () => { try { return await __e2e.findAntdTableRow(page, { hasTexts: [primaryValue], timeoutMs: 1200 }); } catch { return null; } })() : null;\`。若 \`currentVisibleRow\` 已命中，先把它当作 \`table_row\` 身份证据继续做状态 / 详情校验；只有当前可见列表未命中时，才调用 \`__e2e.resolvePrimaryRecord(...)\` 触发关键词搜索。
+   - 一旦准备把 \`keywordInput / searchButton\` 传给 \`__e2e.resolvePrimaryRecord(...)\`，就不要在同一分支先手写 \`await keywordInput.fill(primaryValue)\`、\`await searchButton.click()\` 或任何预搜索，再让 helper 重复搜索；helper 会自己负责这次检索。预搜索 + helper 再搜索很容易触发双重刷新、重复列表接口，甚至把页面自身打进 \`Cannot read properties of null (reading 'forEach')\` 这类前端异常。
    - 如果 \`currentVisibleRow\` / \`recordCheck.row\` 已经由 helper 命中，不要紧接着再写 \`await expect(recordCheck.row).toContainText(primaryValue)\` 或 \`await expect(currentVisibleRow).toContainText(leadMobile)\` 去证明同一个身份；helper 命中本身已经是身份证据，这类重复断言很容易重新落回 \`locator(...).nth(...)\` 行漂移。若还需要行内可见文本，只做一次 \`const rowText = await recordCheck.row.innerText().catch(() => '')\` 的保守读取；\`rowText\` 为空但列表响应 / 详情证据还在时，继续沿响应 / 详情链闭环，不要因为 stale row 直接失败。
    - const recordCheck = await __e2e.resolvePrimaryRecord(page, {
    -   primaryValue: businessId,
@@ -1961,10 +1968,10 @@ export function buildPrompt(
    - helper 会先按主键检索列表、等待结果收敛；若列表未命中且提供了 \`detailUrl\`，会直接回退详情页。不要继续无限放宽姓名 / 手机号匹配。
    - 如果 \`businessId\` 暂时为空、但你手里已经有本次唯一手机号/联系人，也优先沿用同一个 helper，而不是手写“一次搜索 + 一次 findAntdTableRow 就失败”：\`const recordCheck = await __e2e.resolvePrimaryRecord(page, { primaryValue: leadMobile, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: [leadMobile], maxLookupAttempts: 4, retryIntervalMs: 1200 })\`。
    - 这种手机号 fallback 的目标不是把手机号当 CRM 主键，而是复用 helper 的保守列表收敛轮询；只有 helper 明确返回 \`not_found\` 时，才考虑退回可见文本链或详情入口。
-   - 如果 \`businessId\` 为空、但 \`currentVisibleRow\` / \`recordCheck.row\` 已经稳定命中，且 \`rowText\` 里存在清晰的非手机号 6~12 位数字 ID，可只在这个已命中的分支里做一次保守回填，例如：\`const derivedBusinessId = shared.businessId || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')\`\n   - 这个 \`derivedBusinessId\` 只能用于“row 已命中后解锁 \`detailUrl\` / 详情页回退”；不要在列表未命中前对整页文本猜 \`businessId\`
+   - 如果 \`businessId\` 为空、但 \`currentVisibleRow\` / \`recordCheck.row\` 已经稳定命中，可只在这个已命中的分支里做一次保守回填，例如：先 \`const rowKey = ((await recordCheck.row.getAttribute('data-row-key')) || '').trim()\`，再写 \`const derivedBusinessId = shared.businessId || ((/^[A-Za-z0-9_-]{6,64}$/.test(rowKey) && !/^1\\d{10}$/.test(rowKey)) ? rowKey : '') || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')\`\n   - 这个 \`derivedBusinessId\` 只能用于“row 已命中后解锁 \`detailUrl\` / 详情页回退”；不要在列表未命中前对整页文本猜 \`businessId\`
    - 如果列表行可能省略状态列或“新入库”没有出现在同一行可见文本里，\`rowHasTexts\` 优先传 \`businessId + 联系人/手机号\` 这类身份字段；不要把状态文案当成唯一匹配前提。
    - 如果目标行已经按主键 + 联系人/手机号命中，但状态没有出现在可见行文本 / 状态单元格里，不要继续写 \`await expect(targetRow).toContainText('新入库')\` 或 \`targetRow.locator('td').filter({ hasText: /新入库/ })\`；把该行当作身份证据，优先继续读取 \`recordCheck.response\` -> \`__e2e.pickJsonRecord(...)\` -> \`__e2e.pickJsonValue(...状态 paths...)\`，仍拿不到时再跳详情页 / 详情抽屉用 \`__e2e.readDetailField(...)\` 验证状态。
-   - 如果 \`matchedRecord\` 和 \`__e2e.readDetailField(page, { label: '状态', required: false })\` 都拿不到状态，不要写 \`expect(statusText || '').toContain('新入库')\` 或任何空串兜底断言；应直接抛出“状态证据缺失”这类明确错误，让 repair 看到真实缺口。 
+   - 如果 \`matchedRecord\` 和 \`__e2e.readDetailField(page, { label: '商机进展', required: false }) || __e2e.readDetailField(page, { label: '状态', required: false })\` 都拿不到状态，不要写 \`expect(statusText || '').toContain('新入库')\` 或任何空串兜底断言；应直接抛出“状态证据缺失”这类明确错误，让 repair 看到真实缺口。 
    - 如果当前页面的搜索框/搜索按钮定位并不稳定，可以先只传 \`primaryValue / listResponse / rowHasTexts / detailUrl\`，省略 \`keywordInput / searchButton\`，让 helper 自动探测可见检索控件。`);
   parts.push(`13.1 如果当前页面已知明确的表格容器或详情页 ready 锚点，也优先显式传给 \`resolvePrimaryRecord(...)\`：
    - 例如 \`table: page.locator('.customer-table-wrapper').first()\`
@@ -1981,14 +1988,14 @@ export function buildPrompt(
    - const detailScope = page.locator('.ant-drawer-content:visible, .ant-modal-content:visible').last();
    - const contactText = await __e2e.readDetailField(page, { label: '联系人', scope: detailScope, required: false });
    - const phoneText = await __e2e.readDetailField(page, { label: '手机号', scope: detailScope, required: false });
-   - const statusText = await __e2e.readDetailField(page, { label: '状态', scope: detailScope, required: false });
+   - const statusText = await __e2e.readDetailField(page, { label: '商机进展', scope: detailScope, required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailScope, required: false });
    - await expect(contactText).toContain(contactName);
    - await expect(phoneText).toContain(contactPhone);
    - 如果 \`resolvePrimaryRecord(...)\` 已回退到详情页 / 详情抽屉，不要再对 \`page.locator('body')\` 或整个 Drawer 文本做大段 \`toContain\`；优先按 label 逐项读取联系人、手机号、状态、创建时间。`);
   parts.push(`15. 如果 \`resolvePrimaryRecord(...)\` 已拿到列表响应 \`recordCheck.response\`，优先继续复用：
    - const listJson = recordCheck.response ? await __e2e.readJsonResponse(recordCheck.response, { required: false }) : null;
    - const matchedRecord = listJson ? __e2e.pickJsonRecord(listJson, { label: 'primaryId', value: primaryId, paths: ['primaryId', 'id'], required: false }) : null;
-   - const expectedStatus = matchedRecord ? __e2e.pickJsonValue(matchedRecord, { label: '状态', paths: ['status', 'statusName', 'statusText', 'state', 'stateName', 'stateText', 'displayStatus'], required: false }) : '';
+   - const expectedStatus = matchedRecord ? __e2e.pickJsonValue(matchedRecord, { label: '状态', paths: ${renderJsStringArray(BUSINESS_STATUS_JSON_PATHS)}, required: false }) : '';
    - 如果详情字段的期望值能从列表响应记录里拿到，优先用它去对比 \`__e2e.readDetailField(...)\` 的结果；不要退回整页模糊文本，也不要只留 TODO。
    - 如果列表响应和详情字段都拿不到状态 / 关键字段，不要把断言改成 \`toBeTruthy()\`、\`not.toBe('')\` 或 \`expect(statusText || '')\`；应直接抛出“字段证据缺失”错误。`);
   parts.push(`15.0 如果 \`currentVisibleRow\` 已命中，但你随手把 \`recordCheck.response\` 固定成了 \`null\`，后面又还需要状态 / 详情期望值，不要直接退化成“开详情 + 读裸状态字段”：
@@ -1996,6 +2003,7 @@ export function buildPrompt(
    - 再从 \`statusEvidenceRecordCheck.response\` 读取 \`listJson -> matchedRecord -> expectedStatus\`
    - 这里也不要再补 \`await expect(recordCheck.row).toContainText(primaryValue)\` / \`await expect(currentVisibleRow).toContainText(leadMobile)\` 这类重复身份断言；helper 命中本身已经是身份证据，优先继续用 \`rowText\`、列表响应或详情字段闭环
    - 只有结构化列表响应仍然拿不到状态时，才继续开详情 / 抽屉读字段
+   - 如果前一个 UI step 已经为了 \`artifacts['plan_step_5']\` 手写过一次 \`fill + 搜索\`，后面的 \`Step 6 / Verification\` 就不要再补第二次检索；优先把前一个步骤收口成“切视角 + 列表 ready”，让 \`resolvePrimaryRecord(...)\` 独占这次搜索。若历史脚本暂时保留了 \`artifacts['plan_step_5']\`，后面也只能复用这次响应，不要再额外写 \`waitForApiResponse + keywordInput.fill(...) + searchButton.click()\`
    - 这样可以避免把来源枚举、渠道值或意向标签误当成业务状态。`);
   parts.push(`15.1 如果 \`businessId\` 为空，但你已经用手机号 + 联系人命中了 fallback 行，也不要在 fallback 分支里直接 \`throw new Error('状态证据缺失...')\` 结束：
    - 更稳的写法是先把手机号继续交给 \`__e2e.resolvePrimaryRecord(...)\` 做列表收敛轮询，例如 \`primaryValue: leadMobile\`、\`rowHasTexts: [leadMobile]\`、\`maxLookupAttempts: 4\`、\`retryIntervalMs: 1200\`；不要只做一次搜索就失败。
@@ -2003,23 +2011,26 @@ export function buildPrompt(
    - 必须优先复用这次 fallback 查询响应（例如 \`artifacts['plan_step_5']\` / 当前列表 GET 响应）
    - const fallbackListJson = artifacts['plan_step_5'] ? await __e2e.readJsonResponse(artifacts['plan_step_5'], { required: false }) : null;
    - const fallbackMatchedRecord = fallbackListJson ? __e2e.pickJsonRecord(fallbackListJson, { label: 'leadMobile', value: leadMobile, paths: ['mobile', 'phone', 'contactPhone', 'contactMobile'], required: false }) : null;
-   - const fallbackExpectedStatus = fallbackMatchedRecord ? __e2e.pickJsonValue(fallbackMatchedRecord, { label: '状态', paths: ['status', 'statusName', 'statusText', 'state', 'stateName', 'stateText', 'displayStatus'], required: false }) : '';
+   - 如果当前 \`fallbackMatchedRecord\` 仍为空，但 row 已命中且 \`derivedBusinessId\` / \`resolvedBusinessId\` 已可得，先在同一份 \`fallbackListJson\` 上补一跳主键回填，而不是立刻开详情：\`const fallbackMatchedByDerivedBusinessId = !fallbackMatchedRecord && fallbackListJson && derivedBusinessId ? __e2e.pickJsonRecord(fallbackListJson, { label: 'derivedBusinessId', value: derivedBusinessId, paths: ['businessId', 'id'], required: false }) : null;\`
+   - const fallbackStatusRecord = fallbackMatchedRecord || fallbackMatchedByDerivedBusinessId;
+   - const fallbackExpectedStatus = fallbackStatusRecord ? __e2e.pickJsonValue(fallbackStatusRecord, { label: '状态', paths: ${renderJsStringArray(BUSINESS_STATUS_JSON_PATHS)}, required: false }) : '';
    - if (fallbackExpectedStatus) expect(String(fallbackExpectedStatus)).toContain('新入库');
-   - 如果 fallback 行已经命中、但当前结构化来源只是宽泛的 \`listResponse: { urlIncludes: '/business', method: 'GET' }\`，不要把这次响应当成唯一结构化状态来源；可先从已命中 \`rowText\` 里保守提取 \`derivedBusinessId = shared.businessId || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')\`
-   - 如果 \`derivedBusinessId\` 非空，优先继续 \`await page.goto(\`#/business/detail/\${derivedBusinessId}\`, { waitUntil: 'domcontentloaded' })\` 再读 \`__e2e.readDetailField(page, { label: '状态', required: false })\`；只有 \`derivedBusinessId\` 也为空时，才保留“未提供详情入口”的错误收口
+   - 如果 fallback 行已经命中、但当前结构化来源只是宽泛的 \`listResponse: { urlIncludes: '/business', method: 'GET' }\`，不要把这次响应当成唯一结构化状态来源；先补 \`const rowKey = ((await recordCheck.row.getAttribute('data-row-key')) || '').trim()\`，再从已命中 \`rowText\` 里保守提取 \`const derivedBusinessId = shared.businessId || ((/^[A-Za-z0-9_-]{6,64}$/.test(rowKey) && !/^1\\d{10}$/.test(rowKey)) ? rowKey : '') || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')\`
+   - 如果 recent events 已经出现 \`json record not found -> /business/detail/:id -> Cannot read properties of null (reading 'forEach')\`，说明详情页自身可能不稳；这时要先走上面的 \`derivedBusinessId -> pickJsonRecord(...paths=['businessId','id'])\` 回填，不要立刻再次开详情
+   - 如果 \`derivedBusinessId\` 非空，优先继续 \`await page.goto(\`#/business/detail/\${derivedBusinessId}\`, { waitUntil: 'domcontentloaded' })\`，然后按当前商机 family 先读 \`const detailStatus = await __e2e.readDetailField(page, { label: '商机进展', required: false }) || await __e2e.readDetailField(page, { label: '状态', required: false })\`；只有 \`derivedBusinessId\` 也为空时，才保留“未提供详情入口”的错误收口
    - 如果 fallback 行已命中、列表响应也还没有状态，不要写 \`else if (shared.businessId) { await page.goto(...) } else { throw ... }\` 这类分支；若 \`recordLookup.detailEntry\` / 已知“查看”动作 / 详情标题可用，优先直接对 \`recordCheck.row\` 执行 \`await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')\`，随后等待 \`__e2e.waitForVisibleAntdModal(...)\` 或现成 \`detailReadyLocator\`，再读 \`状态\`。
-   - 可直接收敛成这类骨架：\`await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')\` -> \`const detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000 })\` -> \`const statusText = await __e2e.readDetailField(page, { label: '状态', scope: detailScope, titleIncludes: '商机详情', required: false })\`\n   - 若 \`statusText\` 仍为空，再抛出“状态证据缺失：列表行已命中，但列表响应、详情抽屉与详情页都未返回状态”；不要在 row 已命中时直接 \`throw new Error('状态证据缺失：列表行已命中，但无法从列表响应或详情获取状态')\`。
+   - 可直接收敛成这类骨架：\`await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')\` -> \`const detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000 })\` -> \`const statusText = await __e2e.readDetailField(page, { label: '商机进展', scope: detailScope, titleIncludes: '商机详情', required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailScope, titleIncludes: '商机详情', required: false })\`\n   - 若 \`statusText\` 仍为空，再抛出“状态证据缺失：列表行已命中，但列表响应、详情抽屉与详情页都未返回状态”；不要在 row 已命中时直接 \`throw new Error('状态证据缺失：列表行已命中，但无法从列表响应或详情获取状态')\`。
    - 如果当前链路没有 \`detailEntry / actionLabel / 详情标题 / detailReadyLocator\`，不要擅自写 \`await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')\`；\`businessId\` 非空时可优先走 \`detailUrl\`，为空时则保留 row 作为身份证据，结构化列表响应仍然拿不到状态就直接抛出“状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口”。
    - 只有当 fallback 行文本、fallback 列表响应、详情字段三处都拿不到状态时，才允许抛出“状态证据缺失”错误。`);
   parts.push(`15.2 如果列表行已经命中、列表响应里也拿不到状态，而当前页面还停留在列表页，不要直接在裸列表页上调用 \`__e2e.readDetailField(page, { label: '状态' })\` 然后判空：
-   - 如果当前链路已经有稳定 \`detailUrl\` / \`detailReadyLocator\`，优先直接沿用这条详情页链：\`await page.goto(detailUrl, { waitUntil: 'domcontentloaded' })\` 或等待现成的详情页 ready 锚点，然后再读 \`__e2e.readDetailField(page, { label: '状态', required: false })\`
+   - 如果当前链路已经有稳定 \`detailUrl\` / \`detailReadyLocator\`，优先直接沿用这条详情页链：\`await page.goto(detailUrl, { waitUntil: 'domcontentloaded' })\` 或等待现成的详情页 ready 锚点，然后按当前商机 family 先读 \`__e2e.readDetailField(page, { label: '商机进展', required: false })\`，再回退 \`__e2e.readDetailField(page, { label: '状态', required: false })\`
    - 只有当没有稳定 \`detailUrl\`，且 \`recordLookup.detailEntry\` 明确指向 \`drawer_or_modal\` 或项目里已知详情标题时，才把命中的目标行当作详情入口，写 \`await __e2e.clickAntdRowAction(page, targetRow, '查看')\` + \`await __e2e.waitForVisibleAntdModal(...)\`
-   - 即使 \`businessId\` 为空，只要 \`recordCheck.mode === 'table_row'\` 且 \`recordCheck.row\` 已命中，也不要直接 \`else { throw new Error('状态证据缺失...') }\`；优先继续沿用这条 \`row -> detailEntry / detailReadyLocator\` 回退链。
-   - 如果确实拿到了详情弹层容器，再写 \`const statusText = await __e2e.readDetailField(page, { label: '状态', scope: detailScope, required: false })\`
+   - 即使 \`businessId\` 为空，只要 \`recordCheck.mode === 'table_row'\` 且 \`recordCheck.row\` 已命中，也不要直接 \`else { throw new Error('状态证据缺失...') }\`；优先继续沿用这条 \`row -> detailEntry / detailReadyLocator\` 回退链，不要在已经跳过详情页后又回到列表抛“未提供详情入口”。
+   - 如果确实拿到了详情弹层容器，再写 \`const statusText = await __e2e.readDetailField(page, { label: '商机进展', scope: detailScope, required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailScope, required: false })\`
    - 如果详情抽屉/详情页仍然没有状态字段，再抛出“状态证据缺失”；不要在列表页裸读字段后直接失败。`);
   parts.push(`15.3 如果 \`recordCheck.mode === 'not_found'\`，且当前链路没有可用的 \`detailUrl / detailEntry\` 回退路径，不要凭空写：
    - \`const detailScope = page.locator('.ant-drawer-content:visible, .ant-modal-content:visible').last()\`
-   - \`const statusText = await __e2e.readDetailField(page, { label: '状态', scope: detailScope, required: false })\`
+   - \`const statusText = await __e2e.readDetailField(page, { label: '商机进展', scope: detailScope, required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailScope, required: false })\`
    - 正确做法是先继续复用 \`recordCheck.response\`，例如 \`const listJson = recordCheck.response ? await __e2e.readJsonResponse(recordCheck.response, { required: false }) : null\`
    - 再用 \`__e2e.pickJsonRecord(...)\` / \`__e2e.pickJsonValue(...)\` 尝试读取命中记录和状态
    - 如果列表响应仍然没有命中记录 / 状态，就直接抛出“未命中目标记录：列表未命中，且没有可用的详情回退路径”这类错误，让 repair 去修搜索链或详情入口，而不是伪造详情容器。`);
@@ -2034,7 +2045,11 @@ export function buildPrompt(
 6. 返回商机列表后，搜索框经常在 DOM 中同时存在隐藏克隆节点；优先使用 \`page.locator('input#businessList_keywords:visible').first()\` 或其他明确可见的搜索框，不要直接对 \`getByPlaceholder('商机ID/联系人名称/电话/企业名称').first()\` 做可见性断言。
 7. 返回列表校验新建商机时，不要继续写 \`page.locator('tbody tr').filter({ hasText: leadMobile }).first()\` 或对匹配结果断言 \`toHaveCount(1)\`。切到“我创建的”后，不要看到搜索框就立刻填手机号；先短超时检查当前可见列表是否已经出现目标行，例如 \`const currentVisibleRow = leadMobile ? await (async () => { try { return await __e2e.findAntdTableRow(page, { hasTexts: [leadMobile], timeoutMs: 1200 }); } catch { return null; } })() : null;\`。如果 \`currentVisibleRow\` 已命中，先把它当作当前列表已收敛的身份证据，再继续读状态 / 详情；只有当前可见列表未命中时，才优先写 \`const recordCheck = await __e2e.resolvePrimaryRecord(page, { primaryValue: leadMobile, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: [leadMobile], maxLookupAttempts: 4, retryIntervalMs: 1200 })\`。不要默认再把 \`leadContactName\` 拼回 fallback \`rowHasTexts\`，联系人只在命中行文本里确实出现时再断言。只有 helper 明确 \`not_found\` 时，才退回 \`findAntdTableRow(...)\`。
 8. 运行时生成联系人手机号时，必须保证最终字符串严格匹配 \`/^1\\d{10}$/\`。不要写 \`13\${stamp.slice(-9)}\` 这类实际只会得到 10 位号码的表达式；针对当前商机创建 family，优先沿用 live 已验证的安全模板，例如 \`const stamp = Date.now().toString().slice(-6); const leadMobile = '1990000' + stamp.slice(-4);\`\n   - 不要继续默认用普通 \`139\${stamp}\` 这类时间戳号段；UAT 里可能存在去重 / 黑名单 / 历史脏数据，容易把“提交成功但列表搜空”误判成列表链问题。
-8.1 第三页 / 附件信息页的最终主动作，不要固化成 \`getByRole('button', { name: /^保\\s*存$/ }).first()\`：
+8.1 第一页点击完第一个 \`保存并继续\` 后，不要只因为第二个 \`保存并继续\` 仍然可见就直接继续：
+   - 先确认当前真的进入了第二页，优先用 \`label[title="企业名称"]\`、\`label[title="意向产品"]\`、当前 form-item 或第二页专属说明做正向锚点；不要退回整页 \`getByText(/关联产品意向信息|企业名称|意向产品/i).first()\` 这类可能命中隐藏节点的链
+   - 如果当前场景步骤要求填写企业名称 / 意向产品 / 产品类型，就必须先完成这些第二页字段，再点击下一次 \`保存并继续\`；不要写 \`if (await nextBtn2.isVisible()) { await nextBtn2.click(); }\` 这种只凭按钮可见就跳页的分支
+   - \`企业名称\` 这类远程搜索 Select 继续优先用 \`__e2e.selectAntdOption(page, companyRow, { label, searchText })\`；产品 / 树选择继续优先用 \`__e2e.selectAntdOption(page, productRow, { label, searchText, tree: true })\`，不要退回手写 dropdown + 文本点击链
+8.2 第三页 / 附件信息页的最终主动作，不要固化成 \`getByRole('button', { name: /^保\\s*存$/ }).first()\`：
    - 先用 \`附件信息 / 上传录音文件 / 上传图片\` 这些末页锚点确认当前真的在最后一步
    - 再只在当前可见步骤容器内定位 \`/保\\s*存|提\\s*交|确\\s*定/i\` 的最后一个按钮
    - 不要把 \`保存并继续\` / \`上一步\` 当成最终提交，也不要在未确认已到附件页前就直接找最终按钮
@@ -2044,7 +2059,7 @@ export function buildPrompt(
    - 若 \`currentVisibleRow\` 已命中，先把它当作当前列表已收敛的身份证据，继续读状态 / 详情字段
    - 但如果后面还需要状态证据，而你此时手里的 \`recordCheck.response\` 会是 \`null\`，不要直接一路掉进详情字段读取；先补一跳只为拿结构化列表响应的 \`__e2e.resolvePrimaryRecord(...)\`（例如 \`maxLookupAttempts: 1\`、\`retryIntervalMs: 200\`），再从 \`statusEvidenceRecordCheck.response -> __e2e.pickJsonRecord(...) -> __e2e.pickJsonValue(...状态 paths...)\` 读取状态
    - 只有当前可见列表未命中时，才调用 \`__e2e.resolvePrimaryRecord(...)\` 触发关键词搜索；不要在切换 helper 返回后立刻 \`fill + 搜索\`
-10. 如果按 \`businessId\` 回查列表，优先直接写 \`const recordCheck = await __e2e.resolvePrimaryRecord(page, { primaryValue: businessId, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: [businessId, leadMobile], detailUrl: \`#/business/detail/\${businessId}\` })\`。若 \`recordCheck.mode === 'table_row'\`，先把该行当作目标记录已命中的身份证据；只有当“新入库”真的出现在可见行文本里时才直接断言它。若状态不在行文本 / 状态单元格里，优先继续读取 \`recordCheck.response\` + \`__e2e.pickJsonRecord(...)\` 的状态字段，仍拿不到时再去详情页 / 详情抽屉用 \`__e2e.readDetailField(...)\` 校验状态。若 helper 已回退到详情页 / 详情抽屉，就直接在详情面校验联系人、手机号和状态，不要退回整页 \`toContain\`。如果列表响应和详情字段都没有状态，不要写 \`expect(statusText || '').toContain('新入库')\`；应直接抛出“状态证据缺失”错误。等价地，如果按 \`businessId\` 检索后 \`findAntdTableRow\` 仍然找不到目标行，不要无限继续放宽姓名 / 手机号文本匹配；如果 \`businessId\` 本身为空，也不要立刻写 \`expect(businessId).toBeTruthy()\`，而要先切到“我创建的”，再优先写 \`const recordCheck = await __e2e.resolvePrimaryRecord(page, { primaryValue: leadMobile, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: [leadMobile], maxLookupAttempts: 4, retryIntervalMs: 1200 })\`\n   - 这条 fallback helper 的目标是保守轮询列表收敛；若 \`recordCheck.mode === 'table_row'\`，先断言手机号，联系人只在行文本里确实出现时再断言，否则继续读列表响应 / 详情字段。\n   - 只有 helper 明确返回 \`not_found\` 且没有详情入口时，才允许退回 \`const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [leadMobile, leadContactName] })\` 这类可见文本链。fallback 行已经命中后，只有当“新入库”确实出现在可见行文本里时才直接断言；若状态不在该行文本里，优先继续读取这次列表检索响应，用 \`__e2e.pickJsonRecord(..., { label: 'leadMobile', value: leadMobile, paths: ['mobile', 'phone', 'contactPhone', 'contactMobile'], required: false })\` 找命中的列表记录，再配合 \`__e2e.pickJsonValue(...状态 paths...)\` 或 \`__e2e.readDetailField(page, { label: '状态', required: false })\` 完成验收。`);
+10. 如果按 \`businessId\` 回查列表，优先直接写 \`const recordCheck = await __e2e.resolvePrimaryRecord(page, { primaryValue: businessId, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: [businessId, leadMobile], detailUrl: \`#/business/detail/\${businessId}\` })\`。若 \`recordCheck.mode === 'table_row'\`，先把该行当作目标记录已命中的身份证据；只有当“新入库”真的出现在可见行文本里时才直接断言它。若状态不在行文本 / 状态单元格里，优先继续读取 \`recordCheck.response\` + \`__e2e.pickJsonRecord(...)\` 的状态字段，状态 paths 至少覆盖 ${renderJsStringArray(BUSINESS_STATUS_JSON_PATHS)}；仍拿不到时再去详情页 / 详情抽屉用 \`__e2e.readDetailField(...)\` 校验状态。若 helper 已回退到详情页 / 详情抽屉，就直接在详情面校验联系人、手机号和状态，不要退回整页 \`toContain\`；当前商机场景里详情状态优先尝试 \`商机进展\`，其次才是 \`状态\`。如果列表响应和详情字段都没有状态，不要写 \`expect(statusText || '').toContain('新入库')\`；应直接抛出“状态证据缺失”错误。等价地，如果按 \`businessId\` 检索后 \`findAntdTableRow\` 仍然找不到目标行，不要无限继续放宽姓名 / 手机号文本匹配；如果 \`businessId\` 本身为空，也不要立刻写 \`expect(businessId).toBeTruthy()\`，而要先切到“我创建的”，再优先写 \`const recordCheck = await __e2e.resolvePrimaryRecord(page, { primaryValue: leadMobile, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: [leadMobile], maxLookupAttempts: 4, retryIntervalMs: 1200 })\`\n   - 这条 fallback helper 的目标是保守轮询列表收敛；若 \`recordCheck.mode === 'table_row'\`，先断言手机号，联系人只在行文本里确实出现时再断言，否则继续读列表响应 / 详情字段。\n   - 只有 helper 明确返回 \`not_found\` 且没有详情入口时，才允许退回 \`const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [leadMobile, leadContactName] })\` 这类可见文本链。fallback 行已经命中后，只有当“新入库”确实出现在可见行文本里时才直接断言；若状态不在该行文本里，优先继续读取这次列表检索响应，用 \`__e2e.pickJsonRecord(..., { label: 'leadMobile', value: leadMobile, paths: ['mobile', 'phone', 'contactPhone', 'contactMobile'], required: false })\` 找命中的列表记录，再配合 \`__e2e.pickJsonValue(...状态 paths...)\` 或 \`__e2e.readDetailField(page, { label: '商机进展', required: false }) || __e2e.readDetailField(page, { label: '状态', required: false })\` 完成验收。`);
   }
 
   if (looksLikeBusinessCreateOrderTask(snapshot, description, context)) {
@@ -2209,7 +2224,8 @@ export function buildRepairPrompt(
   context?: GenerateTestContext,
   planning?: ResolvedPromptPlanningContext
 ): string {
-  const resolvedPlanning = planning || resolveIntentPromptPlanningContext(snapshot, description, context, { auth });
+  const resolvedPlanning =
+    planning || resolveIntentPromptPlanningContext(snapshot, description, context, { auth, projectUid: context?.projectUid });
   const parts = [buildPrompt(snapshot, description, auth, edgeCases, existingExample, context, resolvedPlanning)];
   const latestTraceLines = collectRepairLatestTraceLines(repair);
   const recentEvents = latestTraceLines.map((item) => `- ${item}`).join('\n');
@@ -2258,7 +2274,7 @@ export function buildRepairPrompt(
     looksLikeBusinessCreateTask(snapshot, description, context) &&
     /未找到表格目标行：hasTexts=/.test(repair.executionError)
   ) {
-    diagnosisHints.push(`这次不是还要继续一味放宽 \`findAntdTableRow\`，而是缺少更稳定的业务主键和“列表结果收敛”回查链。修复时在第三页提交后立刻读取 \`createResp\` / 提交响应 JSON，优先写 \`const createJson = await __e2e.readJsonResponse(await createResp)\`，再用 \`__e2e.pickJsonValue(createJson, { label: 'businessId', paths: ${renderJsStringArray(BUSINESS_ID_JSON_PATHS)}, required: false })\` 提取并保存；如果 \`businessId\` 非空，回到列表后优先直接写 \`const recordCheck = await __e2e.resolvePrimaryRecord(page, { primaryValue: businessId, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: [businessId, leadMobile], detailUrl: \`#/business/detail/\${businessId}\` })\`。若 \`businessId\` 为空，不要立刻写 \`expect(businessId).toBeTruthy()\`，也不要退回“一次 search + 一次 findAntdTableRow 就失败”；先切到“我创建的”，再优先写 \`const recordCheck = await __e2e.resolvePrimaryRecord(page, { primaryValue: leadMobile, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: [leadMobile], maxLookupAttempts: 4, retryIntervalMs: 1200 })\`\n- 让 helper 保守轮询几次列表收敛；如果 \`recordCheck.mode === 'table_row'\`，先断言手机号，联系人只在行文本确实出现时再断言，否则继续读取 \`recordCheck.response\`。\n- 只有 helper 明确返回 \`not_found\` 且没有详情入口时，才允许再退回 \`const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [leadMobile, leadContactName] })\` 这类可见文本链。\n- fallback 行命中后，只有当“新入库”真的出现在该行可见文本里时才直接断言；如果状态不在该行可见文本 / 状态单元格里，不要继续把 \`新入库\` 写成硬断言，而要优先继续读这次列表检索响应，用 \`__e2e.pickJsonRecord(..., { label: 'leadMobile', value: leadMobile, paths: ['mobile', 'phone', 'contactPhone', 'contactMobile'], required: false })\` 找到命中的列表记录，再配合 \`__e2e.pickJsonValue(...状态 paths...)\` 或 \`__e2e.readDetailField(page, { label: '状态', required: false })\` 完成状态校验。若 helper 已回退到详情页 / 详情抽屉，就优先继续读 \`recordCheck.response\`，用 \`__e2e.pickJsonRecord(...)\` 找到命中的列表记录，再配合 \`__e2e.readDetailField(page, { label: '联系人', required: false })\`、\`__e2e.readDetailField(page, { label: '手机号', required: false })\`、\`__e2e.readDetailField(page, { label: '状态', required: false })\` 做字段对比，不要改成整页模糊文本断言。`);
+    diagnosisHints.push(`这次不是还要继续一味放宽 \`findAntdTableRow\`，而是缺少更稳定的业务主键和“列表结果收敛”回查链。修复时在第三页提交后立刻读取 \`createResp\` / 提交响应 JSON，优先写 \`const createJson = await __e2e.readJsonResponse(await createResp)\`，再用 \`__e2e.pickJsonValue(createJson, { label: 'businessId', paths: ${renderJsStringArray(BUSINESS_ID_JSON_PATHS)}, required: false })\` 提取并保存；如果 \`businessId\` 非空，回到列表后优先直接写 \`const recordCheck = await __e2e.resolvePrimaryRecord(page, { primaryValue: businessId, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: [businessId, leadMobile], detailUrl: \`#/business/detail/\${businessId}\` })\`。若 \`businessId\` 为空，不要立刻写 \`expect(businessId).toBeTruthy()\`，也不要退回“一次 search + 一次 findAntdTableRow 就失败”；先切到“我创建的”，再优先写 \`const recordCheck = await __e2e.resolvePrimaryRecord(page, { primaryValue: leadMobile, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: [leadMobile], maxLookupAttempts: 4, retryIntervalMs: 1200 })\`\n- 让 helper 保守轮询几次列表收敛；如果 \`recordCheck.mode === 'table_row'\`，先断言手机号，联系人只在行文本确实出现时再断言，否则继续读取 \`recordCheck.response\`。\n- 只有 helper 明确返回 \`not_found\` 且没有详情入口时，才允许再退回 \`const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [leadMobile, leadContactName] })\` 这类可见文本链。\n- fallback 行命中后，只有当“新入库”真的出现在该行可见文本里时才直接断言；如果状态不在该行可见文本 / 状态单元格里，不要继续把 \`新入库\` 写成硬断言，而要优先继续读这次列表检索响应，用 \`__e2e.pickJsonRecord(..., { label: 'leadMobile', value: leadMobile, paths: ['mobile', 'phone', 'contactPhone', 'contactMobile'], required: false })\` 找到命中的列表记录，再配合 \`__e2e.pickJsonValue(...状态 paths...)\` 或 \`__e2e.readDetailField(page, { label: '商机进展', required: false }) || __e2e.readDetailField(page, { label: '状态', required: false })\` 完成状态校验。若 helper 已回退到详情页 / 详情抽屉，就优先继续读 \`recordCheck.response\`，用 \`__e2e.pickJsonRecord(...)\` 找到命中的列表记录，再配合 \`__e2e.readDetailField(page, { label: '联系人', required: false })\`、\`__e2e.readDetailField(page, { label: '手机号', required: false })\`、\`__e2e.readDetailField(page, { label: '商机进展', required: false }) || __e2e.readDetailField(page, { label: '状态', required: false })\` 做字段对比，不要改成整页模糊文本断言。`);
   }
   if (
     looksLikeBusinessCreateTask(snapshot, description, context) &&
@@ -2276,6 +2292,21 @@ export function buildRepairPrompt(
   ) {
     diagnosisHints.push(
       "这次不是 `scrollIntoViewIfNeeded()` 本身有问题，而是最后一步主动作被你固化成了精确 `保存`。修复时先用 `附件信息 / 上传录音文件 / 上传图片` 这些末页锚点确认已经进入最后一步，再只在当前可见步骤容器里定位 `/保\\s*存|提\\s*交|确\\s*定/i` 的最后一个按钮；不要继续写 `getByRole('button', { name: /^保\\s*存$/ }).first()`，也不要把 `保存并继续` / `上一步` 当成最终提交。"
+    );
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /scrollIntoViewIfNeeded|locator not found|toBeVisible/i.test(repair.executionError) &&
+    /companyRow\.or\(productRow\)\.first\(\)|label\[title="企业名称"\]|label\[title="意向产品"\]/.test(
+      repair.previousCode
+    ) &&
+    /nextBtn2[\s\S]*保存并继续[\s\S]*click\(\)/.test(repair.previousCode) &&
+    !/selectAntdOption\(page,\s*companyRow/.test(repair.previousCode) &&
+    !/selectAntdOption\(page,\s*productRow/.test(repair.previousCode) &&
+    /保\\\\s\*存\|提\\\\s\*交\|确\\\\s\*定/.test(`${repair.executionError}\n${repair.previousCode}`)
+  ) {
+    diagnosisHints.push(
+      "这次不是最终按钮文案还不够宽，而是脚本在第二页刚看到 `企业名称 / 意向产品` 锚点后，就因为第二个 `保存并继续` 仍然可见直接继续了，实际上并没有先把第二页必填项填完。修复时不要继续保留 `await expect(companyRow.or(productRow).first()).toBeVisible(...); if (await nextBtn2.isVisible(...)) { await nextBtn2.click(); }` 这种跳页链；若当前需求包含企业名称 / 意向产品 / 产品类型，必须先用 `__e2e.selectAntdOption(page, companyRow, { label, searchText })` 或 `__e2e.selectAntdOption(page, productRow, { label, searchText, tree: true })` 完成第二页字段，再点击下一次 `保存并继续`。只有 `附件信息 / 上传录音文件 / 上传图片` 已出现后，才开始找最终 `保存 / 提交 / 确定`。"
     );
   }
   if (
@@ -2302,7 +2333,7 @@ export function buildRepairPrompt(
     /(Expected substring:\s*"新入库"|hasText:\s*\/新入库\/)/.test(repair.executionError) &&
     /(resolvePrimaryRecord|findAntdTableRow)/.test(repair.previousCode)
   ) {
-    diagnosisHints.push(`这次不是列表没命中，而是脚本已经按主键/联系人命中了目标行，却还把 \`新入库\` 写成同一行可见文本 / 状态单元格的硬断言。修复时保留 \`targetRow\` 作为身份命中证据，不要继续写 \`await expect(targetRow).toContainText('新入库')\` 或 \`targetRow.locator('td').filter({ hasText: /新入库/ })\`。优先继续读取 \`recordCheck.response\` / 列表检索响应，用 \`__e2e.pickJsonRecord(...)\` 找到命中的列表记录，再用 \`__e2e.pickJsonValue(..., { label: '状态', paths: ['status', 'statusName', 'statusText', 'state', 'stateName', 'stateText', 'displayStatus'], required: false })\` 校验状态；如果列表 JSON 仍拿不到状态，就直接跳 \`detailUrl\` 或打开“查看 / 详情”抽屉后用 \`__e2e.readDetailField(page, { label: '状态', required: false })\` 完成验收。如果 \`matchedRecord\` 和详情字段都为空，不要写 \`expect(statusText || '').toContain('新入库')\`；应直接抛出“状态证据缺失”错误。`);
+    diagnosisHints.push(`这次不是列表没命中，而是脚本已经按主键/联系人命中了目标行，却还把 \`新入库\` 写成同一行可见文本 / 状态单元格的硬断言。修复时保留 \`targetRow\` 作为身份命中证据，不要继续写 \`await expect(targetRow).toContainText('新入库')\` 或 \`targetRow.locator('td').filter({ hasText: /新入库/ })\`。优先继续读取 \`recordCheck.response\` / 列表检索响应，用 \`__e2e.pickJsonRecord(...)\` 找到命中的列表记录，再用 \`__e2e.pickJsonValue(..., { label: '状态', paths: ${renderJsStringArray(BUSINESS_STATUS_JSON_PATHS)}, required: false })\` 校验状态；如果列表 JSON 仍拿不到状态，就直接跳 \`detailUrl\` 或打开“查看 / 详情”抽屉后优先用 \`__e2e.readDetailField(page, { label: '商机进展', required: false })\`，再回退 \`__e2e.readDetailField(page, { label: '状态', required: false })\` 完成验收。如果 \`matchedRecord\` 和详情字段都为空，不要写 \`expect(statusText || '').toContain('新入库')\`；应直接抛出“状态证据缺失”错误。`);
   }
   if (
     looksLikeBusinessCreateTask(snapshot, description, context) &&
@@ -2314,20 +2345,20 @@ export function buildRepairPrompt(
     looksLikeBusinessCreateTask(snapshot, description, context) &&
     /状态证据缺失：列表行已命中，但列表响应和详情字段都未返回状态/.test(repair.executionError)
   ) {
-    diagnosisHints.push(`这次不是列表行没命中，而是你已经命中了目标行、也读过列表响应，但还没有真正进入详情面就直接把 \`readDetailField(page, { label: '状态' })\` 判空了。修复时不要继续在裸列表页上读状态；若当前链路已经有稳定 \`detailUrl\` / \`detailReadyLocator\`，优先直接沿用这条详情页链，先 \`await page.goto(detailUrl, { waitUntil: 'domcontentloaded' })\` 或等待详情页 ready，再用 \`__e2e.readDetailField(page, { label: '状态', required: false })\` 读取状态。只有当没有稳定 \`detailUrl\`、且 \`detailEntry\` 明确指向 \`drawer_or_modal\` 或项目里已知详情标题时，才对命中的 \`targetRow / recordCheck.row\` 执行 \`await __e2e.clickAntdRowAction(page, targetRow, '查看')\`，随后等待 \`__e2e.waitForVisibleAntdModal(...)\` 并把容器传给 \`__e2e.readDetailField(...)\`。只有详情抽屉/详情页里仍然没有状态字段时，才允许抛出“状态证据缺失”错误。`);
+    diagnosisHints.push(`这次不是列表行没命中，而是你已经命中了目标行、也读过列表响应，但还没有真正进入详情面就直接把 \`readDetailField(page, { label: '状态' })\` 判空了。修复时不要继续在裸列表页上读状态；若当前链路已经有稳定 \`detailUrl\` / \`detailReadyLocator\`，优先直接沿用这条详情页链，先 \`await page.goto(detailUrl, { waitUntil: 'domcontentloaded' })\` 或等待详情页 ready，再优先用 \`__e2e.readDetailField(page, { label: '商机进展', required: false })\`，然后回退 \`__e2e.readDetailField(page, { label: '状态', required: false })\` 读取状态。只有当没有稳定 \`detailUrl\`、且 \`detailEntry\` 明确指向 \`drawer_or_modal\` 或项目里已知详情标题时，才对命中的 \`targetRow / recordCheck.row\` 执行 \`await __e2e.clickAntdRowAction(page, targetRow, '查看')\`，随后等待 \`__e2e.waitForVisibleAntdModal(...)\` 并把容器传给 \`__e2e.readDetailField(...)\`。只有详情抽屉/详情页里仍然没有状态字段时，才允许抛出“状态证据缺失”错误。`);
   }
   if (
     looksLikeBusinessCreateTask(snapshot, description, context) &&
     /状态证据缺失：列表行已命中，但无法从列表响应或详情(?:读取|获取)状态/.test(repair.executionError)
   ) {
-    diagnosisHints.push(`这次不是列表行没命中，而是 \`businessId\` 为空时，脚本在命中 \`recordCheck.row\` 后只写了“有主键就跳详情、没有主键就直接报错”的坏分支。修复时不要继续保留 \`else if (shared.businessId) { await page.goto(...) } else { throw ... }\`；若当前链路已经有 \`detailEntry\`、已知“查看”动作或详情标题（如 \`商机详情\`），优先直接对 \`recordCheck.row\` 执行 \`await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')\`，随后等待 \`const detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000 })\` 或现成 \`detailReadyLocator\`，再用 \`__e2e.readDetailField(page, { label: '状态', scope: detailScope, titleIncludes: '商机详情', required: false })\` 读取状态。只有列表响应、详情抽屉、详情页三处都拿不到状态时，才允许抛出“状态证据缺失”错误。`);
+    diagnosisHints.push(`这次不是列表行没命中，而是 \`businessId\` 为空时，脚本在命中 \`recordCheck.row\` 后只写了“有主键就跳详情、没有主键就直接报错”的坏分支。修复时不要继续保留 \`else if (shared.businessId) { await page.goto(...) } else { throw ... }\`；若当前链路已经有 \`detailEntry\`、已知“查看”动作或详情标题（如 \`商机详情\`），优先直接对 \`recordCheck.row\` 执行 \`await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')\`，随后等待 \`const detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000 })\` 或现成 \`detailReadyLocator\`，再用 \`__e2e.readDetailField(page, { label: '商机进展', scope: detailScope, titleIncludes: '商机详情', required: false }) || __e2e.readDetailField(page, { label: '状态', scope: detailScope, titleIncludes: '商机详情', required: false })\` 读取状态。只有列表响应、详情抽屉、详情页三处都拿不到状态时，才允许抛出“状态证据缺失”错误。`);
   }
   if (
     looksLikeBusinessCreateTask(snapshot, description, context) &&
     /Expected substring:\s*"新入库"/.test(repair.executionError) &&
     /Received string:\s*"无意向 有意向/i.test(repair.executionError)
   ) {
-    diagnosisHints.push(`这次不是详情状态真的变成了“无意向 / 有意向”，而是 \`readDetailField(page, { label: '状态' })\` 命中了详情里的意向标签/动作区。修复时不要继续直接对这串文本断言“新入库”；优先沿用结构化 \`detailEntry / detailSurface\` 链：先命中 \`targetRow\`，再写 \`await __e2e.clickAntdRowAction(page, targetRow, '查看')\`，随后等待 \`const detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000 })\`，并用 \`__e2e.readDetailField(page, { label: '状态', scope: detailScope, titleIncludes: '商机详情', required: false })\` 读取真实状态。若读到的仍是“无意向 / 有意向”这类意向标签，不要把它当业务状态；应优先回退到 \`matchedRecord\` 的状态字段，或继续在详情面找真实状态字段。`);
+    diagnosisHints.push(`这次不是详情状态真的变成了“无意向 / 有意向”，而是 \`readDetailField(page, { label: '状态' })\` 命中了详情里的意向标签/动作区。修复时不要继续直接对这串文本断言“新入库”；优先沿用结构化 \`detailEntry / detailSurface\` 链：先命中 \`targetRow\`，再写 \`await __e2e.clickAntdRowAction(page, targetRow, '查看')\`，随后等待 \`const detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000 })\`，并优先用 \`__e2e.readDetailField(page, { label: '商机进展', scope: detailScope, titleIncludes: '商机详情', required: false })\`，再回退 \`__e2e.readDetailField(page, { label: '状态', scope: detailScope, titleIncludes: '商机详情', required: false })\` 读取真实状态。若读到的仍是“无意向 / 有意向”这类意向标签，不要把它当业务状态；应优先回退到 \`matchedRecord\` 的状态字段，或继续在详情面找真实状态字段。`);
   }
   const shortUnexpectedStatusMatch = repair.executionError.match(/Received string:\s*"([^"\n]{1,12})"/);
   if (
@@ -2338,7 +2369,7 @@ export function buildRepairPrompt(
     shortUnexpectedStatusMatch &&
     !/(新入库|有意向|无意向|待|已|审|跟进|签约|成功|失败|关闭|丢|作废)/.test(shortUnexpectedStatusMatch[1])
   ) {
-    diagnosisHints.push(`这次不是详情里的真实业务状态变成了「${shortUnexpectedStatusMatch[1]}」，而是脚本在 \`currentVisibleRow\` 已命中后把 \`recordCheck.response\` 留成了 \`null\`，随后又把 \`readDetailField(page, { label: '状态' })\` 读到的短枚举值误当状态。修复时不要继续直接断言这个短值；保留 \`currentVisibleRow\` 作为身份证据，但先补一跳只为拿结构化列表响应：\`const statusEvidenceRecordCheck = recordCheck.response ? recordCheck : currentVisibleRow ? await __e2e.resolvePrimaryRecord(page, { primaryValue, keywordInput, searchButton, listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts, maxLookupAttempts: 1, retryIntervalMs: 200, detailUrl }) : recordCheck;\`，再从 \`statusEvidenceRecordCheck.response -> __e2e.pickJsonRecord(...) -> __e2e.pickJsonValue(...状态 paths...)\` 读取状态。只有结构化列表响应仍拿不到状态时，才继续开详情；若详情字段再次返回这类短枚举值，也不要把它当业务状态。`);
+    diagnosisHints.push(`这次不是详情里的真实业务状态变成了「${shortUnexpectedStatusMatch[1]}」，而是脚本在 \`currentVisibleRow\` 已命中后把 \`recordCheck.response\` 留成了 \`null\`，随后又把 \`readDetailField(page, { label: '状态' })\` 读到的短枚举值误当状态。修复时不要继续直接断言这个短值；保留 \`currentVisibleRow\` 作为身份证据，但先补一跳只为拿结构化列表响应：\`const statusEvidenceRecordCheck = recordCheck.response ? recordCheck : currentVisibleRow ? await __e2e.resolvePrimaryRecord(page, { primaryValue, keywordInput, searchButton, listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts, maxLookupAttempts: 1, retryIntervalMs: 200, detailUrl }) : recordCheck;\`，再从 \`statusEvidenceRecordCheck.response -> __e2e.pickJsonRecord(...) -> __e2e.pickJsonValue(...状态 paths...)\` 读取状态。只有结构化列表响应仍拿不到状态时，才继续开详情；开详情时先试 \`商机进展\`，再试 \`状态\`，若详情字段再次返回这类短枚举值，也不要把它当业务状态。`);
   }
   if (
     looksLikeBusinessCreateTask(snapshot, description, context) &&
@@ -2371,12 +2402,28 @@ export function buildRepairPrompt(
     diagnosisHints.push('这次不是 `__e2e.switchBusinessListOwnershipView(...)` 没切成功，而是 helper 后又追加了脆弱的 active-locator 断言。修复时删除 `.ant-tabs-tab-active` / `.ant-radio-button-wrapper-checked` / `.ant-select-selection-selected-value` 或整页 `getByText(\'我创建的\')` 这类选中态断言；helper 成功本身就足够。若还需要辅助收敛，只允许检查当前 URL 已回列表、可见搜索框 / 列表 ready，然后直接进入后续搜索或 `resolvePrimaryRecord(...)` 回查。');
   }
   if (
+    /Cannot read properties of null \(reading 'forEach'\)|Cannot read properties of null \(reading "forEach"\)/.test(repair.executionError) &&
+    /resolvePrimaryRecord\(/.test(repair.previousCode) &&
+    /keywordInput\.fill\(|fill\(primaryValue\)|fill\(shared\.(businessId|contactPhone)\s*\|\|/.test(repair.previousCode) &&
+    /searchButton\.click\(\)|getByRole\('button', \{ name: \/搜\\\\s\*索\/i \}\)\.first\(\)\.click\(\)/.test(repair.previousCode)
+  ) {
+    diagnosisHints.push('这次不是列表数据真的为空，而是你在同一条回查链里先手写了 `keywordInput.fill(...) + searchButton.click()`，随后又把同一组 `keywordInput/searchButton` 传给 `__e2e.resolvePrimaryRecord(...)`，导致 helper 再触发一次搜索/刷新，把页面自己的列表逻辑打进了 `null.forEach`。修复时二选一：要么完全交给 `__e2e.resolvePrimaryRecord(...)` 负责搜索，要么保留手动搜索但不要再把同一组控件传给 helper。对当前商机列表场景，优先删除预搜索，只保留 `currentVisibleRow` 短探测 + `__e2e.resolvePrimaryRecord(...)` 这一条链。');
+  }
+  if (
     looksLikeBusinessCreateTask(snapshot, description, context) &&
     /未命中目标记录：列表未命中，且没有可用的详情回退路径/.test(repair.executionError) &&
     /switchBusinessListOwnershipView/.test(repair.previousCode) &&
     /resolvePrimaryRecord/.test(repair.previousCode)
   ) {
     diagnosisHints.push('这次不是再多加几轮 `maxLookupAttempts` 就能解决，而是切到“我创建的”后当前列表本身可能已经刷新出目标记录，你又立刻填搜索框把结果搜空了。修复时不要在 `__e2e.switchBusinessListOwnershipView(...)` 返回后马上 `fill + 搜索`；先短超时写 `const currentVisibleRow = primaryValue ? await (async () => { try { return await __e2e.findAntdTableRow(page, { hasTexts: [primaryValue], timeoutMs: 1200 }); } catch { return null; } })() : null;` 检查当前可见列表。若 `currentVisibleRow` 已命中，就直接把它当作 `recordCheck.row` 的身份证据继续读列表响应 / 详情字段；只有当前可见列表未命中时，才调用 `__e2e.resolvePrimaryRecord(...)` 触发关键词搜索。');
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /artifacts\['plan_step_5'\]\s*=\s*await listResp/.test(repair.previousCode) &&
+    /statusEvidenceRecordCheck\s*=|const verifyResp = __e2e.waitForApiResponse/.test(repair.previousCode) &&
+    /keywordInput\.fill\(|searchButton\.click\(\)|resolvePrimaryRecord\(/.test(repair.previousCode)
+  ) {
+    diagnosisHints.push("这次不是单个 step 的等待时间不够，而是脚本把同一条列表回查拆成了两次检索：前一步先为 `artifacts['plan_step_5']` 手动 `fill + 搜索`，后一步又在 `Step 6 / Verification` 里继续 `resolvePrimaryRecord(...)` 或 `waitForApiResponse + fill + click`。修复时优先把前一个步骤收口成 `await __e2e.switchBusinessListOwnershipView(...)` + 列表 ready，把唯一一次检索留给 `resolvePrimaryRecord(...)`；如果历史脚本暂时保留了 `artifacts['plan_step_5']`，后面也只能复用这次 response，不要再对同一主值第二次搜索。");
   }
   if (
     looksLikeBusinessCreateTask(snapshot, description, context) &&
@@ -2488,7 +2535,27 @@ export function buildRepairPrompt(
     )
   ) {
     diagnosisHints.push(
-      "这次不是继续给 `pickJsonRecord(...)` 补更多 path 就能顶掉当前头阻塞，而是 `businessId` 仍为空，row 已命中时也没有 `detailUrl` 可退。修复时只在 `currentVisibleRow` / `recordCheck.row` 已命中的分支里做一次保守回填：先 `const rowText = await recordCheck.row.innerText().catch(() => '')`，再写 `const derivedBusinessId = shared.businessId || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')`。这个回填只能用于“已命中目标行后解锁详情页回退”；不要在列表未命中前对整页文本猜 `businessId`，也不要继续把 `listResponse: { urlIncludes: '/business', method: 'GET' }` 当成唯一结构化状态来源。若 `expectedStatus` 仍为空但 `derivedBusinessId` 非空，优先 `await page.goto(`#/business/detail/${derivedBusinessId}`, { waitUntil: 'domcontentloaded' })` 再用 `__e2e.readDetailField(page, { label: '状态', required: false })` 读取状态；只有 `derivedBusinessId` 也为空时，才保留“状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口”这条错误收口。"
+      "这次不是继续给 `pickJsonRecord(...)` 补更多 path 就能顶掉当前头阻塞，而是 `businessId` 仍为空，row 已命中时也没有稳定 detail fallback。修复时只在 `currentVisibleRow` / `recordCheck.row` 已命中的分支里做一次保守回填：先 `const rowText = await recordCheck.row.innerText().catch(() => '')`，再补 `const rowKey = ((await recordCheck.row.getAttribute('data-row-key')) || '').trim()`，随后写 `const derivedBusinessId = shared.businessId || ((/^[A-Za-z0-9_-]{6,64}$/.test(rowKey) && !/^1\\d{10}$/.test(rowKey)) ? rowKey : '') || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')`。这个回填只能用于“已命中目标行后解锁详情页回退”；不要在列表未命中前对整页文本猜 `businessId`，也不要继续把 `listResponse: { urlIncludes: '/business', method: 'GET' }` 当成唯一结构化状态来源。若 `expectedStatus` 仍为空但 `derivedBusinessId` 非空，优先 `await page.goto(`#/business/detail/${derivedBusinessId}`, { waitUntil: 'domcontentloaded' })`，再按当前商机 family 先 `await __e2e.readDetailField(page, { label: '商机进展', required: false })`，再回退 `await __e2e.readDetailField(page, { label: '状态', required: false })`；只有 `derivedBusinessId` 也为空时，才保留“状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口”这条错误收口。"
+    );
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口/.test(repair.executionError) &&
+    /\/business\/detail\/|detail field not found|Cannot read properties of null \(reading 'forEach'\)/.test(recentEventText)
+  ) {
+    diagnosisHints.push(
+      "这次不是没有详情入口，而是脚本其实已经进入过商机详情路由，但详情状态字段读取还不稳。修复时不要在跳过 detailUrl 后又回到列表抛“未提供详情入口”；保留这条 detail fallback，优先写 `const detailStatus = await __e2e.readDetailField(page, { label: '商机进展', required: false }) || await __e2e.readDetailField(page, { label: '状态', required: false })`。如果 `detailStatus` 仍为空，再抛 `详情字段缺失：状态` 或保留当前 detail 证据，让下一轮继续修字段读取；不要把已经存在的 detail 路由退化成“未提供详情入口”。"
+    );
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /状态证据缺失：列表行已命中，但列表响应和详情字段都未返回状态/.test(repair.executionError) &&
+    /json record not found|\/business\/detail\/|Cannot read properties of null \(reading 'forEach'\)/.test(recentEventText) &&
+    /rowKey|getAttribute\('data-row-key'\)|derivedBusinessId|resolvedBusinessId/.test(repair.previousCode) &&
+    /pickJsonRecord\(listJson/.test(repair.previousCode)
+  ) {
+    diagnosisHints.push(
+      "这次不是继续在详情页里补更多 `readDetailField('状态')` 就能过，而是 `statusEvidenceRecordCheck.response` 很可能已经拿到了正确列表响应，只是你仍在用手机号去 `pickJsonRecord(...)`。修复时在 `rowKey / derivedBusinessId / resolvedBusinessId` 已可得的前提下，先补 `const matchedRecordByDerivedBusinessId = !matchedRecord && listJson && derivedBusinessId ? __e2e.pickJsonRecord(listJson, { label: 'derivedBusinessId', value: derivedBusinessId, paths: ['businessId', 'id'], required: false }) : null;`，再把 `matchedRecord || matchedRecordByDerivedBusinessId` 当成状态来源。只有这条结构化回填仍拿不到状态时，才继续 `page.goto(#/business/detail/${derivedBusinessId})`；不要在 `json record not found -> /business/detail/:id -> null.forEach` 这条链上反复重开详情。"
     );
   }
   if (/未找到行操作：查看/.test(repair.executionError) && /createOrder|data-createOrder|生成订单/.test(`${repair.previousCode}\n${recentEventText}`)) {
@@ -2769,7 +2836,8 @@ export async function* generateTest(
   const edgeCases = await loadEdgeCases(context?.scenarioEntryUrl || snapshot.url);
   yield { type: 'thinking', content: `找到 ${edgeCases.length} 个相关边缘案例` };
 
-  const resolvedPlanning = planning || resolveIntentPromptPlanningContext(snapshot, description, context, { auth });
+  const resolvedPlanning =
+    planning || resolveIntentPromptPlanningContext(snapshot, description, context, { auth, projectUid: context?.projectUid });
   yield { type: 'thinking', content: '正在加载现有测试范例...' };
   const existingExample = await loadExistingExample(snapshot, description, context, resolvedPlanning);
   const deterministicTemplate = resolveDeterministicTemplate(snapshot, description, existingExample, context, resolvedPlanning);
@@ -2843,7 +2911,8 @@ export async function* repairTest(
   const edgeCases = await loadEdgeCases(context?.scenarioEntryUrl || snapshot.url);
   yield { type: 'thinking', content: `已加载 ${edgeCases.length} 个相关边缘案例` };
 
-  const resolvedPlanning = planning || resolveIntentPromptPlanningContext(snapshot, description, context);
+  const resolvedPlanning =
+    planning || resolveIntentPromptPlanningContext(snapshot, description, context, { projectUid: context?.projectUid });
   yield { type: 'thinking', content: '正在加载现有测试范例...' };
   const existingExample = await loadExistingExample(snapshot, description, context, resolvedPlanning);
   const deterministicTemplate = resolveDeterministicTemplate(snapshot, description, existingExample, context, resolvedPlanning);

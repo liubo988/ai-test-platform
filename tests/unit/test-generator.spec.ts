@@ -120,16 +120,22 @@ describe('test-generator prompt builder', () => {
     expect(prompt).toContain('不要直接退化成“开详情 + 读裸状态字段”');
     expect(prompt).toContain('const statusEvidenceRecordCheck = recordCheck.response ? recordCheck : currentVisibleRow ? await __e2e.resolvePrimaryRecord(page, { primaryValue, keywordInput, searchButton, listResponse: { urlIncludes: \'/business\', method: \'GET\' }, rowHasTexts, maxLookupAttempts: 1, retryIntervalMs: 200, detailUrl }) : recordCheck;');
     expect(prompt).toContain('不要看到搜索框就立刻填值');
+    expect(prompt).toContain('不要在同一分支先手写 `await keywordInput.fill(primaryValue)`');
     expect(prompt).toContain('不要默认再把 `leadContactName` 拼回 fallback `rowHasTexts`');
     expect(prompt).toContain('必须保证最终字符串严格匹配 `/^1\\d{10}$/`');
     expect(prompt).toContain('不要写 `13${stamp.slice(-9)}`');
     expect(prompt).toContain("const leadMobile = '1990000' + stamp.slice(-4);");
     expect(prompt).toContain('不要继续默认用普通 `139${stamp}`');
+    expect(prompt).toContain('不要只因为第二个 `保存并继续` 仍然可见就直接继续');
+    expect(prompt).toContain('必须先完成这些第二页字段，再点击下一次 `保存并继续`');
+    expect(prompt).toContain('__e2e.selectAntdOption(page, companyRow, { label, searchText })');
+    expect(prompt).toContain('__e2e.selectAntdOption(page, productRow, { label, searchText, tree: true })');
     expect(prompt).toContain('提交响应如果返回 `businessId` / `id` / `data.id`');
     expect(prompt).toContain('如果 `businessId` / `orderId` 这类共享稳定标识提取为空，不要立刻写 `expect(variable).toBeTruthy()`');
     expect(prompt).toContain('再继续做“我创建的 / 我跟进的”归属切换和列表回查');
     expect(prompt).toContain('如果 `businessId` 本身为空，也不要立刻写 `expect(businessId).toBeTruthy()`');
-    expect(prompt).toContain("const derivedBusinessId = shared.businessId || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')");
+    expect(prompt).toContain("const rowKey = ((await recordCheck.row.getAttribute('data-row-key')) || '').trim()");
+    expect(prompt).toContain("const derivedBusinessId = shared.businessId || ((/^[A-Za-z0-9_-]{6,64}$/.test(rowKey) && !/^1\\d{10}$/.test(rowKey)) ? rowKey : '') || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')");
     expect(prompt).toContain('不要把这次响应当成唯一结构化状态来源');
     expect(prompt).toContain('__e2e.readJsonResponse');
     expect(prompt).toContain('__e2e.pickJsonValue');
@@ -151,6 +157,9 @@ describe('test-generator prompt builder', () => {
     expect(prompt).toContain('状态证据缺失');
     expect(prompt).toContain("const fallbackListJson = artifacts['plan_step_5'] ? await __e2e.readJsonResponse(artifacts['plan_step_5'], { required: false }) : null;");
     expect(prompt).toContain("const fallbackMatchedRecord = fallbackListJson ? __e2e.pickJsonRecord(fallbackListJson, { label: 'leadMobile', value: leadMobile, paths: ['mobile', 'phone', 'contactPhone', 'contactMobile'], required: false }) : null;");
+    expect(prompt).toContain("const fallbackMatchedByDerivedBusinessId = !fallbackMatchedRecord && fallbackListJson && derivedBusinessId ? __e2e.pickJsonRecord(fallbackListJson, { label: 'derivedBusinessId', value: derivedBusinessId, paths: ['businessId', 'id'], required: false }) : null;");
+    expect(prompt).toContain("const fallbackStatusRecord = fallbackMatchedRecord || fallbackMatchedByDerivedBusinessId;");
+    expect(prompt).toContain('后面的 `Step 6 / Verification` 就不要再补第二次检索');
     expect(prompt).toContain('按 `businessId` 检索后 `findAntdTableRow` 仍然找不到目标行');
     expect(prompt).toContain('读取列表搜索响应里的目标记录');
     expect(prompt).toContain('详情页 / 详情抽屉');
@@ -663,6 +672,87 @@ Error: element(s) not found`,
     expect(prompt).toContain("不要在 `__e2e.switchBusinessListOwnershipView(...)` 返回后马上 `fill + 搜索`");
     expect(prompt).toContain("const currentVisibleRow = primaryValue ? await (async () => { try { return await __e2e.findAntdTableRow(page, { hasTexts: [primaryValue], timeoutMs: 1200 }); } catch { return null; } })() : null;");
     expect(prompt).toContain('只有当前可见列表未命中时，才调用 `__e2e.resolvePrimaryRecord(...)`');
+  });
+
+  it('adds duplicate-search repair hints when manual search is followed by resolvePrimaryRecord on the same controls', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/business/businesslist',
+        title: '商机列表',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '商机列表' }],
+        screenshot: '',
+      },
+      '创建商机后切回我创建的列表并校验新入库记录',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: [
+          "const keywordInput = page.locator('input#businessList_keywords:visible').first();",
+          'await keywordInput.fill(primaryValue);',
+          "await page.getByRole('button', { name: /搜\\\\s*索/i }).first().click();",
+          "const recordCheck = await __e2e.resolvePrimaryRecord(page, { primaryValue, keywordInput, searchButton: page.getByRole('button', { name: /搜\\\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: [shared.contactPhone] });",
+        ].join('\n'),
+        executionError: "Cannot read properties of null (reading 'forEach')",
+        recentEvents: [],
+      },
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://uat.example.com/#/business/createbusiness',
+        expectedOutcome: '创建成功后在我创建的列表看到新入库记录',
+      }
+    );
+
+    expect(prompt).toContain('先手写了 `keywordInput.fill(...) + searchButton.click()`');
+    expect(prompt).toContain('随后又把同一组 `keywordInput/searchButton` 传给 `__e2e.resolvePrimaryRecord(...)`');
+    expect(prompt).toContain('导致 helper 再触发一次搜索/刷新');
+    expect(prompt).toContain('优先删除预搜索，只保留 `currentVisibleRow` 短探测 + `__e2e.resolvePrimaryRecord(...)`');
+  });
+
+  it('adds split-search repair hints when an earlier list step already cached a manual search response and later steps search again', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/business/businesslist',
+        title: '商机列表',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '商机列表' }],
+        screenshot: '',
+      },
+      '创建商机后切回我创建的列表并校验新入库记录',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: [
+          "const listResp = __e2e.waitForApiResponse(page, { urlIncludes: '/business', method: 'GET' });",
+          'await keywordInput.fill(shared.createdOpportunityKey);',
+          'await searchButton.click();',
+          "artifacts['plan_step_5'] = await listResp;",
+          "const statusEvidenceRecordCheck = recordCheck.response ? recordCheck : await __e2e.resolvePrimaryRecord(page, { primaryValue, keywordInput, searchButton, listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts, maxLookupAttempts: 1, retryIntervalMs: 200 });",
+          "const verifyResp = __e2e.waitForApiResponse(page, { urlIncludes: '/business', method: 'GET' });",
+          'await keywordInput.fill(shared.createdOpportunityKey);',
+          'await searchButton.click();',
+        ].join('\n'),
+        executionError: "Cannot read properties of null (reading 'forEach')",
+        recentEvents: [],
+      },
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://uat.example.com/#/business/createbusiness',
+        expectedOutcome: '创建成功后在我创建的列表看到新入库记录',
+      }
+    );
+
+    expect(prompt).toContain("把同一条列表回查拆成了两次检索：前一步先为 `artifacts['plan_step_5']` 手动 `fill + 搜索`");
+    expect(prompt).toContain('把前一个步骤收口成 `await __e2e.switchBusinessListOwnershipView(...)` + 列表 ready');
+    expect(prompt).toContain('后面也只能复用这次 response，不要再对同一主值第二次搜索');
   });
 
   it('adds targeted detail-status hints when 状态 误读成意向标签', () => {
@@ -1310,7 +1400,8 @@ Received string:    "5204612026-03-27 13:08:29中铁上海工程局集团有限�
     expect(prompt).toContain('这次不是列表没命中');
     expect(prompt).toContain("不要继续写 `await expect(targetRow).toContainText('新入库')`");
     expect(prompt).toContain('__e2e.pickJsonRecord(...)');
-    expect(prompt).toContain("paths: ['status', 'statusName', 'statusText', 'state', 'stateName', 'stateText', 'displayStatus']");
+    expect(prompt).toContain(`paths: ["status", "statusName", "statusText", "state", "stateName", "stateText", "displayStatus", "progress.displayStatus"]`);
+    expect(prompt).toContain("__e2e.readDetailField(page, { label: '商机进展', required: false })");
     expect(prompt).toContain("__e2e.readDetailField(page, { label: '状态', required: false })");
     expect(prompt).toContain("不要写 `expect(statusText || '').toContain('新入库')`");
     expect(prompt).toContain('状态证据缺失');
@@ -1565,6 +1656,58 @@ Received string:    "5204612026-03-27 13:08:29中铁上海工程局集团有限�
     expect(prompt).toContain('如果 scoped locator `count() === 0`');
     expect(prompt).toContain('回退到更稳的页面级可见主动作链');
     expect(prompt).toContain('继续排除 `保存并继续` / `上一步`');
+  });
+
+  it('adds business-create repair hints when the script skips second-page required fields and searches final submit too early', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/business/createbusiness',
+        title: '创建商机',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '创建商机' }],
+        screenshot: '',
+      },
+      '创建商机后切回我创建的列表并校验新入库记录',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: [
+          "const companyRow = page.locator('.ant-form-item').filter({ has: page.locator('label[title=\"企业名称\"]') }).first();",
+          "const productRow = page.locator('.ant-form-item').filter({ has: page.locator('label[title=\"意向产品\"]') }).first();",
+          'await expect(companyRow.or(productRow).first()).toBeVisible({ timeout: 20000 });',
+          "const nextBtn2 = page.getByRole('button', { name: /保存并继续/i }).first();",
+          'if (await nextBtn2.isVisible({ timeout: 5000 }).catch(() => false)) {',
+          '  await nextBtn2.click();',
+          '}',
+          "await expect(page.getByText(/附件信息|上传录音文件|上传图片/i).first()).toBeVisible({ timeout: 20000 });",
+          "const submitButton = page.getByRole('button', { name: /^(?!.*保存并继续)(?!.*上一步).*(保\\\\s*存|提\\\\s*交|确\\\\s*定).*$/i }).last();",
+          'await expect(submitButton).toBeVisible({ timeout: 15000 });',
+        ].join('\n'),
+        executionError: `expect(locator).toBeVisible() failed
+
+Locator: getByRole('button', { name: /^(?!.*保存并继续)(?!.*上一步).*(保\\s*存|提\\s*交|确\\s*定).*$/i }).last()
+Expected: visible
+Timeout: 15000ms
+Error: element(s) not found`,
+        recentEvents: [],
+      },
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://uat.example.com/#/business/createbusiness',
+        expectedOutcome: '创建商机后在我创建的列表看到新入库记录',
+      }
+    );
+
+    expect(prompt).toContain('脚本在第二页刚看到 `企业名称 / 意向产品` 锚点后');
+    expect(prompt).toContain('并没有先把第二页必填项填完');
+    expect(prompt).toContain('不要继续保留 `await expect(companyRow.or(productRow).first()).toBeVisible(...); if (await nextBtn2.isVisible(...)) { await nextBtn2.click(); }`');
+    expect(prompt).toContain('__e2e.selectAntdOption(page, companyRow, { label, searchText })');
+    expect(prompt).toContain('__e2e.selectAntdOption(page, productRow, { label, searchText, tree: true })');
+    expect(prompt).toContain('只有 `附件信息 / 上传录音文件 / 上传图片` 已出现后');
   });
 
   it('pulls dropdown repairs for 疑难工商注销 back to selectAntdOption instead of manual scrollIntoView chains', () => {
@@ -2044,10 +2187,96 @@ Error: element(s) not found`,
       }
     );
 
-    expect(prompt).toContain("const derivedBusinessId = shared.businessId || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')");
+    expect(prompt).toContain("const rowKey = ((await recordCheck.row.getAttribute('data-row-key')) || '').trim()");
+    expect(prompt).toContain("const derivedBusinessId = shared.businessId || ((/^[A-Za-z0-9_-]{6,64}$/.test(rowKey) && !/^1\\d{10}$/.test(rowKey)) ? rowKey : '') || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')");
     expect(prompt).toContain('只在 `currentVisibleRow` / `recordCheck.row` 已命中的分支里做一次保守回填');
     expect(prompt).toContain("不要继续把 `listResponse: { urlIncludes: '/business', method: 'GET' }` 当成唯一结构化状态来源");
     expect(prompt).toContain("await page.goto(`#/business/detail/${derivedBusinessId}`, { waitUntil: 'domcontentloaded' })");
+    expect(prompt).toContain("await __e2e.readDetailField(page, { label: '商机进展', required: false })");
+  });
+
+  it('adds targeted detail-route hints when the script already entered business detail but still collapses back to no-detail-entry', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/business/businesslist',
+        title: '商机列表',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '商机列表' }],
+        screenshot: '',
+      },
+      '创建商机后切回我创建的列表并校验新入库记录',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: [
+          "const derivedBusinessId = shared.businessId || '521101';",
+          "await page.goto(`#/business/detail/${derivedBusinessId}`, { waitUntil: 'domcontentloaded' });",
+          "const detailStatus = await __e2e.readDetailField(page, { label: '状态', required: false });",
+          "throw new Error('状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口');",
+        ].join('\n'),
+        executionError: '状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口',
+        recentEvents: [
+          "historyhistory {pathname: /business/detail/521101, search: , hash: , query: Object, state: undefined}",
+          "Cannot read properties of null (reading 'forEach')",
+          'detail field not found',
+        ],
+      },
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://uat.example.com/#/business/createbusiness',
+        expectedOutcome: '创建商机后在我创建的列表看到新入库记录',
+      }
+    );
+
+    expect(prompt).toContain('这次不是没有详情入口');
+    expect(prompt).toContain("const detailStatus = await __e2e.readDetailField(page, { label: '商机进展', required: false }) || await __e2e.readDetailField(page, { label: '状态', required: false })");
+    expect(prompt).toContain('不要在跳过 detailUrl 后又回到列表抛“未提供详情入口”');
+  });
+
+  it('adds derived-businessId list-json fallback hints before reopening an unstable detail page', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/business/businesslist',
+        title: '商机列表',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '商机列表' }],
+        screenshot: '',
+      },
+      '创建商机后切回我创建的列表并校验新入库记录',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: [
+          "const matchedRecord = listJson ? __e2e.pickJsonRecord(listJson, { label: 'leadMobile', value: primaryValue, paths: ['mobile', 'phone', 'contactPhone', 'contactMobile'], required: false }) : null;",
+          "const rowKey = ((await recordCheck.row.getAttribute('data-row-key')) || '').trim();",
+          "const derivedBusinessId = shared.businessId || ((/^[A-Za-z0-9_-]{6,64}$/.test(rowKey) && !/^1\\\\d{10}$/.test(rowKey)) ? rowKey : '') || '';",
+          "await page.goto(`#/business/detail/${derivedBusinessId}`, { waitUntil: 'domcontentloaded' });",
+        ].join('\n'),
+        executionError: '状态证据缺失：列表行已命中，但列表响应和详情字段都未返回状态',
+        recentEvents: [
+          'json record not found',
+          'historyhistory {pathname: /business/detail/521127, search: , hash: , query: Object, state: undefined}',
+          "Cannot read properties of null (reading 'forEach')",
+        ],
+      },
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://uat.example.com/#/business/createbusiness',
+        expectedOutcome: '创建商机后在我创建的列表看到新入库记录',
+      }
+    );
+
+    expect(prompt).toContain("const matchedRecordByDerivedBusinessId = !matchedRecord && listJson && derivedBusinessId ? __e2e.pickJsonRecord(listJson, { label: 'derivedBusinessId', value: derivedBusinessId, paths: ['businessId', 'id'], required: false }) : null;");
+    expect(prompt).toContain('再把 `matchedRecord || matchedRecordByDerivedBusinessId` 当成状态来源');
+    expect(prompt).toContain('不要在 `json record not found -> /business/detail/:id -> null.forEach` 这条链上反复重开详情');
   });
 
   it('injects matched project knowledge into prompt generation', () => {
