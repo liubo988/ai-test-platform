@@ -4922,7 +4922,7 @@ export default function IntentE2EWorkbench({
             <div className="space-y-4">
               <div className="min-w-0">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#8c7656]">Intent Workbench</p>
+                  <p className="text-[13px] font-medium uppercase tracking-[0.22em] text-[#8c7656]">Intent Workbench</p>
                   <div className="flex items-center gap-2">
                     {showCollapseControl && (
                       <button
@@ -4948,7 +4948,7 @@ export default function IntentE2EWorkbench({
                 <h2 className="mt-3 text-[21px] font-semibold leading-[1.16] tracking-[-0.05em] text-slate-950 md:text-[27px] xl:text-[28px]">
                   讲清任务，AI 自动规划、执行与修复
                 </h2>
-                <p className="mt-2.5 text-[13px] leading-6 text-slate-600 md:text-[14px]">{subtitle}</p>
+                <p className="mt-2.5 text-[14px] leading-6 text-slate-600">{subtitle}</p>
               </div>
 
               <div className="space-y-2.5">
@@ -4997,13 +4997,13 @@ export default function IntentE2EWorkbench({
                           }`}
                         >
                           <div className="flex items-center justify-between gap-2">
-                            <span className={`text-[10px] uppercase tracking-[0.16em] ${active ? 'text-[#8c7656]' : 'text-slate-400'}`}>
+                            <span className={`text-[11px] uppercase tracking-[0.16em] ${active ? 'text-[#8c7656]' : 'text-slate-400'}`}>
                               {item.label}
                             </span>
                             <span className={`h-2.5 w-2.5 rounded-full ${active ? 'bg-[#9a7341]' : 'bg-slate-300'}`} />
                           </div>
-                          <p className="mt-1.5 text-[13px] font-semibold leading-5 text-current">{item.summary}</p>
-                          <p className="mt-1 text-[11px] leading-5 text-slate-500">{item.detail}</p>
+                          <p className="mt-1.5 text-[14px] font-semibold leading-6 text-current">{item.summary}</p>
+                          <p className="mt-1 text-[13px] leading-6 text-slate-500">{item.detail}</p>
                         </button>
                       );
                     })}
@@ -5026,7 +5026,7 @@ export default function IntentE2EWorkbench({
               <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.08fr)_minmax(320px,0.92fr)]">
                 <div className="rounded-[24px] border border-[#e7dfd3] bg-white/72 p-4">
                   <div className="flex flex-wrap items-center gap-2">
-                    <label htmlFor="intent-e2e-input" className="text-xs font-medium tracking-[0.08em] text-slate-400">
+                    <label htmlFor="intent-e2e-input" className="text-[13px] font-medium tracking-[0.08em] text-slate-400">
                       测试目标
                     </label>
                     <div ref={inputHelpPopoverRef} className="relative">
@@ -5048,7 +5048,7 @@ export default function IntentE2EWorkbench({
                           aria-label="填写提示"
                         >
                           <p className="text-sm font-medium text-slate-900">建议只写“业务结果”，不要写点击脚本</p>
-                          <div className="mt-2.5 space-y-1.5 text-xs leading-6 text-slate-600">
+                          <div className="mt-2.5 space-y-1.5 text-[13px] leading-6 text-slate-600">
                             <p>目标动作：登录 / 搜索 / 新建 / 提交 / 下单</p>
                             <p>成功标准：页面文案 / URL / 列表状态 / 接口成功</p>
                             <p>复杂页面：补一张成功态或关键表单截图，帮助模型理解页面结构。</p>
@@ -5070,24 +5070,24 @@ export default function IntentE2EWorkbench({
                 <div className="space-y-4">
                   <div className="rounded-[24px] border border-[#e7dfd3] bg-white/72 p-4">
                     <label className="block">
-                      <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">Target URL</span>
+                      <span className="text-[13px] font-medium uppercase tracking-[0.14em] text-slate-400">Target URL</span>
                       <input
                         value={targetUrl}
                         onChange={(targetEvent) => setTargetUrl(targetEvent.target.value)}
                         placeholder="https://example.com/checkout"
                         className="mt-2.5 h-11 w-full rounded-2xl border border-[#ddd2c4] bg-white/84 px-4 text-sm text-slate-800 outline-none transition focus:border-[#c9bba7]"
                       />
-                      <p className="mt-2 text-[11px] leading-5 text-slate-500">尽量给真实入口，能减少 AI 在多层导航里的试探。</p>
+                      <p className="mt-2 text-[13px] leading-6 text-slate-500">尽量给真实入口，能减少 AI 在多层导航里的试探。</p>
                     </label>
                   </div>
 
                   <div className="rounded-[24px] border border-[#e7dfd3] bg-white/72 p-4">
                     <div className="flex items-center justify-between gap-3">
                       <div>
-                        <p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">截图 / 参考图</p>
-                        <p className="mt-1 text-[11px] leading-5 text-slate-500">补目标页、关键区域或成功态即可。</p>
+                        <p className="text-[13px] font-medium uppercase tracking-[0.14em] text-slate-400">截图 / 参考图</p>
+                        <p className="mt-1 text-[13px] leading-6 text-slate-500">补目标页、关键区域或成功态即可。</p>
                       </div>
-                      <label className="inline-flex h-9 cursor-pointer items-center justify-center rounded-full border border-[#ddd2c4] bg-white/88 px-3.5 text-xs text-slate-700 transition hover:bg-white">
+                      <label className="inline-flex h-9 cursor-pointer items-center justify-center rounded-full border border-[#ddd2c4] bg-white/88 px-3.5 text-[13px] text-slate-700 transition hover:bg-white">
                         上传图片
                         <input type="file" accept="image/*" multiple onChange={handleAttachmentChange} className="hidden" />
                       </label>
@@ -7244,79 +7244,89 @@ export default function IntentE2EWorkbench({
                   <div className="shrink-0">
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0">
-                        <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#8c7656]">Live Console</p>
-                        <h2 className="mt-3 text-[21px] font-semibold leading-[1.16] tracking-[-0.05em] text-slate-950 md:text-[27px]">
+                        <h2 className="text-[21px] font-semibold leading-[1.16] tracking-[-0.05em] text-slate-950 md:text-[27px]">
                           实时日志
                         </h2>
                       </div>
-                      <div className="flex flex-col items-end gap-2">
-                        <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${railStatusBadge.className}`}>
-                          {railStatusBadge.label}
-                        </span>
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setRailView('workbench')}
-                            className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-full border border-[#d7d0c5] bg-white/88 px-3.5 text-[12px] text-slate-600 shadow-[0_8px_22px_rgba(44,37,28,0.06)] transition hover:border-[#c6baaa] hover:text-slate-900"
-                          >
-                            编辑任务
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setWorkbenchCollapsed(true)}
-                            className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-full border border-[#d7d0c5] bg-white/88 px-3 text-[12px] text-slate-600 shadow-[0_8px_22px_rgba(44,37,28,0.06)] transition hover:border-[#c6baaa] hover:text-slate-900"
-                            title="收起左栏"
-                          >
-                            收起
-                          </button>
-                        </div>
+                      <div className="shrink-0 rounded-full border border-[#e1d8cb] bg-white/80 px-3 py-1 text-[11px] font-medium text-slate-500 shadow-[0_8px_20px_rgba(44,37,28,0.05)]">
+                        日志控制台
                       </div>
                     </div>
 
-                    <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
-                      <span className="rounded-full border border-[#ded4c7] bg-white/76 px-3 py-1 text-slate-700">{liveAttemptValue}</span>
-                      <span className="rounded-full border border-[#ded4c7] bg-white/76 px-3 py-1">累计 {displayAttempts.length} 次尝试</span>
-                      <span className="rounded-full border border-[#ded4c7] bg-white/76 px-3 py-1">最近 {streamState.feed.length} 条</span>
+                    <div className="mt-4 grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setRailView('workbench')}
+                        className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-[16px] border border-[#d7d0c5] bg-white/90 px-3 text-[12px] font-medium text-slate-700 shadow-[0_10px_24px_rgba(44,37,28,0.05)] transition hover:border-[#c6baaa] hover:bg-white hover:text-slate-950"
+                      >
+                        编辑任务
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRailView('live')}
+                        className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-[16px] border border-[#ddc59f] bg-[#f8ecdc]/96 px-3 text-[12px] font-medium text-[#7a5c33] shadow-[0_10px_24px_rgba(122,92,51,0.08)] transition hover:bg-[#f5e6d3]"
+                      >
+                        查看画面
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setWorkbenchCollapsed(true)}
+                        className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-[16px] border border-[#d7d0c5] bg-white/82 px-3 text-[12px] font-medium text-slate-600 shadow-[0_10px_24px_rgba(44,37,28,0.04)] transition hover:border-[#c6baaa] hover:bg-white hover:text-slate-900"
+                        title="收起左栏"
+                      >
+                        收起
+                      </button>
+                      <Link
+                        href="/"
+                        className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-[16px] border border-[#d7d0c5] bg-white/82 px-3 text-[12px] font-medium text-slate-600 shadow-[0_10px_24px_rgba(44,37,28,0.04)] transition hover:border-[#c6baaa] hover:bg-white hover:text-slate-900"
+                      >
+                        返回项目
+                      </Link>
                     </div>
+
                   </div>
 
-                  <div className="mt-4 flex min-h-[480px] flex-1 flex-col overflow-hidden rounded-[24px] border border-[#e2d8ca] bg-[linear-gradient(180deg,rgba(255,252,247,0.98),rgba(248,242,234,0.96))] shadow-[inset_0_1px_0_rgba(255,255,255,0.92),0_18px_36px_rgba(91,73,47,0.08)] xl:min-h-0">
-                    <div className={`shrink-0 border-b px-4 py-3.5 ${liveLogStatus.toneClassName}`}>
+                  <div className="mt-4 flex min-h-[520px] flex-1 flex-col overflow-hidden rounded-[26px] border border-[#e2d8ca] bg-[linear-gradient(180deg,rgba(255,252,247,0.99),rgba(248,242,234,0.96))] shadow-[inset_0_1px_0_rgba(255,255,255,0.92),0_18px_36px_rgba(91,73,47,0.08)] xl:min-h-0">
+                    <div className={`shrink-0 border-b px-4 py-4 ${liveLogStatus.toneClassName}`}>
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="flex min-w-0 items-center gap-2.5">
                             <span className={liveLogStatus.indicatorClassName} />
-                            <p className="truncate text-[13px] font-medium">{liveLogStatus.title}</p>
+                            <p className="truncate text-[15px] font-semibold">{liveLogStatus.title}</p>
                           </div>
-                          <p className="mt-2 text-[11px] leading-5 opacity-80">{liveLogStatus.detail}</p>
+                          <p className="mt-2 text-[13px] leading-6 opacity-80">{liveLogStatus.detail}</p>
                         </div>
-                        <span className="rounded-full border border-black/5 bg-white/78 px-2.5 py-1 text-[10px] font-medium tracking-[0.14em] text-current">
+                        <span className="rounded-full border border-black/5 bg-white/78 px-2.5 py-1 text-[12px] font-medium tracking-[0.14em] text-current">
                           {liveLogStatus.badgeLabel}
                         </span>
                       </div>
-                      <div className="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-[#8b775c]">
-                        <span className="rounded-full border border-black/5 bg-white/80 px-2.5 py-1 text-[#6d5b46]">
+                      <div className="mt-4 grid grid-cols-3 gap-2 rounded-[18px] border border-black/5 bg-white/48 p-1.5 text-[10px] text-[#8b775c]">
+                        <span className="truncate whitespace-nowrap rounded-[14px] bg-white/86 px-2 py-2 text-center font-medium text-[#6d5b46] shadow-[0_6px_18px_rgba(255,255,255,0.3)]">
                           {liveAttemptValue}
                         </span>
-                        <span>累计 {displayAttempts.length} 次</span>
-                        <span>最近 {streamState.feed.length} 条</span>
+                        <span className="truncate whitespace-nowrap rounded-[14px] px-2 py-2 text-center">
+                          累计 {displayAttempts.length} 次
+                        </span>
+                        <span className="truncate whitespace-nowrap rounded-[14px] px-2 py-2 text-center">
+                          最近 {streamState.feed.length} 条
+                        </span>
                       </div>
                     </div>
 
                     {liveFeedItems.length > 0 ? (
                       <>
-                        <div className="grid shrink-0 grid-cols-[auto_1fr] gap-x-3 border-b border-[#e7dccf] bg-white/60 px-4 py-2 text-[10px] uppercase tracking-[0.18em] text-[#9a8668]">
+                        <div className="grid shrink-0 grid-cols-[auto_1fr] gap-x-3 border-b border-[#e7dccf] bg-white/60 px-4 py-2.5 text-[11px] uppercase tracking-[0.18em] text-[#9a8668]">
                           <span>级别</span>
-                          <span>Log Stream</span>
+                          <span>日志内容</span>
                         </div>
                         <div
                           aria-live="polite"
-                          className="intent-e2e-scroll min-h-0 flex-1 overflow-y-auto bg-[linear-gradient(180deg,rgba(255,250,245,0.8),rgba(249,244,238,0.96))] px-3 py-2 xl:overscroll-contain"
+                          className="intent-e2e-scroll min-h-0 flex-1 overflow-y-auto bg-[linear-gradient(180deg,rgba(255,250,245,0.8),rgba(249,244,238,0.96))] px-3 py-3 xl:overscroll-contain"
                         >
                           {liveFeedItems.map((item, index) => (
                             <div
                               key={item.id}
-                              className={`mb-2 grid grid-cols-[auto_1fr] gap-x-3 rounded-[18px] border px-3 py-3 shadow-[0_8px_18px_rgba(89,72,48,0.04)] last:mb-0 ${
+                              className={`mb-2.5 grid grid-cols-[auto_1fr] gap-x-3 rounded-[18px] border px-3 py-3 shadow-[0_8px_18px_rgba(89,72,48,0.04)] last:mb-0 ${
                                 feedToneConsoleSurfaceClass(item.tone)
                               } ${index === 0 ? 'ring-1 ring-[#d8c29f]/70' : ''}
                               `}
@@ -7327,50 +7337,37 @@ export default function IntentE2EWorkbench({
                               <div className="min-w-0">
                                 <div className="flex flex-wrap items-center gap-2">
                                   <span
-                                    className={`rounded-full border px-2 py-0.5 font-mono text-[10px] tracking-[0.16em] ${feedToneConsoleLabelClass(
+                                    className={`rounded-full border px-2 py-0.5 font-mono text-[11px] tracking-[0.16em] ${feedToneConsoleLabelClass(
                                       item.tone
                                     )}`}
                                   >
                                     {feedToneConsoleLabel(item.tone)}
                                   </span>
                                   {index === 0 && (
-                                    <span className="rounded-full border border-[#dbc7aa] bg-[#f7ecdd] px-2 py-0.5 text-[10px] font-medium text-[#8c7656]">
-                                      LATEST
+                                    <span className="rounded-full border border-[#dbc7aa] bg-[#f7ecdd] px-2 py-0.5 text-[11px] font-medium text-[#8c7656]">
+                                      最新
                                     </span>
                                   )}
                                 </div>
-                                <p className="mt-1.5 text-[12px] leading-6 text-slate-700">{item.text}</p>
+                                <p className="mt-1.5 text-[14px] leading-6 text-slate-700">{item.text}</p>
                               </div>
                             </div>
                           ))}
                         </div>
                       </>
                     ) : (
-                      <div className="flex min-h-0 flex-1 items-center justify-center bg-[linear-gradient(180deg,rgba(255,251,246,0.82),rgba(249,244,238,0.96))] px-5 py-6 text-center">
-                        <div className="max-w-[250px]">
-                          <p className="text-sm font-medium text-slate-700">日志流准备中</p>
-                          <p className="mt-2 text-xs leading-6 text-slate-500">
+                      <div className="flex min-h-0 flex-1 items-center justify-center bg-[linear-gradient(180deg,rgba(255,251,246,0.82),rgba(249,244,238,0.96))] px-4 py-5 text-center">
+                        <div className="w-full rounded-[24px] border border-dashed border-[#ddd0bf] bg-white/66 px-4 py-6 shadow-[inset_0_1px_0_rgba(255,255,255,0.92),0_10px_24px_rgba(91,73,47,0.04)]">
+                          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-[18px] border border-[#e0d3c2] bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(245,236,226,0.9))] shadow-[0_12px_30px_rgba(91,73,47,0.08)]">
+                            <span className="h-2.5 w-2.5 rounded-full bg-[#c8b49a] animate-pulse" />
+                          </div>
+                          <p className="mt-4 text-[15px] font-medium text-slate-700">日志流准备中</p>
+                          <p className="mt-2 text-[14px] leading-6 text-slate-500">
                             执行开始后，这里会持续显示最新阶段、修复动作和诊断信息。
                           </p>
                         </div>
                       </div>
                     )}
-                  </div>
-
-                  <div className="mt-3 flex items-center justify-between gap-3 text-[11px] text-slate-500">
-                    <Link
-                      href="/"
-                      className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-full border border-[#d7d0c5] bg-white/88 px-3.5 text-[12px] text-slate-600 shadow-[0_8px_22px_rgba(44,37,28,0.06)] transition hover:border-[#c6baaa] hover:text-slate-900"
-                    >
-                      返回项目
-                    </Link>
-                    <button
-                      type="button"
-                      onClick={() => setRailView('live')}
-                      className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-full border border-[#d7d0c5] bg-white/88 px-3.5 text-[12px] text-slate-600 shadow-[0_8px_22px_rgba(44,37,28,0.06)] transition hover:border-[#c6baaa] hover:text-slate-900"
-                    >
-                      查看画面
-                    </button>
                   </div>
                 </div>
               </section>
@@ -10912,8 +10909,7 @@ export default function IntentE2EWorkbench({
               <div className="border-b border-[#ddd5ca] bg-[linear-gradient(180deg,rgba(250,247,241,0.98),rgba(242,238,231,0.94))] px-5 py-5">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-[17px] font-semibold tracking-[-0.03em] text-slate-950">执行与反馈中心</p>
-                    <p className="mt-2 max-w-sm text-xs leading-6 text-slate-500">{activeRailTab.description}</p>
+                    <p className="text-[19px] font-semibold tracking-[-0.03em] text-slate-950">执行与反馈中心</p>
                   </div>
                 </div>
 
@@ -10932,7 +10928,7 @@ export default function IntentE2EWorkbench({
                               setDetailView('compile');
                             }
                           }}
-                          className={`inline-flex items-center gap-2 rounded-[14px] px-3 py-2 text-[12px] font-medium transition ${
+                          className={`inline-flex items-center gap-2 rounded-[14px] px-3 py-2 text-[14px] font-medium transition ${
                             active
                               ? 'bg-white text-slate-950 shadow-[0_6px_18px_rgba(44,37,28,0.08)]'
                               : 'text-slate-500 hover:bg-white/70 hover:text-slate-900'
@@ -10940,7 +10936,7 @@ export default function IntentE2EWorkbench({
                         >
                           <span>{item.label}</span>
                           {active && (
-                            <span className="rounded-full bg-[#f5efe5] px-2 py-0.5 text-[10px] font-medium text-[#8c7656]">
+                            <span className="rounded-full bg-[#f5efe5] px-2 py-0.5 text-[12px] font-medium text-[#8c7656]">
                               {item.countLabel}
                             </span>
                           )}
@@ -11157,9 +11153,9 @@ export default function IntentE2EWorkbench({
                 {railView === 'context' && (
                   <div className="space-y-4">
                     <div className="intent-e2e-detail-launcher rounded-[26px] border border-black/5 bg-white/92 p-4 shadow-[0_12px_28px_rgba(44,37,28,0.06)]">
-                      <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">Execution Context</p>
+                      <p className="text-[13px] font-medium uppercase tracking-[0.18em] text-slate-400">Execution Context</p>
                       <p className="mt-1.5 text-base font-semibold tracking-[-0.02em] text-slate-950">登录、模型与执行边界</p>
-                      <p className="mt-1 text-xs leading-5 text-slate-500">
+                      <p className="mt-1 text-[14px] leading-6 text-slate-600">
                         本次运行真正需要的上下文统一收在这里，左侧不再继续堆控制项。
                       </p>
                     </div>
@@ -11170,9 +11166,9 @@ export default function IntentE2EWorkbench({
                 {railView === 'workbench' && !embedded && (
                   <div className="space-y-4">
                     <div className="intent-e2e-detail-launcher rounded-[26px] border border-black/5 bg-white/92 p-4 shadow-[0_12px_28px_rgba(44,37,28,0.06)]">
-                      <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">Intent Workbench</p>
+                      <p className="text-[13px] font-medium uppercase tracking-[0.18em] text-slate-400">Intent Workbench</p>
                       <p className="mt-1.5 text-base font-semibold tracking-[-0.02em] text-slate-950">任务描述、入口与参考图</p>
-                      <p className="mt-1 text-xs leading-5 text-slate-500">
+                      <p className="mt-1 text-[14px] leading-6 text-slate-600">
                         任务输入收进右侧标签页，左侧改成持续日志位；需要修改任务时，不再回到整块左栏。
                       </p>
                     </div>
@@ -11187,9 +11183,9 @@ export default function IntentE2EWorkbench({
                 {railView === 'governance' && !embedded && (
                   <div className="space-y-4">
                     <div className="intent-e2e-detail-launcher rounded-[26px] border border-black/5 bg-white/92 p-4 shadow-[0_12px_28px_rgba(44,37,28,0.06)]">
-                      <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">Governance</p>
+                      <p className="text-[13px] font-medium uppercase tracking-[0.18em] text-slate-400">Governance</p>
                       <p className="mt-1.5 text-base font-semibold tracking-[-0.02em] text-slate-950">知识草稿、洞察、审计与回滚</p>
-                      <p className="mt-1 text-xs leading-5 text-slate-500">
+                      <p className="mt-1 text-[14px] leading-6 text-slate-600">
                         治理学习单独放到右侧工作舱，和实时执行、编译产物并列查看，避免干扰任务输入。
                       </p>
                     </div>
@@ -11202,9 +11198,9 @@ export default function IntentE2EWorkbench({
                     <div className="intent-e2e-detail-launcher rounded-[26px] border border-black/5 bg-white/92 p-4 shadow-[0_12px_28px_rgba(44,37,28,0.06)]">
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
-                          <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">Execution Details</p>
+                          <p className="text-[13px] font-medium uppercase tracking-[0.18em] text-slate-400">Execution Details</p>
                           <p className="mt-1.5 text-base font-semibold tracking-[-0.02em] text-slate-950">{activeDetailTab.label}</p>
-                          <p className="mt-1 text-xs leading-5 text-slate-500">{activeDetailTab.description}</p>
+                          <p className="mt-1 text-[14px] leading-6 text-slate-600">{activeDetailTab.description}</p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
@@ -11237,7 +11233,7 @@ export default function IntentE2EWorkbench({
                                 }`}
                               >
                                 <span>{item.label}</span>
-                                <span className={`text-[10px] ${active ? 'text-[#8c7656]' : 'text-slate-400'}`}>{item.countLabel}</span>
+                                <span className={`text-[11px] ${active ? 'text-[#8c7656]' : 'text-slate-400'}`}>{item.countLabel}</span>
                               </button>
                             );
                           })}
@@ -11246,7 +11242,7 @@ export default function IntentE2EWorkbench({
                     </div>
 
                     <div className="intent-e2e-detail-launcher rounded-[26px] border border-black/5 bg-white/92 p-4 shadow-[0_12px_28px_rgba(44,37,28,0.06)]">
-                      <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">Current Snapshot</p>
+                      <p className="text-[13px] font-medium uppercase tracking-[0.14em] text-slate-400">Current Snapshot</p>
                       <p className="mt-2 text-sm text-slate-800">{activeDetailPreview}</p>
                     </div>
 
@@ -11681,7 +11677,7 @@ export default function IntentE2EWorkbench({
                     <div className="intent-e2e-browser-stage overflow-hidden rounded-[28px] border border-black/5 bg-[linear-gradient(180deg,rgba(252,249,243,0.97),rgba(245,241,233,0.96))] px-4 py-4 shadow-[0_18px_44px_rgba(44,37,28,0.08)] xl:flex xl:min-h-0 xl:flex-col">
                       <div className="flex items-center justify-between gap-3">
                         <div>
-                          <p className="text-xs leading-5 text-slate-500">
+                          <p className="text-[14px] leading-6 text-slate-600">
                             {browserSessionId
                               ? `当前展示第 ${browserAttempt?.attempt || '-'} 次尝试的实时浏览器画面${running ? '，执行中会持续刷新。' : '，已保留最后一帧。'}`
                               : '执行开始后会自动连接当前尝试的浏览器画面。'}
@@ -11718,12 +11714,12 @@ export default function IntentE2EWorkbench({
                                   <span className="h-2.5 w-2.5 rounded-full bg-[#ffd26f]" />
                                   <span className="h-2.5 w-2.5 rounded-full bg-[#89d185]" />
                                 </div>
-                                <span className="text-[10px] uppercase tracking-[0.18em] text-slate-400">Live Preview Idle</span>
+                                <span className="text-[12px] uppercase tracking-[0.18em] text-slate-400">Live Preview Idle</span>
                               </div>
                               <div className="flex h-full items-center justify-center bg-[radial-gradient(circle_at_top,rgba(28,34,44,0.72),transparent_48%),linear-gradient(180deg,#080a0e,#0d1118_56%,#0a0d12)] px-6 pt-10 text-center">
                                 <div className="max-w-[320px]">
                                   <p className="text-sm font-medium text-slate-200">浏览器实时画面会在执行开始后自动出现</p>
-                                  <p className="mt-3 text-xs leading-6 text-slate-400">
+                                  <p className="mt-3 text-[14px] leading-6 text-slate-400">
                                     当前还没有浏览器执行会话。开始生成并执行脚本后，这里会切到真实运行画面，并持续保留最后一帧。
                                   </p>
                                 </div>
@@ -11754,9 +11750,9 @@ export default function IntentE2EWorkbench({
             >
               <div className="shrink-0 flex items-start justify-between gap-4 border-b border-slate-200 bg-white/92 px-5 py-4 backdrop-blur">
                 <div>
-                  <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">Execution Details</p>
+                  <p className="text-[13px] font-medium uppercase tracking-[0.16em] text-slate-400">Execution Details</p>
                   <p className="mt-1 text-base font-semibold text-slate-950">{activeDetailTab.label}</p>
-                  <p className="mt-1 text-xs leading-5 text-slate-500">{activeDetailTab.description}</p>
+                  <p className="mt-1 text-[14px] leading-6 text-slate-600">{activeDetailTab.description}</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
