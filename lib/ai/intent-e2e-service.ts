@@ -1,10 +1,9 @@
 import { createHash } from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
 import {
   analyzePage,
   precheckPageAccess,
   type AuthConfig,
+  type PageAccessPrecheckFailureClass,
   type PageAccessPrecheckOptions,
   type PageAccessPrecheckReadyResult,
   type PageSnapshot,
@@ -46,11 +45,16 @@ import {
   type PlatformVerificationContractAsset,
 } from '@/lib/test-platform-asset-model';
 import {
-  getIntentRepairMemoryPath,
   listRelevantIntentRepairHints,
   recordIntentRepairFailure,
   recordIntentRepairResolution,
 } from '@/lib/ai/intent-repair-memory';
+import {
+  buildIntentE2EAssetReadiness,
+  buildIntentE2EProjectAssetAvailability,
+  type IntentE2EAssetReadiness,
+} from '@/lib/intent-e2e-asset-readiness';
+import { resolveIntentE2ERepairBudget, type IntentE2ERepairBudget } from '@/lib/intent-e2e-repair-budget';
 import {
   buildIntentE2EFailureDiagnosis,
   buildIntentE2EFailureSignature,
@@ -63,17 +67,27 @@ import { resolveIntentE2EPrecheckPolicy, type IntentE2EPrecheckPolicy } from '@/
 import {
   shouldEnforceIntentE2ERuntimeGovernance,
   validateIntentE2ERuntimeGovernance,
+  type IntentE2EFixtureGovernance,
   type IntentE2ERuntimeGovernance,
 } from '@/lib/intent-e2e-runtime-governance';
+import {
+  deleteIntentE2ESharedSessionCache,
+  readIntentE2ESharedSessionCache,
+  resolveIntentE2ESharedSessionCacheKey,
+  writeIntentE2ESharedSessionCache,
+} from '@/lib/intent-e2e-shared-session-cache';
+import {
+  executeIntentE2EFixture,
+  resolveIntentE2EFixtureRefForPhase,
+} from '@/lib/intent-e2e-fixture-executor';
 import { type IntentE2ERunControl } from '@/lib/intent-e2e-run-control';
 import {
   archiveIntentE2ERunArtifacts,
   type IntentE2ERunArtifactArchiveAttempt,
   type IntentE2ERunArtifactIndex,
 } from '@/lib/intent-e2e-run-artifacts';
-import { getIntentProjectOnboardingPath, readIntentProjectOnboardingStatus } from '@/lib/intent-project-onboarding';
 import type { IntentResolvedStarterAsset } from '@/lib/intent-starter-assets';
-import { getIntentProjectKnowledgePath, type IntentProjectKnowledgeRule } from '@/lib/intent-project-knowledge';
+import { type IntentProjectKnowledgeRule } from '@/lib/intent-project-knowledge';
 import type { IntentE2ECiCdReport } from '@/lib/intent-e2e-cicd-report';
 import type { IntentE2ECiCdProfile, IntentE2ESystemOnboardingManifestSummary } from '@/lib/intent-e2e-system-onboarding';
 import { resolveIntentRunnerAdapter, type IntentRunnerGeneratedArtifact } from '@/lib/intent-runner-adapter';
@@ -88,25 +102,18 @@ export interface IntentE2EKnowledgeSummary {
   starterAssets: IntentResolvedStarterAsset[];
 }
 
-export type IntentE2EAssetReadinessStatus = 'ready' | 'asset_missing' | 'no_hit';
-
-export interface IntentE2EAssetReadiness {
-  status: IntentE2EAssetReadinessStatus;
-  projectUid: string;
-  onboardingPath?: string;
-  knowledgePath?: string;
-  repairMemoryPath?: string;
-  hasOnboarding?: boolean;
-  onboardingReady?: boolean;
-  hasKnowledgeAsset?: boolean;
-  hasRepairMemoryAsset?: boolean;
-  knowledgeMatchCount: number;
-  reasons: string[];
-}
+export type { IntentE2EAssetReadiness, IntentE2EAssetReadinessStatus } from '@/lib/intent-e2e-asset-readiness';
 
 export interface IntentE2EAttemptHelperUsage {
   usedHelpers: string[];
   usedSuggestedHelpers: string[];
+}
+
+export interface IntentE2EAttemptLog {
+  level: string;
+  message: string;
+  at?: string;
+  meta?: unknown;
 }
 
 export interface IntentE2ESuccessKnowledgeCandidate {
@@ -145,7 +152,7 @@ export interface IntentE2EAttempt {
   sessionId?: string;
   code: string;
   events: GenerateEvent[];
-  logs: Array<{ level: string; message: string; at?: string }>;
+  logs: IntentE2EAttemptLog[];
   result: TestResult;
   helperUsage?: IntentE2EAttemptHelperUsage;
   structuredPatch?: IntentExecutionStructuredPatch;
@@ -159,6 +166,27 @@ export interface IntentE2EResolvedUrls {
   scenarioEntryUrl: string;
   precheckUrl: string;
   analyzeUrl: string;
+}
+
+export type IntentE2EFailureCtaActionKey =
+  | 'prepare_prerequisites'
+  | 'preview_knowledge_draft'
+  | 'edit_description'
+  | 'handoff_manual';
+
+export interface IntentE2EFailureCtaAction {
+  action: IntentE2EFailureCtaActionKey;
+  label: string;
+  description: string;
+  recommended: boolean;
+  enabled: boolean;
+}
+
+export interface IntentE2EFailureCta {
+  headline: string;
+  summary: string;
+  primaryAction: IntentE2EFailureCtaActionKey;
+  actions: IntentE2EFailureCtaAction[];
 }
 
 export interface IntentE2ERunResult {
@@ -183,6 +211,8 @@ export interface IntentE2ERunResult {
   description: string;
   knowledge?: IntentE2EKnowledgeSummary | null;
   assetReadiness?: IntentE2EAssetReadiness | null;
+  repairBudget?: IntentE2ERepairBudget | null;
+  failureCta?: IntentE2EFailureCta | null;
   qualitySplit?: IntentE2EQualitySplit | null;
   artifactIndex?: IntentE2ERunArtifactIndex | null;
   ciReport?: IntentE2ECiCdReport | null;
@@ -518,6 +548,244 @@ type IntentE2ERuntimeGovernanceCheckResult =
       output: IntentE2ERunResult;
     };
 
+interface IntentE2EFixtureExecutionState {
+  fixture: IntentE2EFixtureGovernance;
+  setupRef: string;
+  cleanupRef: string;
+}
+
+type IntentE2EFixtureSetupResult =
+  | {
+      blocked: false;
+      state: IntentE2EFixtureExecutionState | null;
+    }
+  | {
+      blocked: true;
+      output: IntentE2ERunResult;
+    };
+
+function buildIntentE2EFixtureFailureTriage(input: {
+  phase: 'setup' | 'cleanup';
+  result: TestResult;
+  errorMessage: string;
+  pageUrl: string;
+}): IntentE2EFailureTriage {
+  const triage: IntentE2EFailureTriage = {
+    failureClass: 'data_missing',
+    repairable: false,
+    summary:
+      input.phase === 'setup'
+        ? '判定为 fixture setup 失败：运行前置数据准备未完成，继续自动修复脚本收益很低。'
+        : '判定为 fixture cleanup 失败：运行后置数据回收未完成，优先补 fixture 或前置条件。',
+    matchedSignals: uniqueStrings([
+      input.phase === 'setup' ? 'fixture setup failed' : 'fixture cleanup failed',
+      firstNonEmptyLine(input.errorMessage),
+    ]),
+    diagnosis: null,
+  };
+
+  return {
+    ...triage,
+    diagnosis: buildIntentE2EFailureDiagnosis(triage, input.result, {
+      pageUrl: input.pageUrl,
+    }),
+  };
+}
+
+function appendFixtureCleanupFailureToResult(result: TestResult, errorMessage: string): TestResult {
+  const message = errorMessage.trim() || 'fixture cleanup 执行失败';
+  return {
+    ...result,
+    success: false,
+    error: result.error ? `${result.error}\n${message}` : message,
+    steps: [
+      ...result.steps,
+      {
+        title: 'fixture cleanup',
+        status: 'failed',
+        duration: 0,
+        error: message,
+        at: new Date().toISOString(),
+      },
+    ],
+  };
+}
+
+async function attemptBestEffortIntentE2EFixtureCleanup(input: {
+  fixture: IntentE2EFixtureGovernance;
+  resolvedUrls?: IntentE2EResolvedUrls;
+  projectUid?: string;
+  moduleUid?: string;
+  targetUrl: string;
+  runId?: string;
+  signal?: AbortSignal;
+}): Promise<string> {
+  const cleanupRef = resolveIntentE2EFixtureRefForPhase(input.fixture, 'cleanup');
+  if (!cleanupRef) return '';
+
+  try {
+    await executeIntentE2EFixture({
+      phase: 'cleanup',
+      fixtureRef: cleanupRef,
+      context: {
+        projectUid: input.projectUid,
+        moduleUid: input.moduleUid,
+        targetUrl: input.resolvedUrls?.targetUrl || input.targetUrl,
+        runId: input.runId,
+        owner: input.fixture.owner,
+        idempotencyKey: input.fixture.idempotencyKey,
+        strategy: input.fixture.strategy,
+      },
+      signal: input.signal,
+    });
+    return '';
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error || 'fixture cleanup failed');
+  }
+}
+
+async function runIntentE2EFixtureSetup(
+  input: {
+    projectUid?: string;
+    moduleUid?: string;
+    targetUrl: string;
+    resolvedUrls?: IntentE2EResolvedUrls;
+    description: string;
+    platformAssets: ReturnType<typeof buildBrowserE2EPlatformTestAssetBundle>;
+    runtimeGovernance?: IntentE2ERuntimeGovernance;
+    scenarioCard: ScenarioCard;
+    llmMeta: IntentE2ERunResult['llmMeta'];
+    assetReadiness?: IntentE2EAssetReadiness | null;
+    runtimeSelfHealRetries: number;
+    runId?: string;
+  },
+  listener?: IntentE2EStreamListener,
+  signal?: AbortSignal
+): Promise<IntentE2EFixtureSetupResult> {
+  const fixture = input.runtimeGovernance?.fixture;
+  if (!fixture) {
+    return {
+      blocked: false,
+      state: null,
+    };
+  }
+
+  const setupRef = resolveIntentE2EFixtureRefForPhase(fixture, 'setup');
+  const cleanupRef = resolveIntentE2EFixtureRefForPhase(fixture, 'cleanup');
+  if (!setupRef && !cleanupRef) {
+    return {
+      blocked: false,
+      state: null,
+    };
+  }
+
+  const state: IntentE2EFixtureExecutionState = {
+    fixture,
+    setupRef,
+    cleanupRef,
+  };
+  if (!setupRef) {
+    return {
+      blocked: false,
+      state,
+    };
+  }
+
+  throwIfAborted(signal);
+  await emit(listener, {
+    type: 'stage',
+    stage: 'prechecking',
+    message: `正在执行 fixture setup：${setupRef}…`,
+  });
+
+  try {
+    const setupResult = await executeIntentE2EFixture({
+      phase: 'setup',
+      fixtureRef: setupRef,
+      context: {
+        projectUid: input.projectUid,
+        moduleUid: input.moduleUid,
+        targetUrl: input.resolvedUrls?.targetUrl || input.targetUrl,
+        runId: input.runId,
+        owner: fixture.owner,
+        idempotencyKey: fixture.idempotencyKey,
+        strategy: fixture.strategy,
+      },
+      signal,
+    });
+    await emit(listener, {
+      type: 'stage',
+      stage: 'prechecking',
+      message: `fixture setup 已完成：${setupResult.summary}`,
+    });
+    return {
+      blocked: false,
+      state,
+    };
+  } catch (error) {
+    const setupErrorMessage = error instanceof Error ? error.message : String(error || 'fixture setup failed');
+    const cleanupErrorMessage =
+      cleanupRef && fixture
+        ? await attemptBestEffortIntentE2EFixtureCleanup({
+            fixture,
+            resolvedUrls: input.resolvedUrls,
+            projectUid: input.projectUid,
+            moduleUid: input.moduleUid,
+            targetUrl: input.targetUrl,
+            runId: input.runId,
+            signal,
+          })
+        : '';
+    const errorMessage = cleanupErrorMessage
+      ? `${setupErrorMessage}；此外 cleanup 回收也失败：${cleanupErrorMessage}`
+      : setupErrorMessage;
+    const finalResult = createTerminalFailureResult('fixture setup', errorMessage);
+    const finalFailureTriage = buildIntentE2EFixtureFailureTriage({
+      phase: 'setup',
+      result: finalResult,
+      errorMessage,
+      pageUrl: input.resolvedUrls?.precheckUrl || input.targetUrl,
+    });
+    const repairBudget = resolveIntentE2ERepairBudget({
+      runtimeSelfHealRetries: input.runtimeSelfHealRetries,
+      usedRepairAttempts: 0,
+      assetReadiness: input.assetReadiness || null,
+      triage: finalFailureTriage,
+    });
+    const qualitySplit = resolveIntentE2EQualitySplit({
+      status: 'failed',
+      failureClass: finalFailureTriage?.failureClass,
+    });
+    const output: IntentE2ERunResult = {
+      ...input.platformAssets,
+      scenarioCard: input.scenarioCard,
+      llmMeta: input.llmMeta,
+      targetUrl: input.targetUrl,
+      ...(input.resolvedUrls ? { resolvedUrls: input.resolvedUrls } : {}),
+      description: input.description,
+      knowledge: null,
+      assetReadiness: input.assetReadiness || null,
+      repairBudget,
+      failureCta: buildIntentE2EFailureCta({
+        assetReadiness: input.assetReadiness || null,
+        triage: finalFailureTriage,
+        repairBudget,
+        attemptCount: 0,
+      }),
+      qualitySplit,
+      attempts: [],
+      finalResult,
+      finalFailureTriage,
+    };
+
+    await emitFinalRunState(listener, output);
+    return {
+      blocked: true,
+      output,
+    };
+  }
+}
+
 async function runIntentE2ERuntimeGovernanceCheck(
   input: {
     targetUrl: string;
@@ -529,6 +797,7 @@ async function runIntentE2ERuntimeGovernanceCheck(
     scenarioCard: ScenarioCard;
     llmMeta: IntentE2ERunResult['llmMeta'];
     assetReadiness?: IntentE2EAssetReadiness | null;
+    runtimeSelfHealRetries: number;
   },
   listener?: IntentE2EStreamListener,
   signal?: AbortSignal
@@ -561,6 +830,12 @@ async function runIntentE2ERuntimeGovernanceCheck(
     issues.map((issue) => ({ level: 'error', message: issue.message })),
     { pageUrl: input.resolvedUrls?.precheckUrl || input.targetUrl }
   );
+  const repairBudget = resolveIntentE2ERepairBudget({
+    runtimeSelfHealRetries: input.runtimeSelfHealRetries,
+    usedRepairAttempts: 0,
+    assetReadiness: input.assetReadiness || null,
+    triage: finalFailureTriage,
+  });
   const qualitySplit = resolveIntentE2EQualitySplit({
     status: 'failed',
     failureClass: finalFailureTriage?.failureClass,
@@ -574,6 +849,13 @@ async function runIntentE2ERuntimeGovernanceCheck(
     description: input.description,
     knowledge: null,
     assetReadiness: input.assetReadiness || null,
+    repairBudget,
+    failureCta: buildIntentE2EFailureCta({
+      assetReadiness: input.assetReadiness || null,
+      triage: finalFailureTriage,
+      repairBudget,
+      attemptCount: 0,
+    }),
     qualitySplit,
     attempts: [],
     finalResult,
@@ -600,6 +882,105 @@ function uniqueStrings(values: Array<string | null | undefined>, max = Number.PO
   }
 
   return items;
+}
+
+function buildFailureCtaSummary(values: Array<string | null | undefined>): string {
+  return uniqueStrings(values, 2).join(' ');
+}
+
+function buildIntentE2EFailureCta(input: {
+  assetReadiness?: IntentE2EAssetReadiness | null;
+  triage?: IntentE2EFailureTriage | null;
+  repairBudget?: IntentE2ERepairBudget | null;
+  attemptCount?: number;
+}): IntentE2EFailureCta | null {
+  const assetReadiness = input.assetReadiness || null;
+  const triage = input.triage || null;
+  const repairBudget = input.repairBudget || null;
+  if (!assetReadiness && !triage && !repairBudget) {
+    return null;
+  }
+
+  const hasProjectScope = Boolean(assetReadiness?.projectUid);
+  let primaryAction: IntentE2EFailureCtaActionKey = 'edit_description';
+  let headline = '先改描述，再继续生成';
+  let summary = buildFailureCtaSummary([triage?.summary, repairBudget?.summary]);
+
+  if (assetReadiness?.status === 'asset_missing') {
+    primaryAction = 'prepare_prerequisites';
+    headline = '先补项目资产，再重新运行';
+    summary = buildFailureCtaSummary([
+      '当前项目还没有准备好最小冷启动资产，继续自动修复收益很低。',
+      repairBudget?.summary,
+    ]);
+  } else if ((input.attemptCount || 0) <= 0) {
+    primaryAction = 'prepare_prerequisites';
+    headline = '先补前置条件，再重新运行';
+    summary = buildFailureCtaSummary([
+      triage?.summary || '当前运行在真正执行前就已被拦住，优先补环境、账号、fixture 或治理前置条件。',
+      repairBudget?.summary,
+    ]);
+  } else if (
+    triage?.failureClass === 'auth_failed' ||
+    triage?.failureClass === 'permission_blocked' ||
+    triage?.failureClass === 'env_transient' ||
+    triage?.failureClass === 'data_missing'
+  ) {
+    primaryAction = 'prepare_prerequisites';
+    headline = '先补前置条件，再重新运行';
+    summary = buildFailureCtaSummary([triage.summary, repairBudget?.summary]);
+  } else if (assetReadiness?.status === 'no_hit') {
+    primaryAction = hasProjectScope ? 'preview_knowledge_draft' : 'edit_description';
+    headline = hasProjectScope ? '先补项目知识，再继续自动生成' : '先改描述，再继续生成';
+    summary = buildFailureCtaSummary([
+      '本次未命中项目知识规则，继续盲跑 repair 收益很低。',
+      repairBudget?.summary,
+    ]);
+  } else if (triage?.failureClass === 'ui_anchor_missing' || triage?.failureClass === 'repair_stagnated') {
+    primaryAction = 'handoff_manual';
+    headline = '先转手动任务，避免继续空转';
+    summary = buildFailureCtaSummary([triage.summary, repairBudget?.summary]);
+  }
+
+  const actions: IntentE2EFailureCtaAction[] = [
+    {
+      action: 'prepare_prerequisites',
+      label: '补前置条件',
+      description: '回到执行上下文，补账号、数据、fixture 或冷启动资产后再跑。',
+      recommended: primaryAction === 'prepare_prerequisites',
+      enabled: true,
+    },
+    {
+      action: 'preview_knowledge_draft',
+      label: '生成知识草稿',
+      description: hasProjectScope
+        ? '把当前项目的历史运行沉淀成知识草稿，减少下一次继续盲跑。'
+        : '当前不在项目作用域，暂时不能生成项目知识草稿。',
+      recommended: primaryAction === 'preview_knowledge_draft',
+      enabled: hasProjectScope,
+    },
+    {
+      action: 'edit_description',
+      label: '继续改描述',
+      description: '回到任务输入区，补目标页面、入口 URL、关键步骤或成功标准。',
+      recommended: primaryAction === 'edit_description',
+      enabled: true,
+    },
+    {
+      action: 'handoff_manual',
+      label: '转手动任务',
+      description: '把当前 run 保留到项目工作台，转人工跟进或拆成更稳定的任务。',
+      recommended: primaryAction === 'handoff_manual',
+      enabled: true,
+    },
+  ];
+
+  return {
+    headline,
+    summary,
+    primaryAction,
+    actions,
+  };
 }
 
 function firstNonEmptyLine(value: string): string {
@@ -637,6 +1018,12 @@ type RepairObservationEvidence = {
   frameHint?: string;
 };
 
+type RepairStructuredEvidenceProbe = {
+  status: RepairObservationReport['probes'][number]['status'];
+  summary: string;
+  evidence: string[];
+};
+
 function normalizeObservationText(value: string): string {
   return String(value || '').replace(/\s+/g, '').trim().toLowerCase();
 }
@@ -669,6 +1056,199 @@ function collectRepairObservationEvidence(snapshot: PageSnapshot): RepairObserva
   );
 }
 
+function collectRepairObservationSurfaceTokens(snapshot: PageSnapshot): string[] {
+  return uniqueStrings(
+    [
+      snapshot.title ? `title=${trimInlineText(snapshot.title, 48)}` : '',
+      ...(snapshot.headings || []).map((item) => `heading=${trimInlineText(item.text, 48)}`),
+      ...(snapshot.buttons || []).map((item) => `button=${trimInlineText(item.text || item.title || item.ariaLabel, 48)}`),
+      ...(snapshot.forms || []).flatMap((form) =>
+        form.fields.flatMap((field) => [
+          field.label ? `field=${trimInlineText(field.label, 48)}` : '',
+          field.placeholder ? `placeholder=${trimInlineText(field.placeholder, 48)}` : '',
+        ])
+      ),
+      ...(snapshot.frames || []).flatMap((frame) => [
+        frame.selectorHint ? `frame=${trimInlineText(frame.selectorHint, 48)}` : '',
+        frame.elementId ? `frame_id=${trimInlineText(frame.elementId, 48)}` : '',
+        frame.elementName ? `frame_name=${trimInlineText(frame.elementName, 48)}` : '',
+        ...frame.headings.map((item) => `frame_heading=${trimInlineText(item.text, 48)}`),
+        ...frame.buttons.map((item) => `frame_button=${trimInlineText(item.text || item.title || item.ariaLabel, 48)}`),
+        ...frame.forms.flatMap((form) =>
+          form.fields.flatMap((field) => [
+            field.label ? `frame_field=${trimInlineText(field.label, 48)}` : '',
+            field.placeholder ? `frame_placeholder=${trimInlineText(field.placeholder, 48)}` : '',
+          ])
+        ),
+      ]),
+    ],
+    64
+  );
+}
+
+function asRepairLogMetaRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function normalizeRepairLogMetaString(value: unknown, max = 80): string {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value !== 'string') return '';
+  return trimInlineText(value, max);
+}
+
+function normalizeRepairEvidenceUrl(value: unknown): string {
+  const raw = normalizeRepairLogMetaString(value, 160);
+  if (!raw) return '';
+
+  try {
+    const url = new URL(raw);
+    return trimInlineText(`${url.pathname}${url.search}`, 80);
+  } catch {
+    return raw;
+  }
+}
+
+function collectRepairListJsonEvidence(logs: IntentE2EAttemptLog[]): RepairStructuredEvidenceProbe {
+  const observed: string[] = [];
+  const missing: string[] = [];
+
+  for (const log of logs) {
+    const meta = asRepairLogMetaRecord(log.meta);
+    if (!meta) continue;
+
+    if (log.message === 'api response json parsed') {
+      const topLevelKeys = Array.isArray(meta.topLevelKeys)
+        ? uniqueStrings(meta.topLevelKeys.map((item) => normalizeRepairLogMetaString(item, 24)), 4).join(',')
+        : '';
+      observed.push(
+        uniqueStrings([
+          normalizeRepairEvidenceUrl(meta.url) ? `response=${normalizeRepairEvidenceUrl(meta.url)}` : '',
+          normalizeRepairLogMetaString(meta.status) ? `status=${normalizeRepairLogMetaString(meta.status)}` : '',
+          topLevelKeys ? `keys=${topLevelKeys}` : '',
+        ], 3).join(' ')
+      );
+      continue;
+    }
+
+    if (log.message === 'json record extracted') {
+      const label = normalizeRepairLogMetaString(meta.label, 32) || 'record';
+      const collectionPath = normalizeRepairLogMetaString(meta.collectionPath, 40);
+      const matchPath = normalizeRepairLogMetaString(meta.matchPath, 40);
+      const valuePreview = normalizeRepairLogMetaString(meta.valuePreview, 48);
+      observed.push(
+        uniqueStrings([
+          `record=${label}`,
+          collectionPath ? `collection=${collectionPath}` : '',
+          matchPath ? `path=${matchPath}` : '',
+          valuePreview ? `value=${valuePreview}` : '',
+        ], 4).join(' ')
+      );
+      continue;
+    }
+
+    if (log.message === 'json value extracted') {
+      const label = normalizeRepairLogMetaString(meta.label, 32) || normalizeRepairLogMetaString(meta.path, 32) || 'value';
+      const path = normalizeRepairLogMetaString(meta.path, 40);
+      const valuePreview = normalizeRepairLogMetaString(meta.valuePreview, 48);
+      observed.push(
+        uniqueStrings([
+          `value=${label}`,
+          path ? `path=${path}` : '',
+          valuePreview ? `preview=${valuePreview}` : '',
+        ], 3).join(' ')
+      );
+      continue;
+    }
+
+    if (log.message === 'json record not found') {
+      const label = normalizeRepairLogMetaString(meta.label, 32) || normalizeRepairLogMetaString(meta.valuePreview, 32) || 'record';
+      missing.push(`record-miss=${label}`);
+      continue;
+    }
+
+    if (log.message === 'json value not found') {
+      const label = normalizeRepairLogMetaString(meta.label, 32);
+      const paths = Array.isArray(meta.paths)
+        ? uniqueStrings(meta.paths.map((item) => normalizeRepairLogMetaString(item, 24)), 2).join(',')
+        : '';
+      missing.push(label ? `value-miss=${label}` : paths ? `value-miss=${paths}` : 'value-miss');
+    }
+  }
+
+  if (observed.length > 0) {
+    return {
+      status: 'observed',
+      summary: `上一轮执行已留下 ${observed.length} 条列表 JSON / record lookup 结构化证据`,
+      evidence: uniqueStrings([...observed, ...missing], 6),
+    };
+  }
+
+  if (missing.length > 0) {
+    return {
+      status: 'not_found',
+      summary: '上一轮执行尝试过列表 JSON / record lookup 取证，但未拿到可复用结果',
+      evidence: uniqueStrings(missing, 4),
+    };
+  }
+
+  return {
+    status: 'not_applicable',
+    summary: '上一轮执行未留下列表 JSON / record lookup 结构化证据',
+    evidence: [],
+  };
+}
+
+function collectRepairDetailFieldEvidence(logs: IntentE2EAttemptLog[]): RepairStructuredEvidenceProbe {
+  const observed: string[] = [];
+  const missing: string[] = [];
+
+  for (const log of logs) {
+    const meta = asRepairLogMetaRecord(log.meta);
+    if (!meta) continue;
+
+    if (log.message === 'detail field resolved') {
+      const label = normalizeRepairLogMetaString(meta.label, 32);
+      const matchedLabel = normalizeRepairLogMetaString(meta.matchedLabel, 32);
+      const valuePreview = normalizeRepairLogMetaString(meta.valuePreview, 48);
+      observed.push(
+        uniqueStrings([
+          `field=${matchedLabel || label || 'detail-field'}`,
+          label && matchedLabel && matchedLabel !== label ? `source=${label}` : '',
+          valuePreview ? `value=${valuePreview}` : '',
+        ], 3).join(' ')
+      );
+      continue;
+    }
+
+    if (log.message === 'detail field not found') {
+      const label = normalizeRepairLogMetaString(meta.label, 32) || 'detail-field';
+      missing.push(`field-miss=${label}`);
+    }
+  }
+
+  if (observed.length > 0) {
+    return {
+      status: 'observed',
+      summary: `上一轮执行已留下 ${observed.length} 条详情字段结构化证据`,
+      evidence: uniqueStrings([...observed, ...missing], 6),
+    };
+  }
+
+  if (missing.length > 0) {
+    return {
+      status: 'not_found',
+      summary: '上一轮执行尝试过详情字段读取，但未拿到可复用结果',
+      evidence: uniqueStrings(missing, 4),
+    };
+  }
+
+  return {
+    status: 'not_applicable',
+    summary: '上一轮执行未留下详情字段结构化证据',
+    evidence: [],
+  };
+}
+
 function findRepairObservationEvidence(
   evidence: RepairObservationEvidence[],
   target: string
@@ -696,10 +1276,26 @@ function formatRepairObservationEvidence(items: RepairObservationEvidence[]): st
 
 function buildRepairObservationReport(
   snapshot: PageSnapshot,
-  triage?: IntentE2EFailureTriage | null
+  triage?: IntentE2EFailureTriage | null,
+  baselineSnapshot?: PageSnapshot | null,
+  previousAttemptLogs: IntentE2EAttemptLog[] = []
 ): RepairObservationReport {
   const diagnosis = triage?.diagnosis || null;
   const evidence = collectRepairObservationEvidence(snapshot);
+  const listJsonEvidence = collectRepairListJsonEvidence(previousAttemptLogs);
+  const detailFieldEvidence = collectRepairDetailFieldEvidence(previousAttemptLogs);
+  const baselineTokens = baselineSnapshot ? collectRepairObservationSurfaceTokens(baselineSnapshot) : [];
+  const currentTokens = collectRepairObservationSurfaceTokens(snapshot);
+  const currentTokenSet = new Set(currentTokens);
+  const baselineTokenSet = new Set(baselineTokens);
+  const addedSurfaceTokens = currentTokens
+    .filter((token) => !baselineTokenSet.has(token))
+    .slice(0, 4)
+    .map((token) => `added=${token}`);
+  const removedSurfaceTokens = baselineTokens
+    .filter((token) => !currentTokenSet.has(token))
+    .slice(0, 4)
+    .map((token) => `removed=${token}`);
   const targetAnchor = diagnosis?.targetAnchor || '';
   const candidateAnchors = uniqueStrings(diagnosis?.candidateAnchors || [], 6);
   const anchorMatches = findRepairObservationEvidence(evidence, targetAnchor);
@@ -737,6 +1333,31 @@ function buildRepairObservationReport(
           ...(snapshot.buttons || []).map((item) => `button=${trimInlineText(item.text || item.title || item.ariaLabel, 40)}`),
           snapshot.bodyTextExcerpt ? `body=${trimInlineText(snapshot.bodyTextExcerpt, 80)}` : '',
         ], 4),
+      },
+      {
+        probeUid: 'surface_delta',
+        kind: 'surface_delta',
+        status: baselineSnapshot ? 'observed' : 'not_applicable',
+        summary: !baselineSnapshot
+          ? '缺少初始分析快照，无法比较 DOM surface 变化'
+          : addedSurfaceTokens.length > 0 || removedSurfaceTokens.length > 0
+            ? `相对初始分析快照，新增 ${addedSurfaceTokens.length} 条 surface，消失 ${removedSurfaceTokens.length} 条 surface`
+            : '相对初始分析快照，未观测到明显 DOM surface 变化',
+        evidence: baselineSnapshot ? uniqueStrings([...addedSurfaceTokens, ...removedSurfaceTokens], 6) : [],
+      },
+      {
+        probeUid: 'list_json_evidence',
+        kind: 'list_json_evidence',
+        status: listJsonEvidence.status,
+        summary: listJsonEvidence.summary,
+        evidence: listJsonEvidence.evidence,
+      },
+      {
+        probeUid: 'detail_field_evidence',
+        kind: 'detail_field_evidence',
+        status: detailFieldEvidence.status,
+        summary: detailFieldEvidence.summary,
+        evidence: detailFieldEvidence.evidence,
       },
       {
         probeUid: 'anchor_presence',
@@ -827,6 +1448,12 @@ function deriveRepairObservationTags(report?: RepairObservationReport | null): s
               : 'obs-frame-na';
         case 'page_surface':
           return probe.status === 'observed' ? 'obs-page-surface' : '';
+        case 'surface_delta':
+          return probe.evidence.length > 0 ? 'obs-surface-delta' : 'obs-surface-stable';
+        case 'list_json_evidence':
+          return probe.status === 'observed' ? 'obs-list-json' : '';
+        case 'detail_field_evidence':
+          return probe.status === 'observed' ? 'obs-detail-field' : '';
         default:
           return '';
       }
@@ -983,77 +1610,6 @@ function buildIntentE2EKnowledgeSummary(planning: ResolvedPromptPlanningContext)
         .concat((planning.starterHelpers || []).map((item) => item.helper))
     ),
     starterAssets: planning.starterHelpers || [],
-  };
-}
-
-function pathExists(filePath: string): boolean {
-  if (!filePath) return false;
-  const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath);
-  return fs.existsSync(absolutePath);
-}
-
-function mapOnboardingMissingFieldToReason(field: string): string {
-  switch (field) {
-    case 'manifest':
-      return 'onboarding_manifest_missing';
-    case 'invalid_json':
-      return 'onboarding_manifest_invalid';
-    default:
-      return `onboarding_${field}_missing`;
-  }
-}
-
-function buildIntentE2EAssetReadiness(input: {
-  projectUid?: string | null;
-  knowledgeMatchCount?: number;
-}): IntentE2EAssetReadiness {
-  const projectUid = input.projectUid?.trim() || '';
-  const knowledgeEvaluated = typeof input.knowledgeMatchCount === 'number' && Number.isFinite(input.knowledgeMatchCount);
-  const knowledgeMatchCount =
-    knowledgeEvaluated
-      ? Math.max(0, Math.floor(input.knowledgeMatchCount ?? 0))
-      : 0;
-
-  if (!projectUid) {
-    return {
-      status: 'ready',
-      projectUid: '',
-      knowledgeMatchCount,
-      reasons: ['global_scope'],
-    };
-  }
-
-  const onboardingStatus = readIntentProjectOnboardingStatus(projectUid);
-  const onboardingPath = onboardingStatus.path || getIntentProjectOnboardingPath(projectUid);
-  const knowledgePath = getIntentProjectKnowledgePath(projectUid, { mode: 'write', legacyFallback: false });
-  const repairMemoryPath = getIntentRepairMemoryPath(projectUid, { mode: 'write', legacyFallback: false });
-  const hasKnowledgeAsset = pathExists(knowledgePath);
-  const hasRepairMemoryAsset = pathExists(repairMemoryPath);
-  const reasons = uniqueStrings([
-    ...onboardingStatus.missingFields.map((field) => mapOnboardingMissingFieldToReason(field)),
-    hasKnowledgeAsset ? '' : 'project_knowledge_missing',
-    hasRepairMemoryAsset ? '' : 'repair_memory_missing',
-    knowledgeEvaluated && knowledgeMatchCount <= 0 ? 'knowledge_no_hit' : '',
-  ]);
-  const status: IntentE2EAssetReadinessStatus =
-    !onboardingStatus.exists || !onboardingStatus.ready || !hasKnowledgeAsset
-      ? 'asset_missing'
-      : !knowledgeEvaluated || knowledgeMatchCount > 0
-      ? 'ready'
-      : 'no_hit';
-
-  return {
-    status,
-    projectUid,
-    onboardingPath: onboardingPath || undefined,
-    knowledgePath,
-    repairMemoryPath,
-    hasOnboarding: onboardingStatus.exists,
-    onboardingReady: onboardingStatus.ready,
-    hasKnowledgeAsset,
-    hasRepairMemoryAsset,
-    knowledgeMatchCount,
-    reasons,
   };
 }
 
@@ -1462,6 +2018,20 @@ type IntentE2EPrecheckResult =
       output: IntentE2ERunResult;
     };
 
+function buildPageAccessPrecheckOptions(
+  ignoreFailureClasses: PageAccessPrecheckFailureClass[],
+  storageState?: PageAccessPrecheckReadyResult['storageState']
+): PageAccessPrecheckOptions | undefined {
+  if (ignoreFailureClasses.length === 0 && !storageState) {
+    return undefined;
+  }
+
+  return {
+    ...(ignoreFailureClasses.length > 0 ? { ignoreFailureClasses: [...ignoreFailureClasses] } : {}),
+    ...(storageState ? { storageState } : {}),
+  };
+}
+
 async function runIntentE2EPrecheck(
   input: {
     targetUrl: string;
@@ -1475,26 +2045,53 @@ async function runIntentE2EPrecheck(
     llmMeta: IntentE2ERunResult['llmMeta'];
     knowledge?: IntentE2EKnowledgeSummary | null;
     assetReadiness?: IntentE2EAssetReadiness | null;
+    runtimeSelfHealRetries: number;
+    runtimeGovernance?: IntentE2ERuntimeGovernance;
   },
   listener?: IntentE2EStreamListener,
   signal?: AbortSignal
 ): Promise<IntentE2EPrecheckResult> {
   const precheckUrl = input.precheckUrl?.trim() || input.targetUrl;
-  const precheckOptions: PageAccessPrecheckOptions | undefined = input.precheckPolicy.ignoreFailureClasses.length
-    ? { ignoreFailureClasses: [...input.precheckPolicy.ignoreFailureClasses] }
-    : undefined;
+  const sharedSessionKey = resolveIntentE2ESharedSessionCacheKey(input.runtimeGovernance);
+  const sharedSession = sharedSessionKey ? readIntentE2ESharedSessionCache(sharedSessionKey) : null;
+  const precheckOptions = buildPageAccessPrecheckOptions(
+    input.precheckPolicy.ignoreFailureClasses,
+    sharedSession?.storageState
+  );
   throwIfAborted(signal);
   await emit(listener, {
     type: 'stage',
     stage: 'prechecking',
     message: '正在执行目标页面前置检查（页面可达性 / 登录态）…',
   });
+  if (sharedSession?.storageState) {
+    await emit(listener, {
+      type: 'stage',
+      stage: 'prechecking',
+      message: '已命中 shared session，优先复用当前账号的登录态…',
+    });
+  }
 
   try {
-    const precheck = precheckOptions
+    let precheck = precheckOptions
       ? await precheckPageAccess(precheckUrl, input.auth, precheckOptions)
       : await precheckPageAccess(precheckUrl, input.auth);
+    if (precheck.status === 'blocked' && precheck.failureClass === 'auth_failed' && sharedSessionKey && sharedSession) {
+      deleteIntentE2ESharedSessionCache(sharedSessionKey);
+      await emit(listener, {
+        type: 'stage',
+        stage: 'prechecking',
+        message: 'shared session 已失效，正在回退到显式登录前置检查并刷新会话…',
+      });
+      const fallbackOptions = buildPageAccessPrecheckOptions(input.precheckPolicy.ignoreFailureClasses);
+      precheck = fallbackOptions
+        ? await precheckPageAccess(precheckUrl, input.auth, fallbackOptions)
+        : await precheckPageAccess(precheckUrl, input.auth);
+    }
     throwIfAborted(signal);
+    if (precheck.status === 'ready' && sharedSessionKey) {
+      writeIntentE2ESharedSessionCache(sharedSessionKey, precheck.storageState);
+    }
     if (precheck.status === 'blocked') {
       const finalResult = createTerminalFailureResult('前置检查', precheck.message);
       const finalFailureTriage = classifyIntentE2EFailure(
@@ -1502,6 +2099,12 @@ async function runIntentE2EPrecheck(
         precheck.matchedSignals.map((signal) => ({ level: 'error', message: signal })),
         { pageUrl: precheckUrl }
       );
+      const repairBudget = resolveIntentE2ERepairBudget({
+        runtimeSelfHealRetries: input.runtimeSelfHealRetries,
+        usedRepairAttempts: 0,
+        assetReadiness: input.assetReadiness || null,
+        triage: finalFailureTriage,
+      });
       const qualitySplit = resolveIntentE2EQualitySplit({
         status: 'failed',
         failureClass: finalFailureTriage?.failureClass,
@@ -1515,6 +2118,13 @@ async function runIntentE2EPrecheck(
         description: input.description,
         knowledge: input.knowledge || null,
         assetReadiness: input.assetReadiness || null,
+        repairBudget,
+        failureCta: buildIntentE2EFailureCta({
+          assetReadiness: input.assetReadiness || null,
+          triage: finalFailureTriage,
+          repairBudget,
+          attemptCount: 0,
+        }),
         qualitySplit,
         attempts: [],
         finalResult,
@@ -1537,6 +2147,12 @@ async function runIntentE2EPrecheck(
 
     const finalResult = createTerminalFailureResult('前置检查', error instanceof Error ? error.message : '页面前置检查失败');
     const finalFailureTriage = classifyIntentE2EFailure(finalResult, [], { pageUrl: precheckUrl });
+    const repairBudget = resolveIntentE2ERepairBudget({
+      runtimeSelfHealRetries: input.runtimeSelfHealRetries,
+      usedRepairAttempts: 0,
+      assetReadiness: input.assetReadiness || null,
+      triage: finalFailureTriage,
+    });
     const qualitySplit = resolveIntentE2EQualitySplit({
       status: 'failed',
       failureClass: finalFailureTriage?.failureClass,
@@ -1550,6 +2166,13 @@ async function runIntentE2EPrecheck(
       description: input.description,
       knowledge: input.knowledge || null,
       assetReadiness: input.assetReadiness || null,
+      repairBudget,
+      failureCta: buildIntentE2EFailureCta({
+        assetReadiness: input.assetReadiness || null,
+        triage: finalFailureTriage,
+        repairBudget,
+        attemptCount: 0,
+      }),
       qualitySplit,
       attempts: [],
       finalResult,
@@ -1574,6 +2197,7 @@ export async function runIntentDrivenE2EStream(
   if (!trimmedInput) {
     throw new Error('请至少提供一句测试目标描述');
   }
+  const runtimeConfig = getLLMRuntimeConfig(input.llmConfig);
 
   throwIfAborted(signal);
   await emit(listener, {
@@ -1603,7 +2227,8 @@ export async function runIntentDrivenE2EStream(
   const projectUid = input.projectUid?.trim() || '';
   const promptContext = projectUid ? { ...context, projectUid } : context;
   const repairMemoryOptions = projectUid ? { projectUid } : {};
-  const baseAssetReadiness = buildIntentE2EAssetReadiness({ projectUid });
+  const projectAssetAvailability = buildIntentE2EProjectAssetAvailability({ projectUid });
+  const baseAssetReadiness = buildIntentE2EAssetReadiness({ availability: projectAssetAvailability });
   const scenarioEntryUrl = promptContext.scenarioEntryUrl?.trim() || targetUrl;
   const resolvedUrls: IntentE2EResolvedUrls = {
     targetUrl,
@@ -1647,6 +2272,7 @@ export async function runIntentDrivenE2EStream(
       scenarioCard: scenarioCardOutput.card,
       llmMeta: scenarioCardOutput.llmMeta,
       assetReadiness: baseAssetReadiness,
+      runtimeSelfHealRetries: runtimeConfig.selfHealRetries,
     },
     listener,
     signal
@@ -1667,6 +2293,8 @@ export async function runIntentDrivenE2EStream(
       precheckPolicy,
       llmMeta: scenarioCardOutput.llmMeta,
       assetReadiness: baseAssetReadiness,
+      runtimeSelfHealRetries: runtimeConfig.selfHealRetries,
+      runtimeGovernance: input.runtimeGovernance,
     },
     listener,
     signal
@@ -1674,6 +2302,29 @@ export async function runIntentDrivenE2EStream(
   if (precheck.blocked) {
     return precheck.output;
   }
+
+  const fixtureSetup = await runIntentE2EFixtureSetup(
+    {
+      projectUid,
+      moduleUid: input.moduleUid?.trim() || '',
+      targetUrl,
+      resolvedUrls,
+      description,
+      platformAssets: basePlatformAssets,
+      runtimeGovernance: input.runtimeGovernance,
+      scenarioCard: scenarioCardOutput.card,
+      llmMeta: scenarioCardOutput.llmMeta,
+      assetReadiness: baseAssetReadiness,
+      runtimeSelfHealRetries: runtimeConfig.selfHealRetries,
+      runId: options?.runId,
+    },
+    listener,
+    signal
+  );
+  if (fixtureSetup.blocked) {
+    return fixtureSetup.output;
+  }
+  const fixtureExecutionState = fixtureSetup.state;
 
   await emit(listener, {
     type: 'stage',
@@ -1706,6 +2357,7 @@ export async function runIntentDrivenE2EStream(
   });
   const compiledTemplate = planning.executionPlan
     ? compileIntentExecutionTemplate({
+        priorityScenarioFamily: planning.priorityScenarioFamily,
         executionPlan: planning.executionPlan,
         verificationPlan: planning.verificationPlan,
         auth: input.auth,
@@ -1714,7 +2366,7 @@ export async function runIntentDrivenE2EStream(
     : undefined;
   const knowledge = buildIntentE2EKnowledgeSummary(planning);
   const assetReadiness = buildIntentE2EAssetReadiness({
-    projectUid,
+    availability: projectAssetAvailability,
     knowledgeMatchCount: knowledge.matchCount,
   });
   const platformAssets = buildBrowserE2EPlatformTestAssetBundle({
@@ -1738,7 +2390,6 @@ export async function runIntentDrivenE2EStream(
     snapshot: PageSnapshot;
     report?: RepairObservationReport | null;
   }> = [];
-  const runtimeConfig = getLLMRuntimeConfig(input.llmConfig);
   const observedRepairClusterIds = new Set<string>();
   const runnerAdapter = resolveIntentRunnerAdapter(platformAssets.testType, platformAssets.runnerType);
 
@@ -1799,7 +2450,12 @@ export async function runIntentDrivenE2EStream(
         : null;
     const repairObservationReport =
       kind === 'repair' && repairObservationSnapshot
-        ? buildRepairObservationReport(repairObservationSnapshot, previousTriage)
+        ? buildRepairObservationReport(
+            repairObservationSnapshot,
+            previousTriage,
+            snapshot,
+            attempts[attempts.length - 1]?.logs || []
+          )
         : null;
     if (repairObservationSnapshot) {
       archivedRepairSnapshots.push({
@@ -1915,11 +2571,12 @@ export async function runIntentDrivenE2EStream(
       message: `正在执行第 ${attempt} 次${kind === 'repair' ? '修复后' : ''}测试…`,
     });
 
-    const logs: Array<{ level: string; message: string; at?: string }> = [];
+    const logs: IntentE2EAttemptLog[] = [];
     const result = await runnerAdapter.execute({
       sessionId,
       code: currentCode,
       auth: input.auth,
+      storageState: precheck.precheck.storageState,
       testType: platformAssets.testType,
       runnerType: platformAssets.runnerType,
       testCase: platformAssets.testCase,
@@ -1949,6 +2606,7 @@ export async function runIntentDrivenE2EStream(
         const logEntry = {
           level: payload.level,
           message: payload.message,
+          ...(payload.meta !== undefined ? { meta: payload.meta } : {}),
           at: payload.at,
         };
 
@@ -2111,6 +2769,26 @@ export async function runIntentDrivenE2EStream(
         });
         break;
       }
+
+      const repairBudget = resolveIntentE2ERepairBudget({
+        runtimeSelfHealRetries: runtimeConfig.selfHealRetries,
+        usedRepairAttempts: attempts.reduce((count, item) => count + (item.kind === 'repair' ? 1 : 0), 0),
+        assetReadiness,
+        triage: attemptResult.triage,
+      });
+      if (repairBudget.exhausted) {
+        finalResult = result;
+        await emit(listener, {
+          type: 'attempt_log',
+          attempt,
+          kind,
+          log: {
+            level: 'warn',
+            message: repairBudget.summary,
+          },
+        });
+        break;
+      }
     }
 
     finalResult = result;
@@ -2119,6 +2797,53 @@ export async function runIntentDrivenE2EStream(
 
   if (!finalResult) {
     throw new Error('执行链路未产出结果');
+  }
+
+  if (fixtureExecutionState?.cleanupRef) {
+    throwIfAborted(signal);
+    await emit(listener, {
+      type: 'stage',
+      stage: 'prechecking',
+      message: `正在执行 fixture cleanup：${fixtureExecutionState.cleanupRef}…`,
+    });
+
+    try {
+      const cleanupResult = await executeIntentE2EFixture({
+        phase: 'cleanup',
+        fixtureRef: fixtureExecutionState.cleanupRef,
+        context: {
+          projectUid,
+          moduleUid: input.moduleUid?.trim() || '',
+          targetUrl: resolvedUrls.targetUrl,
+          runId: options?.runId,
+          owner: fixtureExecutionState.fixture.owner,
+          idempotencyKey: fixtureExecutionState.fixture.idempotencyKey,
+          strategy: fixtureExecutionState.fixture.strategy,
+        },
+        signal,
+      });
+      await emit(listener, {
+        type: 'stage',
+        stage: 'prechecking',
+        message: `fixture cleanup 已完成：${cleanupResult.summary}`,
+      });
+    } catch (error) {
+      const cleanupErrorMessage = error instanceof Error ? error.message : String(error || 'fixture cleanup failed');
+      const hadFailureBeforeCleanup = !finalResult.success;
+      finalResult = appendFixtureCleanupFailureToResult(finalResult, cleanupErrorMessage);
+      if (!hadFailureBeforeCleanup || !finalFailureTriage) {
+        finalFailureTriage = buildIntentE2EFixtureFailureTriage({
+          phase: 'cleanup',
+          result: finalResult,
+          errorMessage: cleanupErrorMessage,
+          pageUrl: resolvedUrls.targetUrl,
+        });
+      }
+      await emit(listener, {
+        type: 'error',
+        message: cleanupErrorMessage,
+      });
+    }
   }
 
   const finalAttempt = attempts[attempts.length - 1];
@@ -2139,6 +2864,14 @@ export async function runIntentDrivenE2EStream(
     status: finalResult.success ? 'passed' : 'failed',
     failureClass: finalFailureTriage?.failureClass,
   });
+  const repairBudget = finalResult.success
+    ? null
+    : resolveIntentE2ERepairBudget({
+        runtimeSelfHealRetries: runtimeConfig.selfHealRetries,
+        usedRepairAttempts: attempts.reduce((count, item) => count + (item.kind === 'repair' ? 1 : 0), 0),
+        assetReadiness,
+        triage: finalFailureTriage,
+      });
   let artifactIndex: IntentE2ERunArtifactIndex | null = null;
   if (options?.runId) {
     try {
@@ -2167,6 +2900,15 @@ export async function runIntentDrivenE2EStream(
     description,
     knowledge,
     assetReadiness,
+    repairBudget,
+    failureCta: finalResult.success
+      ? null
+      : buildIntentE2EFailureCta({
+          assetReadiness,
+          triage: finalFailureTriage,
+          repairBudget,
+          attemptCount: attempts.length,
+        }),
     qualitySplit,
     artifactIndex,
     knowledgeCandidates,

@@ -129,6 +129,10 @@ describe('intent-execution-compiler', () => {
     expect(template.code).toContain("不要把最终主动作固化成 `getByRole('button', { name: /^保\\s*存$/ }).first()`");
     expect(template.code).toContain('/保\\s*存|提\\s*交|确\\s*定/i');
     expect(template.code).toContain('如果当前 pane 内根本找不到这个最终主动作');
+    expect(template.code).toContain("不要立刻退化成整页 `page.getByRole(...).last()`");
+    expect(template.code).toContain('candidateContainers');
+    expect(template.code).toContain('attachmentAnchor');
+    expect(template.code).toContain('footer/action-bar');
     expect(template.code).toContain('不要把 selector 锁死在 `.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible`');
     expect(template.code).toContain('click({ force: true })；不要对整页模糊按钮直接 force click');
     expect(template.code).toContain('不要把 `保存并继续` / `上一步` 误当成最终提交');
@@ -139,6 +143,14 @@ describe('intent-execution-compiler', () => {
     expect(template.code).toContain('如果预期状态没有出现在同一行可见文本 / 状态单元格，不要在这里硬失败');
     expect(template.code).toContain('若 currentVisibleRow 已命中但后面还需要状态证据，而 recordCheck.response 会是 null');
     expect(template.code).toContain('statusEvidenceRecordCheck = recordCheck.response ? recordCheck : currentVisibleRow ? await __e2e.resolvePrimaryRecord');
+    expect(template.code).toContain('若 `statusEvidenceRecordCheck.response` 已返回、但此时 shared.businessId 仍为空');
+    expect(template.code).toContain(
+      "const derivedBusinessId = shared.businessId || ((/^[A-Za-z0-9_-]{6,64}$/.test(rowKey) && !/^1\\d{10}$/.test(rowKey)) ? rowKey : '') || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')"
+    );
+    expect(template.code).toContain(
+      "const matchedRecordByDerivedBusinessId = !matchedRecord && listJson && derivedBusinessId ? __e2e.pickJsonRecord(listJson, { label: 'derivedBusinessId', value: derivedBusinessId, paths: ['businessId', 'id'], required: false }) : null;"
+    );
+    expect(template.code).toContain('matchedRecord || matchedRecordByDerivedBusinessId');
     expect(template.code).toContain('不要在外层再手写一次 fill + click 预搜索');
     expect(template.code).toContain('固定骨架 [verify_success_1]：');
     expect(template.code).toContain('const verify_success_1Resp = await artifacts["plan_step_1"];');
@@ -147,14 +159,22 @@ describe('intent-execution-compiler', () => {
     expect(template.code).toContain('timeoutMs: 1200,');
     expect(template.code).toContain('const verify_success_2Record = verify_success_2CurrentVisibleRow');
     expect(template.code).toContain(': await __e2e.resolvePrimaryRecord(page, {');
+    expect(template.code).toContain('const verify_success_2StatusEvidenceRecordCheck = verify_success_2Record.response ? verify_success_2Record : verify_success_2Record.row ? await __e2e.resolvePrimaryRecord(page, {');
+    expect(template.code).toContain('maxLookupAttempts: 1,');
+    expect(template.code).toContain('retryIntervalMs: 200,');
     expect(template.code).toContain('不要紧接着再对同一 row locator 重复做 toContainText(primaryValue)');
     expect(template.code).not.toContain('await expect(verify_success_2Record.row).toContainText(shared.businessId);');
     expect(template.code).toContain('rowHasTexts: [shared.businessId, "TODO_STABLE_STATE"]');
     expect(template.code).not.toContain("keywordInput: page.locator('input#businessList_keywords:visible').first(),");
     expect(template.code).not.toContain("searchButton: page.getByRole('button', { name: /搜\\\\s*索/i }).first(),");
-    expect(template.code).toContain('const verify_success_2ListPayload = verify_success_2Record.response ? await __e2e.readJsonResponse(verify_success_2Record.response, { required: false }) : null;');
+    expect(template.code).toContain('const verify_success_2ListPayload = verify_success_2StatusEvidenceRecordCheck.response ? await __e2e.readJsonResponse(verify_success_2StatusEvidenceRecordCheck.response, { required: false }) : null;');
     expect(template.code).toContain('__e2e.pickJsonRecord(verify_success_2ListPayload');
     expect(template.code).toContain("const verify_success_2RowText = await verify_success_2Record.row.innerText().catch(() => '');");
+    expect(template.code).toContain("const verify_success_2RowKey = ((await verify_success_2Record.row.getAttribute('data-row-key')) || '').trim();");
+    expect(template.code).toContain("const verify_success_2DerivedBusinessId = shared.businessId || ((/^[A-Za-z0-9_-]{6,64}$/.test(verify_success_2RowKey) && !/^1\\d{10}$/.test(verify_success_2RowKey)) ? verify_success_2RowKey : '') || (((verify_success_2RowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item))) || '');");
+    expect(template.code).toContain("const verify_success_2MatchedRecordByDerivedBusinessId = !verify_success_2MatchedRecord && verify_success_2ListPayload && verify_success_2DerivedBusinessId ? __e2e.pickJsonRecord(verify_success_2ListPayload, { label: 'derivedBusinessId', value: verify_success_2DerivedBusinessId, paths: ['businessId', 'id'], required: false }) : null;");
+    expect(template.code).toContain('const verify_success_2ResolvedMatchedRecord = verify_success_2MatchedRecord || verify_success_2MatchedRecordByDerivedBusinessId;');
+    expect(template.code).toContain('__e2e.pickJsonValue(verify_success_2ResolvedMatchedRecord, { label: "状态"');
     expect(template.code).toContain('const verify_success_2ExpectedStatusAssertion = "TODO_EXPECTED_状态";');
     expect(template.code).toContain(
       'if (verify_success_2ExpectedStatusAssertion && verify_success_2RowText.includes(String(verify_success_2ExpectedStatusAssertion))) {'
@@ -304,6 +324,246 @@ describe('intent-execution-compiler', () => {
     expect(template.code).toContain('更稳妥的是把后续搜索/回查接口当成最终列表证据');
   });
 
+  it('sanitizes business-list page-ready instructions to avoid naked ownership text assertions', () => {
+    const template = compileIntentExecutionTemplate({
+      description: '进入商机列表并确认页面就绪',
+      executionPlan: {
+        version: 1,
+        compiler: 'deterministic_dsl_v1',
+        mode: 'scenario',
+        entryUrl: 'https://example.com/#/business/businesslist',
+        summary: '进入商机列表页并确认页面就绪',
+        expectedOutcome: '页面出现我创建的Tab和新建商机按钮',
+        sharedVariables: [],
+        globalRules: [],
+        preferredPrimitives: [],
+        outputContract: [],
+        steps: [
+          {
+            planStepUid: 'plan_step_1',
+            scenarioStepUid: 'step_ready',
+            stepType: 'ui',
+            title: '进入商机列表页并确认页面就绪',
+            target: 'https://example.com/#/business/businesslist',
+            goal: '打开URL https://example.com/#/business/businesslist，等待列表主区域渲染，确认可见“我创建的”Tab与“新建商机”按钮。',
+            allowedActions: ['navigate', 'wait_for_ui', 'assert_visible', 'switch_business_list_ownership_view'],
+            preferredHelpers: ['__e2e.switchBusinessListOwnershipView'],
+            requiredAssertions: ['当前URL包含#/business/businesslist，页面出现“我创建的”Tab和“新建商机”按钮。'],
+            extractVariable: '',
+            sharedVariables: [],
+            dependsOnPlanStepUids: [],
+          },
+        ],
+      },
+    });
+
+    expect(template.code).toContain('列表主区域 ready');
+    expect(template.code).toContain("页面 ready 阶段不要直接写 `await expect(page.getByText('我创建的').first()).toBeVisible(...)`");
+    expect(template.code).toContain("page.getByRole('button', { name: '新建商机' }).first()");
+    expect(template.code).toContain("page.locator('input#businessList_keywords:visible').first()");
+    expect(template.code).not.toContain('页面出现“我创建的”Tab和“新建商机”按钮');
+  });
+
+  it('sanitizes create-business form-ready instructions to avoid locator.or strict-mode assertions', () => {
+    const template = compileIntentExecutionTemplate({
+      description: '点击新建商机后等待创建页第一页就绪',
+      executionPlan: {
+        version: 1,
+        compiler: 'deterministic_dsl_v1',
+        mode: 'scenario',
+        entryUrl: 'https://example.com/#/business/businesslist',
+        summary: '进入新建商机页',
+        expectedOutcome: '页面出现创建流程锚点并可继续填写',
+        sharedVariables: [],
+        globalRules: [],
+        preferredPrimitives: [],
+        outputContract: [],
+        steps: [
+          {
+            planStepUid: 'plan_step_2',
+            scenarioStepUid: 'step_ready_create',
+            stepType: 'ui',
+            title: '进入新建商机页',
+            target: '新建商机按钮',
+            goal: '点击右上“新建商机”按钮，等待创建表单页面加载。',
+            allowedActions: ['click', 'wait_for_ui', 'assert_visible'],
+            preferredHelpers: [],
+            requiredAssertions: ['页面出现创建流程锚点（如“商机联系人信息/关联产品意向信息/附件信息”之一）及必填字段。'],
+            extractVariable: '',
+            sharedVariables: [],
+            dependsOnPlanStepUids: [],
+          },
+        ],
+      },
+    });
+
+    expect(template.code).toContain('确认已进入创建页第一页 ready');
+    expect(template.code).toContain("不要写 `await expect(contactStepHeading.or(sourceLabel)).toBeVisible(...)`");
+    expect(template.code).toContain("const contactStepHeading = page.getByRole('heading', { name: '商机联系人信息' }).first()");
+    expect(template.code).toContain("const headingVisible = await contactStepHeading.isVisible().catch(() => false);");
+    expect(template.code).toContain("const sourceLabel = page.locator('label[title=\"商机来源\"]').first()");
+    expect(template.code).not.toContain('页面出现创建流程锚点（如“商机联系人信息/关联产品意向信息/附件信息”之一）及必填字段。');
+  });
+
+  it('adds create-business final-submit instructions to avoid page-level regex fallback', () => {
+    const template = compileIntentExecutionTemplate({
+      description: '填写商机后在附件页提交保存',
+      executionPlan: {
+        version: 1,
+        compiler: 'deterministic_dsl_v1',
+        mode: 'scenario',
+        entryUrl: 'https://example.com/#/business/createbusiness',
+        summary: '创建商机并提交',
+        expectedOutcome: '在附件页提交成功并开始收敛',
+        sharedVariables: ['businessId'],
+        globalRules: [],
+        preferredPrimitives: [],
+        outputContract: [],
+        steps: [
+          {
+            planStepUid: 'plan_step_submit',
+            scenarioStepUid: 'step_submit_create',
+            stepType: 'ui',
+            title: '填写必填项并提交保存',
+            target: 'https://example.com/#/business/createbusiness',
+            goal: '进入附件页后点击最终提交，等待页面收敛。',
+            allowedActions: ['fill', 'click', 'wait_for_response', 'observe_submit_state'],
+            preferredHelpers: ['__e2e.waitForApiResponse', '__e2e.observeSubmitState'],
+            requiredAssertions: ['附件页最终提交成功'],
+            extractVariable: 'businessId',
+            sharedVariables: ['businessId'],
+            dependsOnPlanStepUids: [],
+          },
+        ],
+      },
+    });
+
+    expect(template.code).toContain('确认已进入创建商机最后一步并触发最终提交');
+    expect(template.code).toContain('最终按钮查找不要直接退化成');
+    expect(template.code).toContain("page.getByRole('button', { name: /^(?!.*保存并继续)(?!.*上一步).*(保\\s*存|提\\s*交|确\\s*定).*$/i }).last()");
+    expect(template.code).toContain('const attachmentAnchor = page.getByText(/附件信息|上传录音文件|上传图片/).first()');
+    expect(template.code).toContain('candidateContainers');
+    expect(template.code).toContain('前 3-4 层可见祖先链');
+    expect(template.code).toContain('footer/action-bar');
+    expect(template.code).toContain('每类 selector 至少枚举前 2-3 个可见命中');
+    expect(template.code).toContain("page.getByRole('button', { name: /^提\\s*交$/ }).first()");
+    expect(template.code).toContain('不要只跑一轮 `count()` 就立刻 throw');
+    expect(template.code).toContain('短时轮询窗口');
+    expect(template.code).toContain('窗口内一旦命中就停下');
+  });
+
+  it('adds family-aware compiler hints for modal save and list-detail flows', () => {
+    const modalTemplate = compileIntentExecutionTemplate({
+      priorityScenarioFamily: 'modal_or_drawer_save',
+      description: '在弹窗里保存分佣配置并确认关闭',
+      executionPlan: {
+        version: 1,
+        compiler: 'deterministic_dsl_v1',
+        mode: 'scenario',
+        entryUrl: 'https://example.com/#/commission/subCommissionConfig',
+        summary: '在弹窗里保存分佣配置',
+        expectedOutcome: '保存成功且弹窗关闭',
+        sharedVariables: [],
+        globalRules: [],
+        preferredPrimitives: [],
+        outputContract: [],
+        steps: [
+          {
+            planStepUid: 'plan_step_modal_save',
+            scenarioStepUid: 'step_modal_save',
+            stepType: 'ui',
+            title: '保存弹窗配置',
+            target: 'https://example.com/#/commission/subCommissionConfig',
+            goal: '在当前可见弹窗内修改配置并点击保存',
+            allowedActions: ['scope', 'fill', 'click', 'observe_submit_state'],
+            preferredHelpers: ['__e2e.waitForVisibleAntdModal', '__e2e.observeSubmitState'],
+            requiredAssertions: ['保存成功且弹窗关闭'],
+            extractVariable: '',
+            sharedVariables: [],
+            dependsOnPlanStepUids: [],
+          },
+        ],
+      },
+      verificationPlan: {
+        version: 1,
+        strategy: 'deterministic_verification_v1',
+        expectedOutcome: '保存成功且弹窗关闭',
+        cleanupNotes: '',
+        checks: [
+          {
+            checkUid: 'verify_modal_save',
+            kind: 'ui_state',
+            source: 'success_criteria',
+            title: '成功标准 1',
+            instruction: '保存成功且弹窗关闭',
+            preferredHelpers: ['__e2e.observeSubmitState'],
+            relatedPlanStepUids: ['plan_step_modal_save'],
+            required: true,
+          },
+        ],
+      },
+    });
+
+    expect(modalTemplate.code).toContain('当前 family = modal_or_drawer_save：所有填写和点击保存都先 scope 到当前可见 modal / drawer，再继续操作。');
+    expect(modalTemplate.code).toContain('当前 family = modal_or_drawer_save：保存后至少确认当前弹层/抽屉关闭或页面回到稳定态，不要只看 toast。');
+    expect(modalTemplate.code).toContain('当前 family = modal_or_drawer_save：最终验收至少覆盖弹层/抽屉关闭或页面回到稳定态，不要只把 toast 当最终成功。');
+
+    const listTemplate = compileIntentExecutionTemplate({
+      priorityScenarioFamily: 'list_search_detail',
+      description: '在列表页搜索目标客户并进入详情核对状态',
+      executionPlan: {
+        version: 1,
+        compiler: 'deterministic_dsl_v1',
+        mode: 'scenario',
+        entryUrl: 'https://example.com/#/customer/list',
+        summary: '搜索目标客户并进入详情',
+        expectedOutcome: '命中目标行并完成详情校对',
+        sharedVariables: ['customerCode'],
+        globalRules: [],
+        preferredPrimitives: [],
+        outputContract: [],
+        steps: [
+          {
+            planStepUid: 'plan_step_list_detail',
+            scenarioStepUid: 'step_list_detail',
+            stepType: 'assert',
+            title: '搜索并进入详情',
+            target: 'https://example.com/#/customer/list',
+            goal: '按 customerCode 搜索目标客户并进入详情页',
+            allowedActions: ['find_table_row', 'resolve_primary_record', 'read_detail_field'],
+            preferredHelpers: ['__e2e.resolvePrimaryRecord', '__e2e.readDetailField'],
+            requiredAssertions: ['命中目标行并完成详情校对'],
+            extractVariable: '',
+            sharedVariables: ['customerCode'],
+            dependsOnPlanStepUids: [],
+          },
+        ],
+      },
+      verificationPlan: {
+        version: 1,
+        strategy: 'deterministic_verification_v1',
+        expectedOutcome: '命中目标行并完成详情校对',
+        cleanupNotes: '',
+        checks: [
+          {
+            checkUid: 'verify_list_detail',
+            kind: 'table_row',
+            source: 'success_criteria',
+            title: '成功标准 1',
+            instruction: '命中目标客户后进入详情并核对联系人和状态',
+            preferredHelpers: ['__e2e.resolvePrimaryRecord', '__e2e.readDetailField'],
+            relatedPlanStepUids: ['plan_step_list_detail'],
+            required: true,
+          },
+        ],
+      },
+    });
+
+    expect(listTemplate.code).toContain('当前 family = list_search_detail：搜索后先等待表格刷新，再定位目标行；不要搜索后直接点击第一行或第一条“查看”。');
+    expect(listTemplate.code).toContain('当前 family = list_search_detail：进入详情后优先按字段标签读取联系人/手机号/状态，不要对整页文本做大段 toContain。');
+    expect(listTemplate.code).toContain('当前 family = list_search_detail：最终验收以“命中目标行 -> 进入对应详情 -> 按字段标签读值”为主，不要只验列表返回结果。');
+  });
+
   it('generalizes primary-record detail fallback skeletons to arbitrary id-like shared variables', () => {
     const template = compileIntentExecutionTemplate({
       description: '创建客户并回列表校验',
@@ -384,7 +644,6 @@ describe('intent-execution-compiler', () => {
     );
     expect(template.code).toContain('await page.goto(`/detail/${verify_customer_1DerivedPrimaryValue}`, { waitUntil: \'domcontentloaded\' });');
     expect(template.code).toContain("__e2e.clickAntdRowAction(page, recordCheck.row, '查看')");
-    expect(template.code).toContain("__e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000 })");
     expect(template.code).toContain('不要凭空假定每条列表行都存在“查看”');
     expect(template.code).toContain('状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口');
     expect(template.code).not.toMatch(/clickAntdRowAction\(page,\s*verify_customer_1Record\.row,\s*["']查看["']\)/);
@@ -662,7 +921,15 @@ describe('intent-execution-compiler', () => {
     expect(template.code).toContain('detailUrl: `/customer/profile/${shared.customerCode}`,');
     expect(template.code).toContain('detailReadyLocator: page.getByText(/客户详情/i).first(),');
     expect(template.code).toContain(`await __e2e.clickAntdRowAction(page, verify_customer_code_knowledgeRecord.row, "查看");`);
-    expect(template.code).toContain(`const verify_customer_code_knowledgeDetailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: "客户详情", timeoutMs: 5000 });`);
+    expect(template.code).toContain(
+      `let verify_customer_code_knowledgeDetailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: "客户详情", timeoutMs: 5000, required: false });`
+    );
+    expect(template.code).toContain(
+      `verify_customer_code_knowledgeDetailScope = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: "客户详情", timeoutMs: 2500, required: false });`
+    );
+    expect(template.code).toContain(
+      `if (!verify_customer_code_knowledgeDetailScope) throw new Error("状态证据缺失：列表行已命中，但“查看”后未出现可用详情弹层或详情页");`
+    );
     expect(template.code).toContain(`const verify_customer_code_knowledgeDetailField1Value = await __e2e.readDetailField(page, { label: "状态", scope: verify_customer_code_knowledgeDetailScope, titleIncludes: "客户详情", required: false })`);
     expect(template.code).toContain(
       `paths: ["recordCode", "customer.code", "customerCode", "data.customerCode", "result.customerCode", "data.data.customerCode", "code", "data.code", "result.code", "data.data.code"]`
@@ -844,7 +1111,13 @@ describe('intent-execution-compiler', () => {
       'await page.goto(`#/business/detail/${verify_business_statusDerivedPrimaryValue}`, { waitUntil: \'domcontentloaded\' });'
     );
     expect(template.code).toContain(
-      'const verify_business_statusDetailField1Value = await __e2e.readDetailField(page, { label: "状态", titleIncludes: "商机详情", required: false })'
+      'const verify_business_statusDetailSurface = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: "商机详情", timeoutMs: 2500, required: false });'
+    );
+    expect(template.code).toContain(
+      'if (!verify_business_statusDetailSurface) throw new Error("详情页无效：detailUrl 未出现商机详情 surface");'
+    );
+    expect(template.code).toContain(
+      'const verify_business_statusDetailField1Value = await __e2e.readDetailField(page, { label: "状态", scope: verify_business_statusDetailSurface, titleIncludes: "商机详情", required: false })'
     );
     expect(template.code).not.toContain('await __e2e.clickAntdRowAction(page, verify_business_statusRecord.row, "查看");');
     expect(template.code).not.toContain('waitForVisibleAntdModal(page, { titleIncludes: "商机详情"');
@@ -1157,6 +1430,11 @@ describe('intent-execution-compiler', () => {
     expect(template.code).toContain('const verify_phone_lookupRecord = verify_phone_lookupCurrentVisibleRow');
     expect(template.code).toContain('primaryValue: shared.contactPhone,');
     expect(template.code).toContain('rowHasTexts: [shared.contactPhone, "新入库"],');
+    expect(template.code).toContain('const verify_phone_lookupStatusEvidenceRecordCheck = verify_phone_lookupRecord.response ? verify_phone_lookupRecord : verify_phone_lookupRecord.row ? await __e2e.resolvePrimaryRecord(page, {');
+    expect(template.code).toContain('const verify_phone_lookupListPayload = verify_phone_lookupStatusEvidenceRecordCheck.response ? await __e2e.readJsonResponse(verify_phone_lookupStatusEvidenceRecordCheck.response, { required: false }) : null;');
+    expect(template.code).toContain("const verify_phone_lookupDerivedBusinessId = shared.businessId || ((/^[A-Za-z0-9_-]{6,64}$/.test(verify_phone_lookupRowKey) && !/^1\\d{10}$/.test(verify_phone_lookupRowKey)) ? verify_phone_lookupRowKey : '') || (((verify_phone_lookupRowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item))) || '');");
+    expect(template.code).toContain("const verify_phone_lookupMatchedRecordByDerivedBusinessId = !verify_phone_lookupMatchedRecord && verify_phone_lookupListPayload && verify_phone_lookupDerivedBusinessId ? __e2e.pickJsonRecord(verify_phone_lookupListPayload, { label: 'derivedBusinessId', value: verify_phone_lookupDerivedBusinessId, paths: ['businessId', 'id'], required: false }) : null;");
+    expect(template.code).toContain('const verify_phone_lookupResolvedMatchedRecord = verify_phone_lookupMatchedRecord || verify_phone_lookupMatchedRecordByDerivedBusinessId;');
     expect(template.code).toContain(
       '先短超时用 __e2e.findAntdTableRow(page, { hasTexts: [shared.contactPhone], timeoutMs: 1200 }) 检查当前可见列表是否已经命中'
     );

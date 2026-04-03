@@ -8,6 +8,7 @@ import {
 } from '@/lib/ai/intent-e2e-service';
 import {
   getIntentE2ERunSnapshotByRunId,
+  listIntentE2ERunSnapshots,
   upsertIntentE2ERunSnapshot,
   type IntentE2ERunSnapshotRecord,
 } from '@/lib/db/repository';
@@ -121,6 +122,27 @@ function cloneRepairObservationReport(report?: RepairObservationReport | null): 
     probes: (report.probes || []).map((probe) => ({
       ...probe,
       evidence: [...(probe.evidence || [])],
+    })),
+  };
+}
+
+function cloneRepairBudget(
+  budget?: IntentE2ERunResult['repairBudget'] | null
+): IntentE2ERunResult['repairBudget'] {
+  if (!budget) return budget ?? null;
+  return {
+    ...budget,
+  };
+}
+
+function cloneFailureCta(
+  cta?: IntentE2ERunResult['failureCta'] | null
+): IntentE2ERunResult['failureCta'] {
+  if (!cta) return cta ?? null;
+  return {
+    ...cta,
+    actions: (cta.actions || []).map((action) => ({
+      ...action,
     })),
   };
 }
@@ -394,6 +416,8 @@ function cloneRunState(state: IntentE2ERunRecord): IntentE2ERunRecord {
                 reasons: [...state.result.assetReadiness.reasons],
               }
             : state.result.assetReadiness ?? null,
+          repairBudget: cloneRepairBudget(state.result.repairBudget),
+          failureCta: cloneFailureCta(state.result.failureCta),
           qualitySplit: state.result.qualitySplit
             ? {
                 ...state.result.qualitySplit,
@@ -606,6 +630,8 @@ function normalizeLoadedRunState(snapshot: IntentE2ERunSnapshotRecord): IntentE2
         artifactContract: resolvedPlatformAssets?.artifactContract || null,
         artifactIndex: cloneIntentE2ERunArtifactIndex(resultCandidate.artifactIndex) || null,
         ciReport: normalizeIntentE2ECiCdReport(resultCandidate.ciReport) || null,
+        repairBudget: cloneRepairBudget(resultCandidate.repairBudget),
+        failureCta: cloneFailureCta(resultCandidate.failureCta),
       }
     : null;
   const normalizedTestType =
@@ -770,11 +796,11 @@ function buildRunSnapshot(state: IntentE2ERunRecord, projectUid = '', moduleUid 
     requestInput: state.request.input,
     targetUrl: state.request.targetUrl,
     state: cloneRunState(state),
-    error: state.error,
+    error: state.error || '',
     createdAt: state.createdAt,
     updatedAt: state.updatedAt,
-    startedAt: state.startedAt,
-    endedAt: state.endedAt,
+    startedAt: state.startedAt || '',
+    endedAt: state.endedAt || '',
   } as const;
 }
 
@@ -1326,6 +1352,44 @@ export async function loadIntentE2ERun(runId: string): Promise<IntentE2ERunRecor
   const interrupted = markRunAsInterrupted(loaded);
   await upsertIntentE2ERunSnapshot(buildRunSnapshot(interrupted, snapshot.projectUid, snapshot.moduleUid || ''));
   return cloneRunState(interrupted);
+}
+
+export async function listRecentIntentE2ETerminalRunSnapshots(params: {
+  projectUid?: string;
+  moduleUid?: string;
+  limit?: number;
+} = {}): Promise<IntentE2ERunSnapshotRecord[]> {
+  pruneExpiredRuns();
+  const projectUid = params.projectUid?.trim() || '';
+  const moduleUid = params.moduleUid?.trim() || '';
+  const limit = Math.max(1, Math.min(200, Math.floor(params.limit || 50)));
+  const persisted = await listIntentE2ERunSnapshots({
+    projectUid,
+    moduleUid,
+    status: 'terminal',
+    limit,
+  });
+  const merged = new Map<string, IntentE2ERunSnapshotRecord>();
+
+  for (const snapshot of persisted) {
+    merged.set(snapshot.runId, snapshot);
+  }
+
+  for (const record of RUNS.values()) {
+    if (!isTerminalStatus(record.state.status)) continue;
+    if (projectUid && record.projectUid !== projectUid) continue;
+    if (moduleUid && record.moduleUid !== moduleUid) continue;
+    const snapshot = buildRunSnapshot(record.state, record.projectUid, record.moduleUid);
+    merged.set(snapshot.runId, snapshot);
+  }
+
+  return [...merged.values()]
+    .sort((a, b) => {
+      const aTs = Date.parse(a.endedAt || a.updatedAt || a.createdAt) || 0;
+      const bTs = Date.parse(b.endedAt || b.updatedAt || b.createdAt) || 0;
+      return bTs - aTs || b.runId.localeCompare(a.runId);
+    })
+    .slice(0, limit);
 }
 
 export function listIntentE2ERunEvents(runId: string, cursor = 0): IntentE2EStreamEvent[] {

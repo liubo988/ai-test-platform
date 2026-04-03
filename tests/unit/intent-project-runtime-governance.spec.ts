@@ -132,6 +132,33 @@ describe('intent-project-runtime-governance', () => {
     ]);
   });
 
+  it('marks project fixture refs invalid when they are not repo-owned fixture:// references', () => {
+    const projectDir = path.join(tempDir, 'proj_invalid_fixture');
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectDir, 'intent-e2e.project-runtime-governance.json'),
+      JSON.stringify({
+        version: 1,
+        environmentProfile: 'test',
+        fixture: {
+          strategy: 'setup_cleanup',
+          setupRef: 'https://example.com/setup.mjs',
+          cleanupRef: 'fixture://crm/cleanup?force=true',
+          owner: 'qa-crm',
+          idempotencyKey: 'crm-opportunity-shared',
+        },
+      })
+    );
+
+    const status = readIntentProjectRuntimeGovernanceStatus('proj_invalid_fixture');
+
+    expect(status.ready).toBe(false);
+    expect(status.issues.map((issue) => issue.code)).toEqual([
+      'fixture_setup_ref_invalid',
+      'fixture_cleanup_ref_invalid',
+    ]);
+  });
+
   it('merges project defaults with request overrides', () => {
     const projectDir = path.join(tempDir, 'proj_1');
     fs.mkdirSync(projectDir, { recursive: true });

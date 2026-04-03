@@ -6,6 +6,7 @@ import {
   buildIntentE2ERolloutStrategy,
   buildIntentE2ERulePerformanceMapFromData,
   buildIntentSuppressedStarterHelperGovernanceInsights,
+  resolveIntentE2ERepeatedFailureSuppressionFromData,
   reconcileIntentStarterHelpersWithSuppressedGovernance,
 } from '@/lib/ai/intent-e2e-insights';
 import { buildIntentE2EPromotionCoverageSummary } from '@/lib/intent-e2e-promotion-coverage';
@@ -2220,6 +2221,114 @@ describe('intent-e2e insights', () => {
     ]);
   });
 
+  it('classifies row action and ownership switch flows into tracked priority families', () => {
+    const runSnapshots = [
+      makeRunSnapshot({
+        runId: 'row_action_family_run',
+        status: 'passed',
+        requestInput: '在商机列表定位目标行后打开更多操作菜单，点击查看并确认详情抽屉打开',
+        targetUrl: 'https://example.com/#/business/businesslist',
+        state: {
+          result: {
+            description: '列表行操作菜单查看详情',
+            scenarioCard: {
+              title: '列表行操作菜单',
+              taskMode: 'scenario',
+              featureDescription: '在商机列表找到目标行后点击更多操作菜单里的查看',
+              flowDefinition: {
+                steps: [
+                  {
+                    stepType: 'ui',
+                    title: '打开更多操作',
+                    target: '商机列表',
+                    instruction: '定位目标行后点击更多操作菜单里的查看',
+                    expectedResult: '详情抽屉打开',
+                  },
+                ],
+              },
+            },
+            attempts: [
+              {
+                attempt: 1,
+                kind: 'generate',
+                result: { success: true },
+              },
+            ],
+          },
+        },
+      }),
+      makeRunSnapshot({
+        runId: 'ownership_switch_family_run',
+        status: 'failed',
+        requestInput: '切换到我创建的归属视角后继续回查目标商机',
+        targetUrl: 'https://example.com/#/business/businesslist',
+        state: {
+          result: {
+            description: '归属视角切换后回查列表目标商机',
+            scenarioCard: {
+              title: '列表归属切换回查',
+              taskMode: 'scenario',
+              featureDescription: '切换到我创建的后刷新列表并继续回查业务记录',
+              flowDefinition: {
+                steps: [
+                  {
+                    stepType: 'ui',
+                    title: '切换归属视角',
+                    target: '商机列表',
+                    instruction: '切到我创建的视角后等待列表刷新',
+                    expectedResult: '列表刷新到正确归属视角',
+                  },
+                ],
+              },
+            },
+            attempts: [
+              {
+                attempt: 1,
+                kind: 'generate',
+                result: { success: false },
+              },
+            ],
+          },
+        },
+      }),
+    ];
+
+    const result = buildIntentE2EInsightsFromData(runSnapshots, [], {
+      projectUid: 'proj_checkout',
+      runLimit: 50,
+      auditLimit: 12,
+    });
+
+    expect(result.priorityScenarioFamilies).toEqual([
+      {
+        family: 'row_action_menu',
+        label: '列表行操作菜单',
+        totalRuns: 1,
+        passedRuns: 1,
+        failedRuns: 0,
+        canceledRuns: 0,
+        firstPassPassedRuns: 1,
+        firstPassPassRate: 100,
+        repairedPassRuns: 0,
+        repairedPassRate: 0,
+        terminalPassRate: 100,
+      },
+      {
+        family: 'list_ownership_switch',
+        label: '列表归属切换后回查',
+        totalRuns: 1,
+        passedRuns: 0,
+        failedRuns: 1,
+        canceledRuns: 0,
+        firstPassPassedRuns: 0,
+        firstPassPassRate: 0,
+        repairedPassRuns: 0,
+        repairedPassRate: 0,
+        terminalPassRate: 0,
+      },
+    ]);
+  });
+
   it('avoids polluting priority scenario families with business search pages or modal-save search flows', () => {
     const runSnapshots = [
       makeRunSnapshot({
@@ -3129,6 +3238,99 @@ describe('intent-e2e insights', () => {
     expect(result.evaluationBaseline.candidates[0]?.selectionReason).toContain('含 1 次失败');
     expect(result.evaluationBaseline.candidates[0]?.selectionReason).toContain('repair 通过');
     expect(buildIntentE2EEvaluationBaselineFromData(runSnapshots)).toMatchObject(result.evaluationBaseline);
+  });
+
+  it('builds repeated failure suppression signal from recent snapshot clusters', () => {
+    const runSnapshots = ['repeat_fail_1', 'repeat_fail_2', 'repeat_fail_3'].map((runId, index) =>
+      makeRunSnapshot({
+        runId,
+        status: 'failed',
+        requestInput: '登录后搜索商机并进入详情页校验字段',
+        targetUrl: 'https://example.com/business/list',
+        endedAt: `2026-04-02T10:0${index + 1}:00.000Z`,
+        state: {
+          result: {
+            description: '登录后在商机列表搜索目标记录并进入详情页校验字段',
+            scenarioCard: {
+              title: '商机列表详情校验',
+              taskMode: 'scenario',
+              featureDescription: '登录后在商机列表搜索目标记录并进入详情页校验字段',
+              flowDefinition: {
+                steps: [
+                  { stepType: 'ui', title: '打开商机列表' },
+                  { stepType: 'assert', title: '校验详情字段' },
+                ],
+              },
+            },
+            verificationPlan: {
+              expectedOutcome: '详情页字段正确',
+              checks: [
+                {
+                  checkUid: 'verify_1',
+                  title: '详情页字段校验',
+                  kind: 'detail_field',
+                  required: true,
+                  preferredHelpers: ['__e2e.waitForApiResponse'],
+                  relatedPlanStepUids: ['plan_step_1'],
+                },
+              ],
+            },
+            qualitySplit: {
+              bucket: 'model_quality',
+              blocked: false,
+              qualityEligible: true,
+              blockerKind: '',
+            },
+            finalFailureTriage: {
+              summary: '状态证据缺失',
+              failureClass: 'assertion_too_strict',
+              repairable: true,
+            },
+            finalResult: {
+              success: false,
+              error: '状态证据缺失',
+              steps: [],
+            },
+            attempts: [
+              {
+                attempt: 1,
+                kind: 'generate',
+                result: { success: false },
+                helperUsage: {
+                  usedHelpers: ['__e2e.waitForApiResponse'],
+                  usedSuggestedHelpers: [],
+                },
+                logs: [],
+                events: [],
+              },
+            ],
+          },
+        },
+      })
+    );
+
+    const signal = resolveIntentE2ERepeatedFailureSuppressionFromData(runSnapshots, {
+      requestInput: '登录后搜索商机并进入详情页校验字段',
+      targetUrl: 'https://example.com/business/list',
+    });
+
+    expect(signal).toMatchObject({
+      shouldSuppress: true,
+      scenarioFamily: 'complex_enterprise_flow',
+      priorityScenarioFamily: 'list_search_detail',
+      targetPath: '/business/list',
+      matchedSnapshotSignature: 'simple_scenario|scenario|/business/list|ui+assert',
+      matchedRunCount: 3,
+      matchedFailedRuns: 3,
+      recentFailureStreak: 3,
+      dominantQualityBucket: 'model_quality',
+      latestFailureClass: 'assertion_too_strict',
+      recommendedDecision: 'draft_only',
+      reason: 'recent_repeated_model_failure',
+      representativeRunIds: ['repeat_fail_3', 'repeat_fail_2', 'repeat_fail_1'],
+    });
+    expect(signal.failurePressureSummary.highFailureCandidateCount).toBe(1);
+    expect(signal.failurePressureSummary.recentFailedVerifyExecutionCount).toBe(3);
   });
 
   it('flags rollback candidates when pass rate drops after a merge audit', () => {

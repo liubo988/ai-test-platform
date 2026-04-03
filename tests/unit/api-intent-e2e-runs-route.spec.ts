@@ -18,7 +18,19 @@ vi.mock('@/lib/server/intent-e2e-project-auth', () => ({
 }));
 
 vi.mock('@/lib/server/project-actor', () => ({
+  RequestError: class RequestError extends Error {
+    status: number;
+
+    constructor(status: number, message: string) {
+      super(message);
+      this.name = 'RequestError';
+      this.status = status;
+    }
+  },
   applyActorCookie: vi.fn((response: NextResponse) => response),
+  toErrorResponse: vi.fn((error: unknown, fallbackMessage: string) =>
+    NextResponse.json({ error: error instanceof Error ? error.message : fallbackMessage }, { status: 500 })
+  ),
 }));
 
 vi.mock('@/lib/ai/intent-e2e-run-registry', () => ({

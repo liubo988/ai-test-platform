@@ -24,7 +24,7 @@ import {
   type PlatformTestType,
   type PlatformVerificationContractAsset,
 } from '@/lib/test-platform-asset-model';
-import { executeTest, type TestResult } from '@/lib/test-executor';
+import { executeTest, type ExecuteTestRuntimeOptions, type TestResult } from '@/lib/test-executor';
 
 const DEFAULT_HTTP_RUNNER_TIMEOUT_MS = 15_000;
 const MAX_HTTP_RUNNER_TIMEOUT_MS = 120_000;
@@ -79,6 +79,7 @@ export interface IntentRunnerExecutionInput {
   sessionId: string;
   code: string;
   auth?: AuthConfig;
+  storageState?: ExecuteTestRuntimeOptions['storageState'];
   testType: PlatformTestType;
   runnerType: PlatformRunnerType;
   testCase?: PlatformTestCaseAsset | null;
@@ -1565,7 +1566,9 @@ const PLAYWRIGHT_RUNNER_ADAPTER: IntentRunnerAdapter = {
   runnerType: 'playwright_runner',
   supportedTestTypes: ['browser_e2e'],
   execute(input, hooks) {
-    return executeTest(input.code, input.sessionId, input.auth, hooks);
+    return executeTest(input.code, input.sessionId, input.auth, hooks, {
+      ...(input.storageState ? { storageState: input.storageState } : {}),
+    });
   },
 };
 

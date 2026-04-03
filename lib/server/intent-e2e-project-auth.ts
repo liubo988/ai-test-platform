@@ -6,6 +6,7 @@ import {
   buildIntentE2EProjectAccountRef,
   buildIntentE2EProjectCredentialRef,
   buildIntentE2EProjectFixtureOwnerRef,
+  hasIntentE2EFixtureContract,
   mergeIntentE2ERuntimeGovernance,
   shouldEnforceIntentE2ERuntimeGovernance,
 } from '@/lib/intent-e2e-runtime-governance';
@@ -91,10 +92,7 @@ function applyProjectFixtureOwnershipGovernance(
     return runtimeGovernance;
   }
 
-  const hasFixtureContract = Boolean(
-    (fixture.strategy && fixture.strategy !== 'none') || fixture.setupRef || fixture.cleanupRef || fixture.idempotencyKey
-  );
-  if (!hasFixtureContract) {
+  if (!hasIntentE2EFixtureContract(fixture)) {
     return runtimeGovernance;
   }
 

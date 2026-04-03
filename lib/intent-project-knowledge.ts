@@ -349,6 +349,7 @@ const DEFAULT_PROJECT_ASSET_ROOT = path.join(process.cwd(), 'reports', 'intent-e
 
 let cachePath = '';
 let cacheProfile: IntentProjectKnowledgeProfile | null = null;
+let cacheSignature = '';
 
 type IntentProjectKnowledgePathMode = 'read' | 'write';
 
@@ -847,18 +848,31 @@ function normalizeCount(value: unknown): number {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
 }
 
+function buildIntentProjectKnowledgeCacheSignature(knowledgePath: string): string {
+  try {
+    const stat = fs.statSync(knowledgePath);
+    return `${stat.size}:${stat.mtimeMs}`;
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code || 'unknown';
+    return `missing:${code}`;
+  }
+}
+
 function loadIntentProjectKnowledgeProfile(knowledgePath = resolveProjectKnowledgePath()): IntentProjectKnowledgeProfile {
-  if (cacheProfile && cachePath === knowledgePath) {
+  const signature = buildIntentProjectKnowledgeCacheSignature(knowledgePath);
+  if (cacheProfile && cachePath === knowledgePath && cacheSignature === signature) {
     return cacheProfile;
   }
 
   cachePath = knowledgePath;
+  cacheSignature = signature;
   try {
     const raw = fs.readFileSync(knowledgePath, 'utf8');
     cacheProfile = normalizeProfile(JSON.parse(raw));
   } catch {
     cacheProfile = { version: 1, rules: [] };
   }
+  cacheSignature = buildIntentProjectKnowledgeCacheSignature(knowledgePath);
 
   return cacheProfile;
 }
@@ -1598,6 +1612,7 @@ export async function writeIntentProjectKnowledgeProfile(
   await fsPromises.writeFile(outputPath, JSON.stringify(normalizedProfile, null, 2), 'utf8');
   cachePath = outputPath;
   cacheProfile = normalizedProfile;
+  cacheSignature = buildIntentProjectKnowledgeCacheSignature(outputPath);
   return toDisplayPath(outputPath);
 }
 
@@ -1777,4 +1792,5 @@ export async function listIntentProjectKnowledgeAuditEntries(
 export function resetIntentProjectKnowledgeCache(): void {
   cachePath = '';
   cacheProfile = null;
+  cacheSignature = '';
 }

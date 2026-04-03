@@ -213,6 +213,14 @@ type IntentDraftTestRunResponse = {
   error?: string;
 };
 
+type IntentLaunchDecisionValue = 'auto_run' | 'needs_bootstrap' | 'needs_fixture' | 'needs_clarify' | 'draft_only';
+
+type IntentDraftLaunchDecisionResponse = {
+  decision?: IntentLaunchDecisionValue;
+  reasons?: string[];
+  error?: string;
+};
+
 type IntentDraftMutationResponse = {
   item?: IntentDraftItem;
   ok?: boolean;
@@ -2397,6 +2405,37 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
         llmConfig: Object.keys(detail.llmConfig || {}).length > 0 ? detail.llmConfig : undefined,
       };
 
+      const launchDecisionRes = await fetch('/api/intent-e2e/launch-decision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const launchDecisionJson = (await launchDecisionRes.json().catch(() => null)) as IntentDraftLaunchDecisionResponse | null;
+      if (!launchDecisionRes.ok || !launchDecisionJson?.decision) {
+        throw new Error(launchDecisionJson?.error || '计算自动测试启动决策失败');
+      }
+
+      const nextParams = new URLSearchParams();
+      nextParams.set('projectUid', detail.projectUid || projectUid);
+      if (detail.moduleUid || draft.moduleUid) {
+        nextParams.set('moduleUid', detail.moduleUid || draft.moduleUid);
+      }
+      nextParams.set('draftUid', detail.intentDraftUid);
+
+      if (launchDecisionJson.decision !== 'auto_run') {
+        nextParams.set('launchDecision', launchDecisionJson.decision);
+        for (const reason of launchDecisionJson.reasons || []) {
+          const normalized = reason.trim();
+          if (normalized) {
+            nextParams.append('launchReason', normalized);
+          }
+        }
+        setIntentDraftDetailOpen(false);
+        setIntentDraftsModalOpen(false);
+        router.push(`/intent-e2e?${nextParams.toString()}`);
+        return;
+      }
+
       const res = await fetch('/api/intent-e2e/runs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2412,12 +2451,6 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
         window.sessionStorage.setItem('intent-e2e:last-run-id', runId);
       }
 
-      const nextParams = new URLSearchParams();
-      nextParams.set('projectUid', detail.projectUid || projectUid);
-      if (detail.moduleUid || draft.moduleUid) {
-        nextParams.set('moduleUid', detail.moduleUid || draft.moduleUid);
-      }
-      nextParams.set('draftUid', detail.intentDraftUid);
       nextParams.set('runId', runId);
       setIntentDraftDetailOpen(false);
       setIntentDraftsModalOpen(false);

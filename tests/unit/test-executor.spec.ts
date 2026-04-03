@@ -118,6 +118,45 @@ describe('test-executor worker template rendering', () => {
   );
 
   it(
+    'loads provided storage state into the worker browser context',
+    async () => {
+      const result = await executeTest(
+        `test('worker storage state smoke', async ({ page }) => {
+          const cookies = await page.context().cookies('https://example.com');
+          const sessionCookie = cookies.find((item) => item.name === 'intent_sid');
+          expect(sessionCookie?.value).toBe('shared-session');
+        });`,
+        'worker-storage-state-smoke',
+        undefined,
+        undefined,
+        {
+          storageState: {
+            cookies: [
+              {
+                name: 'intent_sid',
+                value: 'shared-session',
+                domain: 'example.com',
+                path: '/',
+                expires: -1,
+                httpOnly: false,
+                secure: false,
+                sameSite: 'Lax' as const,
+              },
+            ],
+            origins: [],
+          },
+        }
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+    },
+    20000
+  );
+
+  it(
     'reads response json and extracts primary keys through shared helpers',
     async () => {
       const result = await executeTest(
@@ -870,6 +909,50 @@ describe('test-executor worker template rendering', () => {
   );
 
   it(
+    'relaxes detail titles for visible Ant Design overlays and honors required false',
+    async () => {
+      const result = await executeTest(
+        `test('wait for visible modal with relaxed detail title', async ({ page }) => {
+          await page.goto('about:blank');
+          await page.setContent(\`
+            <div class="ant-drawer-content-wrapper" style="display:block">
+              <div class="ant-drawer-content">
+                <div class="ant-drawer-header">
+                  <div class="ant-drawer-title">商机</div>
+                </div>
+                <div class="ant-drawer-body">
+                  <div class="detail-body">详情内容</div>
+                </div>
+              </div>
+            </div>
+          \`);
+
+          const visibleDrawer = await __e2e.waitForVisibleAntdModal(page, {
+            titleIncludes: '商机详情',
+            timeoutMs: 1200,
+            required: false,
+          });
+          const missingDrawer = await __e2e.waitForVisibleAntdModal(page, {
+            titleIncludes: '不存在的详情',
+            timeoutMs: 300,
+            required: false,
+          });
+
+          await expect(visibleDrawer).toBeVisible();
+          expect(missingDrawer).toBeNull();
+        });`,
+        'worker-wait-visible-modal-relaxed-detail-title'
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+    },
+    20000
+  );
+
+  it(
     'reads inline label value detail fields from generic detail layouts',
     async () => {
       const result = await executeTest(
@@ -896,6 +979,98 @@ describe('test-executor worker template rendering', () => {
           expect(createdAtText).toContain('2026-03-23 10:00');
         });`,
         'worker-read-detail-field-inline-layout'
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+    },
+    20000
+  );
+
+  it(
+    'uses titleIncludes to scope detail field reads to the matching detail page section',
+    async () => {
+      const result = await executeTest(
+        `test('read detail field from titled detail page section', async ({ page }) => {
+          await page.goto('about:blank');
+          await page.setContent(\`
+            <aside class="side-panel">
+              <div class="detail-row">
+                <span class="label">状态</span>
+                <span class="value">无意向</span>
+              </div>
+            </aside>
+            <section class="business-detail-page">
+              <header class="page-header">
+                <h2>商机详情</h2>
+              </header>
+              <div class="detail-panel">
+                <div class="detail-row">
+                  <span class="label">状态</span>
+                  <span class="value">新入库</span>
+                </div>
+                <div class="detail-row">
+                  <span class="label">商机进展</span>
+                  <span class="value">新入库</span>
+                </div>
+              </div>
+            </section>
+          \`);
+
+          const statusText = await __e2e.readDetailField(page, {
+            label: '状态',
+            titleIncludes: '商机详情',
+          });
+          const progressText = await __e2e.readDetailField(page, {
+            label: '商机进展',
+            titleIncludes: '商机详情',
+          });
+
+          expect(statusText).toBe('新入库');
+          expect(progressText).toBe('新入库');
+        });`,
+        'worker-read-detail-field-page-title-scope'
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+    },
+    20000
+  );
+
+  it(
+    'returns null for invalid detail surface pages and avoids blind detail field reads',
+    async () => {
+      const result = await executeTest(
+        `test('invalid detail surface short-circuits detail reads', async ({ page }) => {
+          await page.goto('about:blank');
+          await page.setContent(\`
+            <main class="error-page">
+              <h1>抱歉！页面好像不见了</h1>
+              <p>请联系管理员!</p>
+            </main>
+          \`);
+
+          const detailSurface = await __e2e.waitForVisibleDetailSurface(page, {
+            titleIncludes: '商机详情',
+            timeoutMs: 500,
+            required: false,
+          });
+          const detailStatus = await __e2e.readDetailField(page, {
+            label: '状态',
+            titleIncludes: '商机详情',
+            timeoutMs: 500,
+            required: false,
+          });
+
+          expect(detailSurface).toBe(null);
+          expect(detailStatus).toBe('');
+        });`,
+        'worker-invalid-detail-surface'
       );
 
       expect(result).toMatchObject({

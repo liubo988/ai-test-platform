@@ -12885,10 +12885,10 @@
   - 只修当前最新真实首轮缺口：`scrollIntoViewIfNeeded|.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible|/保\\s*存|提\\s*交|确\\s*定/i`
   - 修法只允许落在“最终提交按钮 step scope / active pane fallback”的首轮 skeleton / repair 指引：
     - 先继续优先看当前可见 pane
-    - 当前 pane 内找不到最终主动作时，允许回退到更稳的页面级主动作链
+    - 当前 pane 内找不到最终主动作时，后续已进一步收窄为：优先扩 `candidateContainers`，仅在 `attachmentAnchor` 已确认可见时允许再试一次更窄的 exact `提交` fallback
     - 不扩回列表回查、状态证据链、认证链或其他 family
 
-## 2026-03-28 第一百九十四次更新（R3 第三十三刀：最终提交按钮 current pane miss 时允许 page-level fallback）
+## 2026-03-28 第一百九十四次更新（R3 第三十三刀：最终提交按钮 current pane miss 首轮 fallback；后续已被 candidateContainers + exact-submit 口径取代）
 
 - 本轮目标：
   - 严格沿上一轮“只修当前最新真实首轮缺口”的下一步执行，不扩范围。
@@ -12900,28 +12900,28 @@
   - `lib/test-generator.ts`
     - 更新首轮 skeleton 规则 `11.1 / 21.2`：
       - 最终提交按钮仍先优先收窄到当前可见步骤容器
-      - 如果当前 pane 内根本找不到 `/保\\s*存|提\\s*交|确\\s*定/i` 的最终主动作，明确允许回退到更稳的页面级可见主动作链
+      - 如果当前 pane 内根本找不到 `/保\\s*存|提\\s*交|确\\s*定/i` 的最终主动作，后续已进一步收紧为：先扩 `candidateContainers`，仅在 `attachmentAnchor` 已确认可见时允许再试更窄的 exact `提交` fallback
       - 明确禁止把 selector 锁死在 `.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible` 这类单一路径
       - 继续保留“不要把 `保存并继续` / `上一步` 误当最终提交”的旧约束
     - 新增 repair diagnosis：
       - 当失败链已经是 `activePane + /保\\s*存|提\\s*交|确\\s*定/i + scrollIntoViewIfNeeded`
-      - 明确提示改成“当前 pane 优先，但 scoped locator `count() === 0` 时立刻回退到 page-level 主动作链”
+      - 明确提示改成“当前 pane 优先，但 scoped locator `count() === 0` 时立刻切到 `candidateContainers` 链；只有 `attachmentAnchor` 已可见且 scoped 容器都 miss 时才允许再试 exact `提交` fallback”
   - `lib/intent-execution-compiler.ts`
     - 编译器内联提示同步补齐：
       - 当前 pane 优先
-      - pane miss 时回退 page-level 可见主动作链
+      - pane miss 时先扩 `candidateContainers`，只在 `attachmentAnchor` 已可见时允许更窄的 exact `提交` fallback
       - 不再把 selector 锁死在单一 pane locator
   - `lib/intent-action-library.ts`
     - `assert.watch-submit-state` capability 的 notes / example 对齐到同一口径：
-      - 示例改成 `scopedFinalSaveBtn.count()` 判空
-      - pane miss 时回退页面级 `/^(?!.*保存并继续)(?!.*上一步).*(保\\s*存|提\\s*交|确\\s*定).*$/i`
+      - 示例先走 `candidateContainers`
+      - scoped miss 后仅允许 `page.getByRole('button', { name: /^提\\s*交$/ }).first()`
   - `tests/unit/test-generator.spec.ts`
     - 新增 repair 回归：覆盖 “active-pane selector trap final submit lookup”
     - 同步更新通用 prompt 断言，确保 fallback 指引进入首轮生成文案
   - `tests/unit/intent-execution-compiler.spec.ts`
-    - 新增断言：编译模板必须包含 current pane miss -> page-level fallback 规则
+    - 新增断言：编译模板必须包含 current pane miss -> `candidateContainers + exact submit fallback` 规则
   - `tests/unit/intent-action-library.spec.ts`
-    - 新增断言：capability example / notes 必须包含 scoped -> page-level fallback 骨架
+    - 新增断言：capability example / notes 必须包含 `candidateContainers + exact submit fallback` 骨架
 - 验证：
   - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/intent-action-library.spec.ts`
   - `npm run build`
@@ -12944,7 +12944,7 @@
   - R0：已完成
   - R1：进行中（R1.1 已完成；第四刀：priority scenario family 归类去污染已落地）
   - R2：已完成（当前 roadmap scope）
-  - R3：进行中（第三十三刀：最终提交按钮 current pane miss 时允许 page-level fallback 的首轮指引已落地）
+  - R3：进行中（第三十三刀：最终提交按钮 current pane miss 的首轮指引已落地；后续已继续收紧到 `candidateContainers + exact-submit`）
   - R4：已完成
   - R5：已完成
   - R6：已完成（当前 roadmap scope）
@@ -12992,7 +12992,7 @@
 - 下一步：
   - 继续 `R3`
   - 只在环境恢复后继续复用同一 payload 发起 clean rerun，直到重新拿到 `attempt1`
-  - 在拿到 clean `attempt1` 之前，不扩写新的代码 family，也不回退本轮 page-level fallback 改动
+  - 在拿到 clean `attempt1` 之前，不扩写新的代码 family，也不回退当前 `candidateContainers + exact-submit` 收口
 
 ## 2026-03-28 第一百九十六次更新（R3 第三十四刀：最终验收不再对 helper 已命中的表格行重复做主值断言）
 

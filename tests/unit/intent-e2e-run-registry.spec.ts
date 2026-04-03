@@ -6,6 +6,7 @@ vi.mock('@/lib/ai/intent-e2e-service', () => ({
 
 vi.mock('@/lib/db/repository', () => ({
   getIntentE2ERunSnapshotByRunId: vi.fn(),
+  listIntentE2ERunSnapshots: vi.fn(),
   upsertIntentE2ERunSnapshot: vi.fn(),
 }));
 
@@ -16,7 +17,7 @@ vi.mock('@/lib/intent-e2e-cicd-report', () => ({
 }));
 
 import { runIntentDrivenE2EStream, type IntentE2ERunResult } from '@/lib/ai/intent-e2e-service';
-import { getIntentE2ERunSnapshotByRunId, upsertIntentE2ERunSnapshot } from '@/lib/db/repository';
+import { getIntentE2ERunSnapshotByRunId, listIntentE2ERunSnapshots, upsertIntentE2ERunSnapshot } from '@/lib/db/repository';
 import { buildIntentE2ECiCdReport } from '@/lib/intent-e2e-cicd-report';
 import { buildBrowserE2EPlatformTestAssetBundle } from '@/lib/test-platform-asset-model';
 import {
@@ -24,6 +25,7 @@ import {
   createIntentE2ERun,
   getIntentE2ERun,
   listIntentE2ERunEvents,
+  listRecentIntentE2ETerminalRunSnapshots,
   loadIntentE2ERun,
   resetIntentE2ERunRegistry,
   startIntentE2ERun,
@@ -421,6 +423,7 @@ describe('intent-e2e-run-registry', () => {
     vi.useRealTimers();
     resetIntentE2ERunRegistry();
     vi.mocked(getIntentE2ERunSnapshotByRunId).mockResolvedValue(null as never);
+    vi.mocked(listIntentE2ERunSnapshots).mockResolvedValue([] as never);
     vi.mocked(upsertIntentE2ERunSnapshot).mockResolvedValue(undefined as never);
   });
 
@@ -591,8 +594,110 @@ describe('intent-e2e-run-registry', () => {
     });
   });
 
+  it('lists recent terminal run snapshots by merging persisted and in-memory terminal runs', async () => {
+    const finalResult = createFinalResult(false);
+
+    vi.mocked(runIntentDrivenE2EStream).mockImplementation(async (_request, listener) => {
+      await listener?.({
+        type: 'final_result',
+        result: finalResult,
+      });
+      return finalResult as never;
+    });
+    vi.mocked(listIntentE2ERunSnapshots).mockResolvedValue([
+      {
+        runId: 'persisted_failed_1',
+        projectUid: 'proj_1',
+        moduleUid: 'mod_1',
+        status: 'failed',
+        stage: 'completed',
+        requestInput: '旧失败任务',
+        targetUrl: 'https://example.com/legacy',
+        state: null,
+        error: 'legacy failed',
+        createdAt: '2024-04-02T09:58:00.000Z',
+        updatedAt: '2024-04-02T09:59:00.000Z',
+        startedAt: '2024-04-02T09:58:05.000Z',
+        endedAt: '2024-04-02T09:59:00.000Z',
+      },
+    ] as never);
+
+    const created = createIntentE2ERun({
+      input: '访问结算页并提交，最终看到成功页面',
+      projectUid: 'proj_1',
+      moduleUid: 'mod_1',
+    });
+    startIntentE2ERun(created.runId, {
+      input: '访问结算页并提交，最终看到成功页面',
+      projectUid: 'proj_1',
+      moduleUid: 'mod_1',
+    });
+    await waitForIntentE2ERunCompletion(created.runId);
+
+    const snapshots = await listRecentIntentE2ETerminalRunSnapshots({
+      projectUid: 'proj_1',
+      moduleUid: 'mod_1',
+      limit: 10,
+    });
+
+    expect(listIntentE2ERunSnapshots).toHaveBeenCalledWith({
+      projectUid: 'proj_1',
+      moduleUid: 'mod_1',
+      status: 'terminal',
+      limit: 10,
+    });
+    expect(snapshots.map((item) => item.runId)).toContain('persisted_failed_1');
+    expect(snapshots.map((item) => item.runId)).toContain(created.runId);
+    expect(snapshots[0]?.runId).toBe(created.runId);
+  });
+
   it('stores failed final_result from precheck-style failures without promoting them to runtime errors', async () => {
     const finalResult = createPrecheckFailureResult();
+    finalResult.repairBudget = {
+      configuredRepairLimit: 2,
+      maxRepairAttempts: 0,
+      usedRepairAttempts: 0,
+      remainingRepairAttempts: 0,
+      exhausted: true,
+      reasonCode: 'auth_blocked',
+      stopReason: '认证阻塞',
+      summary: '当前失败属于认证阻塞，不继续消耗 repair 配额。当前不会继续进入自动修复。',
+    };
+    finalResult.failureCta = {
+      headline: '先补前置条件，再重新运行',
+      summary: '认证流程当前不可用，先补账号、登录方式或会话前置条件。',
+      primaryAction: 'prepare_prerequisites',
+      actions: [
+        {
+          action: 'prepare_prerequisites',
+          label: '补前置条件',
+          description: '先检查账号、登录地址和会话配置。',
+          recommended: true,
+          enabled: true,
+        },
+        {
+          action: 'preview_knowledge_draft',
+          label: '生成知识草稿',
+          description: '当前不在项目作用域，暂时不能生成项目知识草稿。',
+          recommended: false,
+          enabled: false,
+        },
+        {
+          action: 'edit_description',
+          label: '继续改描述',
+          description: '补登录入口和成功标准后再试。',
+          recommended: false,
+          enabled: true,
+        },
+        {
+          action: 'handoff_manual',
+          label: '转手动任务',
+          description: '转人工跟进登录态问题。',
+          recommended: false,
+          enabled: true,
+        },
+      ],
+    };
 
     vi.mocked(runIntentDrivenE2EStream).mockImplementation(async (_request, listener) => {
       await listener?.({
@@ -625,6 +730,13 @@ describe('intent-e2e-run-registry', () => {
         blocked: true,
         qualityEligible: false,
         blockerKind: 'auth',
+      },
+      repairBudget: {
+        reasonCode: 'auth_blocked',
+        exhausted: true,
+      },
+      failureCta: {
+        primaryAction: 'prepare_prerequisites',
       },
     });
     expect(finished?.events.some((event) => event.type === 'error')).toBe(false);
@@ -973,6 +1085,108 @@ describe('intent-e2e-run-registry', () => {
       code: "await page.goto('https://example.com/checkout');",
     });
     expect(upsertIntentE2ERunSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('restores repair budget and failure CTA from persisted terminal failure snapshots', async () => {
+    const finalResult = createPrecheckFailureResult();
+    finalResult.repairBudget = {
+      configuredRepairLimit: 2,
+      maxRepairAttempts: 0,
+      usedRepairAttempts: 0,
+      remainingRepairAttempts: 0,
+      exhausted: true,
+      reasonCode: 'auth_blocked',
+      stopReason: '认证阻塞',
+      summary: '当前失败属于认证阻塞，不继续消耗 repair 配额。当前不会继续进入自动修复。',
+    };
+    finalResult.failureCta = {
+      headline: '先补前置条件，再重新运行',
+      summary: '登录前置未满足，建议先补账号、会话或环境条件。',
+      primaryAction: 'prepare_prerequisites',
+      actions: [
+        {
+          action: 'prepare_prerequisites',
+          label: '补前置条件',
+          description: '先检查账号、登录地址和会话配置。',
+          recommended: true,
+          enabled: true,
+        },
+        {
+          action: 'preview_knowledge_draft',
+          label: '生成知识草稿',
+          description: '当前不在项目作用域，暂时不能生成项目知识草稿。',
+          recommended: false,
+          enabled: false,
+        },
+        {
+          action: 'edit_description',
+          label: '继续改描述',
+          description: '补登录入口和成功标准后再试。',
+          recommended: false,
+          enabled: true,
+        },
+        {
+          action: 'handoff_manual',
+          label: '转手动任务',
+          description: '转人工跟进登录态问题。',
+          recommended: false,
+          enabled: true,
+        },
+      ],
+    };
+
+    vi.mocked(getIntentE2ERunSnapshotByRunId).mockResolvedValue({
+      runId: 'intent-run-failed-persisted',
+      projectUid: 'proj_1',
+      status: 'failed',
+      stage: 'completed',
+      requestInput: '登录后检查首页额度信息',
+      targetUrl: 'https://example.com/checkout',
+      state: {
+        runId: 'intent-run-failed-persisted',
+        status: 'failed',
+        stage: 'completed',
+        createdAt: '2026-03-18T10:00:00.000Z',
+        updatedAt: '2026-03-18T10:05:00.000Z',
+        startedAt: '2026-03-18T10:00:10.000Z',
+        endedAt: '2026-03-18T10:05:00.000Z',
+        request: {
+          input: '登录后检查首页额度信息',
+          targetUrl: 'https://example.com/checkout',
+          attachmentCount: 0,
+          hasAuth: true,
+          llm: {
+            provider: 'openai',
+            model: 'gpt-5.4',
+            apiStyle: 'responses',
+            visionEnabled: true,
+            selfHealRetries: 2,
+            maxPlanSteps: 8,
+          },
+        },
+        events: [{ type: 'final_result' as const, result: finalResult }],
+        result: finalResult,
+        error: finalResult.finalResult.error,
+      },
+      error: finalResult.finalResult.error || '',
+      createdAt: '2026-03-18T10:00:00.000Z',
+      updatedAt: '2026-03-18T10:05:00.000Z',
+      startedAt: '2026-03-18T10:00:10.000Z',
+      endedAt: '2026-03-18T10:05:00.000Z',
+    } as never);
+
+    const loaded = await loadIntentE2ERun('intent-run-failed-persisted');
+
+    expect(loaded?.result?.repairBudget).toMatchObject({
+      reasonCode: 'auth_blocked',
+      exhausted: true,
+      maxRepairAttempts: 0,
+    });
+    expect(loaded?.result?.failureCta).toMatchObject({
+      primaryAction: 'prepare_prerequisites',
+      headline: '先补前置条件，再重新运行',
+    });
+    expect(loaded?.result?.failureCta?.actions).toHaveLength(4);
   });
 
   it('defaults platform metadata when loading legacy snapshots without explicit platform fields', async () => {

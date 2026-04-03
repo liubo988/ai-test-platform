@@ -355,13 +355,22 @@ describe('test-generator structured slot patch path', () => {
       'detailSurface: titleIncludes=商机详情; scopeHints=详情页'
     );
     expect(String(vi.mocked(callLLMStructured).mock.calls[0]?.[0]?.prompt || '')).toContain(
-      'const verify_success_2Record = await __e2e.resolvePrimaryRecord(page, {'
+      'const verify_success_2Record = verify_success_2CurrentVisibleRow'
+    );
+    expect(String(vi.mocked(callLLMStructured).mock.calls[0]?.[0]?.prompt || '')).toContain(
+      ': await __e2e.resolvePrimaryRecord(page, {'
     );
     expect(String(vi.mocked(callLLMStructured).mock.calls[0]?.[0]?.prompt || '')).toContain(
       'await __e2e.clickAntdRowAction(page, verify_success_2Record.row, "查看");'
     );
     expect(String(vi.mocked(callLLMStructured).mock.calls[0]?.[0]?.prompt || '')).toContain(
-      'const verify_success_2DetailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: "商机详情", timeoutMs: 5000 });'
+      'let verify_success_2DetailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: "商机详情", timeoutMs: 5000, required: false });'
+    );
+    expect(String(vi.mocked(callLLMStructured).mock.calls[0]?.[0]?.prompt || '')).toContain(
+      'verify_success_2DetailScope = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: "商机详情", timeoutMs: 2500, required: false });'
+    );
+    expect(String(vi.mocked(callLLMStructured).mock.calls[0]?.[0]?.prompt || '')).toContain(
+      'if (!verify_success_2DetailScope) throw new Error("状态证据缺失：列表行已命中，但“查看”后未出现可用详情弹层或详情页");'
     );
     expect(String(vi.mocked(callLLMStructured).mock.calls[0]?.[0]?.prompt || '')).toContain('__e2e.pickJsonRecord(verify_success_2ListPayload');
     expect(String(vi.mocked(callLLMStructured).mock.calls[0]?.[0]?.prompt || '')).toContain(

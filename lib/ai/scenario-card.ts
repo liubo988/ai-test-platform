@@ -1,5 +1,10 @@
 import { callLLMStructured } from '@/lib/llm-client';
 import { getLLMRuntimeConfig, type LLMRuntimeOverrides } from '@/lib/llm/provider-config';
+import {
+  formatIntentE2EPriorityScenarioFamilyLabel,
+  resolveIntentE2EPriorityScenarioFamilyRoute,
+  type IntentE2EPriorityScenarioFamilyRoute,
+} from '@/lib/intent-e2e-priority-scenario-family';
 import { looksLikeIntentStableIdentifierVariable } from '@/lib/intent-shared-variable-utils';
 import { buildFlowSummary, normalizeFlowDefinition, normalizeTaskMode, type FlowDefinition, type TaskMode } from '@/lib/task-flow';
 import { buildIntentActionDSL } from '@/lib/intent-action-dsl';
@@ -499,16 +504,192 @@ function stabilizeBusinessCreateCard(card: ScenarioCard): ScenarioCard {
   };
 }
 
-function stabilizeScenarioCard(card: ScenarioCard): ScenarioCard {
-  if (!looksLikeBusinessCreateScenarioCard(card)) return card;
+function resolveScenarioCardPriorityFamilyRoute(card: ScenarioCard): IntentE2EPriorityScenarioFamilyRoute {
+  return resolveIntentE2EPriorityScenarioFamilyRoute({
+    requestInput: `${card.title}\n${card.featureDescription}`,
+    targetUrl: card.targetUrl,
+    scenarioCard: card,
+    description: [
+      card.flowDefinition.expectedOutcome,
+      ...card.successCriteria,
+      ...card.notes,
+    ]
+      .map((item) => toString(item))
+      .filter(Boolean)
+      .join('\n'),
+    visualAnchors: card.visualAnchors,
+  });
+}
 
-  return stabilizeBusinessCreateCard({
+function buildScenarioCardFamilyRouteNotes(route: IntentE2EPriorityScenarioFamilyRoute): string[] {
+  const notes: string[] = [];
+
+  if (route.source === 'visual_anchor_salvaged' && route.family !== 'untracked') {
+    notes.push(`family_route：文本描述不足，已根据视觉锚点辅助收口到“${formatIntentE2EPriorityScenarioFamilyLabel(route.family)}”场景。`);
+  }
+
+  for (const signal of route.clarifySignals) {
+    notes.push(`clarify_signal：${signal}`);
+  }
+
+  return notes;
+}
+
+function isModalOrDrawerStep(step: FlowDefinition['steps'][number]): boolean {
+  return /(drawer|modal|抽屉|弹窗|弹框|弹层|对话框)/i.test(buildScenarioStepHaystack(step));
+}
+
+function isModalOrDrawerOpenStep(step: FlowDefinition['steps'][number]): boolean {
+  const haystack = buildScenarioStepHaystack(step);
+  return isModalOrDrawerStep(step) && /(打开|进入|展示|显示|出现|open)/i.test(haystack) && !/(保存|提交|确定|save|submit|confirm)/i.test(haystack);
+}
+
+function isModalOrDrawerSaveStep(step: FlowDefinition['steps'][number]): boolean {
+  const haystack = buildScenarioStepHaystack(step);
+  return isModalOrDrawerStep(step) && /(保存|提交|确定|save|submit|confirm)/i.test(haystack);
+}
+
+function sanitizeModalOrDrawerSaveSuccessCriterion(criterion: string): string {
+  const value = toString(criterion);
+  if (!value) return value;
+  if (!/(保存|提交|确定|save|submit|confirm|成功)/i.test(value)) return value;
+  if (/(关闭|消失|稳定态|稳定状态|回到|返回|close|closed|stable)/i.test(value)) return value;
+  return appendUniqueClause(value, '并确认当前弹层/抽屉关闭或页面回到稳定态');
+}
+
+function sanitizeModalOrDrawerSaveStep(step: FlowDefinition['steps'][number]): FlowDefinition['steps'][number] {
+  if (isModalOrDrawerOpenStep(step)) {
+    return {
+      ...step,
+      instruction: appendUniqueClause(step.instruction, '后续填写和保存都先 scope 到当前可见的弹层/抽屉容器内。'),
+      expectedResult: appendUniqueClause(step.expectedResult, '当前可见弹层/抽屉已打开，可继续填写和保存。'),
+    };
+  }
+
+  if (isModalOrDrawerSaveStep(step)) {
+    return {
+      ...step,
+      instruction: appendUniqueClause(step.instruction, '填写和点击保存前先 scope 到当前可见的弹层/抽屉容器内。'),
+      expectedResult: appendUniqueClause(step.expectedResult, '保存后确认当前弹层/抽屉关闭或页面回到稳定态。'),
+    };
+  }
+
+  return step;
+}
+
+function stabilizeModalOrDrawerSaveCard(card: ScenarioCard): ScenarioCard {
+  const flowDefinition = normalizeFlowDefinition(card.flowDefinition, card.targetUrl || card.flowDefinition.entryUrl);
+
+  return {
     ...card,
+    successCriteria: normalizeStringArray(card.successCriteria.map((criterion) => sanitizeModalOrDrawerSaveSuccessCriterion(criterion))),
     notes: normalizeStringArray([
       ...card.notes,
-      '进入创建商机页后，优先使用“商机联系人信息 / 关联产品意向信息 / 附件信息”等当前步骤标题或字段标签作为锚点，不要对裸“创建商机”文本使用 getByText(...).first()；页面里可能同时存在隐藏统计文案如“本月创建商机”。',
+      '不要只看 toast；弹层 / 抽屉保存后至少确认当前弹层关闭或页面回到稳定态。',
+      '弹层 / 抽屉内的填写、按钮定位和断言都先 scope 到当前可见容器，再继续操作。',
     ]),
-  });
+    flowDefinition: {
+      ...flowDefinition,
+      steps: flowDefinition.steps.map((step) => sanitizeModalOrDrawerSaveStep(step)),
+    },
+  };
+}
+
+function isListSearchStep(step: FlowDefinition['steps'][number]): boolean {
+  const haystack = buildScenarioStepHaystack(step);
+  return /(搜索|检索|查询|search)/i.test(haystack) && /(列表|表格|table|list|结果)/i.test(haystack);
+}
+
+function isListSearchDetailEntryStep(step: FlowDefinition['steps'][number]): boolean {
+  const haystack = buildScenarioStepHaystack(step);
+  return /(详情|detail|查看|抽屉|drawer|modal)/i.test(haystack) && !/(保存|提交|确定|save|submit|confirm)/i.test(haystack);
+}
+
+function sanitizeListSearchDetailSuccessCriterion(criterion: string): string {
+  const value = toString(criterion);
+  if (!value) return value;
+
+  if (/(搜索|检索|查询|search)/i.test(value) && /(结果|有数据|命中|记录)/i.test(value) && !/(详情|detail|抽屉|drawer|modal)/i.test(value)) {
+    return appendUniqueClause(value, '并进入目标记录详情');
+  }
+
+  if (/(详情|detail|抽屉|drawer|modal)/i.test(value) && !/(字段|标签|联系人|手机号|状态|锚点)/i.test(value)) {
+    return appendUniqueClause(value, '详情锚点可见并可按字段标签继续校验');
+  }
+
+  return value;
+}
+
+function sanitizeListSearchDetailStep(step: FlowDefinition['steps'][number]): FlowDefinition['steps'][number] {
+  if (isListSearchStep(step)) {
+    return {
+      ...step,
+      instruction: appendUniqueClause(step.instruction, '搜索后先等待表格刷新并重新定位目标行，不要直接点击第一行。'),
+      expectedResult: appendUniqueClause(step.expectedResult, '列表结果已刷新并稳定显示目标记录。'),
+    };
+  }
+
+  if (isListSearchDetailEntryStep(step)) {
+    return {
+      ...step,
+      instruction: appendUniqueClause(step.instruction, '只在目标行稳定命中后再进入详情；进入后优先按字段标签读取详情值。'),
+      expectedResult: appendUniqueClause(step.expectedResult, '成功进入对应详情页/详情抽屉，详情锚点可见。'),
+    };
+  }
+
+  return step;
+}
+
+function stabilizeListSearchDetailCard(card: ScenarioCard): ScenarioCard {
+  const flowDefinition = normalizeFlowDefinition(card.flowDefinition, card.targetUrl || card.flowDefinition.entryUrl);
+
+  return {
+    ...card,
+    successCriteria: normalizeStringArray(card.successCriteria.map((criterion) => sanitizeListSearchDetailSuccessCriterion(criterion))),
+    notes: normalizeStringArray([
+      ...card.notes,
+      '搜索后先等待表格刷新再定位目标行，不要搜索后直接点击第一行或第一条“查看”。',
+      '详情校验优先按字段标签读取联系人/手机号/状态，不要对整页文本做大段 toContain。',
+    ]),
+    flowDefinition: {
+      ...flowDefinition,
+      steps: flowDefinition.steps.map((step) => sanitizeListSearchDetailStep(step)),
+    },
+  };
+}
+
+function stabilizeScenarioCard(card: ScenarioCard): ScenarioCard {
+  let nextCard = card;
+
+  if (looksLikeBusinessCreateScenarioCard(nextCard)) {
+    nextCard = stabilizeBusinessCreateCard({
+      ...nextCard,
+      notes: normalizeStringArray([
+        ...nextCard.notes,
+        '进入创建商机页后，优先使用“商机联系人信息 / 关联产品意向信息 / 附件信息”等当前步骤标题或字段标签作为锚点，不要对裸“创建商机”文本使用 getByText(...).first()；页面里可能同时存在隐藏统计文案如“本月创建商机”。',
+      ]),
+    });
+  }
+
+  const familyRoute = resolveScenarioCardPriorityFamilyRoute(nextCard);
+  if (familyRoute.source !== 'text_only' || familyRoute.clarifySignals.length > 0) {
+    nextCard = {
+      ...nextCard,
+      notes: normalizeStringArray([
+        ...nextCard.notes,
+        ...buildScenarioCardFamilyRouteNotes(familyRoute),
+      ]),
+    };
+  }
+
+  const priorityScenarioFamily = familyRoute.family;
+  if (priorityScenarioFamily === 'modal_or_drawer_save') {
+    nextCard = stabilizeModalOrDrawerSaveCard(nextCard);
+  } else if (priorityScenarioFamily === 'list_search_detail') {
+    nextCard = stabilizeListSearchDetailCard(nextCard);
+  }
+
+  return nextCard;
 }
 
 function buildScenarioCardSchema(maxPlanSteps: number): Record<string, unknown> {
@@ -723,6 +904,7 @@ export function buildGenerateInputFromScenarioCard(card: ScenarioCard): {
           }),
           expectedOutcome,
           successCriteria: [...card.successCriteria],
+          visualAnchors: [...card.visualAnchors],
           sharedVariables: flowDefinition.sharedVariables,
           cleanupNotes: flowDefinition.cleanupNotes,
           scenarioSteps,
@@ -733,6 +915,7 @@ export function buildGenerateInputFromScenarioCard(card: ScenarioCard): {
           scenarioEntryUrl: targetUrl,
           expectedOutcome,
           successCriteria: [...card.successCriteria],
+          visualAnchors: [...card.visualAnchors],
           scenarioSteps,
           actionDsl,
         };

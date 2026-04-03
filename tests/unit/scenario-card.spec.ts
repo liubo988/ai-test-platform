@@ -74,6 +74,7 @@ describe('scenario-card', () => {
     expect(input.context.taskMode).toBe('scenario');
     expect(input.context.scenarioSummary).toContain('填写表单');
     expect(input.context.successCriteria).toEqual(['URL 保持在 create 页面', '页面出现新建商机记录']);
+    expect(input.context.visualAnchors).toEqual(['表单头部显示“创建商机”']);
     expect(input.context.sharedVariables).toEqual(['businessId']);
     expect(input.context.scenarioSteps?.[0]?.stepUid).toBe('flow_1');
     expect(input.context.actionDsl?.steps[0]?.allowedActions).toContain('click');
@@ -309,6 +310,193 @@ describe('scenario-card', () => {
     expect(card.successCriteria[1]).toBe('点击“保 存”后出现成功提示');
     expect(card.flowDefinition.steps[0]?.expectedResult).toBe('成功打开新建商机页面，出现商机联系人信息或其他创建表单区块锚点。');
     expect(card.flowDefinition.steps[1]?.expectedResult).toBe('出现保存成功提示');
+  });
+
+  it('stabilizes modal-or-drawer save cards with scope and close-state guidance', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '编辑客户抽屉并保存',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/customer/list',
+      featureDescription: '打开客户详情抽屉，修改联系人后保存',
+      successCriteria: ['保存成功提示出现'],
+      visualAnchors: ['客户详情抽屉', '保存按钮'],
+      notes: [],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/customer/list',
+        sharedVariables: ['customerCode'],
+        expectedOutcome: '客户信息修改成功',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step_open_drawer',
+            stepType: 'ui',
+            title: '打开客户详情抽屉',
+            target: '客户列表',
+            instruction: '点击目标客户进入详情抽屉',
+            expectedResult: '客户详情抽屉打开',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step_save_drawer',
+            stepType: 'ui',
+            title: '保存客户抽屉',
+            target: '客户详情抽屉',
+            instruction: '修改联系人后点击保存',
+            expectedResult: '保存成功',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    expect(card.successCriteria[0]).toContain('当前弹层/抽屉关闭或页面回到稳定态');
+    expect(card.notes.some((note) => note.includes('不要只看 toast'))).toBe(true);
+    expect(card.flowDefinition.steps[0]?.instruction).toContain('scope 到当前可见的弹层/抽屉容器内');
+    expect(card.flowDefinition.steps[0]?.expectedResult).toContain('当前可见弹层/抽屉已打开');
+    expect(card.flowDefinition.steps[1]?.instruction).toContain('scope 到当前可见的弹层/抽屉容器内');
+    expect(card.flowDefinition.steps[1]?.expectedResult).toContain('当前弹层/抽屉关闭或页面回到稳定态');
+  });
+
+  it('stabilizes list-search-detail cards with refresh and detail-field guidance', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '搜索客户并进入详情抽屉',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/customer/list',
+      featureDescription: '在客户列表按编号搜索目标客户后进入详情抽屉校验联系人',
+      successCriteria: ['搜索结果有数据', '进入客户详情抽屉'],
+      visualAnchors: ['客户列表搜索框', '客户详情抽屉'],
+      notes: [],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/customer/list',
+        sharedVariables: [],
+        expectedOutcome: '成功进入客户详情抽屉并校验联系人',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step_search_customer',
+            stepType: 'ui',
+            title: '搜索客户',
+            target: '客户列表',
+            instruction: '输入客户编号后点击搜索',
+            expectedResult: '列表返回目标客户',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step_open_detail',
+            stepType: 'ui',
+            title: '进入客户详情抽屉',
+            target: '客户列表结果行',
+            instruction: '点击目标客户进入详情抽屉',
+            expectedResult: '客户详情抽屉打开',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    expect(card.successCriteria[0]).toContain('并进入目标记录详情');
+    expect(card.successCriteria[1]).toContain('详情锚点可见并可按字段标签继续校验');
+    expect(card.notes.some((note) => note.includes('不要搜索后直接点击第一行'))).toBe(true);
+    expect(card.notes.some((note) => note.includes('按字段标签读取联系人/手机号/状态'))).toBe(true);
+    expect(card.flowDefinition.steps[0]?.instruction).toContain('等待表格刷新并重新定位目标行');
+    expect(card.flowDefinition.steps[0]?.expectedResult).toContain('列表结果已刷新并稳定显示目标记录');
+    expect(card.flowDefinition.steps[1]?.instruction).toContain('优先按字段标签读取详情值');
+    expect(card.flowDefinition.steps[1]?.expectedResult).toContain('详情锚点可见');
+  });
+
+  it('salvages untracked text family with visual anchors and emits family route notes', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '核对客户信息',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/customer/list',
+      featureDescription: '核对目标客户的详情信息',
+      successCriteria: ['目标客户信息可见'],
+      visualAnchors: ['客户列表搜索框', '客户详情抽屉'],
+      notes: [],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/customer/list',
+        sharedVariables: [],
+        expectedOutcome: '看到目标客户信息',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step_search_customer',
+            stepType: 'ui',
+            title: '搜索客户',
+            target: '当前页面',
+            instruction: '输入客户编号后查询目标客户',
+            expectedResult: '结果区出现目标客户',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step_open_customer',
+            stepType: 'ui',
+            title: '打开客户详情',
+            target: '目标记录',
+            instruction: '打开目标客户信息',
+            expectedResult: '客户信息可见',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    expect(card.notes.some((note) => note.includes('family_route：文本描述不足'))).toBe(true);
+    expect(card.notes.some((note) => note.includes('列表搜索详情'))).toBe(true);
+    expect(card.notes.some((note) => note.includes('不要搜索后直接点击第一行'))).toBe(true);
+    expect(card.flowDefinition.steps[0]?.instruction).toContain('等待表格刷新并重新定位目标行');
+    expect(card.flowDefinition.steps[1]?.instruction).toContain('优先按字段标签读取详情值');
+  });
+
+  it('emits clarify_signal when visual anchors conflict with a tracked text family', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '新建商机并在我创建的列表中验证记录出现',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription: '登录后创建商机，保存成功后回列表校验新记录',
+      successCriteria: ['“我创建的”列表中出现本次新建商机记录'],
+      visualAnchors: ['客户列表搜索框', '客户详情抽屉'],
+      notes: [],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/createbusiness',
+        sharedVariables: ['businessId'],
+        expectedOutcome: '成功创建商机并在“我创建的”列表中看到该记录',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step_create_business',
+            stepType: 'ui',
+            title: '填写并保存商机',
+            target: 'https://example.com/#/business/createbusiness',
+            instruction: '填写商机表单并点击保存',
+            expectedResult: '提交成功',
+            extractVariable: 'businessId',
+          },
+          {
+            stepUid: 'step_verify_business',
+            stepType: 'assert',
+            title: '回列表校验新建记录',
+            target: 'https://example.com/#/business/businesslist',
+            instruction: '回到我创建的列表校验新记录出现',
+            expectedResult: '“我创建的”列表中出现本次新建商机记录。',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    expect(card.notes.some((note) => note.includes('clarify_signal：'))).toBe(true);
+    expect(card.notes.some((note) => note.includes('文本更像“创建后回列表验收”'))).toBe(true);
+    expect(card.notes.some((note) => note.includes('视觉锚点更像“列表搜索详情”'))).toBe(true);
+    expect(card.notes.some((note) => note.includes('不要搜索后直接点击第一行'))).toBe(false);
   });
 
   it('still rewrites list entry and hallucinated business-name extraction when success criteria mention the extracted name', () => {

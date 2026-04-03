@@ -96,6 +96,8 @@ describe('test-generator prompt builder', () => {
     expect(prompt).toContain('`.ant-tabs-tab-active` / `.ant-radio-button-wrapper-checked` / `.ant-select-selection-selected-value`');
     expect(prompt).toContain('helper 成功本身就说明归属切换已收敛');
     expect(prompt).toContain('可见搜索框 / 列表 ready');
+    expect(prompt).toContain("不要直接写 `await expect(page.getByText('我创建的').first()).toBeVisible(...)`");
+    expect(prompt).toContain("page.getByRole('button', { name: '新建商机' }).first()");
     expect(prompt).toContain('对“企业名称”这类远程搜索 Select');
     expect(prompt).toContain('必须传 `searchText`');
     expect(prompt).toContain('`.ant-dropdown-trigger`');
@@ -110,6 +112,9 @@ describe('test-generator prompt builder', () => {
     expect(prompt).toContain('本月创建商机');
     expect(prompt).toContain("page.getByRole('heading', { name: '商机联系人信息' }).first()");
     expect(prompt).toContain('只能作为“已经进入当前步骤”的正向锚点');
+    expect(prompt).toContain("不要写 `await expect(contactStepHeading.or(sourceLabel)).toBeVisible(...)`");
+    expect(prompt).toContain('Playwright strict mode 在两个锚点同时可见时会直接失败');
+    expect(prompt).toContain("const headingVisible = await contactStepHeading.isVisible().catch(() => false)");
     expect(prompt).toContain("page.locator('input#businessList_keywords:visible').first()");
     expect(prompt).toContain("const recordCheck = await __e2e.resolvePrimaryRecord(page, { primaryValue: leadMobile, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: [leadMobile], maxLookupAttempts: 4, retryIntervalMs: 1200 })");
     expect(prompt).toContain("const currentVisibleRow = primaryValue ? await (async () => { try { return await __e2e.findAntdTableRow(page, { hasTexts: [primaryValue], timeoutMs: 1200 }); } catch { return null; } })() : null;");
@@ -130,6 +135,12 @@ describe('test-generator prompt builder', () => {
     expect(prompt).toContain('必须先完成这些第二页字段，再点击下一次 `保存并继续`');
     expect(prompt).toContain('__e2e.selectAntdOption(page, companyRow, { label, searchText })');
     expect(prompt).toContain('__e2e.selectAntdOption(page, productRow, { label, searchText, tree: true })');
+    expect(prompt).toContain("不要把 fallback 直接退化成 `page.getByRole('button', { name: /^(?!.*保存并继续)(?!.*上一步).*(保\\s*存|提\\s*交|确\\s*定).*$/i }).last()`");
+    expect(prompt).toContain('candidateContainers');
+    expect(prompt).toContain('前 3-4 层可见祖先链');
+    expect(prompt).toContain('footer / action-bar');
+    expect(prompt).toContain("page.getByRole('button', { name: /^提\\s*交$/ }).first()");
+    expect(prompt).toContain('不要对整页 regex + `.last()` 盲等 30 秒');
     expect(prompt).toContain('提交响应如果返回 `businessId` / `id` / `data.id`');
     expect(prompt).toContain('如果 `businessId` / `orderId` 这类共享稳定标识提取为空，不要立刻写 `expect(variable).toBeTruthy()`');
     expect(prompt).toContain('再继续做“我创建的 / 我跟进的”归属切换和列表回查');
@@ -169,7 +180,9 @@ describe('test-generator prompt builder', () => {
     expect(prompt).toContain('没有可用的详情回退路径');
     expect(prompt).toContain("不要写 `else if (shared.businessId) { await page.goto(...) } else { throw ... }`");
     expect(prompt).toContain("__e2e.clickAntdRowAction(page, recordCheck.row, '查看')");
-    expect(prompt).toContain("const detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000 })");
+    expect(prompt).toContain("let detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000, required: false })");
+    expect(prompt).toContain("detailScope = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false })");
+    expect(prompt).toContain("状态证据缺失：列表行已命中，但“查看”后未出现可用详情弹层或详情页");
     expect(prompt).toContain("如果当前链路没有 `detailEntry / actionLabel / 详情标题 / detailReadyLocator`");
     expect(prompt).toContain('状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口');
     expect(prompt).toContain("不要在 row 已命中时直接 `throw new Error('状态证据缺失：列表行已命中，但无法从列表响应或详情获取状态')`");
@@ -635,6 +648,46 @@ Error: element(s) not found`,
     expect(prompt).toContain('resolvePrimaryRecord(...)');
   });
 
+  it('adds targeted page-ready ownership hints when list readiness uses naked 我创建的 text visibility', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/business/businesslist',
+        title: '商机列表',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '商机列表' }],
+        screenshot: '',
+      },
+      '创建商机后切回我创建的列表并校验新入库记录',
+      undefined,
+      [],
+      '',
+      {
+        failedStepTitle: 'Step 1: 进入商机列表页并确认页面就绪',
+        previousCode: [
+          "await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });",
+          "await expect(page.getByRole('button', { name: '新建商机' }).first()).toBeVisible({ timeout: 20000 });",
+          "await expect(page.getByText('我创建的').first()).toBeVisible({ timeout: 20000 });",
+          "await expect(page.locator('input#businessList_keywords:visible').first()).toBeVisible({ timeout: 20000 });",
+        ].join('\n'),
+        executionError: "expect(locator).toBeVisible() failed\n\nLocator: getByText('我创建的').first()\nExpected: visible",
+        recentEvents: [],
+      },
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://uat.example.com/#/business/createbusiness',
+        expectedOutcome: '创建成功后在我创建的列表看到新入库记录',
+      }
+    );
+
+    expect(prompt).toContain("页面 ready 阶段把裸 `getByText('我创建的').first()` 当成稳定锚点");
+    expect(prompt).toContain('URL 已回列表 + 新建商机按钮可见');
+    expect(prompt).toContain('`input#businessList_keywords:visible` 或列表容器 ready');
+    expect(prompt).toContain('真正的“我创建的”切换留给后续 `__e2e.switchBusinessListOwnershipView(...)`');
+  });
+
   it('adds visible-row-first repair hints when not_found happens right after switching ownership view', () => {
     const prompt = buildRepairPrompt(
       {
@@ -794,6 +847,44 @@ Error: element(s) not found`,
     expect(prompt).toContain('不要把它当业务状态');
   });
 
+  it('adds targeted row-action detail-surface hints when 商机详情 modal strict wait misses', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/business/businesslist',
+        title: '商机列表',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '商机列表' }],
+        screenshot: '',
+      },
+      '创建商机后切回我创建的列表并校验新入库记录',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: [
+          "await __e2e.clickAntdRowAction(page, recordCheck.row, '查看');",
+          "const detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000 });",
+          "const statusText = await __e2e.readDetailField(page, { label: '商机进展', scope: detailScope, titleIncludes: '商机详情', required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailScope, titleIncludes: '商机详情', required: false });",
+        ].join('\n'),
+        executionError: 'Error: 未找到可见弹框: titleIncludes=商机详情',
+        recentEvents: ['row action clicked'],
+      },
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://uat.example.com/#/business/createbusiness',
+        expectedOutcome: '创建成功后在我创建的列表看到新入库记录',
+      }
+    );
+
+    expect(prompt).toContain('详情面 ready 假设过严');
+    expect(prompt).toContain("waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000, required: false })");
+    expect(prompt).toContain("waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false })");
+    expect(prompt).toContain('状态证据缺失：列表行已命中，但“查看”后未出现可用详情弹层或详情页');
+  });
+
   it('adds targeted detail-status hints when currentVisibleRow loses response and 状态 reads as a short enum like 抖音', () => {
     const prompt = buildRepairPrompt(
       {
@@ -917,6 +1008,48 @@ Call log:
     expect(prompt).toContain('本月创建商机');
     expect(prompt).toContain('商机联系人信息');
     expect(prompt).toContain('label[title="商机来源"]');
+  });
+
+  it('adds targeted create-business repair hints when first-page ready anchors are merged with locator.or and trigger strict mode', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/business/createbusiness',
+        title: '创建商机',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '创建商机' }],
+        screenshot: '',
+      },
+      '从商机列表点击新建商机后填写三段表单并提交',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: [
+          "const contactStepHeading = page.getByRole('heading', { name: '商机联系人信息' }).first();",
+          "const sourceLabel = page.locator('label[title=\"商机来源\"]').first();",
+          'await expect(contactStepHeading.or(sourceLabel)).toBeVisible({ timeout: 20000 });',
+          'await expect(sourceLabel).toBeVisible({ timeout: 20000 });',
+        ].join('\n'),
+        executionError: `expect(locator).toBeVisible() failed
+
+Locator: getByRole('heading', { name: '商机联系人信息' }).first().or(locator('label[title="商机来源"]').first())
+Expected: visible
+Error: strict mode violation: getByRole('heading', { name: '商机联系人信息' }).first().or(locator('label[title="商机来源"]').first()) resolved to 2 elements:
+    1) <h1>商机联系人信息</h1>
+    2) <label title="商机来源">商机来源</label>`,
+        recentEvents: [],
+      }
+    );
+
+    expect(prompt).toContain('第一页 ready 把两个可见锚点用 `.or()` 合成了一条 expect');
+    expect(prompt).toContain('删除 `contactStepHeading.or(sourceLabel)` 这类 union locator');
+    expect(prompt).toContain("const contactStepHeading = page.getByRole('heading', { name: '商机联系人信息' }).first()");
+    expect(prompt).toContain("const sourceLabel = page.locator('label[title=\"商机来源\"]').first()");
+    expect(prompt).toContain("const headingVisible = await contactStepHeading.isVisible().catch(() => false);");
+    expect(prompt).toContain('不要在删掉 `.or()` 后又立刻把主锚点和备用锚点都写成必须同时成立的 `toBeVisible()`');
   });
 
   it('adds targeted create-business repair hints when static step copy is mistaken for a disappearing validation error', () => {
@@ -1484,6 +1617,8 @@ Received string:    "5204612026-03-27 13:08:29中铁上海工程局集团有限�
 
     expect(prompt).toContain('如果当前链路已经有稳定 `detailUrl` / `detailReadyLocator`');
     expect(prompt).toContain("await page.goto(detailUrl, { waitUntil: 'domcontentloaded' })");
+    expect(prompt).toContain('detailSurface.titleIncludes');
+    expect(prompt).toContain("titleIncludes: '商机详情'");
     expect(prompt).toContain("只有当没有稳定 `detailUrl`");
     expect(prompt).toContain('只有详情抽屉/详情页里仍然没有状态字段时');
     expect(prompt).toContain("如果 `recordCheck.mode === 'not_found'`");
@@ -1654,8 +1789,104 @@ Received string:    "5204612026-03-27 13:08:29中铁上海工程局集团有限�
 
     expect(prompt).toContain('你把定位链锁死在 `.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible`');
     expect(prompt).toContain('如果 scoped locator `count() === 0`');
-    expect(prompt).toContain('回退到更稳的页面级可见主动作链');
+    expect(prompt).toContain('切到更稳的 `candidateContainers` 链');
+    expect(prompt).toContain('footer/action-bar 容器');
     expect(prompt).toContain('继续排除 `保存并继续` / `上一步`');
+  });
+
+  it('adds business-create repair hints when final submit falls back to page-level regex last()', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/business/createbusiness',
+        title: '创建商机',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '创建商机' }],
+        screenshot: '',
+      },
+      '创建商机后切回我创建的列表并校验新入库记录',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: [
+          "await expect(page.getByText(/附件信息|上传录音文件|上传图片/i).first()).toBeVisible({ timeout: 20000 });",
+          "const finalPane = page.locator('.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible').first();",
+          "let submitButton = finalPane.getByRole('button', { name: /保\\\\s*存|提\\\\s*交|确\\\\s*定/i }).filter({ hasNotText: /保存并继续|上一步/ }).last();",
+          'if (!(await submitButton.count())) {',
+          "  submitButton = page.getByRole('button', { name: /^(?!.*保存并继续)(?!.*上一步).*(保\\\\s*存|提\\\\s*交|确\\\\s*定).*$/i }).last();",
+          '}',
+          'await submitButton.scrollIntoViewIfNeeded();',
+        ].join('\n'),
+        executionError: `locator.scrollIntoViewIfNeeded: Timeout 30000ms exceeded.\nCall log:\n  - waiting for getByRole('button', { name: /^(?!.*保存并继续)(?!.*上一步).*(保\\s*存|提\\s*交|确\\s*定).*$/i }).last()\n`,
+        recentEvents: [],
+      },
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://uat.example.com/#/business/createbusiness',
+        expectedOutcome: '创建商机后在我创建的列表看到新入库记录',
+      }
+    );
+
+    expect(prompt).toContain('fallback 已经退化成整页 page-level regex + `.last()`');
+    expect(prompt).toContain("不要继续写 `page.getByRole('button', { name: /^(?!.*保存并继续)(?!.*上一步).*(保\\s*存|提\\s*交|确\\s*定).*$/i }).last()`");
+    expect(prompt).toContain('candidateContainers');
+    expect(prompt).toContain("page.getByRole('button', { name: /^提\\s*交$/ }).first()");
+    expect(prompt).toContain("selector 不要统一写成 `.first()`");
+    expect(prompt).toContain('不要只跑一轮 `count()` 就立刻 throw');
+    expect(prompt).toContain('3-5 秒的短时轮询窗口');
+    expect(prompt).toContain('只要某个 scoped locator `count() > 0` 就停在该容器');
+    expect(prompt).toContain('不要继续对整页 regex + `.last()` 盲等 30 秒');
+  });
+
+  it('adds business-create repair hints when scoped candidateContainers still miss the final submit button', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/business/createbusiness',
+        title: '创建商机',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '创建商机' }],
+        screenshot: '',
+      },
+      '创建商机后切回我创建的列表并校验新入库记录',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: [
+          "const attachmentAnchor = page.getByText(/附件信息|上传录音文件|上传图片/).first();",
+          "const candidateContainers = [",
+          "  attachmentAnchor.locator('xpath=ancestor::*[contains(@class,\"ant-card\") or contains(@class,\"ant-tabs-tabpane\") or self::form][1]'),",
+          "  page.locator('.ant-tabs-tabpane-active:visible').first(),",
+          "  page.locator('form:visible').first(),",
+          "  page.locator('.ant-modal-content:visible, .ant-drawer-content:visible').last(),",
+          "];",
+          "throw new Error('未在末页容器内找到最终提交按钮');",
+        ].join('\n'),
+        executionError: '未在末页容器内找到最终提交按钮',
+        recentEvents: [],
+      },
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://uat.example.com/#/business/createbusiness',
+        expectedOutcome: '创建商机后在我创建的列表看到新入库记录',
+      }
+    );
+
+    expect(prompt).toContain('当前 `candidateContainers` 还太浅');
+    expect(prompt).toContain('前 3-4 层可见祖先链');
+    expect(prompt).toContain('.ant-modal-footer:visible');
+    expect(prompt).toContain('[class*="action"]:visible');
+    expect(prompt).toContain("page.getByRole('button', { name: /^提\\s*交$/ }).first()");
+    expect(prompt).toContain("selector 不要统一写成 `.first()`");
+    expect(prompt).toContain('不要只跑一轮 `count()` 就立刻 throw');
+    expect(prompt).toContain('3-5 秒的短时轮询窗口');
+    expect(prompt).toContain('只有轮询窗口内这些都 miss 后，才允许抛 `未在末页容器内找到最终提交按钮`');
   });
 
   it('adds business-create repair hints when the script skips second-page required fields and searches final submit too early', () => {
@@ -1845,6 +2076,82 @@ Error: element(s) not found`,
     expect(prompt).toContain('POST /crmapi/business/createOrder');
     expect(prompt).toContain('不要再强行查找同一行并点击“查看”');
     expect(prompt).toContain('createOrder 响应成功 + Drawer 关闭');
+  });
+
+  it('loads business create status detail-entry guidance from default project knowledge', () => {
+    const previousKnowledgePath = process.env.INTENT_E2E_PROJECT_KNOWLEDGE_PATH;
+    delete process.env.INTENT_E2E_PROJECT_KNOWLEDGE_PATH;
+    resetIntentProjectKnowledgeCache();
+
+    try {
+      const snapshot = {
+        url: 'https://uat-service.yikaiye.com/#/business/businesslist',
+        title: '商机列表',
+        forms: [],
+        buttons: [
+          {
+            text: '新建商机',
+            id: 'new-business',
+            type: 'button',
+            ariaLabel: '新建商机',
+            title: '新建商机',
+            className: 'ant-btn ant-btn-primary',
+            isIconOnly: false,
+          },
+        ],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '商机列表' }],
+        bodyTextExcerpt: '我创建的 新建商机 商机进展 新入库',
+        screenshot: '',
+      };
+      const description = '在商机列表页新建一条商机并保存成功，切换到“我创建的”视图后校验该记录“商机进展”为“新入库”';
+      const context = {
+        taskMode: 'scenario' as const,
+        scenarioEntryUrl: 'https://uat-service.yikaiye.com/#/business/businesslist',
+        sharedVariables: ['createdBusinessId', 'createdBusinessKeyword'],
+        expectedOutcome: '在“我创建的”列表中确认商机进展为新入库',
+        cleanupNotes: '',
+        scenarioSummary: '1. 新建商机\n2. 切换到我创建的\n3. 校验商机进展为新入库',
+      };
+
+      const planning = resolveIntentPromptPlanningContext(snapshot, description, context);
+      const matchedRule = planning.knowledge?.matches.find((item) => item.ruleId === 'business.create-list-status-detail-entry');
+      const prompt = buildPrompt(snapshot, description, undefined, [], '', context, planning);
+
+      expect(matchedRule).toBeTruthy();
+      expect(matchedRule?.recordLookupHints?.[0]?.detailEntry).toEqual({
+        trigger: 'row_action',
+        actionLabel: '查看',
+        target: 'drawer_or_modal',
+      });
+      expect(matchedRule?.recordLookupHints?.[0]?.detailReadyLocator).toEqual({ textIncludes: '商机详情' });
+      expect(matchedRule?.detailSurfaceHints?.[0]).toEqual({
+        stableIdentifiers: ['createdBusinessId'],
+        whenStepTypes: ['assert'],
+        stepTextIncludes: ['商机进展', '新入库'],
+        titleIncludes: '商机详情',
+        scopeHints: ['详情抽屉'],
+      });
+      expect(matchedRule?.stepPatches?.[0]?.addPreferredHelpers).toEqual([
+        '__e2e.clickAntdRowAction',
+        '__e2e.waitForVisibleAntdModal',
+        '__e2e.readDetailField',
+      ]);
+      expect(planning.dsl.globalRules.join('\n')).toContain('不要把 `business/detail` 当成唯一详情路径');
+      expect(prompt).toContain('新建商机后列表状态回查');
+      expect(prompt).toContain('不要把 `#/business/detail/:id` 当成唯一详情入口');
+      expect(prompt).toContain('detailEntry{ trigger=row_action; actionLabel=查看; target=drawer_or_modal }');
+      expect(prompt).toContain('detailReadyLocator.textIncludes=商机详情');
+      expect(prompt).toContain('若 `detailUrl` 无效，优先复用已命中目标行的“查看”详情入口');
+    } finally {
+      if (previousKnowledgePath) {
+        process.env.INTENT_E2E_PROJECT_KNOWLEDGE_PATH = previousKnowledgePath;
+      } else {
+        delete process.env.INTENT_E2E_PROJECT_KNOWLEDGE_PATH;
+      }
+      resetIntentProjectKnowledgeCache();
+    }
   });
 
   it('adds media-playback success rules to avoid false negatives from raced fallback booleans', () => {
@@ -2195,6 +2502,88 @@ Error: element(s) not found`,
     expect(prompt).toContain("await __e2e.readDetailField(page, { label: '商机进展', required: false })");
   });
 
+  it('adds targeted derived-businessId hints when the row is matched but the script still stops at list response missing status', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/business/businesslist',
+        title: '商机列表',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '商机列表' }],
+        screenshot: '',
+      },
+      '创建商机后切回我创建的列表并校验新入库记录',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: [
+          "const statusEvidenceRecordCheck = recordCheck.response ? recordCheck : await __e2e.resolvePrimaryRecord(page, { primaryValue: shared.businessId || shared.contactMobile, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: shared.businessId ? [shared.businessId, shared.contactMobile] : [shared.contactMobile], maxLookupAttempts: 1, retryIntervalMs: 200, detailUrl: shared.businessId ? `#/business/detail/${shared.businessId}` : undefined });",
+          "const listJson = statusEvidenceRecordCheck.response ? await __e2e.readJsonResponse(statusEvidenceRecordCheck.response, { required: false }) : null;",
+          "const matchedRecord = listJson ? __e2e.pickJsonRecord(listJson, { label: shared.businessId ? 'businessId' : 'leadMobile', value: shared.businessId || shared.contactMobile, paths: shared.businessId ? ['businessId', 'id'] : ['mobile', 'phone', 'contactPhone', 'contactMobile'], required: false }) : null;",
+          "const rowText = await recordCheck.row.innerText().catch(() => '');",
+          "throw new Error('状态证据缺失：列表行已命中，但列表响应未返回状态');",
+        ].join('\n'),
+        executionError: '状态证据缺失：列表行已命中，但列表响应未返回状态',
+        recentEvents: ['table row matched', 'api response json parsed'],
+      },
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://uat.example.com/#/business/createbusiness',
+        expectedOutcome: '创建商机后在我创建的列表看到新入库记录',
+      }
+    );
+
+    expect(prompt).toContain("throw new Error('状态证据缺失：列表行已命中，但列表响应未返回状态')");
+    expect(prompt).toContain("const rowKey = ((await recordCheck.row.getAttribute('data-row-key')) || '').trim()");
+    expect(prompt).toContain("const derivedBusinessId = shared.businessId || ((/^[A-Za-z0-9_-]{6,64}$/.test(rowKey) && !/^1\\d{10}$/.test(rowKey)) ? rowKey : '') || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')");
+    expect(prompt).toContain("const matchedRecordByDerivedBusinessId = !matchedRecord && listJson && derivedBusinessId ? __e2e.pickJsonRecord(listJson, { label: 'derivedBusinessId', value: derivedBusinessId, paths: ['businessId', 'id'], required: false }) : null;");
+    expect(prompt).toContain('把 `matchedRecord || matchedRecordByDerivedBusinessId` 当成状态来源');
+    expect(prompt).toContain('不要在 row 已命中后继续把“列表响应未返回状态”当默认收口');
+  });
+
+  it('reuses the same targeted hints for the newer Step 7 status-evidence variants', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/business/businesslist',
+        title: '商机列表',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '商机列表' }],
+        screenshot: '',
+      },
+      '创建商机后切回我创建的列表并校验新入库记录',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: [
+          "const statusEvidenceRecordCheck = recordCheck.response ? recordCheck : await __e2e.resolvePrimaryRecord(page, { primaryValue: shared.businessId || shared.contactMobile, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: shared.businessId ? [shared.businessId, shared.contactMobile] : [shared.contactMobile], maxLookupAttempts: 1, retryIntervalMs: 200, detailUrl: shared.businessId ? `#/business/detail/${shared.businessId}` : undefined });",
+          "const listJson = statusEvidenceRecordCheck.response ? await __e2e.readJsonResponse(statusEvidenceRecordCheck.response, { required: false }) : null;",
+          "const matchedRecord = listJson ? __e2e.pickJsonRecord(listJson, { label: shared.businessId ? 'businessId' : 'leadMobile', value: shared.businessId || shared.contactMobile, paths: shared.businessId ? ['businessId', 'id'] : ['mobile', 'phone', 'contactPhone', 'contactMobile'], required: false }) : null;",
+          "const rowText = await recordCheck.row.innerText().catch(() => '');",
+          "throw new Error('状态证据缺失：列表行已命中，但列表响应未命中状态（含 derivedBusinessId 回填）');",
+        ].join('\n'),
+        executionError: '状态证据缺失：列表行已命中，但列表响应未命中状态（含 derivedBusinessId 回填）',
+        recentEvents: ['table row matched', 'api response json parsed'],
+      },
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://uat.example.com/#/business/createbusiness',
+        expectedOutcome: '创建商机后在我创建的列表看到新入库记录',
+      }
+    );
+
+    expect(prompt).toContain("const rowKey = ((await recordCheck.row.getAttribute('data-row-key')) || '').trim()");
+    expect(prompt).toContain("const derivedBusinessId = shared.businessId || ((/^[A-Za-z0-9_-]{6,64}$/.test(rowKey) && !/^1\\d{10}$/.test(rowKey)) ? rowKey : '') || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')");
+    expect(prompt).toContain("const matchedRecordByDerivedBusinessId = !matchedRecord && listJson && derivedBusinessId ? __e2e.pickJsonRecord(listJson, { label: 'derivedBusinessId', value: derivedBusinessId, paths: ['businessId', 'id'], required: false }) : null;");
+    expect(prompt).toContain('把 `matchedRecord || matchedRecordByDerivedBusinessId` 当成状态来源');
+  });
+
   it('adds targeted detail-route hints when the script already entered business detail but still collapses back to no-detail-entry', () => {
     const prompt = buildRepairPrompt(
       {
@@ -2233,8 +2622,100 @@ Error: element(s) not found`,
     );
 
     expect(prompt).toContain('这次不是没有详情入口');
-    expect(prompt).toContain("const detailStatus = await __e2e.readDetailField(page, { label: '商机进展', required: false }) || await __e2e.readDetailField(page, { label: '状态', required: false })");
+    expect(prompt).toContain("const detailSurface = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false });");
+    expect(prompt).toContain("throw new Error('详情页无效：detailUrl 未出现商机详情 surface')");
+    expect(prompt).toContain("const detailStatus = await __e2e.readDetailField(page, { label: '商机进展', scope: detailSurface, titleIncludes: '商机详情', required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailSurface, titleIncludes: '商机详情', required: false })");
+    expect(prompt).toContain('detailSurface.titleIncludes');
+    expect(prompt).toContain("titleIncludes: '商机详情'");
     expect(prompt).toContain('不要在跳过 detailUrl 后又回到列表抛“未提供详情入口”');
+  });
+
+  it('adds invalid detail-surface hints when detailUrl lands on a business error page', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/business/businesslist',
+        title: '商机列表',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '商机列表' }],
+        screenshot: '',
+      },
+      '创建商机后切回我创建的列表并校验新入库记录',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: [
+          "await page.goto(`#/business/detail/${derivedBusinessId}`, { waitUntil: 'domcontentloaded' });",
+          "const detailSurface = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false });",
+          "if (!detailSurface) throw new Error('详情页无效：detailUrl 未出现商机详情 surface');",
+        ].join('\n'),
+        executionError: '详情页无效：detailUrl 未出现商机详情 surface',
+        recentEvents: [
+          'historyhistory {pathname: /business/detail/521201, search: , hash: , query: Object, state: undefined}',
+          'detail surface invalid page',
+          '抱歉！页面好像不见了, 请联系管理员!',
+        ],
+      },
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://uat.example.com/#/business/createbusiness',
+        expectedOutcome: '创建商机后在我创建的列表看到新入库记录',
+      }
+    );
+
+    expect(prompt).toContain('`detailUrl` 打开的根本不是有效详情页 surface');
+    expect(prompt).toContain('不要继续在同一个 `#/business/detail/...` 页面上重复 `readDetailField(...)`');
+    expect(prompt).toContain('`detailEntry / actionLabel / detailReadyLocator`');
+    expect(prompt).toContain('`const detailSurface = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: \'商机详情\', timeoutMs: 2500, required: false }); if (!detailSurface) throw new Error(\'详情页无效：detailUrl 未出现商机详情 surface\');`');
+    expect(prompt).toContain("throw new Error('详情页无效：detailUrl 未出现商机详情 surface')");
+  });
+
+  it('adds detail-surface guard hints when generic status-missing errors actually came from an invalid detailUrl page', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/business/businesslist',
+        title: '商机列表',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '商机列表' }],
+        screenshot: '',
+      },
+      '创建商机后切回我创建的列表并校验新入库记录',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: [
+          "await page.goto(`#/business/detail/${derivedBusinessId}`, { waitUntil: 'domcontentloaded' });",
+          "const detailStatus = await __e2e.readDetailField(page, { label: '商机进展', titleIncludes: '商机详情', required: false }) || await __e2e.readDetailField(page, { label: '状态', titleIncludes: '商机详情', required: false });",
+          "if (!detailStatus) {",
+          "  throw new Error('状态证据缺失：列表行已命中，但列表响应、详情抽屉与详情页都未返回状态');",
+          "}",
+        ].join('\n'),
+        executionError: '状态证据缺失：列表行已命中，但列表响应、详情抽屉与详情页都未返回状态',
+        recentEvents: [
+          'historyhistory {pathname: /business/detail/521205, search: , hash: , query: Object, state: undefined}',
+          "Cannot read properties of null (reading 'forEach')",
+          'detail surface invalid page',
+          'detail field not found',
+        ],
+      },
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://uat.example.com/#/business/createbusiness',
+        expectedOutcome: '创建商机后在我创建的列表看到新入库记录',
+      }
+    );
+
+    expect(prompt).toContain('这次不是详情页里真的没有状态字段');
+    expect(prompt).toContain("不要继续保留 `throw new Error('状态证据缺失：列表行已命中，但列表响应、详情抽屉与详情页都未返回状态')`");
+    expect(prompt).toContain("const detailSurface = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false }); if (!detailSurface) throw new Error('详情页无效：detailUrl 未出现商机详情 surface');");
+    expect(prompt).toContain("const detailStatus = await __e2e.readDetailField(page, { label: '商机进展', scope: detailSurface, titleIncludes: '商机详情', required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailSurface, titleIncludes: '商机详情', required: false })");
   });
 
   it('adds derived-businessId list-json fallback hints before reopening an unstable detail page', () => {
@@ -2510,11 +2991,35 @@ Error: element(s) not found`,
               evidence: ['heading=Checkout Refreshed', 'button=立即提交'],
             },
             {
+              probeUid: 'surface_delta',
+              kind: 'surface_delta',
+              status: 'observed',
+              summary: '相对初始分析快照，新增 2 条 surface，消失 1 条 surface',
+              evidence: ['added=title=Checkout Refreshed', 'added=button=立即提交', 'removed=title=Checkout'],
+            },
+            {
               probeUid: 'anchor_presence',
               kind: 'anchor_presence',
               status: 'not_found',
               summary: '目标锚点「提交订单」未在最新观察中命中',
               evidence: [],
+            },
+            {
+              probeUid: 'list_json_evidence',
+              kind: 'list_json_evidence',
+              status: 'observed',
+              summary: '上一轮执行已留下 3 条列表 JSON / record lookup 结构化证据',
+              evidence: [
+                'response=/api/order/search status=200 keys=data,records',
+                'record=orderId collection=data.records path=orderId value=ORD-001',
+              ],
+            },
+            {
+              probeUid: 'detail_field_evidence',
+              kind: 'detail_field_evidence',
+              status: 'observed',
+              summary: '上一轮执行已留下 1 条详情字段结构化证据',
+              evidence: ['field=状态 value=已提交'],
             },
           ],
         },
@@ -2524,8 +3029,17 @@ Error: element(s) not found`,
     expect(prompt).toContain('## Repair Observation Protocol（受控观察结果）');
     expect(prompt).toContain('observedAt: 2026-03-26T07:00:00.000Z');
     expect(prompt).toContain('[page_surface] page_surface · observed');
+    expect(prompt).toContain('[surface_delta] surface_delta · observed');
+    expect(prompt).toContain('added=button=立即提交');
     expect(prompt).toContain('button=立即提交');
     expect(prompt).toContain('[anchor_presence] anchor_presence · not_found');
+    expect(prompt).toContain('[list_json_evidence] list_json_evidence · observed');
+    expect(prompt).toContain('[detail_field_evidence] detail_field_evidence · observed');
+    expect(prompt).toContain('response=/api/order/search status=200 keys=data,records');
+    expect(prompt).toContain('field=状态 value=已提交');
+    expect(prompt).toContain('如果 `surface_delta` 已明确提示新增 / 消失的 surface');
+    expect(prompt).toContain('如果 `list_json_evidence` 已显示上一轮拿到过列表 JSON、record match 或字段值');
+    expect(prompt).toContain('如果 `detail_field_evidence` 已显示上一轮读到过详情字段');
     expect(prompt).toContain('如果 `anchor_presence` / `candidate_anchor_presence` 都显示 `not_found`');
   });
 
@@ -2871,6 +3385,144 @@ Error: element(s) not found`,
     expect(planning.executionPlan?.steps[0]?.preferredHelpers).toContain('__e2e.ensureLoggedIn');
   });
 
+  it('propagates list-search-detail family into prompt planning and rendered action library', () => {
+    const snapshot = {
+      url: 'https://example.com/#/customer/list',
+      title: '客户列表',
+      forms: [
+        {
+          action: '',
+          method: 'GET',
+          fields: [
+            {
+              type: 'text',
+              name: 'keyword',
+              id: 'customer_keywords',
+              placeholder: '请输入客户名称/手机号',
+              required: false,
+              label: '关键词',
+            },
+          ],
+        },
+      ],
+      buttons: [{ text: '搜索', id: '', type: 'button', ariaLabel: '', title: '', className: 'ant-btn', isIconOnly: false }],
+      tooltipElements: [],
+      links: [],
+      headings: [{ level: 'H1', text: '客户列表' }],
+      bodyTextExcerpt: '客户列表 搜索 手机号 联系人 状态 详情',
+      screenshot: '',
+    };
+    const description = '在客户列表按手机号搜索目标记录，进入详情页核对联系人和状态';
+    const context = {
+      taskMode: 'scenario' as const,
+      scenarioEntryUrl: 'https://example.com/#/customer/list',
+      sharedVariables: ['customerCode'],
+      expectedOutcome: '命中目标记录并完成详情核对',
+      cleanupNotes: '',
+      scenarioSummary: '1. 在列表页搜索目标记录\n2. 进入详情页\n3. 核对联系人和状态',
+      scenarioSteps: [
+        {
+          stepUid: 'step_list_detail',
+          stepType: 'ui' as const,
+          title: '搜索并进入详情',
+          target: 'https://example.com/#/customer/list',
+          instruction: '在客户列表按手机号搜索目标记录并进入详情页',
+          expectedResult: '进入目标详情页',
+          extractVariable: '',
+        },
+      ],
+    };
+
+    const planning = resolveIntentPromptPlanningContext(snapshot, description, context);
+    const prompt = buildPrompt(snapshot, description, undefined, [], '', context, planning);
+
+    expect(planning.priorityScenarioFamily).toBe('list_search_detail');
+    expect(prompt).toContain('assert.resolve-primary-record');
+    expect(prompt).toContain('assert.read-detail-field');
+    expect(prompt).toContain('__e2e.resolvePrimaryRecord');
+    expect(prompt).toContain('__e2e.readDetailField');
+    expect(prompt).toContain('当前 family = list_search_detail：最终验收以“命中目标行 -> 进入对应详情 -> 按字段标签读值”为主，不要只验列表返回结果。');
+  });
+
+  it('salvages untracked family from visual anchors during planning without overriding tracked text families', () => {
+    const snapshot = {
+      url: 'https://example.com/#/customer/list',
+      title: '客户列表',
+      forms: [],
+      buttons: [{ text: '搜索', id: '', type: 'button', ariaLabel: '', title: '', className: 'ant-btn', isIconOnly: false }],
+      tooltipElements: [],
+      links: [],
+      headings: [{ level: 'H1', text: '客户列表' }],
+      bodyTextExcerpt: '客户列表 搜索 客户详情',
+      screenshot: '',
+    };
+
+    const visualOnlyPlanning = resolveIntentPromptPlanningContext(
+      snapshot,
+      '核对客户信息',
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://example.com/#/customer/list',
+        scenarioSummary: '1. 查看客户信息',
+        expectedOutcome: '目标客户信息可见',
+        visualAnchors: ['客户列表搜索框', '客户详情抽屉'],
+        scenarioSteps: [
+          {
+            stepUid: 'step_view_customer',
+            stepType: 'ui',
+            title: '查看客户信息',
+            target: '当前页面',
+            instruction: '打开目标客户信息',
+            expectedResult: '客户信息可见',
+            extractVariable: '',
+          },
+        ],
+      }
+    );
+
+    expect(visualOnlyPlanning.priorityScenarioFamily).toBe('list_search_detail');
+    expect(visualOnlyPlanning.priorityScenarioFamilyRoute?.textFamily).toBe('untracked');
+    expect(visualOnlyPlanning.priorityScenarioFamilyRoute?.visualFamily).toBe('list_search_detail');
+    expect(visualOnlyPlanning.priorityScenarioFamilyRoute?.source).toBe('visual_anchor_salvaged');
+
+    const conflictPlanning = resolveIntentPromptPlanningContext(
+      snapshot,
+      '创建商机并回列表校验',
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://example.com/#/business/createbusiness',
+        expectedOutcome: '创建成功并能按 businessId 检索到记录',
+        visualAnchors: ['客户列表搜索框', '客户详情抽屉'],
+        scenarioSummary: '1. 创建商机\n2. 回列表校验',
+        scenarioSteps: [
+          {
+            stepUid: 'step_create_business',
+            stepType: 'ui',
+            title: '提交创建商机',
+            target: 'https://example.com/#/business/createbusiness',
+            instruction: '填写表单并提交',
+            expectedResult: '创建成功',
+            extractVariable: 'businessId',
+          },
+          {
+            stepUid: 'step_verify_business',
+            stepType: 'assert',
+            title: '回列表校验',
+            target: 'https://example.com/#/business/businesslist',
+            instruction: '在我创建的列表里检索 businessId',
+            expectedResult: '命中目标记录',
+            extractVariable: '',
+          },
+        ],
+      }
+    );
+
+    expect(conflictPlanning.priorityScenarioFamily).toBe('business_create_list_verify');
+    expect(conflictPlanning.priorityScenarioFamilyRoute?.textFamily).toBe('business_create_list_verify');
+    expect(conflictPlanning.priorityScenarioFamilyRoute?.visualFamily).toBe('list_search_detail');
+    expect(conflictPlanning.priorityScenarioFamilyRoute?.clarifySignals[0]).toContain('视觉锚点更像“列表搜索详情”');
+  });
+
   it('does not preload ensureLoggedIn when the task itself is testing the login flow', () => {
     const planning = resolveIntentPromptPlanningContext(
       {
@@ -2973,8 +3625,8 @@ Error: element(s) not found`,
     expect(prompt).toContain("不要把最终主动作固化成 `getByRole('button', { name: /^保\\s*存$/ }).first()`");
     expect(prompt).toContain('/保\\s*存|提\\s*交|确\\s*定/i');
     expect(prompt).toContain('如果当前 pane 内根本找不到这个最终主动作');
-    expect(prompt).toContain('回退到更稳的页面级可见主动作链');
-    expect(prompt).toContain('不要把 selector 锁死在 `.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible`');
+    expect(prompt).toContain('candidateContainers');
+    expect(prompt).toContain("page.getByRole('button', { name: /^提\\s*交$/ }).first()");
     expect(prompt).toContain('不要把 `保存并继续` 误当成最终提交');
     expect(prompt).toContain('subtree intercepts pointer events');
     expect(prompt).toContain('click({ force: true })');

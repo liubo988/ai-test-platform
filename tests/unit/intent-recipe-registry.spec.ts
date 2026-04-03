@@ -70,6 +70,67 @@ describe('intent-recipe-registry', () => {
     expect(registry.items.map((item) => item.recipe.slug)).toContain('ui.antd-modal-drawer-save');
   });
 
+  it('applies light family weighting only after a recipe already matches', () => {
+    const dsl = buildIntentActionDSL({
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/businesslist',
+      featureDescription: '切换到我创建的视角后继续检索目标商机',
+      expectedOutcome: '列表刷新到正确归属视角并命中目标记录',
+      steps: [
+        {
+          stepUid: 'step_1',
+          stepType: 'ui',
+          title: '切换归属视角',
+          target: 'https://example.com/#/business/businesslist',
+          instruction: '切换到我创建的视角后等待列表刷新',
+          expectedResult: '列表已切到正确归属视角',
+          extractVariable: '',
+        },
+      ],
+    });
+
+    const baseRegistry = selectIntentRecipeRegistry({
+      dsl,
+      snapshot: {
+        url: 'https://example.com/#/business/businesslist',
+        title: '商机列表',
+        frames: [],
+      },
+      preferredCapabilitySlugs: ['ui.switch-business-list-ownership-view'],
+    });
+    const boostedRegistry = selectIntentRecipeRegistry({
+      dsl,
+      snapshot: {
+        url: 'https://example.com/#/business/businesslist',
+        title: '商机列表',
+        frames: [],
+      },
+      priorityScenarioFamily: 'list_ownership_switch',
+      preferredCapabilitySlugs: ['ui.switch-business-list-ownership-view'],
+    });
+    const unrelatedRegistry = selectIntentRecipeRegistry({
+      dsl,
+      snapshot: {
+        url: 'https://example.com/#/business/businesslist',
+        title: '商机列表',
+        frames: [],
+      },
+      priorityScenarioFamily: 'modal_or_drawer_save',
+      preferredCapabilitySlugs: ['ui.switch-business-list-ownership-view'],
+    });
+
+    const baseOwnershipRecipe = baseRegistry.items.find((item) => item.recipe.slug === 'business.list-ownership-switch');
+    const boostedOwnershipRecipe = boostedRegistry.items.find((item) => item.recipe.slug === 'business.list-ownership-switch');
+    const unrelatedOwnershipRecipe = unrelatedRegistry.items.find((item) => item.recipe.slug === 'business.list-ownership-switch');
+
+    expect(baseOwnershipRecipe).toBeTruthy();
+    expect(boostedOwnershipRecipe).toBeTruthy();
+    expect(unrelatedOwnershipRecipe).toBeTruthy();
+    expect(boostedOwnershipRecipe?.score).toBe((baseOwnershipRecipe?.score || 0) + 3);
+    expect(boostedOwnershipRecipe?.matchedSignals).toContain('family=list_ownership_switch');
+    expect(unrelatedOwnershipRecipe?.score).toBe(baseOwnershipRecipe?.score);
+  });
+
   it('selects seeded runtime recipes for create-order and batch-contact flows', () => {
     const createOrderDsl = buildIntentActionDSL({
       taskMode: 'scenario',

@@ -286,6 +286,40 @@ describe('intent-e2e-project-auth', () => {
     });
   });
 
+  it('derives fixture owner for idempotent ownerless fixture contracts', async () => {
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_1',
+      authRequired: false,
+      loginUrl: '',
+      loginUsername: '',
+      loginPasswordPlain: '',
+      loginPasswordMasked: '',
+      loginDescription: '',
+    } as never);
+    vi.mocked(resolveIntentProjectRuntimeGovernance).mockReturnValue({
+      environmentProfile: 'test',
+      fixture: {
+        strategy: 'idempotent',
+        idempotencyKey: 'crm-dashboard-read',
+      },
+    } as never);
+
+    const req = new NextRequest('http://localhost/api/intent-e2e/runs');
+    const result = await resolveIntentE2EProjectAuth(req, {
+      input: '登录后查看首页额度信息',
+      projectUid: 'proj_1',
+    });
+
+    expect(result.request.runtimeGovernance).toEqual({
+      environmentProfile: 'test',
+      fixture: {
+        strategy: 'idempotent',
+        owner: 'owner://project/proj_1/members/usr_1',
+        idempotencyKey: 'crm-dashboard-read',
+      },
+    });
+  });
+
   it('infers project scope from moduleUid and keeps the module context', async () => {
     const req = new NextRequest('http://localhost/api/intent-e2e/runs');
     const result = await resolveIntentE2EProjectAuth(req, {

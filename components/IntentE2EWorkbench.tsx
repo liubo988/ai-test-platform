@@ -69,9 +69,12 @@ type IntentFailureTriage = {
     | 'auth_failed'
     | 'permission_blocked'
     | 'data_missing'
+    | 'target_row_not_found'
+    | 'ui_anchor_missing'
     | 'selector_drift'
     | 'assertion_too_strict'
     | 'workflow_gap'
+    | 'repair_stagnated'
     | 'unknown';
   repairable: boolean;
   summary: string;
@@ -255,6 +258,52 @@ type IntentAssetReadiness = {
   reasons: string[];
 };
 
+type IntentRepairBudgetReasonCode =
+  | 'runtime_limit'
+  | 'asset_missing'
+  | 'knowledge_no_hit'
+  | 'auth_blocked'
+  | 'permission_blocked'
+  | 'env_blocked'
+  | 'data_blocked'
+  | 'target_row_not_found'
+  | 'workflow_gap'
+  | 'unknown'
+  | 'ui_anchor_missing'
+  | 'repair_stagnated';
+
+type IntentRepairBudget = {
+  configuredRepairLimit: number;
+  maxRepairAttempts: number;
+  usedRepairAttempts: number;
+  remainingRepairAttempts: number;
+  exhausted: boolean;
+  reasonCode: IntentRepairBudgetReasonCode;
+  stopReason: string;
+  summary: string;
+};
+
+type IntentFailureCtaActionKey =
+  | 'prepare_prerequisites'
+  | 'preview_knowledge_draft'
+  | 'edit_description'
+  | 'handoff_manual';
+
+type IntentFailureCtaAction = {
+  action: IntentFailureCtaActionKey;
+  label: string;
+  description: string;
+  recommended: boolean;
+  enabled: boolean;
+};
+
+type IntentFailureCta = {
+  headline: string;
+  summary: string;
+  primaryAction: IntentFailureCtaActionKey;
+  actions: IntentFailureCtaAction[];
+};
+
 type IntentQualityBucket =
   | 'passed'
   | 'auth_blocked'
@@ -363,6 +412,8 @@ type IntentRunResult = {
   description: string;
   knowledge?: IntentKnowledgeSummary | null;
   assetReadiness?: IntentAssetReadiness | null;
+  repairBudget?: IntentRepairBudget | null;
+  failureCta?: IntentFailureCta | null;
   qualitySplit?: IntentQualitySplit | null;
   attempts: IntentAttempt[];
   finalResult: TestResult;
@@ -413,6 +464,46 @@ type IntentRunCancelResponse = {
   ok: boolean;
   run: IntentRunRecord | null;
   error?: string;
+};
+
+type IntentProjectAssetAvailabilityStatus = 'ready' | 'asset_missing';
+
+type IntentProjectAssetAvailability = {
+  status: IntentProjectAssetAvailabilityStatus;
+  projectUid: string;
+  onboardingPath?: string;
+  knowledgePath?: string;
+  repairMemoryPath?: string;
+  hasOnboarding?: boolean;
+  onboardingReady?: boolean;
+  hasKnowledgeAsset?: boolean;
+  hasRepairMemoryAsset?: boolean;
+  reasons: string[];
+};
+
+type IntentLaunchDecisionValue = 'auto_run' | 'needs_bootstrap' | 'needs_fixture' | 'needs_clarify' | 'draft_only';
+
+type IntentLaunchDecisionSignals = {
+  projectUid: string;
+  moduleUid: string;
+  hasTargetUrl: boolean;
+  attachmentCount: number;
+  assetStatus: IntentProjectAssetAvailabilityStatus;
+  requiresFixture: boolean;
+  hasFixtureContract: boolean;
+  hasHighFailurePressure: boolean;
+};
+
+type IntentLaunchDecisionResponse = {
+  decision: IntentLaunchDecisionValue;
+  reasons: string[];
+  signals?: IntentLaunchDecisionSignals;
+  assetAvailability?: IntentProjectAssetAvailability | null;
+  error?: string;
+};
+
+type IntentBlockedLaunchDecision = IntentLaunchDecisionResponse & {
+  source: 'route' | 'query';
 };
 
 type IntentDraftLaunchDetail = {
@@ -1951,12 +2042,20 @@ function intentFailureClassLabel(failureClass: IntentFailureTriage['failureClass
       return '权限阻塞';
     case 'data_missing':
       return '数据阻塞';
+    case 'target_row_not_found':
+      return '目标行未命中';
+    case 'ui_anchor_missing':
+      return '页面锚点缺失';
     case 'selector_drift':
       return '定位器漂移';
     case 'assertion_too_strict':
       return '断言过严';
     case 'workflow_gap':
       return '流程缺口';
+    case 'repair_stagnated':
+      return '修复停滞';
+    case 'unknown':
+      return '未分类';
     default:
       return '未分类';
   }
@@ -1964,6 +2063,36 @@ function intentFailureClassLabel(failureClass: IntentFailureTriage['failureClass
 
 function intentFailureTone(triage: IntentFailureTriage): string {
   return triage.repairable ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-rose-200 bg-rose-50 text-rose-800';
+}
+
+function intentRepairBudgetReasonLabel(reasonCode: IntentRepairBudgetReasonCode): string {
+  switch (reasonCode) {
+    case 'asset_missing':
+      return '项目资产未就绪';
+    case 'knowledge_no_hit':
+      return '项目知识未命中';
+    case 'auth_blocked':
+      return '认证阻塞';
+    case 'permission_blocked':
+      return '权限阻塞';
+    case 'env_blocked':
+      return '环境阻塞';
+    case 'data_blocked':
+      return '数据阻塞';
+    case 'target_row_not_found':
+      return '目标行未命中';
+    case 'workflow_gap':
+      return '流程缺口';
+    case 'ui_anchor_missing':
+      return '页面锚点缺失';
+    case 'repair_stagnated':
+      return '修复停滞';
+    case 'unknown':
+      return '保守收紧';
+    case 'runtime_limit':
+    default:
+      return '运行配置';
+  }
 }
 
 function normalizeIntentQualityBucket(value: unknown): IntentQualityBucket | '' {
@@ -2260,6 +2389,86 @@ function intentAssetReadinessTone(status: IntentAssetReadinessStatus): string {
     case 'ready':
     default:
       return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  }
+}
+
+function normalizeIntentLaunchDecisionValue(value: string | null | undefined): IntentLaunchDecisionValue | '' {
+  switch ((value || '').trim()) {
+    case 'auto_run':
+    case 'needs_bootstrap':
+    case 'needs_fixture':
+    case 'needs_clarify':
+    case 'draft_only':
+      return value!.trim() as IntentLaunchDecisionValue;
+    default:
+      return '';
+  }
+}
+
+function isBlockedIntentLaunchDecision(value: IntentLaunchDecisionValue | '' | null | undefined): boolean {
+  return Boolean(value && value !== 'auto_run');
+}
+
+function intentLaunchDecisionLabel(decision: IntentLaunchDecisionValue): string {
+  switch (decision) {
+    case 'needs_bootstrap':
+      return '先补冷启动资产';
+    case 'needs_fixture':
+      return '先补前置数据';
+    case 'needs_clarify':
+      return '先补任务描述';
+    case 'draft_only':
+      return '先保留草稿';
+    case 'auto_run':
+    default:
+      return '可直接开跑';
+  }
+}
+
+function intentLaunchDecisionTone(decision: IntentLaunchDecisionValue): string {
+  switch (decision) {
+    case 'needs_bootstrap':
+      return 'border-amber-200 bg-amber-50 text-amber-800';
+    case 'needs_fixture':
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+    case 'needs_clarify':
+      return 'border-sky-200 bg-sky-50 text-sky-700';
+    case 'draft_only':
+      return 'border-slate-200 bg-slate-100 text-slate-700';
+    case 'auto_run':
+    default:
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  }
+}
+
+function intentLaunchDecisionSummary(decision: IntentLaunchDecisionValue): string {
+  switch (decision) {
+    case 'needs_bootstrap':
+      return '当前项目还没有准备好最小冷启动资产，先补 onboarding / 项目知识，再开始自动测试更稳。';
+    case 'needs_fixture':
+      return '这次请求更像写数据或依赖前置数据的任务，先补 fixture 契约，再跑自动链路。';
+    case 'needs_clarify':
+      return '当前描述上下文不够，先把目标、入口或成功标准补完整，再让 AI 开跑。';
+    case 'draft_only':
+      return '最近相似任务失败压力偏高，先保留草稿或改写描述，比继续盲跑更划算。';
+    case 'auto_run':
+    default:
+      return '当前请求已具备自动运行条件。';
+  }
+}
+
+function intentLaunchDecisionReasonLabel(reason: string): string {
+  switch (reason) {
+    case 'project_bootstrap_required':
+      return '项目冷启动资产尚未完成';
+    case 'fixture_contract_missing':
+      return '缺少 fixture / 前置数据契约';
+    case 'insufficient_request_context':
+      return '任务描述缺少目标、入口或成功标准';
+    case 'high_failure_pressure':
+      return '相似任务近期失败压力偏高';
+    default:
+      return intentAssetReadinessReasonLabel(reason);
   }
 }
 
@@ -3212,6 +3421,17 @@ function normalizeRunResult(result: IntentRunResult): IntentRunResult {
           reasons: result.assetReadiness.reasons || [],
         }
       : result.assetReadiness,
+    repairBudget: result.repairBudget
+      ? {
+          ...result.repairBudget,
+        }
+      : result.repairBudget,
+    failureCta: result.failureCta
+      ? {
+          ...result.failureCta,
+          actions: (result.failureCta.actions || []).map((action) => ({ ...action })),
+        }
+      : result.failureCta,
     qualitySplit: result.qualitySplit
       ? {
           ...result.qualitySplit,
@@ -3709,6 +3929,26 @@ async function createIntentRun(payload: Record<string, unknown>): Promise<Intent
   return json.run;
 }
 
+async function requestIntentLaunchDecision(payload: Record<string, unknown>): Promise<IntentLaunchDecisionResponse> {
+  const res = await fetch('/api/intent-e2e/launch-decision', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  const json = (await res.json().catch(() => null)) as IntentLaunchDecisionResponse | null;
+  if (!res.ok || !json?.decision) {
+    throw new Error(json?.error || '计算自动测试启动决策失败');
+  }
+
+  return {
+    decision: json.decision,
+    reasons: Array.isArray(json.reasons) ? json.reasons : [],
+    signals: json.signals,
+    assetAvailability: json.assetAvailability || null,
+  };
+}
+
 async function fetchIntentRunRecord(runId: string): Promise<IntentRunRecord> {
   const res = await fetch(`/api/intent-e2e/runs/${encodeURIComponent(runId)}`, { cache: 'no-store' });
   const json = (await res.json().catch(() => null)) as (IntentRunResponse & { error?: string }) | null;
@@ -3970,6 +4210,11 @@ export default function IntentE2EWorkbench({
   const searchWorkspaceModuleUid = searchParams.get('moduleUid') || '';
   const searchIntentDraftUid = searchParams.get('draftUid') || '';
   const searchRequestedRunId = searchParams.get('runId') || '';
+  const searchLaunchDecision = searchParams.get('launchDecision') || '';
+  const searchLaunchReasons = useMemo(
+    () => uniqueStrings(searchParams.getAll('launchReason')),
+    [searchParams]
+  );
   const launchedFromIntentDraft = Boolean(searchWorkspaceProjectUid.trim() && searchIntentDraftUid.trim());
   const collapsePreferenceContextKey = embedded
     ? 'embedded'
@@ -3990,6 +4235,7 @@ export default function IntentE2EWorkbench({
   const [canceling, setCanceling] = useState(false);
   const [runError, setRunError] = useState('');
   const [restoreNotice, setRestoreNotice] = useState('');
+  const [launchDecisionResult, setLaunchDecisionResult] = useState<IntentBlockedLaunchDecision | null>(null);
   const [result, setResult] = useState<IntentRunResult | null>(null);
   const [streamState, setStreamState] = useState<StreamState>(() => createEmptyStreamState());
   const [activeRunId, setActiveRunId] = useState('');
@@ -4077,6 +4323,9 @@ export default function IntentE2EWorkbench({
   const displayAttempts = result?.attempts ?? streamState.attempts;
   const displayFinalResult = result?.finalResult ?? streamState.finalResult;
   const displayFinalFailureTriage = result?.finalFailureTriage ?? streamState.finalFailureTriage;
+  const displayLaunchDecision =
+    launchDecisionResult && isBlockedIntentLaunchDecision(launchDecisionResult.decision) ? launchDecisionResult : null;
+  const hasBlockedLaunchDecision = Boolean(displayLaunchDecision);
   const displayTerminalStatus = displayFinalResult
     ? displayFinalResult.success
       ? 'passed'
@@ -4097,6 +4346,24 @@ export default function IntentE2EWorkbench({
   const displayLlmMeta = result?.llmMeta ?? streamState.llmMeta;
   const displayKnowledge = result?.knowledge ?? null;
   const displayAssetReadiness = result?.assetReadiness ?? null;
+  const displayRepairBudget = !displayFinalResult?.success ? result?.repairBudget ?? null : null;
+  const displayFailureCta = !displayFinalResult?.success ? result?.failureCta ?? null : null;
+  const displayBlockedReasonLabels = useMemo(
+    () =>
+      uniqueStrings(
+        (displayLaunchDecision?.assetAvailability?.reasons?.length
+          ? displayLaunchDecision.assetAvailability.reasons
+          : displayLaunchDecision?.reasons || []
+        ).map((item) => intentLaunchDecisionReasonLabel(item))
+      ),
+    [displayLaunchDecision]
+  );
+  const blockedProjectUid =
+    displayLaunchDecision?.signals?.projectUid ||
+    displayLaunchDecision?.assetAvailability?.projectUid ||
+    workspaceProjectUid ||
+    searchWorkspaceProjectUid.trim();
+  const failureProjectUid = displayAssetReadiness?.projectUid || workspaceProjectUid || searchWorkspaceProjectUid.trim();
   const displayTargetUrl = result?.targetUrl ?? streamState.targetUrl;
   const displayResolvedUrls = result?.resolvedUrls ?? streamState.resolvedUrls;
   const browserAttempt = [...displayAttempts].reverse().find((attempt) => Boolean(attempt.sessionId)) || null;
@@ -4666,30 +4933,37 @@ export default function IntentE2EWorkbench({
   const railStatusBadge = useMemo(() => {
     if (running) {
       return {
-        label: canceling ? 'STOPPING' : 'RUNNING',
+        label: canceling ? '停止中' : '运行中',
         className: canceling ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-sky-200 bg-sky-50 text-sky-800',
+      };
+    }
+
+    if (displayLaunchDecision) {
+      return {
+        label: '已拦截',
+        className: intentLaunchDecisionTone(displayLaunchDecision.decision),
       };
     }
 
     if (showCanceledState) {
       return {
-        label: 'STOPPED',
+        label: '已停止',
         className: 'border-amber-200 bg-amber-50 text-amber-800',
       };
     }
 
     if (displayFinalResult) {
       return {
-        label: displayFinalResult.success ? 'PASS' : 'FAIL',
+        label: displayFinalResult.success ? '通过' : '失败',
         className: statusPillTone(displayFinalResult.success),
       };
     }
 
     return {
-      label: 'READY',
-      className: 'border-slate-200 bg-white/85 text-slate-600',
+      label: '待命',
+      className: 'border-[#e6d8c6] bg-[#fbf3e7] text-[#7b6547]',
     };
-  }, [canceling, displayFinalResult, running, showCanceledState]);
+  }, [canceling, displayFinalResult, displayLaunchDecision, running, showCanceledState]);
   const railTabs = useMemo(() => {
     const tabs: Array<{
       key: WorkbenchRailView;
@@ -4859,7 +5133,17 @@ export default function IntentE2EWorkbench({
         indicatorClassName: canceling
           ? 'h-4 w-4 rounded-full border-2 border-amber-500 border-dashed animate-spin'
           : 'h-4 w-4 rounded-full border-2 border-sky-500 border-t-transparent animate-spin',
-        badgeLabel: canceling ? 'STOPPING' : 'RUNNING',
+        badgeLabel: canceling ? '停止中' : '运行中',
+      };
+    }
+
+    if (displayLaunchDecision) {
+      return {
+        toneClassName: intentLaunchDecisionTone(displayLaunchDecision.decision),
+        title: '启动已拦截',
+        detail: intentLaunchDecisionSummary(displayLaunchDecision.decision),
+        indicatorClassName: 'h-2.5 w-2.5 rounded-full bg-amber-500',
+        badgeLabel: '已拦截',
       };
     }
 
@@ -4869,7 +5153,7 @@ export default function IntentE2EWorkbench({
         title: '测试已停止',
         detail: `已保留当前流式上下文和 ${displayAttempts.length} 次尝试记录，方便继续诊断。`,
         indicatorClassName: 'h-2.5 w-2.5 rounded-full bg-amber-500',
-        badgeLabel: 'STOPPED',
+        badgeLabel: '已停止',
       };
     }
 
@@ -4879,7 +5163,7 @@ export default function IntentE2EWorkbench({
         title: displayFinalResult.success ? '测试通过' : '测试失败',
         detail: `共执行 ${displayAttempts.length} 次尝试 · 最终耗时 ${formatDuration(displayFinalResult.duration)}`,
         indicatorClassName: `h-2.5 w-2.5 rounded-full ${displayFinalResult.success ? 'bg-emerald-500' : 'bg-rose-500'}`,
-        badgeLabel: displayFinalResult.success ? 'PASS' : 'FAIL',
+        badgeLabel: displayFinalResult.success ? '通过' : '失败',
       };
     }
 
@@ -4888,11 +5172,142 @@ export default function IntentE2EWorkbench({
       title: '等待启动',
       detail: '开始自动测试后，这里会持续显示最新阶段、修复动作和关键诊断。',
       indicatorClassName: 'h-2.5 w-2.5 rounded-full bg-slate-300 animate-pulse',
-      badgeLabel: 'READY',
+      badgeLabel: '待命',
     };
-  }, [canceling, currentStageText, displayAttempts.length, displayFinalResult, running, showCanceledState]);
+  }, [canceling, currentStageText, displayAttempts.length, displayFinalResult, displayLaunchDecision, running, showCanceledState]);
   const showCollapsedWorkbenchRail = !embedded && workbenchCollapsed;
   const intentWorkbenchFormId = 'intent-e2e-launch-form';
+  const renderBlockedLaunchDecisionCard = () => {
+    if (!displayLaunchDecision) {
+      return null;
+    }
+
+    const returnHref = blockedProjectUid ? `/projects/${blockedProjectUid}` : '/';
+    const assetAvailability = displayLaunchDecision.assetAvailability;
+
+    return (
+      <div className={`rounded-[28px] border px-5 py-5 shadow-[0_16px_36px_rgba(15,23,42,0.06)] ${intentLaunchDecisionTone(displayLaunchDecision.decision)}`}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-[0.18em] opacity-75">Launch Decision</p>
+            <p className="mt-2 text-lg font-semibold text-current">当前请求先不直接开跑</p>
+            <p className="mt-2 text-sm leading-6">
+              {intentLaunchDecisionSummary(displayLaunchDecision.decision)}
+            </p>
+          </div>
+          <span className="rounded-full border px-3 py-1 text-[11px] font-medium">
+            {intentLaunchDecisionLabel(displayLaunchDecision.decision)}
+          </span>
+        </div>
+
+        {displayBlockedReasonLabels.length > 0 && (
+          <div className="mt-4 rounded-2xl border border-current/10 bg-white/60 px-4 py-3 text-sm leading-6 text-slate-700">
+            <p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">判定依据</p>
+            <p className="mt-2">{displayBlockedReasonLabels.join('；')}</p>
+          </div>
+        )}
+
+        {assetAvailability?.projectUid && (
+          <div className="mt-3 rounded-2xl border border-current/10 bg-white/60 px-4 py-3 text-xs leading-6 text-slate-600">
+            <p>项目：{assetAvailability.projectUid}</p>
+            <p>资产状态：{intentAssetReadinessLabel(assetAvailability.status)}</p>
+            {assetAvailability.onboardingPath ? <p>onboarding：{assetAvailability.onboardingPath}</p> : null}
+            {assetAvailability.knowledgePath ? <p>knowledge：{assetAvailability.knowledgePath}</p> : null}
+          </div>
+        )}
+
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              clearBlockedLaunchDecision({ syncQuery: launchedFromIntentDraft });
+              setWorkbenchCollapsed(false);
+              setRailView('workbench');
+            }}
+            className="inline-flex h-11 items-center justify-center rounded-2xl border border-current/15 bg-white/80 px-4 text-sm font-medium text-slate-800 transition hover:bg-white"
+          >
+            继续改描述
+          </button>
+          {!embedded && (
+            <button
+              type="button"
+              onClick={() => {
+                setWorkbenchCollapsed(false);
+                setRailView('governance');
+                void previewProjectKnowledgeDraft();
+              }}
+              disabled={!workspaceProjectUid || knowledgeDraftBusy}
+              className="inline-flex h-11 items-center justify-center rounded-2xl border border-current/15 bg-white/80 px-4 text-sm font-medium text-slate-800 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {knowledgeDraftLoading ? '预览中…' : '预览项目知识草稿'}
+            </button>
+          )}
+          {!embedded ? (
+            <Link
+              href={returnHref}
+              className="inline-flex h-11 items-center justify-center rounded-2xl border border-current/15 bg-white/80 px-4 text-sm font-medium text-slate-800 transition hover:bg-white"
+            >
+              返回项目工作台
+            </Link>
+          ) : onClose ? (
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex h-11 items-center justify-center rounded-2xl border border-current/15 bg-white/80 px-4 text-sm font-medium text-slate-800 transition hover:bg-white"
+            >
+              关闭
+            </button>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
+
+  const handleFailureCtaAction = useCallback(
+    (action: IntentFailureCtaActionKey) => {
+      switch (action) {
+        case 'prepare_prerequisites':
+          setWorkbenchCollapsed(false);
+          setRailView('context');
+          return;
+        case 'preview_knowledge_draft':
+          if (!workspaceProjectUid || knowledgeDraftBusy) {
+            return;
+          }
+          setWorkbenchCollapsed(false);
+          setRailView('governance');
+          void previewProjectKnowledgeDraft();
+          return;
+        case 'handoff_manual':
+          if (activeRunId) {
+            setWorkbenchCollapsed(false);
+            setRailView('workspace');
+            return;
+          }
+          if (failureProjectUid) {
+            router.push(`/projects/${failureProjectUid}`);
+            return;
+          }
+          if (onClose) {
+            onClose();
+          }
+          return;
+        case 'edit_description':
+        default:
+          setWorkbenchCollapsed(false);
+          setRailView('workbench');
+      }
+    },
+    [
+      activeRunId,
+      failureProjectUid,
+      knowledgeDraftBusy,
+      onClose,
+      previewProjectKnowledgeDraft,
+      router,
+      workspaceProjectUid,
+    ]
+  );
 
   const renderIntentWorkbenchEditor = ({
     subtitle,
@@ -4971,7 +5386,10 @@ export default function IntentE2EWorkbench({
                   </button>
                   <button
                     type="button"
-                    onClick={() => clearExecutionState()}
+                    onClick={() => {
+                      clearExecutionState();
+                      clearBlockedLaunchDecision({ syncQuery: launchedFromIntentDraft });
+                    }}
                     disabled={running}
                     className="inline-flex h-10 min-w-0 items-center justify-center rounded-[18px] border border-[#ddd5ca] bg-white/78 px-3 text-[11px] font-medium text-slate-700 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
                   >
@@ -5788,6 +6206,74 @@ export default function IntentE2EWorkbench({
     const nextQuery = nextParams.toString();
     router.replace(nextQuery ? `/intent-e2e?${nextQuery}` : '/intent-e2e');
   }, [embedded, router, searchParams]);
+  const replaceWorkbenchSearchParams = useCallback(
+    (mutate: (nextParams: URLSearchParams) => void) => {
+      if (embedded) return;
+      const nextParams = new URLSearchParams(searchParams.toString());
+      mutate(nextParams);
+      const nextQuery = nextParams.toString();
+      router.replace(nextQuery ? `/intent-e2e?${nextQuery}` : '/intent-e2e');
+    },
+    [embedded, router, searchParams]
+  );
+  const syncLaunchDecisionQuery = useCallback(
+    (decision?: IntentLaunchDecisionValue | null, reasons: string[] = []) => {
+      if (!launchedFromIntentDraft) return;
+
+      replaceWorkbenchSearchParams((nextParams) => {
+        nextParams.delete('launchDecision');
+        nextParams.delete('launchReason');
+        if (!decision || decision === 'auto_run') {
+          return;
+        }
+        nextParams.delete('runId');
+        nextParams.set('launchDecision', decision);
+        reasons.forEach((reason) => {
+          const normalized = reason.trim();
+          if (normalized) {
+            nextParams.append('launchReason', normalized);
+          }
+        });
+      });
+    },
+    [launchedFromIntentDraft, replaceWorkbenchSearchParams]
+  );
+  const clearBlockedLaunchDecision = useCallback(
+    (options?: { syncQuery?: boolean }) => {
+      setLaunchDecisionResult(null);
+      if (options?.syncQuery) {
+        syncLaunchDecisionQuery(null);
+      }
+    },
+    [syncLaunchDecisionQuery]
+  );
+  const applyBlockedLaunchDecision = useCallback(
+    (decision: IntentLaunchDecisionResponse, options?: { source?: 'route' | 'query'; syncQuery?: boolean }) => {
+      const normalized: IntentBlockedLaunchDecision = {
+        decision: decision.decision,
+        reasons: uniqueStrings(decision.reasons || []),
+        signals: decision.signals,
+        assetAvailability: decision.assetAvailability || null,
+        source: options?.source || 'route',
+      };
+      setLaunchDecisionResult(normalized);
+      setRunning(false);
+      setCanceling(false);
+      setRunError('');
+      setRestoreNotice('');
+      setResult(null);
+      setStreamState(createEmptyStreamState());
+      setActiveRunId('');
+      workspaceTaskNamePrefillRunIdRef.current = '';
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.removeItem(RUN_ID_STORAGE_KEY);
+      }
+      if (options?.syncQuery) {
+        syncLaunchDecisionQuery(normalized.decision, normalized.reasons);
+      }
+    },
+    [syncLaunchDecisionQuery]
+  );
 
   const restoreLaunchFormFromDraft = useCallback(
     async (notice?: string) => {
@@ -5847,6 +6333,31 @@ export default function IntentE2EWorkbench({
       active = false;
     };
   }, [activeRunId, restoreLaunchFormFromDraft, searchIntentDraftUid, searchWorkspaceProjectUid]);
+
+  useEffect(() => {
+    if (activeRunId) {
+      return;
+    }
+
+    const decision = normalizeIntentLaunchDecisionValue(searchLaunchDecision);
+    if (!decision || decision === 'auto_run') {
+      return;
+    }
+
+    const reasonKey = searchLaunchReasons.join('|');
+    const currentReasonKey = (launchDecisionResult?.reasons || []).join('|');
+    if (launchDecisionResult?.source === 'query' && launchDecisionResult.decision === decision && currentReasonKey === reasonKey) {
+      return;
+    }
+
+    applyBlockedLaunchDecision(
+      {
+        decision,
+        reasons: searchLaunchReasons,
+      },
+      { source: 'query' }
+    );
+  }, [activeRunId, applyBlockedLaunchDecision, launchDecisionResult, searchLaunchDecision, searchLaunchReasons]);
 
   useEffect(() => {
     let active = true;
@@ -6065,6 +6576,7 @@ export default function IntentE2EWorkbench({
 
   const applyRunRecord = useCallback((run: IntentRunRecord) => {
     setActiveRunId(run.runId);
+    setLaunchDecisionResult(null);
     setResult(run.result ? normalizeRunResult(run.result) : null);
     setStreamState(hydrateStreamStateFromRunRecord(run));
     setRunError(run.status === 'failed' && !run.result ? run.error || '' : '');
@@ -6195,6 +6707,7 @@ export default function IntentE2EWorkbench({
   const clearExecutionState = useCallback((options?: { keepRunId?: boolean }) => {
     streamAbortRef.current?.abort();
     streamAbortRef.current = null;
+    setLaunchDecisionResult(null);
     setRunError('');
     setRestoreNotice('');
     setCanceling(false);
@@ -6284,6 +6797,11 @@ export default function IntentE2EWorkbench({
     }
     if (typeof window === 'undefined') return;
     if (searchRequestedRunId.trim()) return;
+    if (isBlockedIntentLaunchDecision(normalizeIntentLaunchDecisionValue(searchLaunchDecision))) {
+      window.sessionStorage.removeItem(RUN_ID_STORAGE_KEY);
+      setRestoreChecked(true);
+      return;
+    }
 
     let active = true;
 
@@ -6333,7 +6851,7 @@ export default function IntentE2EWorkbench({
     return () => {
       active = false;
     };
-  }, [applyRunRecord, embedded, hydrateLaunchFormFromRun, restoreLaunchFormFromDraft, searchRequestedRunId, startRunStream]);
+  }, [applyRunRecord, embedded, hydrateLaunchFormFromRun, restoreLaunchFormFromDraft, searchLaunchDecision, searchRequestedRunId, startRunStream]);
 
   useEffect(() => {
     return () => {
@@ -7094,13 +7612,7 @@ export default function IntentE2EWorkbench({
     }
 
     clearExecutionState();
-    setRunning(true);
-    setStreamState({
-      ...createEmptyStreamState(),
-      stage: 'received',
-      message: '正在创建服务端运行…',
-      feed: [{ id: createFeedId(), tone: 'info', text: '正在创建服务端运行…' }],
-    });
+    clearBlockedLaunchDecision({ syncQuery: launchedFromIntentDraft });
 
     const payload = {
       input: input.trim(),
@@ -7132,6 +7644,22 @@ export default function IntentE2EWorkbench({
     };
 
     try {
+      const launchDecision = await requestIntentLaunchDecision(payload);
+      if (launchDecision.decision !== 'auto_run') {
+        applyBlockedLaunchDecision(launchDecision, {
+          source: 'route',
+          syncQuery: launchedFromIntentDraft,
+        });
+        return;
+      }
+
+      setRunning(true);
+      setStreamState({
+        ...createEmptyStreamState(),
+        stage: 'received',
+        message: '正在创建服务端运行…',
+        feed: [{ id: createFeedId(), tone: 'info', text: '正在创建服务端运行…' }],
+      });
       const run = await createIntentRun(payload);
       applyRunRecord(run);
       await startRunStream(run.runId, run.events.length);
@@ -7296,7 +7824,7 @@ export default function IntentE2EWorkbench({
                           </div>
                           <p className="mt-2 text-[13px] leading-6 opacity-80">{liveLogStatus.detail}</p>
                         </div>
-                        <span className="rounded-full border border-black/5 bg-white/78 px-2.5 py-1 text-[12px] font-medium tracking-[0.14em] text-current">
+                        <span className="rounded-full border border-black/5 bg-white/78 px-2.5 py-1 text-[12px] font-medium text-current">
                           {liveLogStatus.badgeLabel}
                         </span>
                       </div>
@@ -11024,6 +11552,81 @@ export default function IntentE2EWorkbench({
                     </div>
                   )}
 
+                  {!displayFinalResult.success && (displayRepairBudget || displayFailureCta) && (
+                    <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-700">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="font-medium text-slate-900">下一步动作</p>
+                          <p className="mt-1 text-xs leading-5 text-slate-500">
+                            失败结果不再只停留在总结文案，这里直接给出下一步入口。
+                          </p>
+                        </div>
+                        {displayRepairBudget && (
+                          <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-600">
+                            {intentRepairBudgetReasonLabel(displayRepairBudget.reasonCode)}
+                          </span>
+                        )}
+                      </div>
+
+                      {displayRepairBudget && (
+                        <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                          <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-slate-400">
+                            <span>repair budget</span>
+                            <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-medium tracking-normal text-slate-600">
+                              已用 {displayRepairBudget.usedRepairAttempts}/{displayRepairBudget.maxRepairAttempts}
+                            </span>
+                            <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-medium tracking-normal text-slate-600">
+                              {displayRepairBudget.exhausted ? '已止损' : `剩余 ${displayRepairBudget.remainingRepairAttempts}`}
+                            </span>
+                          </div>
+                          <p className="mt-3 text-xs leading-6 text-slate-600">{displayRepairBudget.summary}</p>
+                        </div>
+                      )}
+
+                      {displayFailureCta && (
+                        <>
+                          <div className="mt-4">
+                            <p className="text-sm font-medium text-slate-900">{displayFailureCta.headline}</p>
+                            <p className="mt-1 text-xs leading-6 text-slate-500">{displayFailureCta.summary}</p>
+                          </div>
+
+                          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                            {displayFailureCta.actions.map((action) => {
+                              const previewAction = action.action === 'preview_knowledge_draft';
+                              const enabled =
+                                action.enabled &&
+                                (!previewAction || Boolean(workspaceProjectUid)) &&
+                                !(previewAction && knowledgeDraftBusy);
+                              const buttonLabel = previewAction && knowledgeDraftLoading ? '预览中…' : action.label;
+
+                              return (
+                                <div key={action.action} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <p className="text-sm font-medium text-slate-900">{action.label}</p>
+                                    {action.recommended && (
+                                      <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[10px] font-medium text-amber-700">
+                                        建议优先
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="mt-2 text-xs leading-6 text-slate-500">{action.description}</p>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleFailureCtaAction(action.action)}
+                                    disabled={!enabled}
+                                    className="mt-3 inline-flex h-10 items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-800 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {buttonLabel}
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+
                   {finalStats && (
                     <div className="grid gap-3 sm:grid-cols-3">
                       <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
@@ -11041,6 +11644,8 @@ export default function IntentE2EWorkbench({
                     </div>
                   )}
                 </div>
+              ) : hasBlockedLaunchDecision ? (
+                renderBlockedLaunchDecisionCard()
               ) : (
                 <div className="mt-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-sm text-slate-400">
                   还没有执行结果。填写 Intent Workbench 后点击“开始自动测试”。
@@ -11714,7 +12319,7 @@ export default function IntentE2EWorkbench({
                                   <span className="h-2.5 w-2.5 rounded-full bg-[#ffd26f]" />
                                   <span className="h-2.5 w-2.5 rounded-full bg-[#89d185]" />
                                 </div>
-                                <span className="text-[12px] uppercase tracking-[0.18em] text-slate-400">Live Preview Idle</span>
+                                <span className="text-[11px] font-medium tracking-[0.12em] text-slate-400">实时预览待命</span>
                               </div>
                               <div className="flex h-full items-center justify-center bg-[radial-gradient(circle_at_top,rgba(28,34,44,0.72),transparent_48%),linear-gradient(180deg,#080a0e,#0d1118_56%,#0a0d12)] px-6 pt-10 text-center">
                                 <div className="max-w-[320px]">

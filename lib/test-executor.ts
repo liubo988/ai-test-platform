@@ -2,6 +2,7 @@ import { fork, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import type { BrowserContextOptions } from 'playwright';
 import { broadcastFrame } from './screencast-manager';
 
 const ROOT = process.cwd();
@@ -21,6 +22,10 @@ interface ExecuteHooks {
   onFrame?: (payload: { sessionId: string; frameIndex: number; timestamp: number; approxBase64Bytes: number }) => void;
   onStep?: (payload: StepResult) => void;
   onLog?: (payload: WorkerLog) => void;
+}
+
+export interface ExecuteTestRuntimeOptions {
+  storageState?: Exclude<BrowserContextOptions['storageState'], undefined>;
 }
 
 interface StepResult {
@@ -151,7 +156,8 @@ export async function executeTest(
   code: string,
   sessionId: string,
   auth?: { loginUrl?: string; username?: string; password?: string; loginDescription?: string },
-  hooks?: ExecuteHooks
+  hooks?: ExecuteHooks,
+  options?: ExecuteTestRuntimeOptions
 ): Promise<TestResult> {
   const tmpDir = path.join(ROOT, 'tests', 'e2e', 'generated');
   await fs.mkdir(tmpDir, { recursive: true });
@@ -160,7 +166,8 @@ export async function executeTest(
   const executableCode = prepareTestCodeForExecution(code);
   const workerCode = renderWorkerCodeForExecution(template, executableCode);
 
-  const tmpFile = path.join(tmpDir, `worker-${Date.now()}.mjs`);
+  const fileSeed = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const tmpFile = path.join(tmpDir, `worker-${fileSeed}.mjs`);
   await fs.writeFile(tmpFile, workerCode, 'utf8');
 
   const workerEnv = { ...process.env };
@@ -168,11 +175,21 @@ export async function executeTest(
   if (auth?.username) workerEnv.E2E_USERNAME = auth.username;
   if (auth?.password) workerEnv.E2E_PASSWORD = auth.password;
   if (auth?.loginDescription) workerEnv.E2E_LOGIN_DESCRIPTION = auth.loginDescription;
+  const storageStateFile = options?.storageState
+    ? path.join(tmpDir, `storage-state-${fileSeed}.json`)
+    : '';
+  if (storageStateFile) {
+    await fs.writeFile(storageStateFile, JSON.stringify(options?.storageState || {}), 'utf8');
+    workerEnv.E2E_STORAGE_STATE_PATH = storageStateFile;
+  }
 
   try {
     return await runWorker(tmpFile, sessionId, workerEnv, hooks);
   } finally {
     await fs.unlink(tmpFile).catch(() => {});
+    if (storageStateFile) {
+      await fs.unlink(storageStateFile).catch(() => {});
+    }
   }
 }
 

@@ -40,6 +40,74 @@
       ]
     },
     {
+      "id": "business.create-list-status-detail-entry",
+      "title": "新建商机后列表状态回查",
+      "match": {
+        "urlIncludes": ["/business/createbusiness", "/business/businesslist"],
+        "descriptionIncludes": ["商机进展", "新入库"]
+      },
+      "promptNotes": [
+        "新建商机后切到“我创建的”校验“商机进展”时，不要把 `#/business/detail/:id` 当成唯一详情入口；如果列表行已经命中且 detailUrl 无效，优先复用目标行的显式“查看”入口。",
+        "这条 family 的固定详情链优先写成 `detailEntry{ trigger=row_action; actionLabel=查看; target=drawer_or_modal } -> detailReadyLocator.textIncludes=商机详情 -> __e2e.readDetailField(... '商机进展') || __e2e.readDetailField(... '状态')`。"
+      ],
+      "capabilitySlugs": [
+        "ui.click-antd-row-action",
+        "assert.read-detail-field"
+      ],
+      "addGlobalRules": [
+        "命中新建商机列表状态回查知识时，若 `detailUrl` 无效，优先复用已命中目标行的“查看”详情入口，不要把 `business/detail` 当成唯一详情路径。"
+      ],
+      "addPreferredPrimitives": [
+        "open_business_detail_from_row(row): 用 `__e2e.clickAntdRowAction(page, row, '查看')` 打开商机详情，并等待 `商机详情` surface 稳定。"
+      ],
+      "addOutputContract": [
+        "若列表行已命中但行内未直接展示“商机进展”，优先通过“查看”打开商机详情并读取“商机进展/状态”，不要直接把 invalid detail route 继续当作唯一详情路径。"
+      ],
+      "stepPatches": [
+        {
+          "whenStepTypes": ["assert"],
+          "stepTextIncludes": ["商机进展", "新入库", "我创建的"],
+          "addAllowedActions": ["click_row_action", "wait_for_visible_modal", "read_detail_field"],
+          "addPreferredHelpers": ["__e2e.clickAntdRowAction", "__e2e.waitForVisibleAntdModal", "__e2e.readDetailField"],
+          "addRequiredAssertions": [
+            "若列表行未直出状态，优先通过“查看”打开“商机详情”并读取“商机进展”或“状态”字段"
+          ],
+          "addForbiddenPatterns": [
+            "把 #/business/detail/{{id}} 当成唯一详情入口",
+            "detailUrl 无效后仍继续在 business/detail 页面裸读状态"
+          ]
+        }
+      ],
+      "recordLookupHints": [
+        {
+          "stableIdentifiers": ["createdBusinessId"],
+          "whenStepTypes": ["assert"],
+          "stepTextIncludes": ["商机进展", "新入库"],
+          "listResponse": { "urlIncludes": "/business", "method": "GET" },
+          "detailUrl": "/business/detail/{{primaryValue}}",
+          "searchSurface": {
+            "keywordInput": { "selector": "input#businessList_keywords:visible" },
+            "searchButton": { "textIncludes": "搜索" }
+          },
+          "detailReadyLocator": { "textIncludes": "商机详情" },
+          "detailEntry": {
+            "trigger": "row_action",
+            "actionLabel": "查看",
+            "target": "drawer_or_modal"
+          }
+        }
+      ],
+      "detailSurfaceHints": [
+        {
+          "stableIdentifiers": ["createdBusinessId"],
+          "whenStepTypes": ["assert"],
+          "stepTextIncludes": ["商机进展", "新入库"],
+          "titleIncludes": "商机详情",
+          "scopeHints": ["详情抽屉"]
+        }
+      ]
+    },
+    {
       "id": "embedded.easyindex-search",
       "title": "搜企业 iframe 业务页",
       "match": {

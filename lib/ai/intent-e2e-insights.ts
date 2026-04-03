@@ -32,10 +32,11 @@ import {
   type IntentVerificationFailurePressureSummary,
 } from '@/lib/intent-verification-failure-pressure-summary';
 import { summarizeIntentExecutionRepairObservationArtifact } from '@/lib/intent-execution-artifacts';
-import type { IntentE2EAssetReadiness, IntentE2EAssetReadinessStatus } from '@/lib/ai/intent-e2e-service';
+import type { IntentE2EAssetReadiness, IntentE2EAssetReadinessStatus } from '@/lib/intent-e2e-asset-readiness';
 import {
   isIntentE2EBlockedQualityBucket,
   normalizeIntentE2EQualitySplit,
+  type IntentE2EBlockerKind,
   type IntentE2EQualityBucket,
   type IntentE2EQualitySplit,
 } from '@/lib/intent-e2e-quality-split';
@@ -52,6 +53,10 @@ import {
   type IntentProjectRuntimeGovernanceIssue,
   type IntentProjectRuntimeGovernanceStatus,
 } from '@/lib/intent-project-runtime-governance';
+import { classifyIntentE2EPriorityScenarioFamily } from '@/lib/intent-e2e-priority-scenario-family';
+import type { IntentE2EPriorityScenarioFamily } from '@/lib/intent-e2e-priority-scenario-family';
+
+export type { IntentE2EPriorityScenarioFamily } from '@/lib/intent-e2e-priority-scenario-family';
 
 export interface IntentE2EInsightPassMetrics {
   firstPassPassedRuns: number;
@@ -377,13 +382,6 @@ export interface IntentE2EInsightRolloutStrategyOverview {
   readyCount: number;
   gates: IntentE2EInsightRolloutStrategyGate[];
 }
-
-export type IntentE2EPriorityScenarioFamily =
-  | 'business_create_list_verify'
-  | 'business_to_order'
-  | 'list_search_detail'
-  | 'modal_or_drawer_save'
-  | 'untracked';
 
 export interface IntentE2EInsightPriorityScenarioStat extends IntentE2EInsightPassMetrics {
   family: Exclude<IntentE2EPriorityScenarioFamily, 'untracked'>;
@@ -852,6 +850,27 @@ export interface IntentE2EInsightsResult {
   runtimeGovernanceStatus?: IntentE2EInsightProjectRuntimeGovernanceStatus;
 }
 
+export type IntentE2ERepeatedFailureSuppressionDecision = 'draft_only' | 'needs_bootstrap' | 'needs_fixture';
+
+export interface IntentE2ERepeatedFailureSuppressionSignal {
+  shouldSuppress: boolean;
+  scenarioFamily: IntentE2EScenarioFamily;
+  priorityScenarioFamily: IntentE2EPriorityScenarioFamily;
+  targetPath: string;
+  matchedSnapshotSignature: string;
+  matchedRunCount: number;
+  matchedFailedRuns: number;
+  recentFailureStreak: number;
+  dominantQualityBucket: IntentE2EQualityBucket | '';
+  dominantBlockerKind: IntentE2EBlockerKind;
+  latestFailureClass: string;
+  recommendedDecision: IntentE2ERepeatedFailureSuppressionDecision | '';
+  reason: string;
+  latestFinishedAt: string;
+  representativeRunIds: string[];
+  failurePressureSummary: IntentVerificationFailurePressureSummary;
+}
+
 interface BuildIntentE2EInsightsOptions {
   projectUid?: string;
   runLimit?: number;
@@ -1043,7 +1062,9 @@ const PRIORITY_SCENARIO_FAMILY_LABELS: Record<IntentE2EPriorityScenarioFamily, s
   business_to_order: '商机转订单 / 生成订单',
   list_search_detail: '列表搜索并进入详情',
   modal_or_drawer_save: '弹层 / 抽屉编辑并保存',
-  untracked: '未纳入 roadmap 四类优先场景',
+  row_action_menu: '列表行操作菜单',
+  list_ownership_switch: '列表归属切换后回查',
+  untracked: '未纳入当前优先 family',
 };
 
 const VERIFICATION_INTENT_LABELS: Record<IntentE2EInsightVerificationIntent, string> = {
@@ -1396,9 +1417,13 @@ function priorityScenarioFamilyRank(family: IntentE2EPriorityScenarioFamily): nu
       return 2;
     case 'modal_or_drawer_save':
       return 3;
+    case 'row_action_menu':
+      return 4;
+    case 'list_ownership_switch':
+      return 5;
     case 'untracked':
     default:
-      return 4;
+      return 6;
   }
 }
 
@@ -1545,73 +1570,6 @@ function classifyIntentE2EScenarioFamily(input: {
     return hasEnterpriseSurface ? 'complex_enterprise_flow' : 'simple_scenario';
   }
   return 'unknown';
-}
-
-function classifyIntentE2EPriorityScenarioFamily(input: {
-  requestInput: string;
-  targetUrl: string;
-  scenarioCard: unknown;
-  description: string;
-}): IntentE2EPriorityScenarioFamily {
-  const scenarioCard =
-    input.scenarioCard && typeof input.scenarioCard === 'object' && !Array.isArray(input.scenarioCard)
-      ? (input.scenarioCard as {
-          title?: unknown;
-          featureDescription?: unknown;
-          flowDefinition?: {
-            steps?: unknown;
-          } | null;
-        })
-      : null;
-  const steps = Array.isArray(scenarioCard?.flowDefinition?.steps) ? scenarioCard?.flowDefinition?.steps || [] : [];
-  const haystack = [
-    input.requestInput,
-    input.targetUrl,
-    input.description,
-    typeof scenarioCard?.title === 'string' ? scenarioCard.title : '',
-    typeof scenarioCard?.featureDescription === 'string' ? scenarioCard.featureDescription : '',
-    ...steps.flatMap((step) =>
-      step && typeof step === 'object' && !Array.isArray(step)
-        ? [
-            String((step as { title?: unknown }).title || ''),
-            String((step as { target?: unknown }).target || ''),
-            String((step as { instruction?: unknown }).instruction || ''),
-            String((step as { expectedResult?: unknown }).expectedResult || ''),
-          ]
-        : []
-    ),
-  ].join('\n');
-
-  const hasBusiness = /(商机|business)/i.test(haystack);
-  const hasCreate = /(新建|创建|新增|create|提交|submit)/i.test(haystack);
-  const hasOrderFlow = /(createorder|生成订单|转订单|订单信息|orderid|订单id|订单号)/i.test(haystack);
-  const hasSearch = /(搜索|检索|查询|search)/i.test(haystack);
-  const hasModal = /(drawer|modal|抽屉|弹窗|弹框|弹层|对话框)/i.test(haystack);
-  const hasSaveAction = /(保存|提交|确定|save|submit|confirm)/i.test(haystack);
-  const hasCloseState = /(关闭|消失|closed|close)/i.test(haystack);
-  const hasSuccessState = /(保存成功|提交成功|success)/i.test(haystack);
-  const hasBusinessCreateSurface =
-    /(新建商机|创建商机|新增商机|createbusiness|商机创建页|商机创建|保存成功后|新建记录)/i.test(haystack) ||
-    (hasBusiness && hasCreate);
-  const hasBusinessListVerifySurface =
-    /(我创建的|回列表|商机列表|列表中状态|新入库|列表可见|记录存在|命中目标记录)/i.test(haystack);
-  const hasDetailEntry =
-    /(进入详情|打开详情|查看详情|详情页|详情抽屉|详情弹窗|详情弹层|detail)/i.test(haystack);
-
-  if (hasOrderFlow && (hasBusiness || /crmapi\/business/i.test(haystack))) {
-    return 'business_to_order';
-  }
-  if (hasBusiness && hasBusinessCreateSurface && hasBusinessListVerifySurface) {
-    return 'business_create_list_verify';
-  }
-  if (hasModal && hasSaveAction && (hasCloseState || hasSuccessState)) {
-    return 'modal_or_drawer_save';
-  }
-  if (hasSearch && hasDetailEntry && !hasSaveAction && !hasBusinessCreateSurface) {
-    return 'list_search_detail';
-  }
-
-  return 'untracked';
 }
 
 function buildPassMetrics(runs: InsightRunRecord[]): IntentE2EInsightPassMetrics {
@@ -4129,6 +4087,271 @@ export function buildIntentE2EEvaluationBaselineFromData(
 ): IntentE2EEvaluationBaseline {
   const terminalRuns = runSnapshots.map(normalizeTerminalRun).filter((item): item is InsightRunRecord => Boolean(item));
   return buildEvaluationBaseline(terminalRuns);
+}
+
+function createNeutralFailurePressureSummary(): IntentVerificationFailurePressureSummary {
+  return {
+    recentFailedReviewCapabilityCount: 0,
+    recentFailedVerifyCapabilityCount: 0,
+    recentFailedReviewExecutionCount: 0,
+    recentFailedVerifyExecutionCount: 0,
+    recentFailureWindowDays: 14,
+    highFailureCandidateCount: 0,
+    highFailureRepairCount: 0,
+    highFailureGovernanceCount: 0,
+    latestRepairObservationAt: '',
+    latestRepairObservationSummary: '',
+    latestRepairObservationVerifierCheckUids: [],
+  };
+}
+
+function createNeutralRepeatedFailureSuppressionSignal(input: {
+  scenarioFamily: IntentE2EScenarioFamily;
+  priorityScenarioFamily: IntentE2EPriorityScenarioFamily;
+  targetPath: string;
+}): IntentE2ERepeatedFailureSuppressionSignal {
+  return {
+    shouldSuppress: false,
+    scenarioFamily: input.scenarioFamily,
+    priorityScenarioFamily: input.priorityScenarioFamily,
+    targetPath: input.targetPath,
+    matchedSnapshotSignature: '',
+    matchedRunCount: 0,
+    matchedFailedRuns: 0,
+    recentFailureStreak: 0,
+    dominantQualityBucket: '',
+    dominantBlockerKind: '',
+    latestFailureClass: '',
+    recommendedDecision: '',
+    reason: '',
+    latestFinishedAt: '',
+    representativeRunIds: [],
+    failurePressureSummary: createNeutralFailurePressureSummary(),
+  };
+}
+
+function resolveRepeatedFailureSuppressionThreshold(bucket: IntentE2EQualityBucket | ''): number {
+  switch (bucket) {
+    case 'auth_blocked':
+    case 'permission_blocked':
+    case 'env_blocked':
+    case 'data_blocked':
+      return 2;
+    default:
+      return 3;
+  }
+}
+
+function resolveRepeatedFailureSuppressionReason(
+  bucket: IntentE2EQualityBucket | ''
+): {
+  recommendedDecision: IntentE2ERepeatedFailureSuppressionDecision;
+  reason: string;
+} {
+  switch (bucket) {
+    case 'auth_blocked':
+      return {
+        recommendedDecision: 'needs_bootstrap',
+        reason: 'recent_repeated_auth_block',
+      };
+    case 'permission_blocked':
+      return {
+        recommendedDecision: 'needs_bootstrap',
+        reason: 'recent_repeated_permission_block',
+      };
+    case 'env_blocked':
+      return {
+        recommendedDecision: 'needs_bootstrap',
+        reason: 'recent_repeated_environment_block',
+      };
+    case 'data_blocked':
+      return {
+        recommendedDecision: 'needs_fixture',
+        reason: 'recent_repeated_data_block',
+      };
+    default:
+      return {
+        recommendedDecision: 'draft_only',
+        reason: 'recent_repeated_model_failure',
+      };
+  }
+}
+
+function matchesRepeatedFailureSuppressionRun(
+  run: InsightRunRecord,
+  target: {
+    scenarioFamily: IntentE2EScenarioFamily;
+    priorityScenarioFamily: IntentE2EPriorityScenarioFamily;
+    targetPath: string;
+  }
+): boolean {
+  if (!target.targetPath && target.priorityScenarioFamily === 'untracked') {
+    return false;
+  }
+
+  if (target.targetPath && run.targetPath !== target.targetPath) {
+    return false;
+  }
+
+  if (target.priorityScenarioFamily !== 'untracked') {
+    return run.priorityScenarioFamily === target.priorityScenarioFamily;
+  }
+
+  return run.scenarioFamily === target.scenarioFamily;
+}
+
+function analyzeRepeatedFailureSuppressionCluster(
+  clusterRuns: InsightRunRecord[],
+  target: {
+    scenarioFamily: IntentE2EScenarioFamily;
+    priorityScenarioFamily: IntentE2EPriorityScenarioFamily;
+    targetPath: string;
+  }
+): IntentE2ERepeatedFailureSuppressionSignal {
+  const orderedRuns = [...clusterRuns].sort((a, b) => b.finishedAtMs - a.finishedAtMs || b.runId.localeCompare(a.runId));
+  const recentFailureRuns: InsightRunRecord[] = [];
+
+  for (const run of orderedRuns) {
+    if (run.status !== 'failed') {
+      if (recentFailureRuns.length > 0) break;
+      return createNeutralRepeatedFailureSuppressionSignal(target);
+    }
+    recentFailureRuns.push(run);
+  }
+
+  const bucketStats = new Map<IntentE2EQualityBucket, number>();
+  for (const run of recentFailureRuns) {
+    const bucket = run.qualitySplit.bucket;
+    bucketStats.set(bucket, (bucketStats.get(bucket) || 0) + 1);
+  }
+
+  const dominantQualityBucket =
+    [...bucketStats.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] || 'model_quality';
+  const threshold = resolveRepeatedFailureSuppressionThreshold(dominantQualityBucket);
+  const { recommendedDecision, reason } = resolveRepeatedFailureSuppressionReason(dominantQualityBucket);
+  const latestRun = recentFailureRuns[0] || orderedRuns[0];
+  const recentFailureWindowMs =
+    recentFailureRuns.length > 0
+      ? Math.max(
+          0,
+          Math.ceil(
+            (recentFailureRuns[0].finishedAtMs - recentFailureRuns[recentFailureRuns.length - 1].finishedAtMs) /
+              (24 * 60 * 60 * 1000)
+          )
+        ) + 1
+      : 14;
+
+  const shouldSuppress = recentFailureRuns.length >= threshold;
+
+  return {
+    shouldSuppress,
+    scenarioFamily: target.scenarioFamily,
+    priorityScenarioFamily: target.priorityScenarioFamily,
+    targetPath: target.targetPath,
+    matchedSnapshotSignature: latestRun?.snapshotSignature || '',
+    matchedRunCount: clusterRuns.length,
+    matchedFailedRuns: clusterRuns.filter((run) => run.status === 'failed').length,
+    recentFailureStreak: recentFailureRuns.length,
+    dominantQualityBucket,
+    dominantBlockerKind: latestRun?.qualitySplit.blockerKind || '',
+    latestFailureClass: latestRun?.failureClass || '',
+    recommendedDecision: shouldSuppress ? recommendedDecision : '',
+    reason: shouldSuppress ? reason : '',
+    latestFinishedAt: latestRun?.finishedAt || '',
+    representativeRunIds: orderedRuns.slice(0, 3).map((run) => run.runId),
+    failurePressureSummary: shouldSuppress
+      ? summarizeIntentVerificationFailurePressureSummaryFromItems(
+          [
+            {
+              recentFailedReviewCapabilityCount: 0,
+              recentFailedVerifyCapabilityCount: 0,
+              recentFailedReviewExecutionCount: 0,
+              recentFailedVerifyExecutionCount: recentFailureRuns.length,
+              recentFailureWindowDays: Math.max(1, recentFailureWindowMs),
+              highFailurePressure: true,
+              latestRepairObservationAt: latestRun?.finishedAt || '',
+              latestRepairObservationSummary: latestRun?.finalGraderResult.summary || latestRun?.failureClass || '',
+              latestRepairObservationVerifierCheckUids: latestRun?.verifierResult.failingChecks.map((check) => check.checkUid) || [],
+            },
+          ],
+          {
+            itemKind: 'queue',
+          }
+        )
+      : createNeutralFailurePressureSummary(),
+  };
+}
+
+export function resolveIntentE2ERepeatedFailureSuppressionFromData(
+  runSnapshots: IntentE2ERunSnapshotRecord[],
+  input: {
+    requestInput: string;
+    targetUrl?: string | null;
+  }
+): IntentE2ERepeatedFailureSuppressionSignal {
+  const scenarioFamily = classifyIntentE2EScenarioFamily({
+    requestInput: input.requestInput,
+    targetUrl: typeof input.targetUrl === 'string' ? input.targetUrl : '',
+    scenarioCard: null,
+    description: '',
+  });
+  const priorityScenarioFamily = classifyIntentE2EPriorityScenarioFamily({
+    requestInput: input.requestInput,
+    targetUrl: typeof input.targetUrl === 'string' ? input.targetUrl : '',
+    scenarioCard: null,
+    description: '',
+  });
+  const targetPath = normalizeTargetPath(typeof input.targetUrl === 'string' ? input.targetUrl : '');
+  const neutral = createNeutralRepeatedFailureSuppressionSignal({
+    scenarioFamily,
+    priorityScenarioFamily,
+    targetPath,
+  });
+
+  if (scenarioFamily === 'unknown') {
+    return neutral;
+  }
+
+  const terminalRuns = runSnapshots.map(normalizeTerminalRun).filter((item): item is InsightRunRecord => Boolean(item));
+  const matchedRuns = terminalRuns.filter((run) =>
+    matchesRepeatedFailureSuppressionRun(run, {
+      scenarioFamily,
+      priorityScenarioFamily,
+      targetPath,
+    })
+  );
+
+  if (matchedRuns.length === 0) {
+    return neutral;
+  }
+
+  const clusters = new Map<string, InsightRunRecord[]>();
+  for (const run of matchedRuns) {
+    const clusterKey = run.snapshotSignature || `${run.scenarioFamily}|${run.targetPath || run.targetUrl || run.runId}`;
+    const current = clusters.get(clusterKey) || [];
+    current.push(run);
+    clusters.set(clusterKey, current);
+  }
+
+  const bestCluster = [...clusters.values()]
+    .map((clusterRuns) =>
+      analyzeRepeatedFailureSuppressionCluster(clusterRuns, {
+        scenarioFamily,
+        priorityScenarioFamily,
+        targetPath,
+      })
+    )
+    .sort((a, b) => {
+      return (
+        Number(b.shouldSuppress) - Number(a.shouldSuppress) ||
+        b.recentFailureStreak - a.recentFailureStreak ||
+        b.matchedFailedRuns - a.matchedFailedRuns ||
+        Date.parse(b.latestFinishedAt) - Date.parse(a.latestFinishedAt) ||
+        a.matchedSnapshotSignature.localeCompare(b.matchedSnapshotSignature)
+      );
+    })[0];
+
+  return bestCluster || neutral;
 }
 
 function getStarterEligibleRuleSource(

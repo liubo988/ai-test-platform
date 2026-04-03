@@ -1,4 +1,5 @@
 import type { IntentActionDSL } from './intent-action-dsl';
+import type { IntentE2EPriorityScenarioFamily, IntentTrackedE2EPriorityScenarioFamily } from './intent-e2e-priority-scenario-family';
 import type { AuthConfig, PageSnapshot } from './page-analyzer';
 import { buildIntentSharedVariableJsonPaths } from './intent-shared-variable-utils';
 import { intentStarterAssetScopeLabel, type IntentResolvedStarterAsset } from './intent-starter-assets';
@@ -22,9 +23,28 @@ export interface SelectIntentActionLibraryInput {
   dsl: IntentActionDSL;
   auth?: AuthConfig;
   snapshot: Pick<PageSnapshot, 'url' | 'title' | 'frames'>;
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily;
   preferredCapabilitySlugs?: string[];
   starterHelpers?: IntentResolvedStarterAsset[];
 }
+
+interface IntentActionFamilyCapabilityProfile {
+  preferredCapabilitySlugs: string[];
+}
+
+const FAMILY_CAPABILITY_PROFILES: Partial<
+  Record<IntentTrackedE2EPriorityScenarioFamily, IntentActionFamilyCapabilityProfile>
+> = {
+  business_create_list_verify: {
+    preferredCapabilitySlugs: ['assert.wait-for-api-response', 'assert.watch-submit-state', 'assert.resolve-primary-record'],
+  },
+  modal_or_drawer_save: {
+    preferredCapabilitySlugs: ['ui.wait-for-visible-antd-modal', 'assert.wait-for-api-response', 'assert.watch-submit-state'],
+  },
+  list_search_detail: {
+    preferredCapabilitySlugs: ['ui.find-antd-table-row', 'assert.resolve-primary-record', 'assert.read-detail-field'],
+  },
+};
 
 function uniqueBySlug(items: IntentActionCapability[]): IntentActionCapability[] {
   const bySlug = new Map<string, IntentActionCapability>();
@@ -56,6 +76,11 @@ function hasPreferredHelper(dsl: IntentActionDSL, helper: string): boolean {
 
 function renderJsStringArray(items: string[]): string {
   return `[${items.map((item) => JSON.stringify(item)).join(', ')}]`;
+}
+
+function listFamilyPreferredCapabilitySlugs(family?: IntentE2EPriorityScenarioFamily): string[] {
+  if (!family || family === 'untracked') return [];
+  return FAMILY_CAPABILITY_PROFILES[family]?.preferredCapabilitySlugs || [];
 }
 
 const BUSINESS_STATUS_JSON_PATHS = ['status', 'statusName', 'statusText', 'state', 'stateName', 'stateText', 'displayStatus', 'progress.displayStatus'];
@@ -278,7 +303,7 @@ function createPrimaryRecordResolutionCapability(): IntentActionCapability {
       '如果列表行可能省略状态列、状态文本被折叠，`rowHasTexts` 优先传主键 + 联系人/手机号这类身份字段；不要把“新入库 / 已审核”这类状态文案当成硬前提。',
       '对于提交后需要回列表验收的新建记录，优先让 helper 自带少量重试（例如 `maxLookupAttempts` / `retryIntervalMs`）；不要手写“一次搜索 + 一次 findAntdTableRow 就失败”的一次性链路。',
       '若已知表格作用域或详情页 ready 锚点，优先继续显式传 `table` / `detailReadyLocator`，避免 helper 在整页范围里误命中错表，或在详情页还没稳定时过早断言。',
-      '如果 verification plan / 项目知识已经给出 `detailEntry`（例如 `trigger=row_action`、`actionLabel=查看`、`target=drawer_or_modal`），优先沿用这条固定详情入口链：只对命中的目标行调用 `__e2e.clickAntdRowAction(...)`，随后等待 Drawer / Modal 或详情页 ready，再继续 `__e2e.readDetailField(...)`；不要退回整页 `page.getByText(\'查看\')` + 猜容器。',
+      '如果 verification plan / 项目知识已经给出 `detailEntry`（例如 `trigger=row_action`、`actionLabel=查看`、`target=drawer_or_modal`），优先沿用这条固定详情入口链：只对命中的目标行调用 `__e2e.clickAntdRowAction(...)`。若详情标题已知，先 `waitForVisibleAntdModal(... required: false)`，modal miss 后再 `waitForVisibleDetailSurface(... required: false)`；两者都 miss 时直接抛“状态证据缺失：列表行已命中，但“查看”后未出现可用详情弹层或详情页”，再继续 `__e2e.readDetailField(...)`；不要退回整页 `page.getByText(\'查看\')` + 猜容器。',
       '如果存在稳定详情路由或详情锚点，显式传 `detailUrl` / `detailReadyLocator`；helper 返回后若 `mode === "table_row"` 且 `row` 存在，就继续做列表行断言；若返回 `detail_url`，直接在详情页 / 详情锚点完成字段校验。',
       '如果 `recordCheck.response` 可用，优先继续 `await __e2e.readJsonResponse(recordCheck.response, { required: false })`，再用 `__e2e.pickJsonRecord(...)` 找到命中的列表记录，并为 `__e2e.readDetailField(...)` 提供 expected value。',
       '若目标行已经按主键 + 联系人/手机号命中，但状态没有出现在同一行可见文本 / 状态单元格，不要继续写 `expect(row).toContainText(\'新入库\')` 这类硬断言；保留该行作为身份证据，优先用 `recordCheck.response -> __e2e.pickJsonRecord(...) -> __e2e.pickJsonValue(...)` 读取状态，仍拿不到时再回退 `detailUrl / detailEntry + __e2e.readDetailField(...)`。',
@@ -291,7 +316,7 @@ function createPrimaryRecordResolutionCapability(): IntentActionCapability {
       '如果 fallback 分支当前手里只有宽泛的 `listResponse: { urlIncludes: \'/business\', method: \'GET\' }`，不要把它当唯一结构化状态来源；row 已命中且 `resolvedBusinessId` 可得时，优先走 `detailUrl` / 详情页再读状态。',
       '如果 fallback 行已经命中、`resolvedBusinessId` 也已经从 `data-row-key / rowText` 派生出来，先在同一份 `listJson` 上补 `__e2e.pickJsonRecord(..., { label: \'resolvedBusinessId\', value: resolvedBusinessId, paths: [\'businessId\', \'id\'] })` 这条主键回填，再决定是否开详情；不要在 `json record not found -> /business/detail/:id -> null.forEach` 这条链上反复重开详情。',
       '商机创建 / 商机列表 family 在详情页里优先尝试 `商机进展` 字段，再回退通用 `状态`；不要只写一个 `readDetailField(page, { label: \'状态\' })` 就判定详情没有状态。',
-      '即使共享稳定标识为空，只要 `recordCheck.row` 已命中且 `detailEntry` / 已知“查看”动作 / 详情标题 / `detailReadyLocator` 已经明确给出，也不要写 `else if (businessId) { await page.goto(...) } else { throw ... }`；这时可直接对 `recordCheck.row` 走 `__e2e.clickAntdRowAction(page, recordCheck.row, \'查看\')` + `__e2e.waitForVisibleAntdModal(...)` / `detailReadyLocator`，再读状态。',
+      '即使共享稳定标识为空，只要 `recordCheck.row` 已命中且 `detailEntry` / 已知“查看”动作 / 详情标题 / `detailReadyLocator` 已经明确给出，也不要写 `else if (businessId) { await page.goto(...) } else { throw ... }`；这时可直接对 `recordCheck.row` 走 `__e2e.clickAntdRowAction(page, recordCheck.row, \'查看\')`。若详情标题已知，先 `let detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: \'商机详情\', timeoutMs: 5000, required: false })`，modal miss 后再 `detailScope = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: \'商机详情\', timeoutMs: 2500, required: false })`；两者都 miss 时直接抛“状态证据缺失：列表行已命中，但“查看”后未出现可用详情弹层或详情页”，再读状态。',
       '如果当前页面没有明确 `detailEntry / actionLabel / 详情标题 / detailReadyLocator`，不要因为 row 已命中就默认假定存在“查看”行操作；若 `businessId` 非空可优先走 `detailUrl`，否则应保留当前行作为身份证据，并在结构化列表响应仍拿不到状态时抛出“状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口”。',
       '不要在 row 已命中时直接抛“无法从列表响应或详情获取状态”；必须先判断当前链路是否真的提供了详情入口，没有的话就按“未提供详情入口”的错误收口。',
       '如果列表行已经命中、列表响应里仍拿不到状态，不要在裸列表页上直接 `readDetailField(page, { label: \'状态\' })` 判空；若已知稳定 `detailUrl / detailReadyLocator`，优先直接进入详情页再读字段。只有没有稳定详情路由、且 `detailEntry` 明确指向 Drawer / Modal 时，才对命中的目标行执行 `__e2e.clickAntdRowAction(page, targetRow, \'查看\')` 并等待详情弹层。',
@@ -349,7 +374,9 @@ function createPrimaryRecordResolutionCapability(): IntentActionCapability {
       "  else if (resolvedExpectedStatus) expect(resolvedExpectedStatus).toContain('新入库');",
       "  else if (resolvedBusinessId) {",
       "    await page.goto(`#/business/detail/${resolvedBusinessId}`, { waitUntil: 'domcontentloaded' });",
-      "    const statusText = await __e2e.readDetailField(page, { label: '商机进展', required: false }) || await __e2e.readDetailField(page, { label: '状态', required: false });",
+      "    const detailSurface = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false });",
+      "    if (!detailSurface) throw new Error('详情页无效：detailUrl 未出现商机详情 surface');",
+      "    const statusText = await __e2e.readDetailField(page, { label: '商机进展', scope: detailSurface, titleIncludes: '商机详情', required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailSurface, titleIncludes: '商机详情', required: false });",
       "    if (statusText) await expect(statusText).toContain('新入库');",
       "    else throw new Error('状态证据缺失：列表行已命中，但列表响应和详情字段都未返回状态');",
       '  } else {',
@@ -464,7 +491,8 @@ function createSubmitStateCapability(): IntentActionCapability {
       '若存在关键接口，优先先注册 `__e2e.waitForApiResponse(...)` 再点击提交；`observeSubmitState` 负责接口之后的 UI 收敛，不替代接口等待。',
       '只对最终“保存 / 提交 / 确定 / 生成订单”主动作套用这条链；对中间步骤的“保存并继续 / 下一步”，如果接口名并不明确，优先点击后等待下一块表单标题、字段或步骤锚点出现，不要臆造宽泛 `/business` POST 等待。',
       '多步向导里连续出现的 `保存并继续` 不能只因按钮仍然可见就连点推进；每次点击前都先确认当前步骤必填字段已经填写，且下一步专属锚点 / 字段已经出现。',
-      '多步表单 / Ant Tabs 的最终“保存 / 提交”不要直接对整页 `page.getByRole(...).first()`；先收窄到当前可见步骤容器（如 `.ant-tabs-tabpane-active`、当前 Modal / Drawer 或当前表单块），先尝试定位 `/保\\s*存|提\\s*交|确\\s*定/i` 的最后一个主动作；如果当前 pane 内根本找不到这个最终主动作，再回退到更稳的页面级可见主动作链，并继续排除 `保存并继续` / `上一步`，不要把 selector 锁死在 `.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible` 这类单一路径；命中后再 `scrollIntoViewIfNeeded()`。',
+      '多步表单 / Ant Tabs 的最终“保存 / 提交”不要直接对整页 `page.getByRole(...).first()`；先收窄到当前可见步骤容器（如 `.ant-tabs-tabpane-active`、当前 Modal / Drawer 或当前表单块），先尝试定位 `/保\\s*存|提\\s*交|确\\s*定/i` 的最后一个主动作；如果当前 pane 内根本找不到这个最终主动作，不要立刻退化成整页 page-level fallback，而是改成准备少量 `candidateContainers`，至少覆盖 `attachmentAnchor` 的前 3-4 层可见祖先链，以及可见 footer/action-bar 容器，继续排除 `保存并继续` / `上一步`；只有这些 scoped 容器都 miss，且 `attachmentAnchor` 已可见时，才允许再试一次更窄的 `page.getByRole(\'button\', { name: /^提\\s*交$/ }).first()`；命中后再 `scrollIntoViewIfNeeded()`。',
+      '若已确认附件页（例如已命中 `附件信息 / 上传录音文件 / 上传图片`），scoped 容器仍 miss 时，可额外尝试 `page.getByRole(\'button\', { name: /^提\\s*交$/ }).first()` 这种更窄的 page-level exact submit fallback；不要直接回退到整页宽 regex + `.last()`。',
       '如果已收窄到当前可见容器内的提交按钮，点击仍因标题 / section-head / sticky header 拦截 pointer events 超时，可只对这个 scoped button 使用 `click({ force: true })`；不要对整页模糊按钮直接 force click。',
       '优先传 `submitButton`；会关闭弹层时再补 `closeTitleIncludes` 或 `closeLocator`；会回列表/出现结果时优先补 `successLocator`，需要短窗口观察路由时再补 `urlIncludes`。',
       '`urlIncludes` 默认只是辅助观察，不是最终 URL 的硬断言；如果业务要求最终必须到某个地址，helper 之后再显式 `expect(page).toHaveURL(...)` 或走回退导航。',
@@ -482,11 +510,50 @@ function createSubmitStateCapability(): IntentActionCapability {
     ],
     example: [
       "const LIST_URL = 'https://example.com/#/business/businesslist';",
+      "const attachmentAnchor = page.getByText(/附件信息|上传录音文件|上传图片/).first();",
+      "await expect(attachmentAnchor).toBeVisible({ timeout: 15000 });",
       "const activePane = page.locator('.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible').first();",
-      "const scopedFinalSaveBtn = activePane.getByRole('button', { name: /保\\s*存|提\\s*交|确\\s*定/i }).last();",
-      'const finalSaveBtn = (await scopedFinalSaveBtn.count())',
-      '  ? scopedFinalSaveBtn',
-      "  : page.getByRole('button', { name: /^(?!.*保存并继续)(?!.*上一步).*(保\\s*存|提\\s*交|确\\s*定).*$/i }).last();",
+      'const extraContainerSelectors = [',
+      "  '.ant-modal-footer:visible',",
+      "  '.ant-drawer-footer:visible',",
+      "  '[class*=\"footer\"]:visible',",
+      "  '[class*=\"action\"]:visible',",
+      "  '[class*=\"btn\"][class*=\"wrap\"]:visible',",
+      '];',
+      "const candidateContainers = [",
+      '  activePane,',
+      "  attachmentAnchor.locator('xpath=ancestor::*[1]'),",
+      "  attachmentAnchor.locator('xpath=ancestor::*[2]'),",
+      "  attachmentAnchor.locator('xpath=ancestor::*[3]'),",
+      "  attachmentAnchor.locator('xpath=ancestor::*[4]'),",
+      '];',
+      'for (const selector of extraContainerSelectors) {',
+      '  const matches = page.locator(selector);',
+      "  const matchCount = await matches.count().catch(() => 0);",
+      '  for (let index = 0; index < Math.min(matchCount, 3); index += 1) {',
+      '    candidateContainers.push(matches.nth(index));',
+      '  }',
+      '}',
+      'let finalSaveBtn = null;',
+      'const finalSubmitDeadline = Date.now() + 5000;',
+      'while (!finalSaveBtn && Date.now() < finalSubmitDeadline) {',
+      '  for (const container of candidateContainers) {',
+      "    const scopedFinalSaveBtn = container.getByRole('button', { name: /保\\s*存|提\\s*交|确\\s*定/i }).filter({ hasNotText: /保存并继续|上一步/ }).last();",
+      '    if (await scopedFinalSaveBtn.count().catch(() => 0)) {',
+      '      finalSaveBtn = scopedFinalSaveBtn;',
+      '      break;',
+      '    }',
+      '  }',
+      '  if (!finalSaveBtn) {',
+      "    const exactSubmitBtn = page.getByRole('button', { name: /^提\\s*交$/ }).first();",
+      '    if (await exactSubmitBtn.count().catch(() => 0)) {',
+      '      finalSaveBtn = exactSubmitBtn;',
+      '      break;',
+      '    }',
+      '  }',
+      '  if (!finalSaveBtn) await page.waitForTimeout(200);',
+      '}',
+      "if (!finalSaveBtn) throw new Error('未在末页容器内找到最终提交按钮');",
       'await finalSaveBtn.scrollIntoViewIfNeeded();',
       "const createResp = __e2e.waitForApiResponse(page, { urlIncludes: '/business', method: 'POST' });",
       'await finalSaveBtn.click({ force: true });',
@@ -587,8 +654,12 @@ function createCapabilityFromSlug(slug: string, input: SelectIntentActionLibrary
       return createBusinessListOwnershipCapability();
     case 'ui.wait-for-visible-antd-modal':
       return createVisibleModalCapability();
+    case 'assert.read-detail-field':
+      return createDetailFieldCapability();
     case 'ui.find-antd-table-row':
       return createTableRowCapability();
+    case 'assert.resolve-primary-record':
+      return createPrimaryRecordResolutionCapability();
     case 'ui.click-antd-row-action':
       return createRowActionCapability();
     case 'navigation.enter-iframe-context':
@@ -617,11 +688,19 @@ function attachStarterAsset(
 
 export function selectIntentActionLibrary(input: SelectIntentActionLibraryInput): IntentActionLibrary {
   const capabilities: IntentActionCapability[] = [];
+  const familyPreferredCapabilitySlugs = listFamilyPreferredCapabilitySlugs(input.priorityScenarioFamily);
 
   for (const starterAsset of input.starterHelpers || []) {
     const capability = createCapabilityFromSlug(starterAsset.capabilitySlug, input);
     if (capability) {
       capabilities.push(attachStarterAsset(capability, starterAsset) as IntentActionCapability);
+    }
+  }
+
+  for (const slug of familyPreferredCapabilitySlugs) {
+    const capability = createCapabilityFromSlug(slug, input);
+    if (capability) {
+      capabilities.push(capability);
     }
   }
 

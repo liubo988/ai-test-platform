@@ -100,6 +100,7 @@ export type PageAccessPrecheckFailureClass = 'auth_failed' | 'permission_blocked
 
 export interface PageAccessPrecheckOptions {
   ignoreFailureClasses?: PageAccessPrecheckFailureClass[];
+  storageState?: Exclude<BrowserContextOptions['storageState'], undefined>;
 }
 
 export interface PageAccessPrecheckReadyResult {
@@ -722,7 +723,7 @@ export async function precheckPageAccess(
   options?: PageAccessPrecheckOptions
 ): Promise<PageAccessPrecheckResult> {
   const browser: Browser = await chromium.launch({ headless: true });
-  const context = await createAnalyzerContext(browser);
+  const context = await createAnalyzerContext(browser, options?.storageState);
   const page = await context.newPage();
 
   try {

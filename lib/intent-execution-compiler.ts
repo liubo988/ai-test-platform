@@ -1,4 +1,5 @@
 import type { AuthConfig } from './page-analyzer';
+import type { IntentE2EPriorityScenarioFamily } from './intent-e2e-priority-scenario-family';
 import { buildIntentSharedVariableJsonPaths, looksLikeIntentStableIdentifierVariable } from './intent-shared-variable-utils';
 import type {
   IntentExecutionPlan,
@@ -36,6 +37,7 @@ export interface CompileIntentExecutionTemplateInput {
   verificationPlan?: IntentVerificationPlan;
   auth?: AuthConfig;
   description?: string;
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily;
 }
 
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
@@ -86,6 +88,133 @@ function renderCommentLines(lines: string[], indent = '    '): string[] {
 
 function renderJsStringArray(items: string[]): string {
   return `[${items.map((item) => JSON.stringify(item)).join(', ')}]`;
+}
+
+function buildIntentExecutionStepHaystack(step: IntentExecutionPlanStep): string {
+  return [step.title, step.goal, step.target, ...step.requiredAssertions].join('\n');
+}
+
+function isBusinessListPageReadyStep(step: IntentExecutionPlanStep): boolean {
+  const haystack = buildIntentExecutionStepHaystack(step);
+  if (!/(商机列表|businesslist)/i.test(haystack)) return false;
+  if (!/(页面就绪|页面主区域|列表加载|确认页面|确认页面就绪|进入商机列表页并确认|打开商机列表页|列表页并确认)/i.test(haystack)) {
+    return false;
+  }
+
+  return /(我创建的|我跟进的|归属|范围|新建商机)/i.test(haystack);
+}
+
+function isBusinessCreateFormReadyStep(step: IntentExecutionPlanStep): boolean {
+  const haystack = buildIntentExecutionStepHaystack(step);
+  if (!/(新建商机|创建商机|createbusiness)/i.test(haystack)) return false;
+  if (
+    !/(进入新建商机页|进入创建页|等待创建表单页面加载|等待创建表单|创建表单页面加载|创建流程锚点|第一页|创建页加载)/i.test(
+      haystack
+    )
+  ) {
+    return false;
+  }
+
+  return /(商机联系人信息|商机来源|关联产品意向信息|附件信息|新建商机按钮)/i.test(haystack);
+}
+
+function isBusinessCreateFinalSubmitStep(step: IntentExecutionPlanStep): boolean {
+  const haystack = buildIntentExecutionStepHaystack(step);
+  if (!/(新建商机|创建商机|createbusiness)/i.test(haystack)) return false;
+  if (
+    !step.preferredHelpers.includes('__e2e.observeSubmitState') &&
+    !/(提交保存|点击提交|最终提交|提交并保存|保存商机|完成保存)/i.test(haystack)
+  ) {
+    return false;
+  }
+
+  return /(附件信息|上传录音文件|上传图片|businessId|列表|提交|保存)/i.test(haystack);
+}
+
+function buildBusinessListPageReadyGoal(): string {
+  return '进入商机列表页并确认列表主区域 ready；以“新建商机”按钮、可见搜索框或列表容器作为稳定锚点，不要在页面 ready 阶段对整页 `getByText(\'我创建的\')` 写可见性断言。';
+}
+
+function buildBusinessListPageReadyRequiredAssertions(): string[] {
+  return ['当前 URL 包含 #/business/businesslist，且列表主区域 ready（“新建商机”按钮、可见搜索框或列表容器至少一种出现）。'];
+}
+
+function buildBusinessCreateFormReadyGoal(): string {
+  return '点击“新建商机”后确认已进入创建页第一页 ready；优先用单一可见锚点顺序确认，如 `page.getByRole(\'heading\', { name: \'商机联系人信息\' }).first()`、`page.locator(\'label[title="商机来源"]\').first()` 或第一页联系人/手机号字段，不要把多个 locator 用 `.or()` 合成一条 expect。';
+}
+
+function buildBusinessCreateFormReadyRequiredAssertions(): string[] {
+  return ['当前 URL 已进入 #/business/createbusiness，且第一页 ready（`商机联系人信息` heading、`商机来源` label、联系人/手机号字段至少一种稳定出现）。'];
+}
+
+function buildBusinessCreateFinalSubmitGoal(): string {
+  return '确认已进入创建商机最后一步并触发最终提交；先用 `附件信息 / 上传录音文件 / 上传图片` 这些末页锚点确认当前确实在附件页，再只在 scoped candidate containers 内查找最终 `保存 / 提交 / 确定` 主动作。candidate containers 至少覆盖 `attachmentAnchor` 的近邻祖先链和可见 footer/action-bar 容器，不要退化成整页 regex + `.last()`。';
+}
+
+function buildBusinessCreateFinalSubmitRequiredAssertions(): string[] {
+  return ['当前页面已进入附件/末页锚点，且最终提交按钮只在 scoped candidate containers 内被命中；candidate containers 至少包含 `attachmentAnchor` 祖先链或可见 footer/action-bar 容器；点击后提交响应或提交后状态开始收敛。'];
+}
+
+function buildPriorityScenarioFamilyStepHints(
+  step: IntentExecutionPlanStep,
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily
+): string[] {
+  if (!priorityScenarioFamily || priorityScenarioFamily === 'untracked') return [];
+
+  switch (priorityScenarioFamily) {
+    case 'business_create_list_verify':
+      return step.preferredHelpers.includes('__e2e.observeSubmitState') ||
+        step.preferredHelpers.includes('__e2e.resolvePrimaryRecord') ||
+        step.preferredHelpers.includes('__e2e.switchBusinessListOwnershipView')
+        ? [
+            '当前 family = business_create_list_verify：最终成功以“提交收敛 + 列表/详情命中目标记录”为主，不要把 toast / URL 变化当最终通过。',
+            '当前 family = business_create_list_verify：若本步负责切“我创建的 / 我跟进的”，只收口成切视角 + 列表 ready；唯一一次检索留给后续 __e2e.resolvePrimaryRecord(...)。',
+            '当前 family = business_create_list_verify：如果目标 row 已命中、结构化列表响应也已返回，但 businessId 仍为空，不要直接报“列表响应未返回状态”；先用 rowKey / rowText 派生 derivedBusinessId，再回填 matchedRecordByDerivedBusinessId。',
+          ]
+        : [];
+    case 'modal_or_drawer_save':
+      return step.preferredHelpers.includes('__e2e.waitForVisibleAntdModal') ||
+        step.preferredHelpers.includes('__e2e.observeSubmitState')
+        ? [
+            '当前 family = modal_or_drawer_save：所有填写和点击保存都先 scope 到当前可见 modal / drawer，再继续操作。',
+            '当前 family = modal_or_drawer_save：保存后至少确认当前弹层/抽屉关闭或页面回到稳定态，不要只看 toast。',
+          ]
+        : [];
+    case 'list_search_detail':
+      return step.preferredHelpers.includes('__e2e.findAntdTableRow') ||
+        step.preferredHelpers.includes('__e2e.resolvePrimaryRecord') ||
+        step.preferredHelpers.includes('__e2e.readDetailField')
+        ? [
+            '当前 family = list_search_detail：搜索后先等待表格刷新，再定位目标行；不要搜索后直接点击第一行或第一条“查看”。',
+            '当前 family = list_search_detail：进入详情后优先按字段标签读取联系人/手机号/状态，不要对整页文本做大段 toContain。',
+          ]
+        : [];
+    default:
+      return [];
+  }
+}
+
+function buildPriorityScenarioFamilyVerificationHints(
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily
+): string[] {
+  if (!priorityScenarioFamily || priorityScenarioFamily === 'untracked') return [];
+
+  switch (priorityScenarioFamily) {
+    case 'business_create_list_verify':
+      return [
+        '当前 family = business_create_list_verify：最终验收优先复用列表响应 / 详情字段完成状态证据，不要求状态必须出现在同一行可见文本。',
+      ];
+    case 'modal_or_drawer_save':
+      return [
+        '当前 family = modal_or_drawer_save：最终验收至少覆盖弹层/抽屉关闭或页面回到稳定态，不要只把 toast 当最终成功。',
+      ];
+    case 'list_search_detail':
+      return [
+        '当前 family = list_search_detail：最终验收以“命中目标行 -> 进入对应详情 -> 按字段标签读值”为主，不要只验列表返回结果。',
+      ];
+    default:
+      return [];
+  }
 }
 
 function buildDefaultJsonRecordCollectionPaths(): string[] {
@@ -691,6 +820,33 @@ function buildRecordMatchedRecordLines(
   ];
 }
 
+function buildStatusEvidenceRecordLines(
+  baseName: string,
+  recordAccessor: string,
+  resolvePrimaryRecordArgs: string[],
+  enabled: boolean
+): { accessor: string; lines: string[] } {
+  if (!enabled) {
+    return { accessor: recordAccessor, lines: [] };
+  }
+
+  const statusEvidenceRecordAccessor = toSafeIdentifier(
+    `${baseName}StatusEvidenceRecordCheck`,
+    `${baseName}StatusEvidenceRecordCheck`
+  );
+
+  return {
+    accessor: statusEvidenceRecordAccessor,
+    lines: [
+      `const ${statusEvidenceRecordAccessor} = ${recordAccessor}.response ? ${recordAccessor} : ${recordAccessor}.row ? await __e2e.resolvePrimaryRecord(page, {`,
+      ...resolvePrimaryRecordArgs,
+      `  maxLookupAttempts: 1,`,
+      `  retryIntervalMs: 200,`,
+      `}) : ${recordAccessor};`,
+    ],
+  };
+}
+
 function buildCurrentVisibleRowPrecheckLines(
   baseName: string,
   primaryAccessor: string,
@@ -810,6 +966,74 @@ function buildImplicitDetailEntryLines(
   );
 }
 
+function shouldEnableDerivedBusinessIdStatusFallback(
+  sharedVariable: string,
+  check: IntentVerificationPlanCheck,
+  relatedSteps: IntentExecutionPlanStep[],
+  detailUrlExpression: string
+): boolean {
+  if (/businessid/i.test(sharedVariable)) {
+    return true;
+  }
+
+  if (/\/business\/detail\//i.test(normalizeText(detailUrlExpression))) {
+    return true;
+  }
+
+  const haystack = normalizeText(
+    [
+      sharedVariable,
+      check.title,
+      check.instruction,
+      check.recordLookup?.listResponse?.urlIncludes || '',
+      check.recordLookup?.detailUrl || '',
+      ...relatedSteps.map((step) => [step.title, step.target, step.goal, ...step.requiredAssertions].join('\n')),
+    ].join('\n')
+  );
+
+  return /(商机|businesslist|\/business\/|createbusiness)/i.test(haystack);
+}
+
+function buildDirectDetailUrlFallbackLines(
+  baseName: string,
+  relatedSteps: IntentExecutionPlanStep[],
+  check: IntentVerificationPlanCheck,
+  detailFieldLabels: string[],
+  matchedRecordAccessor: string,
+  detailUrlExpression: string,
+  detailReadyLocatorExpression: string
+): string[] {
+  const titleIncludes = pickCheckDetailSurfaceTitleIncludes(check);
+  const detailSurfaceIdentifier = titleIncludes
+    ? toSafeIdentifier(`${baseName}DetailSurface`, `${baseName}DetailSurface`)
+    : '';
+
+  return [
+    `await page.goto(${detailUrlExpression}, { waitUntil: 'domcontentloaded' });`,
+    detailReadyLocatorExpression ? `await expect(${detailReadyLocatorExpression}).toBeVisible();` : '',
+    ...(
+      titleIncludes
+        ? [
+            `const ${detailSurfaceIdentifier} = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: ${JSON.stringify(
+              titleIncludes
+            )}, timeoutMs: 2500, required: false });`,
+            `if (!${detailSurfaceIdentifier}) throw new Error(${JSON.stringify(
+              `详情页无效：detailUrl 未出现${titleIncludes} surface`
+            )});`,
+          ]
+        : []
+    ),
+    ...buildDetailFieldSkeletonLines(
+      baseName,
+      detailFieldLabels,
+      relatedSteps,
+      matchedRecordAccessor,
+      check,
+      detailSurfaceIdentifier
+    ),
+  ].filter(Boolean);
+}
+
 function buildRowStatusFallbackLines(
   baseName: string,
   rowAccessor: string,
@@ -817,6 +1041,7 @@ function buildRowStatusFallbackLines(
   relatedSteps: IntentExecutionPlanStep[],
   check: IntentVerificationPlanCheck,
   detailFieldLabels: string[],
+  sharedVariable: string,
   primaryAccessor: string,
   detailFallbackLines: string[],
   detailUrlExpression: string,
@@ -826,17 +1051,35 @@ function buildRowStatusFallbackLines(
   const rowTextIdentifier = toSafeIdentifier(`${baseName}RowText`, `${baseName}RowText`);
   const rowKeyIdentifier = toSafeIdentifier(`${baseName}RowKey`, `${baseName}RowKey`);
   const derivedPrimaryIdentifier = toSafeIdentifier(`${baseName}DerivedPrimaryValue`, `${baseName}DerivedPrimaryValue`);
+  const derivedBusinessIdIdentifier = toSafeIdentifier(`${baseName}DerivedBusinessId`, `${baseName}DerivedBusinessId`);
+  const matchedRecordByDerivedBusinessIdIdentifier = toSafeIdentifier(
+    `${baseName}MatchedRecordByDerivedBusinessId`,
+    `${baseName}MatchedRecordByDerivedBusinessId`
+  );
+  const resolvedMatchedRecordIdentifier = toSafeIdentifier(
+    `${baseName}ResolvedMatchedRecord`,
+    `${baseName}ResolvedMatchedRecord`
+  );
   const expectedStatusIdentifier = toSafeIdentifier(`${baseName}ExpectedStatus`, `${baseName}ExpectedStatus`);
   const expectedStatusAssertionIdentifier = toSafeIdentifier(
     `${baseName}ExpectedStatusAssertion`,
     `${baseName}ExpectedStatusAssertion`
   );
+  const supportsDerivedBusinessIdFallback =
+    Boolean(matchedRecordAccessor) &&
+    shouldEnableDerivedBusinessIdStatusFallback(sharedVariable, check, relatedSteps, detailUrlExpression);
+  const effectiveMatchedRecordAccessor = supportsDerivedBusinessIdFallback
+    ? resolvedMatchedRecordIdentifier
+    : matchedRecordAccessor;
   const detailUrlRequiresPrimary = Boolean(
     detailUrlExpression && primaryAccessor && detailUrlExpression.includes(`\${${primaryAccessor}}`)
   );
+  const detailFallbackPrimaryIdentifier = supportsDerivedBusinessIdFallback
+    ? derivedBusinessIdIdentifier
+    : derivedPrimaryIdentifier;
   const detailUrlFallbackExpression =
     detailUrlRequiresPrimary && primaryAccessor
-      ? rewriteDetailUrlPrimaryAccessor(detailUrlExpression, primaryAccessor, derivedPrimaryIdentifier)
+      ? rewriteDetailUrlPrimaryAccessor(detailUrlExpression, primaryAccessor, detailFallbackPrimaryIdentifier)
       : detailUrlExpression;
   const expectedStatusAssertionExpression =
     resolveDetailFieldExpectedExpression('状态', relatedSteps, check) || JSON.stringify('TODO_EXPECTED_状态');
@@ -846,9 +1089,24 @@ function buildRowStatusFallbackLines(
 
   return [
     `const ${rowTextIdentifier} = await ${rowAccessor}.innerText().catch(() => '');`,
+    ...(
+      supportsDerivedBusinessIdFallback
+        ? [
+            `const ${rowKeyIdentifier} = ((await ${rowAccessor}.getAttribute('data-row-key')) || '').trim();`,
+            `const ${derivedBusinessIdIdentifier} = ${toSharedAccessor('businessId')} || ((/^[A-Za-z0-9_-]{6,64}$/.test(${rowKeyIdentifier}) && !/^1\\d{10}$/.test(${rowKeyIdentifier})) ? ${rowKeyIdentifier} : '') || (((${rowTextIdentifier}.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item))) || '');`,
+            `const ${matchedRecordByDerivedBusinessIdIdentifier} = !${matchedRecordAccessor} && ${baseName}ListPayload && ${derivedBusinessIdIdentifier} ? __e2e.pickJsonRecord(${baseName}ListPayload, { label: 'derivedBusinessId', value: ${derivedBusinessIdIdentifier}, paths: ['businessId', 'id'], required: false }) : null;`,
+            `const ${resolvedMatchedRecordIdentifier} = ${matchedRecordAccessor} || ${matchedRecordByDerivedBusinessIdIdentifier};`,
+          ]
+        : detailUrlRequiresPrimary
+        ? [
+            `const ${rowKeyIdentifier} = await ${rowAccessor}.getAttribute('data-row-key').catch(() => '');`,
+            `const ${derivedPrimaryIdentifier} = ${primaryAccessor} || ((() => { const candidate = String(${rowKeyIdentifier} || '').trim(); return /^[A-Za-z0-9_-]{6,64}$/.test(candidate) && !/^1\\d{10}$/.test(candidate) ? candidate : ''; })()) || (((String(${rowTextIdentifier} || '').match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item))) || '');`,
+          ]
+        : []
+    ),
     `const ${expectedStatusIdentifier} = ${
-      matchedRecordAccessor && statusPaths.length > 0
-        ? `${matchedRecordAccessor} ? __e2e.pickJsonValue(${matchedRecordAccessor}, { label: "状态", paths: ${renderJsStringArray(
+      effectiveMatchedRecordAccessor && statusPaths.length > 0
+        ? `${effectiveMatchedRecordAccessor} ? __e2e.pickJsonValue(${effectiveMatchedRecordAccessor}, { label: "状态", paths: ${renderJsStringArray(
             statusPaths
           )}, required: false }) : ''`
         : "''"
@@ -864,23 +1122,21 @@ function buildRowStatusFallbackLines(
         ? detailFallbackLines.map((line) => `  ${line}`)
         : [
             detailUrlRequiresPrimary
-              ? `  const ${rowKeyIdentifier} = await ${rowAccessor}.getAttribute('data-row-key').catch(() => '');`
-              : '',
-            detailUrlRequiresPrimary
-              ? `  const ${derivedPrimaryIdentifier} = ${primaryAccessor} || ((() => { const candidate = String(${rowKeyIdentifier} || '').trim(); return /^[A-Za-z0-9_-]{6,64}$/.test(candidate) && !/^1\\d{10}$/.test(candidate) ? candidate : ''; })()) || (((String(${rowTextIdentifier} || '').match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item))) || '');`
-              : '',
-            detailUrlRequiresPrimary
-              ? `  if (!${derivedPrimaryIdentifier}) throw new Error(${JSON.stringify('状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口')});`
+              ? `  if (!${detailFallbackPrimaryIdentifier}) throw new Error(${JSON.stringify('状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口')});`
               : primaryAccessor
               ? `  if (!${primaryAccessor}) throw new Error(${JSON.stringify('状态证据缺失：列表行已命中，但缺少主键且未提供详情入口')});`
               : '',
-            detailUrlExpression ? `  await page.goto(${detailUrlFallbackExpression}, { waitUntil: 'domcontentloaded' });` : '',
-            detailUrlExpression && detailReadyLocatorExpression ? `  await expect(${detailReadyLocatorExpression}).toBeVisible();` : '',
             ...(
               detailUrlExpression
-                ? buildDetailFieldSkeletonLines(baseName, detailFieldLabels, relatedSteps, matchedRecordAccessor, check).map(
-                    (line) => `  ${line}`
-                  )
+                ? buildDirectDetailUrlFallbackLines(
+                    baseName,
+                    relatedSteps,
+                    check,
+                    detailFieldLabels,
+                    matchedRecordAccessor,
+                    detailUrlFallbackExpression,
+                    detailReadyLocatorExpression
+                  ).map((line) => `  ${line}`)
                 : [`  throw new Error(${JSON.stringify('状态证据缺失：列表行已命中，但列表响应和详情入口都未提供状态')});`]
             ),
           ].filter(Boolean)
@@ -956,11 +1212,31 @@ function buildDetailEntryLines(
   const target = detailEntry.target || 'drawer_or_modal';
 
   if (target === 'drawer_or_modal') {
-    const modalArgs = [
-      titleIncludes ? `titleIncludes: ${JSON.stringify(titleIncludes)}` : '',
-      'timeoutMs: 5000',
-    ].filter(Boolean);
-    lines.push(`const ${detailScopeIdentifier} = await __e2e.waitForVisibleAntdModal(page, { ${modalArgs.join(', ')} });`);
+    if (titleIncludes) {
+      lines.push(
+        `let ${detailScopeIdentifier} = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: ${JSON.stringify(
+          titleIncludes
+        )}, timeoutMs: 5000, required: false });`
+      );
+      lines.push(`if (!${detailScopeIdentifier}) {`);
+      lines.push(
+        `  ${detailScopeIdentifier} = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: ${JSON.stringify(
+          titleIncludes
+        )}, timeoutMs: 2500, required: false });`
+      );
+      lines.push(`}`);
+      lines.push(
+        `if (!${detailScopeIdentifier}) throw new Error(${JSON.stringify(
+          '状态证据缺失：列表行已命中，但“查看”后未出现可用详情弹层或详情页'
+        )});`
+      );
+    } else if (detailReadyLocatorExpression) {
+      lines.push(`await expect(${detailReadyLocatorExpression}).toBeVisible({ timeout: 5000 });`);
+      lines.push(`const ${detailScopeIdentifier} = page.locator('.ant-drawer-content:visible, .ant-modal-content:visible').last();`);
+      lines.push(`await expect(${detailScopeIdentifier}).toBeVisible({ timeout: 5000 });`);
+    } else {
+      lines.push(`const ${detailScopeIdentifier} = await __e2e.waitForVisibleAntdModal(page, { timeoutMs: 5000 });`);
+    }
     return [
       ...lines,
       ...buildDetailFieldSkeletonLines(baseName, detailFieldLabels, relatedSteps, matchedRecordAccessor, check, detailScopeIdentifier),
@@ -1147,9 +1423,28 @@ function buildVerificationSkeletonLines(check: IntentVerificationPlanCheck, rela
                 detailUrlExpression
               )
             : [];
+        const needsRowStatusEvidenceFallback =
+          detailFieldLabels.some((label) => /(状态|status|state)/i.test(normalizeText(label))) &&
+          rowDetailEntryLines.length === 0;
+        const statusEvidenceRecord = buildStatusEvidenceRecordLines(
+          baseName,
+          `${baseName}Record`,
+          resolvePrimaryRecordArgs,
+          needsRowStatusEvidenceFallback
+        );
+        const rowMatchedRecordLines =
+          statusEvidenceRecord.lines.length > 0
+            ? buildRecordMatchedRecordLines(
+                baseName,
+                statusEvidenceRecord.accessor,
+                sharedVariable,
+                primaryAccessor,
+                candidatePaths,
+                recordBackedDetailFields.length > 0
+              )
+            : matchedRecordLines;
         const rowStatusFallbackLines =
-          rowDetailEntryLines.length === 0 &&
-          detailFieldLabels.some((label) => /(状态|status|state)/i.test(normalizeText(label)))
+          needsRowStatusEvidenceFallback
             ? buildRowStatusFallbackLines(
                 baseName,
                 `${baseName}Record.row`,
@@ -1157,6 +1452,7 @@ function buildVerificationSkeletonLines(check: IntentVerificationPlanCheck, rela
                 relatedSteps,
                 check,
                 detailFieldLabels,
+                sharedVariable,
                 primaryAccessor,
                 implicitRowDetailEntryLines,
                 detailUrlExpression,
@@ -1177,7 +1473,7 @@ function buildVerificationSkeletonLines(check: IntentVerificationPlanCheck, rela
             rowDetailEntryLines.length > 0
               ? [...matchedRecordLines, ...rowDetailEntryLines].map((line) => `  ${line}`)
               : rowStatusFallbackLines.length > 0
-              ? [...matchedRecordLines, ...rowStatusFallbackLines].map((line) => `  ${line}`)
+              ? [...statusEvidenceRecord.lines, ...rowMatchedRecordLines, ...rowStatusFallbackLines].map((line) => `  ${line}`)
               : matchedRecordLines.length > 0
               ? [
                   ...matchedRecordLines,
@@ -1265,19 +1561,70 @@ function shouldPreferResponseJsonExtraction(step: IntentExecutionPlanStep): bool
   );
 }
 
-function buildStepInstructions(step: IntentExecutionPlanStep): string[] {
+function buildStepInstructions(
+  step: IntentExecutionPlanStep,
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily
+): string[] {
   const primarySharedVariable = pickRelatedSharedVariable([step]);
+  const businessListPageReadyStep = isBusinessListPageReadyStep(step);
+  const businessCreateFormReadyStep = isBusinessCreateFormReadyStep(step);
+  const businessCreateFinalSubmitStep = isBusinessCreateFinalSubmitStep(step);
+  const renderedGoal = businessListPageReadyStep
+    ? buildBusinessListPageReadyGoal()
+    : businessCreateFinalSubmitStep
+    ? buildBusinessCreateFinalSubmitGoal()
+    : businessCreateFormReadyStep
+    ? buildBusinessCreateFormReadyGoal()
+    : normalizeText(step.goal) || '完成当前步骤';
+  const renderedRequiredAssertions = businessListPageReadyStep
+    ? buildBusinessListPageReadyRequiredAssertions()
+    : businessCreateFinalSubmitStep
+    ? buildBusinessCreateFinalSubmitRequiredAssertions()
+    : businessCreateFormReadyStep
+    ? buildBusinessCreateFormReadyRequiredAssertions()
+    : step.requiredAssertions.map((item) => normalizeText(item)).filter(Boolean);
   const instructions: string[] = [
-    `当前步骤目标：${normalizeText(step.goal) || '完成当前步骤'}`,
+    `当前步骤目标：${renderedGoal}`,
     step.target ? `必要时先进入或切换到目标上下文：${normalizeText(step.target)}` : '',
     `只实现 ${step.planStepUid} 的语义，不要顺手合并后续步骤。`,
-    step.requiredAssertions.length > 0
-      ? `本步骤至少要覆盖：${step.requiredAssertions.map((item) => normalizeText(item)).join(' / ')}`
-      : '',
+    renderedRequiredAssertions.length > 0 ? `本步骤至少要覆盖：${renderedRequiredAssertions.join(' / ')}` : '',
   ];
 
   if (step.allowedActions.includes('navigate') && step.target) {
     instructions.push('如果当前 URL 或上下文不匹配，可先导航或切换 frame / modal / list context。');
+  }
+  if (businessListPageReadyStep) {
+    instructions.push(
+      "页面 ready 阶段不要直接写 `await expect(page.getByText('我创建的').first()).toBeVisible(...)`；如果后续步骤会切“我创建的 / 我跟进的”，把 ownership helper 留给后续步骤。"
+    );
+    instructions.push(
+      "本步只确认商机列表 surface 已可交互：优先看 `page.getByRole('button', { name: '新建商机' }).first()`、`page.locator('input#businessList_keywords:visible').first()` 或列表容器，不要把归属标签裸文本可见性当作成功标准。"
+    );
+  }
+  if (businessCreateFormReadyStep) {
+    instructions.push(
+      "创建页第一页 ready 阶段不要写 `await expect(contactStepHeading.or(sourceLabel)).toBeVisible(...)`；Playwright strict mode 在两个锚点同时可见时会直接失败。"
+    );
+    instructions.push(
+      "更稳的写法是先选一个主锚点，例如 `const contactStepHeading = page.getByRole('heading', { name: '商机联系人信息' }).first()`；若它可见就直接断言它，否则再单独断言 `const sourceLabel = page.locator('label[title=\"商机来源\"]').first()` 或第一页联系人/手机号字段。需要回退时可先 `const headingVisible = await contactStepHeading.isVisible().catch(() => false);`，再按顺序分支，不要把多个 locator 合成一个 union locator。"
+    );
+    instructions.push(
+      '只要当前步骤目标是“确认已进入第一页”，单一稳定锚点就足够；不要因为页面上多个锚点都可见，就连续把它们全部写成必须同时成立的 `toBeVisible()` 硬条件。'
+    );
+  }
+  if (businessCreateFinalSubmitStep) {
+    instructions.push(
+      '进入最终提交前，先用 `附件信息 / 上传录音文件 / 上传图片` 这些末页锚点确认已经到最后一步；不要在第二页看到第二个 `保存并继续` 后就直接开始全页找最终按钮。'
+    );
+    instructions.push(
+      "最终按钮查找不要直接退化成 `page.getByRole('button', { name: /^(?!.*保存并继续)(?!.*上一步).*(保\\s*存|提\\s*交|确\\s*定).*$/i }).last()`；这类整页 regex + `.last()` 很容易盲等到超时。"
+    );
+    instructions.push(
+      "更稳的骨架是先 `const attachmentAnchor = page.getByText(/附件信息|上传录音文件|上传图片/).first(); await expect(attachmentAnchor).toBeVisible({ timeout: 20000 });`，再准备少量 `candidateContainers`：至少包含 `attachmentAnchor` 的前 3-4 层可见祖先链，以及 `.ant-modal-footer:visible` / `.ant-drawer-footer:visible` / `[class*=\"footer\"]:visible` / `[class*=\"action\"]:visible` 这类可见 footer/action-bar 容器。footer/action-bar 这类 selector 不要统一写成 `.first()`；每类 selector 至少枚举前 2-3 个可见命中，依次 push 进 `candidateContainers`。`attachmentAnchor` 刚 visible 时底部 action bar 可能还在异步挂载，不要只跑一轮 `count()` 就立刻 throw；给这轮 scoped candidate scan + exact submit fallback 一个短时轮询窗口（例如 3-5 秒、每 200ms 重试一次），窗口内一旦命中就停下。命中后再 `scrollIntoViewIfNeeded()` / `click({ force: true })`。如果轮询窗口内这些 scoped container 都 miss，但 `attachmentAnchor` 已经确认可见，只允许再补一层更窄的 page-level exact submit fallback，例如 `page.getByRole('button', { name: /^提\\s*交$/ }).first()`；不要重新放宽成整页 `/保\\s*存|提\\s*交|确\\s*定/` regex + `.last()`。"
+    );
+    instructions.push(
+      "不要只尝试一个 `attachmentAnchor.locator('xpath=ancestor::*[...] [1]')`、再加 tabpane/form/modal/drawer 这几个固定容器后就直接 throw；末页最终按钮很可能挂在 tabpane 外的底部 action bar，也可能比末页锚点晚一个 tick 才挂出来。只有祖先链、多命中的可见 footer/action-bar 容器，以及这个更窄的 exact submit fallback 在短时轮询窗口里都扫描过且仍未命中时，才允许抛 `未在末页容器内找到最终提交按钮`。"
+    );
   }
   if (step.preferredHelpers.includes('__e2e.ensureLoggedIn')) {
     instructions.push('默认登录预处理会在测试开头完成；除非当前步骤再次进入认证流程，否则不要手写第二套登录逻辑。');
@@ -1299,7 +1646,7 @@ function buildStepInstructions(step: IntentExecutionPlanStep): string[] {
     );
     instructions.push('中间步骤的“保存并继续 / 下一步”如果只是向导切换且接口名不明确，不要发明宽泛的 /business POST 等待；优先点击后等待下一块表单标题、字段或步骤锚点出现。');
     instructions.push('如果提交后“可能自动回列表，也可能仍停留当前页”，把 urlIncludes 只当辅助观察；helper 结束后仍要检查 page.url()，不在目标列表页时再显式回退导航。');
-    instructions.push('如果这是多步表单 / Ant Tabs 最后一页的“保存 / 提交”，不要直接对 page 全局 getByRole(...).first()，也不要把最终主动作固化成 `getByRole(\'button\', { name: /^保\\s*存$/ }).first()`；先收窄到当前可见步骤容器（如 `.ant-tabs-tabpane-active` / 当前 modal / drawer / form block），先尝试定位 `/保\\s*存|提\\s*交|确\\s*定/i` 的最后一个主动作；如果当前 pane 内根本找不到这个最终主动作，再回退到更稳的页面级可见主动作链，并继续排除 `保存并继续` / `上一步`，不要把 selector 锁死在 `.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible` 这类单一路径；命中后再按需 scrollIntoViewIfNeeded()。');
+    instructions.push('如果这是多步表单 / Ant Tabs 最后一页的“保存 / 提交”，不要直接对 page 全局 getByRole(...).first()，也不要把最终主动作固化成 `getByRole(\'button\', { name: /^保\\s*存$/ }).first()`；先收窄到当前可见步骤容器（如 `.ant-tabs-tabpane-active` / 当前 modal / drawer / form block），先尝试定位 `/保\\s*存|提\\s*交|确\\s*定/i` 的最后一个主动作；如果当前 pane 内根本找不到这个最终主动作，不要立刻退化成整页 `page.getByRole(...).last()`，而是改成准备少量 `candidateContainers`，至少覆盖末页锚点附近容器、`attachmentAnchor` 祖先链、当前可见 tabpane / form，以及可见 footer/action-bar 容器，并继续排除 `保存并继续` / `上一步`；若 `attachmentAnchor` 已可见且这些 scoped 容器都 miss，只允许额外尝试一次 `page.getByRole(\'button\', { name: /^提\\s*交$/ }).first()` 这种更窄的 page-level exact submit fallback，不要重新放宽成整页 regex + `.last()`；不要把 selector 锁死在 `.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible` 这类单一路径；命中后再按需 scrollIntoViewIfNeeded()。');
     instructions.push('若已收窄到当前可见容器内的提交按钮，点击仍报 subtree intercepts pointer events / pointer events 被标题或 section-head 拦截，可对该 scoped submitButton 使用 click({ force: true })；不要对整页模糊按钮直接 force click，也不要把 `保存并继续` / `上一步` 误当成最终提交。');
   }
   if (step.preferredHelpers.includes('__e2e.selectAntdOption')) {
@@ -1340,10 +1687,13 @@ function buildStepInstructions(step: IntentExecutionPlanStep): string[] {
       `如果你开始写 \`throw new Error('状态证据缺失：列表行已命中，但列表响应未返回状态')\`，说明还缺 \`statusEvidenceRecordCheck\` 或 \`recordCheck.row -> 查看 -> 商机详情 -> readDetailField('状态')\` 这条 fallback；这条 throw 不能作为首选分支。`
     );
     instructions.push(
-      `即使 ${toSharedAccessor(primarySharedVariable)} 暂时为空，只要 recordCheck.row 已命中且当前链路已经明确给出 detailEntry / 已知动作标签（如“查看”）/ 详情标题 / detailReadyLocator，也不要写 else if (${toSharedAccessor(primarySharedVariable)}) { await page.goto(...) } else { throw ... }；这时可直接对 recordCheck.row 走 __e2e.clickAntdRowAction(page, recordCheck.row, '查看') + __e2e.waitForVisibleAntdModal(...) / detailReadyLocator，再读状态。`
+      `若 \`statusEvidenceRecordCheck.response\` 已返回、但此时 ${toSharedAccessor(primarySharedVariable)} 仍为空，或者 \`matchedRecord\` 仍按 ${toSharedAccessor(primarySharedVariable)} 未命中，不要继续沿用手机号/联系人直接停在“列表响应未返回状态”。对商机列表这类 family，先在已命中分支里补 \`const rowKey = ((await recordCheck.row.getAttribute('data-row-key')) || '').trim()\`，再用当前 \`rowText\` 保守派生 \`const derivedBusinessId = ${toSharedAccessor(primarySharedVariable)} || ((/^[A-Za-z0-9_-]{6,64}$/.test(rowKey) && !/^1\\d{10}$/.test(rowKey)) ? rowKey : '') || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')\`，随后优先写 \`const matchedRecordByDerivedBusinessId = !matchedRecord && listJson && derivedBusinessId ? __e2e.pickJsonRecord(listJson, { label: 'derivedBusinessId', value: derivedBusinessId, paths: ['businessId', 'id'], required: false }) : null;\`，并把 \`matchedRecord || matchedRecordByDerivedBusinessId\` 当成状态来源；只有这条结构化回填仍为空时，才继续 detailUrl / detailEntry fallback。`
     );
     instructions.push(
-      `更具体地，只有当当前链路已经明确给出 detailEntry / 已知动作标签（如“查看”）/ 详情标题时，才可写：await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')；const detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000 })；const statusText = await __e2e.readDetailField(page, { label: '状态', scope: detailScope, titleIncludes: '商机详情', required: false })。若 ${toSharedAccessor(primarySharedVariable)} 非空，可优先走 detailUrl；若 ${toSharedAccessor(primarySharedVariable)} 为空且当前页面没有明确详情入口，不要臆造“查看”，而应抛出“状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口”。`
+      `即使 ${toSharedAccessor(primarySharedVariable)} 暂时为空，只要 recordCheck.row 已命中且当前链路已经明确给出 detailEntry / 已知动作标签（如“查看”）/ 详情标题 / detailReadyLocator，也不要写 else if (${toSharedAccessor(primarySharedVariable)}) { await page.goto(...) } else { throw ... }；这时可直接对 recordCheck.row 走 __e2e.clickAntdRowAction(page, recordCheck.row, '查看')。若 detailEntry.target=drawer_or_modal 且详情标题已知，先写 let detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000, required: false }); if (!detailScope) { detailScope = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false }); } if (!detailScope) throw new Error('状态证据缺失：列表行已命中，但“查看”后未出现可用详情弹层或详情页')；再读状态。`
+    );
+    instructions.push(
+      `更具体地，只有当当前链路已经明确给出 detailEntry / 已知动作标签（如“查看”）/ 详情标题时，才可写：await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')；let detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000, required: false }); if (!detailScope) { detailScope = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false }); } if (!detailScope) throw new Error('状态证据缺失：列表行已命中，但“查看”后未出现可用详情弹层或详情页')；const statusText = await __e2e.readDetailField(page, { label: '商机进展', scope: detailScope, titleIncludes: '商机详情', required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailScope, titleIncludes: '商机详情', required: false })。若 ${toSharedAccessor(primarySharedVariable)} 非空，可优先走 detailUrl；若 ${toSharedAccessor(primarySharedVariable)} 为空且当前页面没有明确详情入口，不要臆造“查看”，而应抛出“状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口”。`
     );
     instructions.push(
       `不要凭空假定每条列表行都存在“查看”动作；只有当前链路已经明确给出 detailEntry / actionLabel / 详情标题 / detailReadyLocator 时，才允许走 row action fallback。`
@@ -1367,7 +1717,7 @@ function buildStepInstructions(step: IntentExecutionPlanStep): string[] {
       `如果 row 已命中、\`statusEvidenceRecordCheck.response\` 也已返回，但 \`matchedRecord\` 仍按 ${toSharedAccessor(primarySharedVariable)} 未命中，不要直接停在“列表响应未返回状态”。对商机列表这类 family，先在已命中分支里补 \`const rowKey = ((await recordCheck.row.getAttribute('data-row-key')) || '').trim()\`，再用当前 \`rowText\` 保守派生 \`const derivedBusinessId = ((/^[A-Za-z0-9_-]{6,64}$/.test(rowKey) && !/^1\\d{10}$/.test(rowKey)) ? rowKey : '') || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')\`，随后优先写 \`const matchedRecordByDerivedBusinessId = !matchedRecord && listJson && derivedBusinessId ? __e2e.pickJsonRecord(listJson, { label: 'derivedBusinessId', value: derivedBusinessId, paths: ['businessId', 'id'], required: false }) : null;\`，并把 \`matchedRecord || matchedRecordByDerivedBusinessId\` 当成状态来源；只有这条结构化回填仍为空时，才继续 detailUrl / detailEntry fallback。`
     );
     instructions.push(
-      `如果你开始写 \`throw new Error('状态证据缺失：列表行已命中，但列表响应未返回状态')\`，不要直接结束；先补一跳 \`statusEvidenceRecordCheck\` 去拿结构化列表响应。只有当前链路已经明确给出 \`detailEntry / actionLabel / 详情标题 / detailReadyLocator\` 时，才允许再对 \`recordCheck.row\` 走 \`查看 -> 商机详情 -> readDetailField('状态')\`；否则不要臆造行操作。`
+      `如果你开始写 \`throw new Error('状态证据缺失：列表行已命中，但列表响应未返回状态')\`，不要直接结束；先补一跳 \`statusEvidenceRecordCheck\` 去拿结构化列表响应。只有当前链路已经明确给出 \`detailEntry / actionLabel / 详情标题 / detailReadyLocator\` 时，才允许再对 \`recordCheck.row\` 走 \`查看 -> waitForVisibleAntdModal(required:false) -> waitForVisibleDetailSurface(required:false) -> readDetailField('商机进展'/'状态')\`；否则不要臆造行操作。`
     );
     instructions.push(
       `不要在 row 已命中时直接抛“无法从列表响应或详情获取状态”；必须先判断当前链路是否真的提供了详情入口，没有的话就保留 row 身份证据并按“未提供详情入口”报错。`
@@ -1409,6 +1759,8 @@ function buildStepInstructions(step: IntentExecutionPlanStep): string[] {
       `当 ${primarySharedVariable} 为空、fallback 主值改用手机号时，rowHasTexts 默认只放手机号；不要再把联系人名拼回默认 rowHasTexts，否则联系人列未渲染时会把本可命中的记录误判成 not_found。联系人名只在命中行文本里确实出现时再断言。`
     );
   }
+
+  instructions.push(...buildPriorityScenarioFamilyStepHints(step, priorityScenarioFamily));
 
   return uniqueStrings(instructions);
 }
@@ -1460,7 +1812,11 @@ function buildVerificationHint(check: IntentVerificationPlanCheck, relatedSteps:
   }
 }
 
-function buildVerificationInstructions(plan: IntentExecutionPlan, verificationPlan?: IntentVerificationPlan): string[] {
+function buildVerificationInstructions(
+  plan: IntentExecutionPlan,
+  verificationPlan?: IntentVerificationPlan,
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily
+): string[] {
   if (!verificationPlan?.checks.length) {
     return ['必须显式完成最终业务验收，不要把验证逻辑省略成空实现。'];
   }
@@ -1473,6 +1829,7 @@ function buildVerificationInstructions(plan: IntentExecutionPlan, verificationPl
       `${verificationPlan.intent === 'review' ? '复核约束' : '验收约束'}：${normalizeText(item)}`
     ),
     '这里只补最终验收，不要把前面步骤的主动作重新执行一遍。',
+    ...buildPriorityScenarioFamilyVerificationHints(priorityScenarioFamily),
   ];
 
   for (const check of verificationPlan.checks) {
@@ -1562,7 +1919,7 @@ export function compileIntentExecutionTemplate(input: CompileIntentExecutionTemp
 
   for (const [index, step] of planSteps.entries()) {
     const slotUid = step.planStepUid;
-    const instructions = buildStepInstructions(step);
+    const instructions = buildStepInstructions(step, input.priorityScenarioFamily);
     slots.push({
       slotUid,
       kind: 'plan_step',
@@ -1591,7 +1948,7 @@ export function compileIntentExecutionTemplate(input: CompileIntentExecutionTemp
   }
 
   const verificationSlotUid = 'verification';
-  const verificationInstructions = buildVerificationInstructions(plan, input.verificationPlan);
+  const verificationInstructions = buildVerificationInstructions(plan, input.verificationPlan, input.priorityScenarioFamily);
   slots.push({
     slotUid: verificationSlotUid,
     kind: 'verification',

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   cloneIntentE2ERuntimeGovernance,
+  isIntentE2EFixtureRef,
   mergeIntentE2ERuntimeGovernance,
   normalizeIntentE2ERuntimeGovernance,
   type IntentE2ERuntimeGovernance,
@@ -22,7 +23,9 @@ export interface IntentProjectRuntimeGovernanceIssue {
     | 'fixture_owner_missing'
     | 'fixture_idempotency_key_missing'
     | 'fixture_setup_ref_missing'
-    | 'fixture_cleanup_ref_missing';
+    | 'fixture_cleanup_ref_missing'
+    | 'fixture_setup_ref_invalid'
+    | 'fixture_cleanup_ref_invalid';
   message: string;
 }
 
@@ -150,6 +153,20 @@ function collectIntentProjectRuntimeGovernanceIssues(
     issues.push({
       code: 'fixture_cleanup_ref_missing',
       message: 'project runtime governance 的 fixture.strategy = setup_cleanup，但缺少 fixture.cleanupRef。',
+    });
+  }
+
+  if (fixture?.setupRef && !isIntentE2EFixtureRef(fixture.setupRef)) {
+    issues.push({
+      code: 'fixture_setup_ref_invalid',
+      message: 'project runtime governance 的 fixture.setupRef 只支持 repo-owned 的 fixture:// 引用。',
+    });
+  }
+
+  if (fixture?.cleanupRef && !isIntentE2EFixtureRef(fixture.cleanupRef)) {
+    issues.push({
+      code: 'fixture_cleanup_ref_invalid',
+      message: 'project runtime governance 的 fixture.cleanupRef 只支持 repo-owned 的 fixture:// 引用。',
     });
   }
 

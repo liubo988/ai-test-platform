@@ -2745,3 +2745,1382 @@
   - 直接重跑同一业务流，优先检查：
     - generate 产出的 `plan_step_5` 是否已显式包含 `rowKey / derivedBusinessId / matchedRecordByDerivedBusinessId`
     - `Verification` slot 是否也不再回落到“手机号未命中就直接抛旧状态缺失”这条旧链
+
+## 2026-04-01 第八十四次更新（post-R14 success hardening：S1 asset readiness split + launch decision core）
+
+- 本轮目标：
+  - 只启动 post-R14 success hardening 的 `S1`
+  - 把 run 前静态资产判断与 run 后完整 `assetReadiness` 语义拆开
+  - 新增 `launch decision` 纯逻辑底座，但不接 route / workbench
+- 已完成：
+  - 已新增 `lib/intent-e2e-asset-readiness.ts`，统一承接：
+    - run 前 `project asset availability`
+    - run 后完整 `IntentE2EAssetReadiness`
+  - `lib/ai/intent-e2e-service.ts` 现已改为：
+    - 在 runtime governance / precheck 前复用 run 前资产可用性
+    - 在 planning 后基于 `knowledgeMatchCount` 构建完整 `assetReadiness`
+    - 保持现有 run result / insights 输出语义兼容
+  - 已新增 `lib/intent-e2e-launch-decision.ts`，首轮纯逻辑已支持：
+    - `auto_run`
+    - `needs_bootstrap`
+    - `needs_fixture`
+    - `needs_clarify`
+    - `draft_only`
+  - `lib/ai/intent-e2e-insights.ts` 已改为从共享模块引用 `assetReadiness` 类型，避免继续耦合 service 内部定义
+  - 已新增 `tests/unit/intent-e2e-launch-decision.spec.ts`，并保持 `tests/unit/intent-e2e-service.spec.ts`、`tests/unit/intent-e2e-insights.spec.ts` 通过
+- 验证：
+  - `npm run build`
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-e2e-launch-decision.spec.ts`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1` 已完成，`S2` 待开始）
+- 风险 / 未完成：
+  - 本轮只补底层能力，不接 `launch-decision route`，也不改 workbench / blocked flow
+  - 本轮没有新增真实入口分流，因此还没有 `auto_run_rate / blocked_rate` 这类流量级指标
+  - repair budget、family route、failure suppression、fixture executor 仍在后续切片
+- 下一步：
+  - 进入 post-R14 success hardening `S2`
+  - 只接 `launch-decision route` 与 workbench blocked flow，不提前展开 `S3+`
+
+## 2026-04-01 第八十五次更新（post-R14 success hardening：S2 launch-decision route + workbench blocked flow）
+
+- 本轮目标：
+  - 只完成 post-R14 success hardening 的 `S2`
+  - 给 `AI生成` 入口加 run 前 launch decision route
+  - 让 workbench 能承接最小 blocked flow，而不是继续直接开跑
+- 已完成：
+  - 已新增 `docs/intent-e2e-s2-task-brief-2026-04-01.md`
+  - 已新增 `lib/server/intent-e2e-request-preparation.ts`，把 request normalize、workspace llm merge、project auth、onboarding defaults 收到同一份 server helper
+  - 已新增 `app/api/intent-e2e/launch-decision/route.ts`
+  - `app/api/intent-e2e/runs/route.ts` 已复用共享请求预处理 helper，保持 run 创建逻辑不变
+  - `components/ProjectWorkspace.tsx` 现在会先消费 `launch-decision route`；blocked 时不创建 run，而是带 `projectUid / moduleUid / draftUid / launchDecision` 跳转到 `/intent-e2e`
+  - `components/IntentE2EWorkbench.tsx` 现在会在提交前先请求 `launch-decision route`；blocked 时不创建 run，并展示最小 blocked card、动作入口和 query 恢复
+  - 已新增 `tests/unit/api-intent-e2e-launch-decision-route.spec.ts`
+  - 已更新 `tests/unit/api-intent-e2e-runs-route.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/api-intent-e2e-runs-route.spec.ts tests/unit/api-intent-e2e-launch-decision-route.spec.ts`
+  - `npm run build`
+  - `npm run build:web`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1`、`S2` 已完成，`S3` 待开始）
+- 风险 / 未完成：
+  - 本轮 blocked flow 只做最小解释与动作入口，还没有完整 failure CTA 面板
+  - `draft_only` 当前只保留 route / UI contract，尚未接真实 failure pressure 数据源
+  - repair budget、family route、failure suppression、fixture executor 仍在后续切片
+- 下一步：
+  - 进入 post-R14 success hardening `S3`
+  - 只做动态 `repair budget` 与失败 CTA，不提前展开 `S4+`
+
+## 2026-04-02 第八十六次更新（post-R14 success hardening：S3 dynamic repair budget + failure CTA）
+
+- 本轮目标：
+  - 只完成 post-R14 success hardening 的 `S3`
+  - 按失败类和 `assetReadiness` 动态收紧 repair 次数
+  - 让 workbench 失败后直接给出最小下一步动作
+- 已完成：
+  - 已新增 `docs/intent-e2e-s3-task-brief-2026-04-02.md`
+  - 已新增 `lib/intent-e2e-repair-budget.ts`
+  - `lib/ai/intent-e2e-service.ts` 现在会在 runtime governance blocked、precheck blocked 和 terminal failure 输出 `repairBudget / failureCta`
+  - `lib/ai/intent-e2e-service.ts` 现在会复用现有 `repair stagnation` 早停，并对 `asset_missing / no_hit / workflow_gap / blocker` 做动态 repair 止损
+  - `lib/ai/intent-e2e-run-registry.ts` 已补 clone / restore，run snapshot 恢复后不会丢 `repairBudget / failureCta`
+  - `components/IntentE2EWorkbench.tsx` 已补 repair budget 摘要和 4 个固定 failure CTA 动作
+  - `components/IntentE2EWorkbench.tsx` 已补 `target_row_not_found / ui_anchor_missing / repair_stagnated` 的失败标签，避免继续落到“未分类”
+  - 已更新 `tests/unit/intent-e2e-service.spec.ts`
+  - 已更新 `tests/unit/intent-e2e-run-registry.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts`
+  - `npm run build`
+  - `npm run build:web`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1`、`S2`、`S3` 已完成，`S4` 待开始）
+- 风险 / 未完成：
+  - 本轮没有改 `launch-decision route` 语义，service 直调下仍允许先跑首轮 generate + execute
+  - failure CTA 只复用现有 workbench / governance / workspace 入口，没有扩成新的人工协作流程
+  - family route、failure suppression、fixture executor 仍在后续切片
+- 下一步：
+  - 进入 post-R14 success hardening `S4`
+  - 只做 top families deterministic route 继续收口，不提前展开 `S5+`
+
+## 2026-04-02 第八十七次更新（post-R14 success hardening：S4a priority family 分类补口 + recipe family 轻量加权）
+
+- 本轮目标：
+  - 只完成 post-R14 success hardening 的 `S4a`
+  - 补 priority family 分类缺口
+  - 给 recipe 增 `family` 字段，并只对已通过基础 matcher 的同 family recipe 做轻量加权
+- 已完成：
+  - 已新增 `docs/intent-e2e-s4-task-brief-2026-04-02.md`
+  - 已新增 `lib/intent-e2e-priority-scenario-family.ts`，统一承接 `priority family` 类型与分类逻辑
+  - `lib/ai/intent-e2e-insights.ts` 已补 `row_action_menu`、`list_ownership_switch` 两个 tracked family 的分类、label 与排序
+  - `lib/intent-recipe-registry.ts` 现在已支持 recipe 显式 `family`、`priorityScenarioFamily` 输入，以及“基础 matcher 已命中后再做同 family 轻量加权”
+  - `lib/test-generator.ts` 现在会在 planning 阶段把当前 family 传给 recipe selection
+  - 已更新 `tests/unit/intent-recipe-registry.spec.ts`
+  - 已更新 `tests/unit/intent-e2e-insights.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-recipe-registry.spec.ts tests/unit/intent-e2e-insights.spec.ts`
+  - `npm run build`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1`、`S2`、`S3`、`S4a` 已完成，`S4b` 待开始）
+- 风险 / 未完成：
+  - 本轮只补 family 分类与 recipe 选择底座，没有进入 `S4b` 的 sanitizer / compiler hints
+  - `visualAnchors` 仍留在 `S4c`，本轮没有改 launch decision 语义
+  - `row_action_menu` 目前只有分类，没有新增专用 recipe
+- 下一步：
+  - 进入 post-R14 success hardening `S4b`
+  - 只给首轮 2-3 个最高频 family 补轻量 sanitizer 与 compiler hints，不提前展开 `S4c / S5+`
+
+## 2026-04-02 第八十八次更新（post-R14 success hardening：S4b family-aware sanitizer + compiler hints）
+
+- 本轮目标：
+  - 只完成 post-R14 success hardening 的 `S4b`
+  - 给首轮 2-3 个最高频 family 补最小 `family-aware sanitizer`
+  - 在 `action-library / compiler / planning` 补 family 级软约束透传
+- 已完成：
+  - 已新增 `docs/intent-e2e-s4b-task-brief-2026-04-02.md`
+  - `lib/ai/scenario-card.ts` 已补 `modal_or_drawer_save / list_search_detail` 的最小 sanitizer，并保留既有 `business_create_list_verify` 稳定化
+  - `lib/intent-action-library.ts` 已支持 `priorityScenarioFamily` 输入，并对首轮 family 注入 soft capability profile
+  - `lib/intent-execution-compiler.ts` 已补 family-aware step / verification hints，并让 compiled template 直接带出 family 提示
+  - `lib/test-generator.ts` 现在会把 `priorityScenarioFamily` 继续透传到 action library 和 compiled template
+  - `lib/ai/intent-e2e-service.ts` 的 service 直编译路径已补 `priorityScenarioFamily` 透传
+  - 已更新 `tests/unit/scenario-card.spec.ts`
+  - 已更新 `tests/unit/intent-action-library.spec.ts`
+  - 已更新 `tests/unit/intent-execution-compiler.spec.ts`
+  - 已更新 `tests/unit/test-generator.spec.ts`
+  - 已更新 `tests/unit/test-generator-structured.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/scenario-card.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/intent-e2e-insights.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1`、`S2`、`S3`、`S4a`、`S4b` 已完成，`S4c` 待开始）
+- 风险 / 未完成：
+  - 本轮没有进入 `S4c`，`visualAnchors` 仍未进入 family 路由
+  - family profile 仍只做软约束，不会硬覆盖 DSL / recipe / helper 选择
+  - 本轮没有做真实 run 样本回放，family 粒度度量仍待补齐
+- 下一步：
+  - 进入 post-R14 success hardening `S4c`
+  - 只让 `visualAnchors` 进入 family 路由做辅助确认 / 误分类纠偏 / clarify signal，不提前展开 `S5+`
+
+## 2026-04-02 第八十九次更新（post-R14 success hardening：S4c visualAnchors family route + clarify signal）
+
+- 本轮目标：
+  - 只完成 post-R14 success hardening 的 `S4c`
+  - 让 `visualAnchors` 显式进入 priority family route
+  - 只做辅助确认、`untracked` 收口和 clarify signal 输出，不越权改 launch decision
+- 已完成：
+  - 已新增 `docs/intent-e2e-s4c-task-brief-2026-04-02.md`
+  - `lib/intent-e2e-priority-scenario-family.ts` 已新增显式 `family route resolver`，区分 `textFamily / visualFamily / finalFamily / source / clarifySignals`
+  - `lib/intent-e2e-priority-scenario-family.ts` 现在只允许：
+    - 文本 `untracked` 时，按强 `visualAnchors` 保守提升到已知 family
+    - 文本 family 与视觉 family 冲突时，输出 `clarify_signal`，但保持文本 family 不变
+  - `lib/ai/scenario-card.ts` 现在会把 `family_route / clarify_signal` 写回 `ScenarioCard.notes`
+  - `lib/ai/scenario-card.ts` 现在会把 `visualAnchors` 显式透传到 `GenerateTestContext`
+  - `lib/test-generator.ts` 现在会在 planning 阶段显式消费 `visualAnchors`，并保留 `priorityScenarioFamilyRoute`
+  - 已更新 `tests/unit/scenario-card.spec.ts`
+  - 已更新 `tests/unit/test-generator.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/scenario-card.spec.ts tests/unit/test-generator.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/intent-e2e-insights.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1`、`S2`、`S3`、`S4` 已完成，`S5` 待开始）
+- 风险 / 未完成：
+  - 本轮没有把 `ScenarioCard` 级 clarify signal 直接接进 `/api/intent-e2e/launch-decision`
+  - `visualAnchors` 仍只做 family 辅助路由，没有新增 vision 推理层
+  - `S4` 的真实 run 样本回放与 family 粒度度量仍待后补
+- 下一步：
+  - 进入 post-R14 success hardening `S5`
+  - 只做 repeated failure suppression，不提前展开 `S6+`
+
+## 2026-04-02 第九十次更新（post-R14 success hardening：S5 repeated failure suppression）
+
+- 本轮目标：
+  - 只完成 post-R14 success hardening 的 `S5`
+  - 对近期已知必败任务建立负向抑制，不再默认 `auto_run`
+  - 只把 repeated failure suppression 接到 `launch-decision route`，不提前展开 `S6`
+- 已完成：
+  - 已新增 `docs/intent-e2e-s5-task-brief-2026-04-02.md`
+  - `lib/ai/intent-e2e-insights.ts` 已新增 `resolveIntentE2ERepeatedFailureSuppressionFromData()`，基于近期 terminal run 的 `snapshotSignature` cluster、`priorityScenarioFamily`、`targetPath` 和 `qualitySplit` 输出 suppression signal
+  - `lib/ai/intent-e2e-run-registry.ts` 已新增 `listRecentIntentE2ETerminalRunSnapshots()`，统一给 route 读取近期 terminal run 快照
+  - `app/api/intent-e2e/launch-decision/route.ts` 现在会在项目上下文里读取近期 terminal run，并把 repeated failure suppression 接进现有 launch decision 输入
+  - `lib/intent-e2e-launch-decision.ts` 现在会显式消费 repeated failure suppression，并返回更具体的 reason：
+    - `recent_repeated_auth_block`
+    - `recent_repeated_permission_block`
+    - `recent_repeated_environment_block`
+    - `recent_repeated_data_block`
+    - `recent_repeated_model_failure`
+  - 已更新 `tests/unit/intent-e2e-launch-decision.spec.ts`
+  - 已更新 `tests/unit/intent-e2e-insights.spec.ts`
+  - 已更新 `tests/unit/intent-e2e-run-registry.spec.ts`
+  - 已更新 `tests/unit/api-intent-e2e-launch-decision-route.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-launch-decision.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-e2e-run-registry.spec.ts tests/unit/api-intent-e2e-launch-decision-route.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1`、`S2`、`S3`、`S4`、`S5` 已完成，`S6` 待开始）
+- 风险 / 未完成：
+  - run 前无法拿到生成后的完整 stepTypes，因此 suppression 仍是基于 `priorityScenarioFamily + targetPath + 历史 snapshotSignature cluster` 的保守近似匹配
+  - 本轮没有把项目级全局 `failurePressureSummary` 再并入 launch decision，只补了 repeated failure 这条最小抑制链
+  - 本轮没有进入 `S6`，fixture executor 仍待补最小执行层
+- 下一步：
+  - 进入 post-R14 success hardening `S6`
+  - 只做 fixture executor 最小版，不提前展开会话复用或更重 repair 证据链
+
+## 2026-04-02 第九十一次更新（post-R14 success hardening：S6 fixture executor 最小版）
+
+- 本轮目标：
+  - 只完成 post-R14 success hardening 的 `S6`
+  - 把 `runtimeGovernance.fixture` 从纯 contract / blocker 接成最小执行层
+  - 只支持 repo-owned `fixture://...` 的 `setup / cleanup`，不提前展开会话复用
+- 已完成：
+  - 已新增 `docs/intent-e2e-s6-task-brief-2026-04-02.md`
+  - `lib/intent-e2e-runtime-governance.ts` 已新增统一 `fixture://` ref 校验 helper，并把 invalid ref 收口成：
+    - `fixture_setup_ref_invalid`
+    - `fixture_cleanup_ref_invalid`
+  - `lib/intent-project-runtime-governance.ts` 已复用同一规则校验项目级 runtime governance manifest
+  - `lib/server/intent-e2e-project-auth.ts` 现在复用统一 fixture contract 判断，并继续为 ownerless fixture 补 project owner
+  - 已新增 `lib/intent-e2e-fixture-executor.ts`，只支持 repo-owned `fixture://... -> scripts/intent-e2e-fixtures/**`，并在执行时注入 `owner / idempotencyKey / project / run` 上下文
+  - `lib/ai/intent-e2e-service.ts` 现在会在 `precheck` 后、`analyzing` 前执行 fixture setup，并在 terminal result 前执行 fixture cleanup
+  - `lib/ai/intent-e2e-service.ts` 已把 fixture setup / cleanup 失败统一收口成 `data_missing -> data_blocked` 终态，不再让 cleanup failure 落到空 triage / 错误 CTA
+  - 已更新 `tests/unit/intent-project-runtime-governance.spec.ts`
+  - 已更新 `tests/unit/intent-e2e-project-auth.spec.ts`
+  - 已更新 `tests/unit/intent-e2e-service.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-project-runtime-governance.spec.ts tests/unit/intent-e2e-project-auth.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-request.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（`S1`、`S2`、`S3`、`S4`、`S5`、`S6` 已完成）
+- 风险 / 未完成：
+  - repo 内目前还没有正式示例 fixture script；本轮只补 contract、executor 和 service 接线，真实脚本仍由项目按 `fixture://...` 目录约定提供
+  - fixture cleanup failure 目前先归入 `data_blocked`，优先保证终态口径与 CTA 正确；更细的 fixture-specific failure family 不在本轮
+  - 会话复用和更强 repair 运行时证据仍保持候选项，不纳入当前 `S1-S6` 承诺范围
+- 下一步：
+  - post-R14 success hardening `S1-S6` 已收口完成
+  - 若继续 success hardening，只能另起 brief 评估 `S6+` 候选，不在当前承诺范围内
+
+## 2026-04-02 第九十二次更新（post-R14 success hardening：S6+ repair runtime evidence DOM delta）
+
+- 本轮目标：
+  - 不改 post-R14 success hardening `S1-S6` 既有承诺
+  - 只从 `S6+` 候选里补最小的 repair runtime evidence：`DOM delta`
+  - 不碰 worker / artifact 协议，只增强现有 repair observation 主链
+- 已完成：
+  - 已新增 `docs/intent-e2e-s6plus-repair-evidence-task-brief-2026-04-02.md`
+  - `lib/ai/intent-e2e-service.ts` 的 repair observation report 现在会在“初始 analyze snapshot vs 最新 repair observation snapshot”之间生成 `surface_delta` probe
+  - `surface_delta` 现在会把新增 / 消失的标题、按钮、字段、frame surface 作为结构化 evidence 注入 repair observation report
+  - `lib/ai/intent-e2e-service.ts` 已把 `surface_delta` 转成：
+    - `obs-surface-delta`
+    - `obs-surface-stable`
+    供现有 repair memory 检索继续复用
+  - `lib/test-generator.ts` 的 repair prompt 现在会显式渲染 `surface_delta`，并要求模型优先沿真实新增 / 消失 surface 修补页面切换、入口控件和断言锚点
+  - 已更新 `tests/unit/intent-e2e-service.spec.ts`
+  - 已更新 `tests/unit/test-generator.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（`S1-S6` 已完成；额外候选切片 `S6+ DOM delta` 已完成）
+- 风险 / 未完成：
+  - 本轮只补 `DOM delta`，还没有补“最近列表 JSON / 详情字段结构化证据”
+  - delta 目前比较的是“初始 analyze snapshot vs 最新 repair observation snapshot”，不是失败瞬间 DOM dump
+  - worker / artifact 协议仍未扩展，继续保持当前最小切片范围
+- 下一步：
+  - 若继续 `S6+`
+  - 优先评估是否还需要“列表 JSON / 详情字段结构化证据”，不直接跳到更重 agent loop
+
+## 2026-04-02 第九十三次更新（post-R14 success hardening：S6+ repair runtime evidence structured data）
+
+- 本轮目标：
+  - 不改 post-R14 success hardening `S1-S6` 和 `S6+ DOM delta` 的既有结论
+  - 只复用现有 `log.meta` 通道，把上一轮已拿到的列表 JSON / record lookup / 详情字段结构化证据接进 repair observation
+  - 不碰 worker / artifact 协议，不扩成新的执行链
+- 已完成：
+  - 已新增 `docs/intent-e2e-s6plus-structured-data-evidence-task-brief-2026-04-02.md`
+  - `lib/ai/intent-e2e-service.ts` 已把执行日志中的 `meta` 保留到 `IntentE2EAttempt.logs`
+  - repair observation report 现在新增：
+    - `list_json_evidence`
+    - `detail_field_evidence`
+  - `list_json_evidence` 会复用上一轮已有的列表接口 / record lookup / 字段值 helper log，转成结构化 evidence
+  - `detail_field_evidence` 会复用上一轮已有的详情字段 helper log，转成结构化 evidence
+  - `lib/ai/intent-e2e-service.ts` 已把这两类 probe 转成：
+    - `obs-list-json`
+    - `obs-detail-field`
+    供 repair memory 检索继续复用
+  - `lib/test-generator.ts` 的 repair prompt 现在会显式渲染这两类 probe，并要求模型优先复用已观察到的 JSON 路径、label、matchedLabel 和 value preview 修补
+  - 已更新 `tests/unit/intent-e2e-service.spec.ts`
+  - 已更新 `tests/unit/test-generator.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（`S1-S6` 已完成；额外候选切片 `S6+ DOM delta`、`S6+ structured data evidence` 已完成）
+- 风险 / 未完成：
+  - 本轮证据仍来自上一轮 helper log 的 `meta`，不是新增 artifact 文件
+  - 仍然没有失败瞬间 DOM dump；repair 证据链还是围绕“初始 analyze / 最新 observation / 执行日志”三者
+  - worker / artifact 协议保持不变，继续维持最小切片
+- 下一步：
+  - 若继续 `S6+`
+  - 再评估是否还有必要补更重的 repair runtime evidence 候选；当前最小可用结构化证据已经补齐
+
+## 2026-04-02 第九十四次更新（post-R14 success hardening：S6+ shared session minimal）
+
+- 本轮目标：
+  - 不改 post-R14 success hardening `S1-S6`、`S6+ DOM delta`、`S6+ structured data evidence` 的既有结论
+  - 只补最小 shared-session 复用能力：按 `credential.accountRef` 复用 `storageState`
+  - 不引入新的账号池系统，不做跨进程 / 跨重启持久化
+- 已完成：
+  - 已新增 `docs/intent-e2e-s6plus-shared-session-task-brief-2026-04-02.md`
+  - 已新增 `lib/intent-e2e-shared-session-cache.ts`，提供进程内 shared-session cache helper
+  - `lib/ai/intent-e2e-service.ts` 的 precheck 链路现在会：
+    - 在 `sessionMode=shared` 且存在 `accountRef` 时优先命中 shared session
+    - 复用上一轮 precheck 成功拿到的 `storageState`
+    - 命中 stale session 且出现 `auth_failed` 时自动清空缓存并回退一次显式登录前置检查
+  - `lib/page-analyzer.ts` 的 `precheckPageAccess` 现可消费外部传入的 `storageState`
+  - `lib/intent-runner-adapter.ts`、`lib/test-executor.ts`、`lib/test-worker.mjs` 现已把 precheck 得到的 `storageState` 透传到真实执行 worker，形成跨 run 最小会话复用闭环
+  - 已更新 `tests/unit/intent-e2e-service.spec.ts`
+  - 已更新 `tests/unit/test-executor.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/test-executor.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（`S1-S6` 已完成；额外候选切片 `S6+ DOM delta`、`S6+ structured data evidence`、`S6+ shared session minimal` 已完成）
+- 风险 / 未完成：
+  - shared session cache 目前只在当前 Node 进程内生效；服务重启后不会保留
+  - 本轮不做 worker 执行后的 session 回写；共享会话仍以 precheck 成功结果为准
+  - 本轮只处理 `auth_failed` 型 stale fallback，不引入更复杂的 freshness / lease 语义
+- 下一步：
+  - `S6+` 的最小候选项已经补齐
+  - 若继续 success hardening，应先回真实 run 指标，再决定是否还需要更重的候选能力
+
+## 2026-04-02 第九十五次更新（post-R14 success hardening：business-list page-ready ownership ready）
+
+- 本轮目标：
+  - 严格按最新真实 rerun 的入口失败继续推进，不扩到其他 family
+  - 只修商机列表 page-ready 阶段回流的裸 `getByText('我创建的').first()` 可见性断言
+  - 不改 runtime helper，只收口 compiler / prompt / repair 指令链
+- 已完成：
+  - 已新增 `docs/intent-e2e-business-list-ownership-ready-task-brief-2026-04-02.md`
+  - `lib/intent-execution-compiler.ts`
+    - 对 business-list page-ready step 新增识别与语义改写
+    - 这类 step 的指令不再把“可见我创建的 Tab”作为页面 ready 成功标准
+    - 改为强调：
+      - URL 已回列表
+      - `新建商机` 按钮可见
+      - `input#businessList_keywords:visible` 或列表容器 ready
+  - `lib/test-generator.ts`
+    - 通用 generate prompt 现在明确禁止在页面 ready 阶段直接写：
+      - `await expect(page.getByText('我创建的').first()).toBeVisible(...)`
+    - repair diagnosis 现在新增定向提示：
+      - 当 `Step 1` 因这条裸 locator 失败时，明确回退成“URL + 新建按钮 + 搜索框 / 列表容器 ready”
+      - 真正的 ownership 切换留给 `__e2e.switchBusinessListOwnershipView(...)` 所在步骤
+  - 已更新：
+    - `tests/unit/intent-execution-compiler.spec.ts`
+    - `tests/unit/test-generator.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1-S6`、`S6+ DOM delta`、`S6+ structured data evidence`、`S6+ shared session minimal` 已完成；post-rerun 单刀 `business-list page-ready ownership ready` 已完成，待最新 rerun 验证）
+- 风险 / 未完成：
+  - 本轮没有重新触发真实 UAT rerun，因此尚未确认首轮失败是否已从 `Step 1` 退出
+  - 本轮故意不改 `lib/test-worker.mjs`，不扩到 runtime helper
+  - `status_evidence_missing` 仍是下一条候选失败簇，但不在本轮范围
+- 下一步：
+  - 用同一真实场景 rerun `3` 次
+  - 若首轮不再停在裸 `我创建的` page-ready 断言，下一刀只处理 `status_evidence_missing`
+  - 若仍停在同一入口，则继续只围绕 business-list ownership ready 收口，不扩 family
+
+## 2026-04-02 第九十六次更新（post-R14 success hardening：status-evidence derived businessId fallback）
+
+- 本轮目标：
+  - 只沿 ownership-ready rerun 后暴露出的新主失败继续推进
+  - 只收 `status_evidence_missing` 中这条具体错误：
+    - `状态证据缺失：列表行已命中，但列表响应未返回状态`
+  - 不改 runtime helper，不并行处理 `createdBusinessId/businessId` 提取失败或新建页 strict mode
+- 已完成：
+  - 已新增 `docs/intent-e2e-status-evidence-derived-id-task-brief-2026-04-02.md`
+  - 已更新 `docs/intent-e2e-success-hardening-real-run-review-2026-04-02.md`
+    - ownership-ready 最新 rerun `3` 次结果已回写
+    - 已确认 `3 / 3` 不再死在 `Step 1 / getByText('我创建的').first()`
+    - 已把下一刀决策收敛为 `status_evidence_missing -> rowKey / derivedBusinessId`
+  - `lib/intent-execution-compiler.ts`
+    - `business_create_list_verify` family 现在新增明确提示：
+      - 若目标 row 已命中、`statusEvidenceRecordCheck.response` 已返回，但 `shared.businessId` 仍为空，不要直接停在“列表响应未返回状态”
+      - 先走 `rowKey / rowText -> derivedBusinessId -> matchedRecordByDerivedBusinessId`
+      - 再把 `matchedRecord || matchedRecordByDerivedBusinessId` 当作状态来源
+  - `lib/test-generator.ts`
+    - repair diagnosis 现在新增精确命中：
+      - `状态证据缺失：列表行已命中，但列表响应未返回状态`
+    - 命中后会定向要求先补 `derivedBusinessId` 结构化回填，而不是直接保留当前 throw
+  - 已更新：
+    - `tests/unit/intent-execution-compiler.spec.ts`
+    - `tests/unit/test-generator.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1-S6`、`S6+ DOM delta`、`S6+ structured data evidence`、`S6+ shared session minimal`、`business-list page-ready ownership ready` 已完成；post-rerun 单刀 `status-evidence derived businessId fallback` 已完成）
+- 风险 / 未完成：
+  - 本轮还没有重新触发真实 rerun，因此尚未验证这条 `derivedBusinessId` 指令链是否已经在最新生成代码里稳定落地
+  - `未从保存接口响应中提取到 createdBusinessId/businessId` 仍是独立失败簇
+  - 新建商机页 `heading.or(label)` strict mode 仍是独立失败簇
+  - 这三条不能并行扩 scope，仍需继续按真实 rerun 单刀推进
+- 下一步：
+  - 用同一真实场景 rerun `3` 次
+  - 若 `status_evidence_missing` 不再是主失败，按最新真实样本决定是在：
+    - `createdBusinessId/businessId` 提取失败
+    - 新建页 strict mode
+    之间二选一继续收口
+  - 若仍死在 `状态证据缺失：列表行已命中，但列表响应未返回状态`，则继续只围绕这条错误追加最小收口，不扩 family
+
+## 2026-04-02 第九十七次更新（post-R14 success hardening：status-evidence derived businessId fallback rerun validation）
+
+- 本轮目标：
+  - 不改上一刀实现范围
+  - 只用同一真实场景 rerun `3` 次，验证 `status-evidence derived businessId fallback` 是否已把目标错误从真实样本中推走
+- 已完成：
+  - 已对同一真实场景完成 rerun `3` 次：
+    - `intent-run-6afcc76c-549d-4040-b194-69e16ab6b36a`
+    - `intent-run-8338efb8-a724-46d5-b077-e40840e2e9a1`
+    - `intent-run-f3a9320f-e5c4-45d2-b456-330801426b90`
+  - 最新 rerun 已确认：
+    - `3 / 3` 不再出现 `Step 1 / getByText('我创建的').first()` page-ready 失败
+    - `3 / 3` 不再出现 `状态证据缺失：列表行已命中，但列表响应未返回状态`
+  - 当前失败已进一步收敛为：
+    - `2 / 3`：新建商机页 `heading.or(label)` strict mode
+    - `1 / 3`：`createdBusinessId` 提取失败
+  - 已更新 `docs/intent-e2e-success-hardening-real-run-review-2026-04-02.md`
+    - ownership ready 与 status evidence 两刀都已标记为“真实样本已验证有效”
+    - 下一刀已收敛到 `create_form_ready_strict_mode`
+- 验证：
+  - 真实 rerun `3` 次：
+    - `intent-run-6afcc76c-549d-4040-b194-69e16ab6b36a`
+    - `intent-run-8338efb8-a724-46d5-b077-e40840e2e9a1`
+    - `intent-run-f3a9320f-e5c4-45d2-b456-330801426b90`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1-S6`、`S6+ DOM delta`、`S6+ structured data evidence`、`S6+ shared session minimal`、`business-list page-ready ownership ready`、`status-evidence derived businessId fallback` 已完成且均已经真实 rerun 验证）
+- 风险 / 未完成：
+  - 当前还没有通过样本，`first_pass_rate / terminal_pass_rate` 仍为 `0 / 3`
+  - 最新 top failure 已经换成新建页 strict mode；若继续 success hardening，必须切换到这条更高频 family
+  - `createdBusinessId` 提取失败仍存在，但本轮不应与 strict mode 并行处理
+- 下一步：
+  - 另起 brief，只收 `create_form_ready_strict_mode`
+  - 目标是消掉：
+    - `getByRole('heading', { name: '商机联系人信息' }).first().or(locator('label[title="商机来源"]').first())`
+  - 仍坚持单刀，不并行处理 `createdBusinessId` 提取失败
+
+## 2026-04-02 第九十八次更新（post-R14 success hardening：create_form_ready_strict_mode rerun validation）
+
+- 本轮目标：
+  - 不改上一刀实现范围
+  - 只用同一真实场景 rerun `3` 次，验证 `create_form_ready_strict_mode` 是否已把目标错误从真实样本中推走
+- 已完成：
+  - 已新增 `docs/intent-e2e-create-form-ready-strict-mode-task-brief-2026-04-02.md`
+  - 已对同一真实场景完成 rerun `3` 次：
+    - `intent-run-00e2c919-3861-4314-b228-4b2c028b2eb9`
+    - `intent-run-8657f389-cb2e-4ed9-83a5-ed6ca4442be2`
+    - `intent-run-9702d405-f98f-4d9a-8a99-f18860312607`
+  - 最新 rerun 已确认：
+    - `3 / 3` 不再出现 `Step 1 / getByText('我创建的').first()` page-ready 失败
+    - `3 / 3` 不再出现 `状态证据缺失：列表行已命中，但列表响应未返回状态`
+    - `3 / 3` 不再出现 `await expect(contactStepHeading.or(sourceLabel)).toBeVisible(...)` strict mode
+  - 当前失败已进一步收敛为：
+    - `1 / 3`：新建商机末页最终提交按钮退化成整页 page-level regex + `.last()`
+    - `2 / 3`：`env_blocked`
+  - 已更新 `docs/intent-e2e-success-hardening-real-run-review-2026-04-02.md`
+    - `create_form_ready_strict_mode` 已标记为“真实样本已验证有效”
+    - 下一刀已收敛到 `create_final_submit_page_regex_fallback`
+- 验证：
+  - 真实 rerun `3` 次：
+    - `intent-run-00e2c919-3861-4314-b228-4b2c028b2eb9`
+    - `intent-run-8657f389-cb2e-4ed9-83a5-ed6ca4442be2`
+    - `intent-run-9702d405-f98f-4d9a-8a99-f18860312607`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1-S6`、`S6+ DOM delta`、`S6+ structured data evidence`、`S6+ shared session minimal`、`business-list page-ready ownership ready`、`status-evidence derived businessId fallback`、`create_form_ready_strict_mode` 已完成且均已经真实 rerun 验证）
+- 风险 / 未完成：
+  - 当前还没有通过样本，`first_pass_rate / terminal_pass_rate` 仍为 `0 / 3`
+  - 最新稳定模型失败已切到末页最终提交按钮 page-level regex fallback
+  - `env_blocked` 仍存在，但本轮不应和模型失败单刀并行处理
+- 下一步：
+  - 另起 brief，只收 `create_final_submit_page_regex_fallback`
+  - 目标是消掉：
+    - `page.getByRole('button', { name: /^(?!.*保存并继续)(?!.*上一步).*(保\\s*存|提\\s*交|确\\s*定).*$/i }).last()`
+  - 仍坚持单刀，不并行处理 `env_blocked` 或 `createdBusinessId` 提取失败
+
+## 2026-04-02 第九十九次更新（post-R14 success hardening：create_final_submit_scoped_locator exact-submit fallback）
+
+- 本轮目标：
+  - 继续只收 `create_final_submit_page_regex_fallback` 这一条 family
+  - 不再继续盲扩 `candidateContainers`
+  - 只在已经确认 `附件信息 / 上传录音文件 / 上传图片` 末页锚点可见时，给最终主动作补一层更窄的 exact `提交` fallback
+- 已完成：
+  - 已复用现有 brief：
+    - `docs/intent-e2e-create-final-submit-scoped-locator-task-brief-2026-04-02.md`
+  - 已重新核对仓库内 live 通过样本：
+    - `scripts/seed-yikaiye-business-create-case.mjs`
+    - `scripts/seed-yikaiye-business-create-order-case.mjs`
+    - `tests/e2e/generated/worker-1773220373823.mjs`
+  - 已确认这些通过样本在附件页都会使用：
+    - `page.getByRole('button', { name: /^提\s*交$/ }).first()`
+    作为最终主动作
+  - 已更新：
+    - `lib/intent-execution-compiler.ts`
+      - `candidateContainers` scoped miss 后，新增“attachmentAnchor 已确认可见时，只允许再试 exact submit fallback”的提示
+    - `lib/test-generator.ts`
+      - 创建商机锚点规则与 repair diagnosis 同步改成 exact-submit fallback
+    - `lib/intent-action-library.ts`
+      - 通用 submit-state 示例已移除旧的整页 regex + `.last()` fallback
+    - `tests/unit/intent-execution-compiler.spec.ts`
+    - `tests/unit/test-generator.spec.ts`
+    - `tests/unit/intent-action-library.spec.ts`
+  - 已更新 `docs/intent-e2e-success-hardening-real-run-review-2026-04-02.md`
+    - 补记了这条 family 的第三刀开发结论与待 rerun 状态
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-action-library.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1-S6`、`S6+ DOM delta`、`S6+ structured data evidence`、`S6+ shared session minimal`、`business-list page-ready ownership ready`、`status-evidence derived businessId fallback`、`create_form_ready_strict_mode` 已完成且均已经真实 rerun 验证；`create_final_submit_scoped_locator exact-submit fallback` 已完成代码收口，待真实 rerun 验证）
+- 风险 / 未完成：
+  - 本轮没有新的真实 UAT rerun，因此还不能把这条 final-submit family 标记为“已验证有效”
+  - `env_blocked` 仍可能和真实 rerun 混在一起，但不属于这条模型质量单刀
+  - 本轮仍然没有改 `runtime helper / worker`，只改 compiler / prompt / capability example / unit test
+- 下一步：
+  - 用同一真实场景 rerun `3` 次
+  - 若不再停在 `未在末页容器内找到最终提交按钮` 或 page-level final submit 定位链，可结束这条切片
+  - 若仍停在同一错误，继续只围绕 final-submit locator family 收口，不并行切去其它失败簇
+
+## 2026-04-02 第一百次更新（post-R14 success hardening：launch-decision legacy bootstrap compatibility）
+
+- 本轮目标：
+  - 只修 `launch-decision` 对 legacy 项目资产的兼容性回归
+  - 让已有历史项目资产的旧项目不再被误判成 `needs_bootstrap`
+  - 保持真正冷启动项目仍然返回 `asset_missing`
+- 已完成：
+  - 已新增 `docs/intent-e2e-launch-decision-legacy-bootstrap-compat-task-brief-2026-04-02.md`
+  - 已更新 `lib/intent-e2e-asset-readiness.ts`
+    - project onboarding 缺失不再一刀切阻断所有旧项目
+    - 仅当项目已有历史资产迹象时，才允许 legacy knowledge fallback 参与启动就绪判断
+    - 真实冷启动项目在只有全局 legacy knowledge、但没有项目级历史资产时，仍保持 `asset_missing`
+  - 已新增 `tests/unit/intent-e2e-asset-readiness.spec.ts`
+    - 覆盖“真实冷启动仍拦截”
+    - 覆盖“legacy knowledge + project repair memory 放行”
+    - 覆盖“已有 project knowledge 的旧项目不再强依赖 onboarding”
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-asset-readiness.spec.ts tests/unit/intent-e2e-launch-decision.spec.ts tests/unit/api-intent-e2e-launch-decision-route.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1-S6`、`S6+ DOM delta`、`S6+ structured data evidence`、`S6+ shared session minimal`、`business-list page-ready ownership ready`、`status-evidence derived businessId fallback`、`create_form_ready_strict_mode` 已完成且均已经真实 rerun 验证；`create_final_submit_scoped_locator exact-submit fallback` 已完成代码收口待 rerun；legacy bootstrap compatibility 回归已修复）
+- 风险 / 未完成：
+  - 本轮只修启动门禁兼容性，不处理其它 real-run failure family
+  - 当前兼容规则仍然有边界：只有“已有项目级历史资产”的旧项目才允许沿用 legacy knowledge
+  - 还没有补独立 onboarding 编辑流；这仍属于后续平台能力
+- 下一步：
+  - 回到既定单刀计划，继续对 `create_final_submit_scoped_locator exact-submit fallback` 做真实 rerun 验证
+  - 若 rerun 不再被 `needs_bootstrap` 误拦，可继续按原计划只围绕 final-submit family 收口
+
+## 2026-04-02 第一百零一次更新（post-R14 success hardening：launch-decision legacy fixture compatibility）
+
+- 本轮目标：
+  - 只修 `launch-decision` 的 `needs_fixture` 兼容性回归
+  - 让没有启用 runtime governance 的 legacy 项目，不会因为写操作草稿被提前拦截
+  - 保持已启用 runtime governance 的请求仍然受 fixture contract 门禁约束
+- 已完成：
+  - 已新增 `docs/intent-e2e-launch-decision-legacy-fixture-compat-task-brief-2026-04-02.md`
+  - 已更新 `lib/intent-e2e-launch-decision.ts`
+    - `needs_fixture` 不再对所有看起来像写操作的请求一刀切生效
+    - 现在只在 `runtime governance` 已进入 enforced 模式时，才会因为缺少 fixture contract 返回 `needs_fixture`
+    - 与 service 主链 `runIntentE2ERuntimeGovernanceCheck()` 的 blocker 语义保持一致
+  - 已更新 `tests/unit/intent-e2e-launch-decision.spec.ts`
+    - 覆盖“enforced governance 缺 fixture 仍拦截”
+    - 覆盖“legacy mutating request 无治理时保持 auto_run”
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-launch-decision.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1-S6`、`S6+ DOM delta`、`S6+ structured data evidence`、`S6+ shared session minimal`、`business-list page-ready ownership ready`、`status-evidence derived businessId fallback`、`create_form_ready_strict_mode` 已完成且均已经真实 rerun 验证；`create_final_submit_scoped_locator exact-submit fallback` 已完成代码收口待 rerun；legacy bootstrap compatibility / legacy fixture compatibility 回归均已修复）
+- 风险 / 未完成：
+  - 本轮只修 launch-decision 与 service 的语义对齐，不处理 fixture script 缺失或 project governance 写入口
+  - 已启用 runtime governance 的项目如果确实没有 fixture contract，仍然会被 `needs_fixture` 拦截，这是保留的预期行为
+  - 本轮没有做新的真实 rerun，只修阻塞性兼容回归
+- 下一步：
+  - 回到既定单刀计划，继续对 `create_final_submit_scoped_locator exact-submit fallback` 做真实 rerun 验证
+  - 若后续再次出现 `needs_fixture`，优先检查请求是否已经带入 project runtime governance 或 onboarding fixture defaults
+
+## 2026-04-02 第一百零二次更新（post-R14 success hardening：create_final_submit candidateContainers prompt consistency）
+
+- 本轮目标：
+  - 继续只收 `create_final_submit_scoped_locator exact-submit fallback` 这条 family
+  - 不改 runtime helper / worker，不并行切其它 failure cluster
+  - 把通用 `submit-state` capability 里的残留简化骨架也收口到 `attachmentAnchor + candidateContainers + exact submit fallback`
+- 已完成：
+  - 已复用现有 brief：
+    - `docs/intent-e2e-create-final-submit-scoped-locator-task-brief-2026-04-02.md`
+  - 已更新 `lib/intent-action-library.ts`
+    - `assert.watch-submit-state` 的 implementation notes 不再写“pane miss 后回退到更稳的页面级可见主动作链”这类宽泛表述
+    - 现在显式要求：
+      - `attachmentAnchor` 已可见
+      - 先走 `candidateContainers`
+      - 至少覆盖 `attachmentAnchor` 的前 `3-4` 层可见祖先链与 footer/action-bar 容器
+      - scoped miss 后只允许尝试 `page.getByRole('button', { name: /^提\\s*交$/ }).first()`
+    - `assert.watch-submit-state` 的示例骨架也已同步改成：
+      - `attachmentAnchor + activePane + candidateContainers`
+      - `for ... of candidateContainers`
+      - `exactSubmitBtn`
+      - `未在末页容器内找到最终提交按钮`
+  - 已更新：
+    - `tests/unit/intent-action-library.spec.ts`
+    - `tests/unit/test-generator.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-action-library.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1-S6`、`S6+ DOM delta`、`S6+ structured data evidence`、`S6+ shared session minimal`、`business-list page-ready ownership ready`、`status-evidence derived businessId fallback`、`create_form_ready_strict_mode` 已完成且均已经真实 rerun 验证；`create_final_submit_scoped_locator exact-submit fallback` 已进一步收紧 prompt / capability example，待真实 rerun 验证）
+- 风险 / 未完成：
+  - 本轮仍然没有新的真实 UAT rerun，因此还不能把这条 final-submit family 标记为“已验证有效”
+  - 当前只收口了 prompt / compiler / capability example 侧，不涉及 runtime helper
+  - 若 rerun 仍失败，下一步也必须继续只围绕末页最终提交按钮链，不并行扩题
+- 下一步：
+  - 用同一真实场景 rerun `3` 次
+  - 若不再出现 page-level final submit 定位链或 `未在末页容器内找到最终提交按钮`，就可以结束这条切片
+  - 若仍失败，继续只围绕 candidateContainers / exact submit fallback 收口
+
+## 2026-04-03 第一百零三次更新（post-R14 success hardening：create_final_submit exact-submit rule propagated into generation guardrails）
+
+- 本轮目标：
+  - 继续只收 `create_final_submit_scoped_locator exact-submit fallback`
+  - 不改 runtime helper，不并行切其它 family
+  - 把 `test-generator` 首轮总则里残留的旧 page-level fallback 口径也统一成当前的 `candidateContainers + exact submit fallback`
+- 已完成：
+  - 已更新 `lib/test-generator.ts`
+    - 总则 `11.1 / 21.2` 现在都显式要求：
+      - 先扩 `candidateContainers`
+      - scoped 容器都 miss 时，只有 `attachmentAnchor` 已可见才允许再试 `page.getByRole('button', { name: /^提\\s*交$/ }).first()`
+      - 不再停留在“pane miss 后回退整页主动作链”的旧口径
+  - 已更新 `tests/unit/test-generator.spec.ts`
+    - 通用 prompt 断言已同步检查 exact submit fallback
+  - 已更新稳定开发文档：
+    - `docs/intent-e2e-high-success-roadmap-2026-03-20.md`
+    - 把旧的 “page-level fallback” 历史口径标记为已被当前 `candidateContainers + exact-submit` 规则取代
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/intent-execution-compiler.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1-S6`、`S6+ DOM delta`、`S6+ structured data evidence`、`S6+ shared session minimal`、`business-list page-ready ownership ready`、`status-evidence derived businessId fallback`、`create_form_ready_strict_mode` 已完成且均已经真实 rerun 验证；`create_final_submit_scoped_locator exact-submit fallback` 的 compiler / prompt / capability example / general guardrail 已全部对齐，待真实 rerun 验证）
+- 风险 / 未完成：
+  - 本轮仍未新增真实 UAT rerun，因此这条 family 仍不能标记为“已验证有效”
+  - 如果 rerun 还失败，下一步也必须继续只围绕末页最终提交按钮链收口
+- 下一步：
+  - 继续用同一真实场景 rerun `3` 次
+  - 若不再停在最终提交按钮定位链，就可结束这条切片
+
+## 2026-04-03 第一百零四次更新（post-R14 success hardening：create_final_submit exact-submit fallback rerun validation）
+
+- 本轮目标：
+  - 继续只收 `create_final_submit_scoped_locator exact-submit fallback`
+  - 不改 runtime helper，不并行切其它 family
+  - 用同一真实场景 rerun 验证最新 compiler / prompt / capability example / general guardrail 收口，确认 final-submit family 退出真实失败簇
+- 已完成：
+  - 已复用现有 brief：
+    - `docs/intent-e2e-create-final-submit-scoped-locator-task-brief-2026-04-02.md`
+  - 已完成同一真实场景 rerun 补验：
+    - `intent-run-6014b908-7ea0-4570-87c6-70a8f0358866`
+  - 结合上一条同刀最新 rerun：
+    - `intent-run-fda4ea2e-132d-4ccd-920f-c26842d18d73`
+  - 最新 `2 / 2` 的 `attemptFailureSignature` 与 `run.error` 都已不再出现：
+    - `未在末页容器内找到最终提交按钮`
+    - page-level final submit fallback family
+  - 最新失败链已经稳定前移到：
+    - `Step 7` 状态证据校验
+    - 或其后的 `page.goto` timeout
+  - 已更新 `docs/intent-e2e-success-hardening-real-run-review-2026-04-02.md`
+    - `create_final_submit_scoped_locator exact-submit fallback` 已标记为“真实样本已验证有效”
+- 验证：
+  - 真实 rerun `2` 次：
+    - `intent-run-fda4ea2e-132d-4ccd-920f-c26842d18d73`
+    - `intent-run-6014b908-7ea0-4570-87c6-70a8f0358866`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1-S6`、`S6+ DOM delta`、`S6+ structured data evidence`、`S6+ shared session minimal`、`business-list page-ready ownership ready`、`status-evidence derived businessId fallback`、`create_form_ready_strict_mode`、`create_final_submit_scoped_locator exact-submit fallback` 已完成且均已经真实 rerun 验证）
+- 风险 / 未完成：
+  - 当前仍没有通过样本，最新 `first_pass_rate / terminal_pass_rate` 仍为 `0 / 2`
+  - `Step 7` 状态证据链仍然是新的真实 top failure
+  - `page.goto` timeout 仍偶发混入终态，但已经不属于 final-submit family
+- 下一步：
+  - 另起 brief，只收 `Step 7 status evidence` 这一条真实 top failure
+  - 不再继续停留在 final-submit locator family
+  - 仍坚持单刀，不并行切去其它失败簇
+
+## 2026-04-03 第一百零五次更新（post-R14 success hardening：Step 7 status evidence rerun validation）
+
+- 本轮目标：
+  - 只收 `Step 7 status evidence`
+  - 不改 runtime helper，不并行切其它 family
+  - 先把 compiler 注释里已有的 `statusEvidenceRecordCheck + derivedBusinessId fallback` 真正落成可执行骨架，再用同一真实场景 rerun 验证
+- 已完成：
+  - 已新增 brief：
+    - `docs/intent-e2e-step-7-status-evidence-task-brief-2026-04-03.md`
+  - 已更新：
+    - `lib/intent-execution-compiler.ts`
+      - `table_row` row 命中分支现在真实生成 `statusEvidenceRecordCheck`
+      - 商机列表状态链现在真实生成 `derivedBusinessId -> matchedRecordByDerivedBusinessId -> resolvedMatchedRecord`
+    - `lib/test-generator.ts`
+      - 已把最新 `Step 7` 失败文案扩进现有 targeted repair diagnosis
+    - `tests/unit/intent-execution-compiler.spec.ts`
+    - `tests/unit/test-generator.spec.ts`
+  - 已完成真实 rerun `1` 次：
+    - `intent-run-e3d72ab5-d7d4-4814-b2a5-614e8ac8c48f`
+  - 最新真实样本的推进结果已经明确：
+    - `attempt 1` 仍停在：
+      - `状态证据缺失：列表行已命中，但列表响应未返回状态`
+    - `attempt 2` 已不再停在旧的列表响应缺口，而是后移到：
+      - `状态证据缺失：列表行已命中，但列表响应与详情页均未返回状态`
+  - `attempt-2-trace.json` 已出现本轮新增的关键执行链：
+    - `statusEvidenceRecordCheck`
+    - `derivedBusinessId`
+    - `matchedRecordByDerivedBusinessId`
+    - `detailStatus = readDetailField('商机进展') || readDetailField('状态')`
+  - `attempt-2-logs.txt` 已证明 repair code 真实进入：
+    - `#/business/detail/521197`
+    - 随后连续命中 `detail field not found`
+  - 已更新：
+    - `docs/intent-e2e-success-hardening-real-run-review-2026-04-02.md`
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+  - 真实 rerun `1` 次：
+    - `intent-run-e3d72ab5-d7d4-4814-b2a5-614e8ac8c48f`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1-S6`、`S6+ DOM delta`、`S6+ structured data evidence`、`S6+ shared session minimal`、`business-list page-ready ownership ready`、`status-evidence derived businessId fallback`、`create_form_ready_strict_mode`、`create_final_submit_scoped_locator exact-submit fallback` 已完成且均已经真实 rerun 验证；本轮 `Step 7 status evidence` 的 `statusEvidenceRecordCheck + derivedBusinessId fallback` 已完成且已被最新真实样本验证“旧签名已后移”）
+- 风险 / 未完成：
+  - 当前仍没有通过样本，最新 `first_pass_rate / terminal_pass_rate` 仍为 `0 / 1`
+  - `Step 5 / Step 7` 仍是当前真实 top failure，但头部缺口已经从“列表响应未返回状态”后移到“列表响应与详情页均未返回状态”
+  - 当前 detail fallback 已进入 `#/business/detail/:id`，但 `商机进展 / 状态` 字段读取仍未闭环
+- 下一步：
+  - 另起 brief，只收 `Step 5 / Step 7 detail-status closure`
+  - 不要再回退去补旧的：
+    - `状态证据缺失：列表行已命中，但列表响应未返回状态`
+    - `状态证据缺失：列表行已命中，但列表响应未命中状态（含 derivedBusinessId 回填）`
+  - 下一刀只围绕：
+    - 已进入 `#/business/detail/:id` 后，如何稳定拿到 `商机进展 / 状态` 的详情字段证据
+
+## 2026-04-03 第一百零六次更新（post-R14 success hardening：Step 5 / Step 7 detail-status closure code/test validation）
+
+- 本轮目标：
+  - 只收 `Step 5 / Step 7 detail-status closure`
+  - 不回退旧的列表响应缺口
+  - 严格保持单刀，只补“已进入 detail route 后如何稳定读状态字段”
+- 已完成：
+  - 已新增 brief：
+    - `docs/intent-e2e-step-5-detail-status-closure-task-brief-2026-04-03.md`
+  - 已更新：
+    - `lib/test-worker.mjs`
+      - 新增 `findVisibleDetailPageSection(page, { titleIncludes })`
+      - `readDetailField(...)` 在未显式提供 `scope` 且给了 `titleIncludes` 时，会先尝试标题对应的详情页 section，再保留原有 modal / drawer / body fallback
+    - `lib/test-generator.ts`
+      - 已把 detail-route repair hint 与 targeted diagnosis 收口成：若当前链路已有 `detailSurface.titleIncludes` / 详情标题，就继续把 `titleIncludes` 传给 `__e2e.readDetailField(...)`
+    - `tests/unit/test-executor.spec.ts`
+      - 已新增 page-detail `titleIncludes` 回归
+    - `tests/unit/test-generator.spec.ts`
+      - 已对齐 detail-route repair hint 断言
+    - `docs/intent-e2e-success-hardening-real-run-review-2026-04-02.md`
+  - 当前这刀的代码/单测收口已经完成，但尚未补新的真实 rerun
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - `npx vitest run tests/unit/test-executor.spec.ts -t "uses titleIncludes to scope detail field reads to the matching detail page section"`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1-S6`、`S6+ DOM delta`、`S6+ structured data evidence`、`S6+ shared session minimal`、`business-list page-ready ownership ready`、`status-evidence derived businessId fallback`、`create_form_ready_strict_mode`、`create_final_submit_scoped_locator exact-submit fallback` 已完成且均已经真实 rerun 验证；本轮 `Step 5 / Step 7 detail-status closure` 的代码与定向验证已完成，真实 rerun 待补）
+- 风险 / 未完成：
+  - 当前仍没有新的真实 rerun，因此 `first_pass_rate / terminal_pass_rate` 暂不更新，仍沿用上一轮 `0 / 1`
+  - `Step 5 / Step 7` 仍是当前真实 top failure，真实头部缺口仍是：
+    - `状态证据缺失：列表行已命中，但列表响应与详情页均未返回状态`
+  - `tests/unit/test-executor.spec.ts` 整份文件在当前环境运行会挂起；本轮只完成了新增用例的定向验证
+  - 本轮仍未处理详情页自身 `Cannot read properties of null (reading 'forEach')`
+- 下一步：
+  - 用同一真实场景补做 `1` 次 rerun，确认新增 `titleIncludes -> detail page section` scope 是否把当前 top failure 继续后推或直接打通
+  - 若 rerun 仍停在 detail status 读取，再只围绕详情字段命中链继续单刀收口，不并行切去其它 family
+
+## 2026-04-03 第一百零七次更新（post-R14 success hardening：Step 5 / Step 7 detail-status closure forced replay validation）
+
+- 本轮目标：
+  - 对上一刀 `Step 5 / Step 7 detail-status closure` 补 `1` 次真实 replay 验证
+  - 不再新增代码，只确认 `titleIncludes -> detail route -> readDetailField(...)` 是否真实进入主链路
+  - 若 UI 启动决策已被抑制，也要把这个前提记录清楚
+- 已完成：
+  - 已先对同一项目 / module / draft 补跑 `launch-decision`：
+    - 返回 `decision = draft_only`
+    - reasons 为：
+      - `recent_repeated_model_failure`
+      - `high_failure_pressure`
+  - 为完成这刀的工程验证，已改走直连 `POST /api/intent-e2e/runs` 的强制 replay：
+    - `intent-run-2c467bf8-18ca-4881-9f9d-1886a7f05f50`
+  - 本次 replay `2` 轮后终态失败，但关键执行链已经按预期进入：
+    - `attempt 1`
+      - `状态证据缺失：列表行已命中，但列表响应和行文本都未返回状态`
+    - `attempt 2`
+      - `状态证据缺失：列表行已命中，但列表响应、详情页字段均未返回状态`
+  - `attempt-2-trace.json` 已明确出现：
+    - `await page.goto(...#/business/detail/521201, { waitUntil: 'domcontentloaded' })`
+    - `await __e2e.readDetailField(page, { label: '商机进展', titleIncludes: '商机详情', required: false })`
+    - `|| await __e2e.readDetailField(page, { label: '状态', titleIncludes: '商机详情', required: false })`
+  - `attempt-2-logs.txt` 已明确出现：
+    - `historyhistory {pathname: /business/detail/521201 ...}`
+    - `json record not found`
+    - `Cannot read properties of null (reading 'forEach')`
+    - 连续 `2` 次 `detail field not found`
+  - 已更新：
+    - `docs/intent-e2e-success-hardening-real-run-review-2026-04-02.md`
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - `npx vitest run tests/unit/test-executor.spec.ts -t "uses titleIncludes to scope detail field reads to the matching detail page section"`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+  - `launch-decision` `1` 次：
+    - `decision = draft_only`
+  - 强制 replay `1` 次：
+    - `intent-run-2c467bf8-18ca-4881-9f9d-1886a7f05f50`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1-S6`、`S6+ DOM delta`、`S6+ structured data evidence`、`S6+ shared session minimal`、`business-list page-ready ownership ready`、`status-evidence derived businessId fallback`、`create_form_ready_strict_mode`、`create_final_submit_scoped_locator exact-submit fallback` 已完成且均已经真实 rerun 验证；`Step 5 / Step 7 detail-status closure` 这一刀已完成代码、定向单测和 forced replay 验证，但 family 仍未收口）
+- 风险 / 未完成：
+  - 当前工作台真实点击 `AI生成` 时，这条 draft 会先被 `launch-decision=draft_only` 抑制；本轮 rerun 属于工程验证用的强制 replay，而不是普通用户路径
+  - 当前真实 top failure 没有再回退到列表链，而是停在详情页侧：
+    - `状态证据缺失：列表行已命中，但列表响应、详情页字段均未返回状态`
+  - 同场景仍伴随：
+    - `Cannot read properties of null (reading 'forEach')`
+    - `detail field not found`
+- 下一步：
+  - 若继续，下一刀只收 `business/detail` 页内的字段命中链和伴随的运行时异常
+  - 不要再回退去补旧的：
+    - `状态证据缺失：列表行已命中，但列表响应未返回状态`
+    - `状态证据缺失：列表行已命中，但列表响应未命中状态（含 derivedBusinessId 回填）`
+    - `状态证据缺失：列表行已命中，但列表响应与详情页均未返回状态`
+
+## 2026-04-03 第一百零八次更新（post-R14 success hardening：Step 5 / Step 7 detail surface validity code/test validation）
+
+- 本轮目标：
+  - 不再继续扩 `readDetailField(...)` label / selector，而是只收 `detailUrl` 自身是否为有效详情页这条最小缺口
+  - 把“真实详情 surface”和“业务错误页”分开，避免继续把错误页误归因为普通详情字段缺失
+  - 保持最小改动：不猜默认 row action、不改 route contract、不改 DB / API 契约
+- 已完成：
+  - 已补 brief：
+    - `docs/intent-e2e-step-5-detail-surface-validity-task-brief-2026-04-03.md`
+  - worker：
+    - 新增 `waitForVisibleDetailSurface(...)`
+    - 新增已知错误页识别：
+      - `页面好像不见了`
+    - `readDetailField(...)` 在已知 `titleIncludes` 且当前页命中错误页时，不再继续对 `body` 盲扫
+  - compiler：
+    - direct `detailUrl` fallback 现在会先执行：
+      - `waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', required: false })`
+    - 若未出现有效 detail surface，会明确抛：
+      - `详情页无效：detailUrl 未出现商机详情 surface`
+  - repair prompt：
+    - 已补“detailUrl 落到错误页”定向诊断，不再把这类样本继续提示成普通 `detail field not found`
+  - 已更新：
+    - `docs/intent-e2e-success-hardening-real-run-review-2026-04-02.md`
+- 验证：
+  - `npx vitest run tests/unit/test-executor.spec.ts -t "invalid detail surface"`
+  - `npx vitest run tests/unit/intent-execution-compiler.spec.ts -t "prefers direct detailUrl fallback over implicit row-action modal guessing when status verification lacks explicit detailEntry"`
+  - `npx vitest run tests/unit/test-generator.spec.ts -t "invalid detail-surface hints when detailUrl lands on a business error page"`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1-S6`、`S6+ DOM delta`、`S6+ structured data evidence`、`S6+ shared session minimal`、`business-list page-ready ownership ready`、`status-evidence derived businessId fallback`、`create_form_ready_strict_mode`、`create_final_submit_scoped_locator exact-submit fallback` 已完成且均已经真实 rerun 验证；`Step 5 / Step 7 detail-status closure` 与本轮 `detail surface validity` 代码 / 定向验证已完成，真实 rerun 待补）
+- 风险 / 未完成：
+  - 本轮仍没有新的真实 rerun，因此 `first_pass_rate / terminal_pass_rate` 暂不更新
+  - 本轮不解决业务侧：
+    - `Cannot read properties of null (reading 'forEach')`
+  - 当前 project knowledge 未命中时，仍没有新增显式 `detailEntry / detailReadyLocator`
+  - `tests/unit/test-executor.spec.ts` 整份文件在当前环境运行会挂起；本轮仍只完成了新增用例的定向验证
+- 下一步：
+  - 用同一真实场景补 `1` 次 rerun，确认：
+    - 新的 invalid detail surface guard 是否真实进入主链路
+    - 终态是否从泛化的 `detail field not found` 收口成更准确的 `详情页无效`
+  - 若 rerun 仍停在这条链，再只围绕两件事二选一：
+    - 项目知识是否需要补显式 `detailEntry / detailReadyLocator`
+    - 或业务侧 `business/detail` 本身是否长期返回错误页 / 权限页
+  - 不要回退去扩更多详情字段 label，也不要无证据默认生成“查看”行操作
+
+## 2026-04-03 第一百零九次更新（post-R14 success hardening：Step 5 detail-surface repair-guard rerun closure）
+
+- 本轮目标：
+  - 对上一刀 `detail surface validity` 再补 `1` 次真实 forced rerun，确认 repair guidance 是否也已经把 detail-surface guard 真正写进主链路
+  - 只验证一个收口结果：
+    - 终态是否从泛化 `状态证据缺失` 升级为显式 `详情页无效：detailUrl 未出现商机详情 surface`
+  - 不扩到新的 helper / verifier / route 语义
+- 已完成：
+  - 已补 brief：
+    - `docs/intent-e2e-step-5-detail-surface-repair-guard-task-brief-2026-04-03.md`
+  - 已确认 repair prompt / slot patch 生成的新 guard 已进入真实 rerun：
+    - 先 `waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false })`
+    - 再 `if (!detailSurface) throw new Error('详情页无效：detailUrl 未出现商机详情 surface')`
+    - 只有拿到 `detailSurface` 后才允许 `scope: detailSurface` 去读 `商机进展 / 状态`
+  - 已完成同一真实场景 forced rerun：
+    - `intent-run-13f62e93-0ee4-42cb-98b8-135407603d87`
+  - 已更新：
+    - `docs/intent-e2e-success-hardening-real-run-review-2026-04-02.md`
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+  - forced rerun `1` 次：
+    - `intent-run-13f62e93-0ee4-42cb-98b8-135407603d87`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1-S6`、`S6+ DOM delta`、`S6+ structured data evidence`、`S6+ shared session minimal`、`business-list page-ready ownership ready`、`status-evidence derived businessId fallback`、`create_form_ready_strict_mode`、`create_final_submit_scoped_locator exact-submit fallback` 已完成且均已经真实 rerun 验证；`Step 5 / Step 7 detail-status closure`、`detail surface validity`、本轮 `detail-surface repair-guard rerun closure` 均已完成并已完成真实 rerun 验证）
+- 风险 / 未完成：
+  - 当前新的真实 top failure 已收口为：
+    - `workflow_gap|Step 6: 校验商机进展状态|详情页无效：detailUrl 未出现商机详情 surface`
+  - 同场景仍伴随：
+    - `Cannot read properties of null (reading 'forEach')`
+    - `detail surface invalid page`
+  - 这说明当前剩余阻塞已经不是 repair guidance 漏 guard，而是 `business/detail` 本身没有出现有效 `商机详情` surface
+- 下一步：
+  - 若继续，只围绕两件事二选一：
+    - 项目知识是否需要补显式 `detailEntry / detailReadyLocator`
+    - 或把 `business/detail` 视为业务 / 环境阻塞并单独治理
+  - 不要回退去扩更多详情字段 label
+  - 也不要无证据默认生成“查看”行操作
+
+## 2026-04-03 第一百一十次更新（post-R14 success hardening：Step 6 business detail-entry default knowledge）
+
+- 本轮目标：
+  - 给默认 `intent-e2e.project-knowledge.json` 补“新建商机后列表状态回查”的显式详情入口知识：
+    - `detailEntry`
+    - `detailReadyLocator`
+    - `detailSurfaceHints`
+  - 用真实 rerun 确认这条 knowledge 真正进入主链路，不再继续只走 `detailUrl`
+  - 若真实链路仍未命中，只修 same-path knowledge stale cache，不扩 helper / verifier / route
+- 已完成：
+  - 已补 brief：
+    - `docs/intent-e2e-step-6-business-detail-entry-knowledge-task-brief-2026-04-03.md`
+  - 已在默认 knowledge 新增规则：
+    - `business.create-list-status-detail-entry`
+  - 已补默认 knowledge prompt 定向单测：
+    - `tests/unit/test-generator.spec.ts`
+  - 已补 same-path knowledge cache 自动失效：
+    - `lib/intent-project-knowledge.ts`
+  - 已补 cache 回归单测：
+    - `tests/unit/intent-project-knowledge.spec.ts`
+  - 已确认首个 forced rerun：
+    - `intent-run-27632039-2f29-43d0-a741-5a05d7a7121a`
+    - 之所以仍打印 `未命中项目知识规则`，是因为长驻服务吃了旧 knowledge cache，不是 rule 条件本身写错
+  - 已补 cache 失效后重新 forced rerun：
+    - `intent-run-f271ee22-6ff8-45d7-be2e-ee5015d7fc0e`
+  - 已确认新 rerun 的真实主链路证据：
+    - 生成阶段打印：
+      - `命中 1 条项目知识规则：新建商机后列表状态回查`
+    - slot patch 已真实写出：
+      - `__e2e.clickAntdRowAction(page, recordCheck.row, '查看')`
+      - `__e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000 })`
+      - `__e2e.readDetailField(... '商机进展') || __e2e.readDetailField(... '状态')`
+    - 首轮执行日志已出现：
+      - `row action clicked`
+    - 首轮执行失败点已前移为：
+      - `未找到可见弹框: titleIncludes=商机详情`
+  - 已更新：
+    - `docs/intent-e2e-success-hardening-real-run-review-2026-04-02.md`
+- 验证：
+  - `npx vitest run tests/unit/intent-project-knowledge.spec.ts tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - forced rerun `1` 次：
+    - `intent-run-f271ee22-6ff8-45d7-be2e-ee5015d7fc0e`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1-S6`、`S6+ DOM delta`、`S6+ structured data evidence`、`S6+ shared session minimal`、`business-list page-ready ownership ready`、`status-evidence derived businessId fallback`、`create_form_ready_strict_mode`、`create_final_submit_scoped_locator exact-submit fallback`、本轮 `Step 6 business detail-entry default knowledge` 已完成并已完成真实 rerun 命中验证；下一刀转入 `row-action detail surface title/ready relaxation`）
+- 风险 / 未完成：
+  - 当前新的真实 top failure 已前移为：
+    - `未找到可见弹框: titleIncludes=商机详情`
+  - 这说明当前阻塞已经不再是：
+    - knowledge miss
+    - `detailUrl` 单一路径
+  - 剩余问题是：
+    - 行内“查看”已点击，但 detail modal / drawer 的标题或 ready 断言仍然过严
+  - `intent-run-f271ee22-6ff8-45d7-be2e-ee5015d7fc0e` 在回写时仍处于 repair / executing，中途证据已足以确认本轮目标完成；终态只用于下一刀参考，不影响本轮 close-out
+- 下一步：
+  - 只开一刀：
+    - `row-action detail surface title/ready relaxation`
+  - 只围绕：
+    - 如何在 row action 已触发后，更稳地确认详情抽屉 / 弹框 surface ready
+  - 不要回退去删除这条 knowledge，也不要重新退回 `detailUrl` 单一路径
+
+## 2026-04-03 第一百一十一次更新（post-R14 success hardening：Step 7 row-action detail surface propagation rerun validation）
+
+- 本轮目标：
+  - 对上一刀 `row-action detail surface title/ready relaxation` 的生成传播做真实 rerun 验证
+  - 只确认两件事：
+    - 首轮生成链是否已经切到新的 `required: false` modal -> detail surface fallback 骨架
+    - 旧的 `waitForVisibleAntdModal(required=true)` strict modal wait 是否已经不再是头部阻塞
+  - 不扩 helper / DB / route / UI 契约
+- 已完成：
+  - 已补 brief：
+    - `docs/intent-e2e-step-7-row-action-detail-surface-propagation-task-brief-2026-04-03.md`
+  - 已完成传播收口：
+    - `lib/test-generator.ts`
+    - `lib/intent-action-library.ts`
+    - `lib/intent-execution-compiler.ts`
+  - 已补 / 已更新单测：
+    - `tests/unit/test-generator.spec.ts`
+    - `tests/unit/test-generator-structured.spec.ts`
+    - `tests/unit/intent-action-library.spec.ts`
+    - `tests/unit/intent-execution-compiler.spec.ts`
+  - 已确认真实 rerun：
+    - `intent-run-1380901e-09ef-48d6-befa-63d10ca7c69b`
+  - 已确认 `attempt 1` 的 structured patch 真实切到新骨架：
+    - `waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000, required: false })`
+    - `waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false })`
+    - `状态证据缺失：列表行已命中，但“查看”后未出现可用详情弹层或详情页`
+  - 已确认同一真实 run 最终通过：
+    - `status = passed`
+    - `attempt 6` 日志已出现：
+      - `ant-modal resolved`
+      - `detail surface resolved`
+      - `detail field resolved`
+        - `field = 商机进展`
+        - `value = 新入库`
+  - 已更新：
+    - `docs/intent-e2e-success-hardening-real-run-review-2026-04-02.md`
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/test-generator-structured.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/intent-execution-compiler.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+  - 真实 rerun `1` 次：
+    - `intent-run-1380901e-09ef-48d6-befa-63d10ca7c69b`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：进行中（`S1-S6`、`S6+ DOM delta`、`S6+ structured data evidence`、`S6+ shared session minimal`、`business-list page-ready ownership ready`、`status-evidence derived businessId fallback`、`create_form_ready_strict_mode`、`create_final_submit_scoped_locator exact-submit fallback`、`Step 5 / Step 7 detail-status closure`、`detail surface validity`、`detail-surface repair-guard rerun closure`、`Step 6 business detail-entry default knowledge`、本轮 `Step 7 row-action detail surface propagation` 均已完成；最新真实 rerun 已终态通过）
+- 风险 / 未完成：
+  - 当前这刀已经收口，旧的 strict modal wait 不再是头部阻塞
+  - 但最终通过的 `attempt 6` 日志里仍伴随：
+    - `Cannot read properties of null (reading 'forEach')`
+  - 同一真实 run 也说明 repair 收敛效率仍不理想：
+    - `attempt 1 / 3 / 5`
+      - `未找到行操作：查看`
+    - `attempt 2 / 4`
+      - `当前链路不再强依赖“查看”行操作`
+  - 这些都已经不是当前切片的“必修项”，但若继续提成功率，需要单独开新 brief 处理
+- 下一步：
+  - 当前这刀已完成，没有必须继续的同 family 开发
+  - 若继续 post-R14 success hardening，只允许另起 brief，单收：
+    - `repair convergence efficiency`
+    - 或 `Cannot read properties of null (reading 'forEach')` 这类非阻塞运行时噪音
+  - 不要回退去重开旧的 detail title / ready strict wait family
+
+## 2026-04-03 第一百一十二次更新（post-R14 success hardening：final close-out）
+
+- 本轮目标：
+  - 不再新增 success hardening 主切片
+  - 只补齐 `S4` 在主计划中要求的 family 粒度回写
+  - 把 `post-R14 success hardening` 阶段正式 close-out
+- 已完成：
+  - 已重新核对主计划、`S6` brief 与最新真实 rerun 结论，确认：
+    - fixture sample 不属于 `S1-S6` 主承诺范围
+    - 当前真正剩余的只是 `S4` family 指标回写与阶段 close-out
+  - 已通过当前项目 `proj_default` 的 `/api/intent-e2e/insights` 补回 `S4` 最小指标：
+    - 当前样本窗口内唯一进入 tracked stats 的 family 为：
+      - `business_create_list_verify`
+    - `priorityScenarioFamilies` 显示：
+      - `totalRuns = 50`
+      - `firstPassPassedRuns = 0`
+      - `firstPassPassRate = 0%`
+      - `passedRuns = 1`
+      - `terminalPassRate = 2%`
+    - 同一窗口可明确回写：
+      - `untracked_rate = 0 / 50 = 0%`
+    - `recipe_hit_rate` 现阶段按 `recentTraces` 做 proxy 记录：
+      - 最近 `8` 条 trace 中，`6` 条出现 `patchedRecipeSlugs`
+      - proxy `recipe_hit_rate = 75%`
+  - 已确认最新真实 rerun：
+    - `intent-run-1380901e-09ef-48d6-befa-63d10ca7c69b`
+    - 已终态通过
+  - 已更新：
+    - `docs/intent-e2e-success-hardening-plan-2026-04-01.md`
+- 验证：
+  - 通过 dev server 读取：
+    - `/api/intent-e2e/insights?projectUid=proj_default`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（`S1-S6`、`S6+ DOM delta`、`S6+ structured data evidence`、`S6+ shared session minimal`、`business-list page-ready ownership ready`、`status-evidence derived businessId fallback`、`create_form_ready_strict_mode`、`create_final_submit_scoped_locator exact-submit fallback`、`Step 5 / Step 7 detail-status closure`、`detail surface validity`、`detail-surface repair-guard rerun closure`、`Step 6 business detail-entry default knowledge`、`Step 7 row-action detail surface propagation` 均已完成；本轮已补齐 `S4` family 粒度回写并正式 close-out）
+- 风险 / 未完成：
+  - 当前 `proj_default` 样本窗口高度集中在：
+    - `business_create_list_verify`
+  - 因此本轮 `S4` 回写只对该 family 有真实统计，其它已落地 family 仍缺足够真实样本，不应空写或伪造指标
+  - `recipe_hit_rate` 当前仍是基于 `recentTraces` 的 proxy，而不是全量历史聚合
+  - 最新通过样本里仍伴随：
+    - `Cannot read properties of null (reading 'forEach')`
+    这类非阻塞运行时噪音
+- 下一步：
+  - 当前阶段已经完成，没有必须继续的同阶段开发
+  - 若继续提升真实成功率，只允许另起 brief，单收：
+    - `repair convergence efficiency`
+    - 或 `Cannot read properties of null (reading 'forEach')` 这类非阻塞噪音

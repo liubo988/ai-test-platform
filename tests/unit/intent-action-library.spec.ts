@@ -80,6 +80,52 @@ describe('intent-action-library', () => {
     expect(slugs).toContain('assert.wait-for-api-response');
   });
 
+  it('soft-injects list-search-detail family capabilities without hard overriding the DSL', () => {
+    const dsl = buildIntentActionDSL({
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/customer/list',
+      featureDescription: '在客户列表搜索目标客户并进入详情',
+      expectedOutcome: '目标客户详情打开',
+      steps: [
+        {
+          stepUid: 'step_1',
+          stepType: 'ui',
+          title: '搜索客户并进入详情',
+          target: 'https://example.com/#/customer/list',
+          instruction: '输入客户编号后搜索，并打开目标客户详情',
+          expectedResult: '目标客户详情打开',
+          extractVariable: '',
+        },
+      ],
+    });
+
+    const baseLibrary = selectIntentActionLibrary({
+      dsl,
+      snapshot: { url: 'https://example.com/#/customer/list', title: '客户列表', frames: [] },
+    });
+    const familyLibrary = selectIntentActionLibrary({
+      dsl,
+      snapshot: { url: 'https://example.com/#/customer/list', title: '客户列表', frames: [] },
+      priorityScenarioFamily: 'list_search_detail',
+    });
+
+    const baseSlugs = baseLibrary.capabilities.map((item) => item.slug);
+    const familySlugs = familyLibrary.capabilities.map((item) => item.slug);
+
+    expect(baseSlugs).toEqual(
+      expect.arrayContaining(['ui.find-antd-table-row', 'assert.read-detail-field', 'assert.resolve-primary-record'])
+    );
+    expect(familySlugs).toEqual(
+      expect.arrayContaining(['ui.find-antd-table-row', 'assert.read-detail-field', 'assert.resolve-primary-record'])
+    );
+    expect(familySlugs.slice(0, 3)).toEqual([
+      'ui.find-antd-table-row',
+      'assert.resolve-primary-record',
+      'assert.read-detail-field',
+    ]);
+    expect(familySlugs).toEqual(expect.arrayContaining(baseSlugs));
+  });
+
   it('renders helper examples for prompt injection', () => {
     const rendered = renderIntentActionLibrary(
       selectIntentActionLibrary({
@@ -311,10 +357,26 @@ describe('intent-action-library', () => {
     expect(capability?.preferredHelper).toBe('__e2e.observeSubmitState');
     expect(capability?.example).toContain('__e2e.observeSubmitState(page, {');
     expect(capability?.example).toContain("const LIST_URL = 'https://example.com/#/business/businesslist';");
+    expect(capability?.example).toContain("const attachmentAnchor = page.getByText(/附件信息|上传录音文件|上传图片/).first();");
     expect(capability?.example).toContain("const activePane = page.locator('.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible').first();");
-    expect(capability?.example).toContain("const scopedFinalSaveBtn = activePane.getByRole('button', { name: /保\\s*存|提\\s*交|确\\s*定/i }).last();");
-    expect(capability?.example).toContain('const finalSaveBtn = (await scopedFinalSaveBtn.count())');
-    expect(capability?.example).toContain("page.getByRole('button', { name: /^(?!.*保存并继续)(?!.*上一步).*(保\\s*存|提\\s*交|确\\s*定).*$/i }).last();");
+    expect(capability?.example).toContain('const extraContainerSelectors = [');
+    expect(capability?.example).toContain('const candidateContainers = [');
+    expect(capability?.example).toContain("attachmentAnchor.locator('xpath=ancestor::*[4]')");
+    expect(capability?.example).toContain("'.ant-modal-footer:visible'");
+    expect(capability?.example).toContain("'.ant-drawer-footer:visible'");
+    expect(capability?.example).toContain("'[class*=\"footer\"]:visible'");
+    expect(capability?.example).toContain("'[class*=\"action\"]:visible'");
+    expect(capability?.example).toContain("const matchCount = await matches.count().catch(() => 0);");
+    expect(capability?.example).toContain('Math.min(matchCount, 3)');
+    expect(capability?.example).toContain('candidateContainers.push(matches.nth(index));');
+    expect(capability?.example).toContain('const finalSubmitDeadline = Date.now() + 5000;');
+    expect(capability?.example).toContain('while (!finalSaveBtn && Date.now() < finalSubmitDeadline) {');
+    expect(capability?.example).toContain('for (const container of candidateContainers) {');
+    expect(capability?.example).toContain("const scopedFinalSaveBtn = container.getByRole('button', { name: /保\\s*存|提\\s*交|确\\s*定/i }).filter({ hasNotText: /保存并继续|上一步/ }).last();");
+    expect(capability?.example).toContain("await scopedFinalSaveBtn.count().catch(() => 0)");
+    expect(capability?.example).toContain("const exactSubmitBtn = page.getByRole('button', { name: /^提\\s*交$/ }).first();");
+    expect(capability?.example).toContain('await page.waitForTimeout(200);');
+    expect(capability?.example).toContain("if (!finalSaveBtn) throw new Error('未在末页容器内找到最终提交按钮');");
     expect(capability?.example).toContain('await finalSaveBtn.scrollIntoViewIfNeeded();');
     expect(capability?.example).toContain('await finalSaveBtn.click({ force: true });');
     expect(capability?.example).toContain('const createJson = await __e2e.readJsonResponse(await createResp);');
@@ -346,7 +408,8 @@ describe('intent-action-library', () => {
     expect(capability?.implementationNotes.join('\n')).toContain('当前步骤必填字段已经填写');
     expect(capability?.implementationNotes.join('\n')).toContain('多步表单 / Ant Tabs 的最终“保存 / 提交”不要直接对整页 `page.getByRole(...).first()`');
     expect(capability?.implementationNotes.join('\n')).toContain('如果当前 pane 内根本找不到这个最终主动作');
-    expect(capability?.implementationNotes.join('\n')).toContain('不要把 selector 锁死在 `.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible`');
+    expect(capability?.implementationNotes.join('\n')).toContain('candidateContainers');
+    expect(capability?.implementationNotes.join('\n')).toContain("page.getByRole('button', { name: /^提\\s*交$/ }).first()");
     expect(capability?.implementationNotes.join('\n')).toContain('click({ force: true })');
     expect(capability?.implementationNotes.join('\n')).toContain('helper 结束后先看当前 URL');
     expect(capability?.implementationNotes.join('\n')).toContain('不要立刻 `expect(variable).toBeTruthy()`');
@@ -403,6 +466,9 @@ describe('intent-action-library', () => {
     expect(capability?.implementationNotes.join('\n')).toContain('后面的 `Step 6 / Verification` 就不要再对同一主值第二次 `fill + 搜索`');
     expect(capability?.implementationNotes.join('\n')).toContain('hasTexts: [primaryValue], timeoutMs: 1200');
     expect(capability?.implementationNotes.join('\n')).toContain("__e2e.clickAntdRowAction(page, targetRow, '查看')");
+    expect(capability?.implementationNotes.join('\n')).toContain("waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000, required: false })");
+    expect(capability?.implementationNotes.join('\n')).toContain("waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false })");
+    expect(capability?.implementationNotes.join('\n')).toContain('状态证据缺失：列表行已命中，但“查看”后未出现可用详情弹层或详情页');
     expect(capability?.implementationNotes.join('\n')).toContain("else if (businessId) { await page.goto(...) } else { throw ... }");
     expect(capability?.implementationNotes.join('\n')).toContain('不要因为 row 已命中就默认假定存在“查看”行操作');
     expect(capability?.implementationNotes.join('\n')).toContain('不要在 row 已命中时直接抛“无法从列表响应或详情获取状态”');
@@ -429,7 +495,9 @@ describe('intent-action-library', () => {
     expect(capability?.example).toContain("else if (resolvedExpectedStatus) expect(resolvedExpectedStatus).toContain('新入库');");
     expect(capability?.example).toContain("else if (resolvedBusinessId) {");
     expect(capability?.example).toContain("await page.goto(`#/business/detail/${resolvedBusinessId}`, { waitUntil: 'domcontentloaded' });");
-    expect(capability?.example).toContain("const statusText = await __e2e.readDetailField(page, { label: '商机进展', required: false }) || await __e2e.readDetailField(page, { label: '状态', required: false });");
+    expect(capability?.example).toContain("const detailSurface = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false });");
+    expect(capability?.example).toContain("if (!detailSurface) throw new Error('详情页无效：detailUrl 未出现商机详情 surface');");
+    expect(capability?.example).toContain("const statusText = await __e2e.readDetailField(page, { label: '商机进展', scope: detailSurface, titleIncludes: '商机详情', required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailSurface, titleIncludes: '商机详情', required: false });");
     expect(capability?.example).toContain("throw new Error('状态证据缺失：列表行已命中，但列表响应和详情字段都未返回状态');");
     expect(capability?.example).toContain("throw new Error('状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口');");
     expect(capability?.example).not.toContain("await __e2e.clickAntdRowAction(page, recordCheck.row, '查看');");

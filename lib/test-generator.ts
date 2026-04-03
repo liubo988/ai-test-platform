@@ -34,6 +34,11 @@ import {
   type IntentExecutionRepairPatch,
   type IntentExecutionSlotPatch,
 } from './intent-execution-slot-patch';
+import {
+  resolveIntentE2EPriorityScenarioFamilyRoute,
+  type IntentE2EPriorityScenarioFamilyRoute,
+  type IntentE2EPriorityScenarioFamily,
+} from './intent-e2e-priority-scenario-family';
 import type {
   IntentExecutionBaseCodeSource,
   IntentExecutionStructuredPatch,
@@ -78,6 +83,7 @@ export interface GenerateTestContext {
   scenarioSummary?: string;
   expectedOutcome?: string;
   successCriteria?: string[];
+  visualAnchors?: string[];
   sharedVariables?: string[];
   cleanupNotes?: string;
   repairObservationSnapshot?: PageSnapshot;
@@ -139,6 +145,9 @@ export interface RepairGraderDiagnosis {
 
 export type RepairObservationProbeKind =
   | 'page_surface'
+  | 'surface_delta'
+  | 'list_json_evidence'
+  | 'detail_field_evidence'
   | 'anchor_presence'
   | 'candidate_anchor_presence'
   | 'frame_probe';
@@ -404,6 +413,8 @@ function applyAuthPlanningHintsToDsl(
 }
 
 export interface ResolvedPromptPlanningContext {
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily;
+  priorityScenarioFamilyRoute?: IntentE2EPriorityScenarioFamilyRoute;
   dsl: IntentActionDSL;
   knowledge: IntentProjectKnowledgeResolution;
   starterHelpers?: IntentResolvedStarterAsset[];
@@ -458,10 +469,31 @@ export function resolveIntentPromptPlanningContext(
     starterHelpers: options.starterHelpers,
   });
   const finalDsl = applyIntentStarterAssetsToDsl(knowledgeAppliedDsl, starterHelpers);
+  const priorityScenarioFamilyRoute = resolveIntentE2EPriorityScenarioFamilyRoute({
+    requestInput: description,
+    targetUrl: context?.scenarioEntryUrl || snapshot.url,
+    scenarioCard: {
+      title: context?.scenarioSummary || finalDsl.summary,
+      featureDescription: finalDsl.summary || description,
+      visualAnchors: context?.visualAnchors || [],
+      flowDefinition: {
+        steps: finalDsl.steps.map((step) => ({
+          title: step.title,
+          target: step.target,
+          instruction: step.goal,
+          expectedResult: step.requiredAssertions.join('；'),
+        })),
+      },
+    },
+    description: uniqueStrings([context?.scenarioSummary, context?.expectedOutcome, context?.cleanupNotes]).join('\n'),
+    visualAnchors: context?.visualAnchors,
+  });
+  const priorityScenarioFamily = priorityScenarioFamilyRoute.family;
   const recipes = selectIntentRecipeRegistry({
     dsl: finalDsl,
     auth: options.auth,
     snapshot,
+    priorityScenarioFamily,
     preferredCapabilitySlugs: [
       ...knowledge.capabilitySlugs,
       ...collectIntentStarterAssetCapabilitySlugs(starterHelpers),
@@ -500,6 +532,8 @@ export function resolveIntentPromptPlanningContext(
   );
 
   return {
+    priorityScenarioFamily,
+    priorityScenarioFamilyRoute,
     dsl: finalDsl,
     knowledge,
     starterHelpers,
@@ -661,6 +695,7 @@ function compilePlanningExecutionTemplate(
   if (!planning.executionPlan) return null;
 
   return compileIntentExecutionTemplate({
+    priorityScenarioFamily: planning.priorityScenarioFamily,
     executionPlan: planning.executionPlan,
     verificationPlan: planning.verificationPlan,
     auth,
@@ -1124,6 +1159,7 @@ function buildActionLibrarySection(
     dsl: planning.dsl,
     auth,
     snapshot,
+    priorityScenarioFamily: planning.priorityScenarioFamily,
     preferredCapabilitySlugs: [
       ...knowledge.capabilitySlugs,
       ...collectIntentStarterAssetCapabilitySlugs(planning.starterHelpers || []),
@@ -1845,8 +1881,11 @@ ${report.probes
 
 使用边界：
 1. 只能基于以上受控观察结果修补 locator、frame 进入方式、helper 选择和断言，不要臆造未观察到的新 DOM 契约。
-2. 如果 \`anchor_presence\` / \`candidate_anchor_presence\` 都显示 \`not_found\`，优先暴露真实漂移或回退到候选锚点，而不是虚构成功路径。
-3. 如果 \`frame_probe\` 显示存在 frame 线索，优先确认是否缺少 \`__e2e.getFrame(...)\` 或 frame 内定位。`;
+2. 如果 \`surface_delta\` 已明确提示新增 / 消失的 surface，优先沿这些真实变化修补页面切换、入口控件和断言锚点，不要继续死守旧页面的 locator。
+3. 如果 \`list_json_evidence\` 已显示上一轮拿到过列表 JSON、record match 或字段值，优先复用这些路径和 label 修补回查链，不要再发明第二套模糊搜索。
+4. 如果 \`detail_field_evidence\` 已显示上一轮读到过详情字段，优先沿相同 label / matchedLabel / value preview 修补详情断言，不要把字段名改写成新的近义词。
+5. 如果 \`anchor_presence\` / \`candidate_anchor_presence\` 都显示 \`not_found\`，优先暴露真实漂移或回退到候选锚点，而不是虚构成功路径。
+6. 如果 \`frame_probe\` 显示存在 frame 线索，优先确认是否缺少 \`__e2e.getFrame(...)\` 或 frame 内定位。`;
 }
 
 export function buildPrompt(
@@ -1926,6 +1965,7 @@ export function buildPrompt(
    - helper 返回后，不要再补 \`.ant-tabs-tab-active\` / \`.ant-radio-button-wrapper-checked\` / \`.ant-select-selection-selected-value\` 这类 active-locator 断言，也不要再对整页 \`getByText('我创建的')\` 写 \`toBeVisible()\`；helper 成功本身就说明归属切换已收敛。
    - 如果还需要辅助收敛证据，只允许检查当前 URL 已回列表、可见搜索框 / 列表 ready，或直接进入后续搜索 / 回查；不要把“选中态 class 可见”当成业务成功标准。
    - 只有脚本已经先确认当前不是目标视角、且这次切换请求本身就是必须消费的证据时，才允许在 helper 前注册 wait promise；更稳妥的是把后续搜索/回查接口当成最终列表证据。`);
+  parts.push(`9.1 如果当前步骤只是“进入商机列表页并确认页面就绪”，不要直接写 \`await expect(page.getByText('我创建的').first()).toBeVisible(...)\`。优先用 \`page.getByRole('button', { name: '新建商机' }).first()\`、\`page.locator('input#businessList_keywords:visible').first()\` 或列表容器确认 surface ready；真正的“我创建的 / 我跟进的”视角切换留给 \`__e2e.switchBusinessListOwnershipView(...)\` 所在步骤。`);
   parts.push(`10. 对标题会拼接实体名称的 Ant Design 弹框，优先直接写：
    - const modal = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '服务分佣配置' });
    - 然后在 \`modal\` 内断言标题后缀、表单行和保存按钮；不要对完整标题做精确匹配。`);
@@ -1943,7 +1983,7 @@ export function buildPrompt(
    - 如果成功结果落在 Ant Design 列表里，不要把 \`successLocator\` 写成裸 \`tbody tr\` 过滤；先让 helper 收敛页面，再用 \`__e2e.findAntdTableRow\` 做最终行断言。
    - 如果按主键检索后的 \`findAntdTableRow\` 仍未命中，不要无限重试表格文本匹配；优先读取列表搜索响应里的目标记录，或直接跳详情页 / 详情抽屉做终态断言。
    - 如果提交后“可能自动回列表，也可能仍停留当前页再由脚本手动返回”，\`urlIncludes\` 只能当辅助观察；helper 后仍要显式检查当前 URL，不匹配时再走 breadcrumb / \`page.goto(...)\` 回退，再继续做“我创建的 / 我跟进的”归属切换和列表回查。`);
-  parts.push(`11.1 对多步表单 / Ant Tabs 最后一页的“保存 / 提交”，不要直接写 \`page.getByRole('button', { name: /保\\s*存|提\\s*交/i }).first()\`，更不要把最终主动作固化成 \`getByRole('button', { name: /^保\\s*存$/ }).first()\`。必须先收窄到当前可见 \`.ant-tabs-tabpane-active\` / 当前步骤容器 / 当前 Modal / Drawer 内，先尝试定位 \`/保\\s*存|提\\s*交|确\\s*定/i\` 的最后一个主动作；如果当前 pane 内根本找不到这个最终主动作，就回退到更稳的页面级可见主动作链，并继续排除 \`保存并继续\` / \`上一步\`，不要把 selector 锁死在 \`.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible\` 这类单一路径；命中后再 \`scrollIntoViewIfNeeded()\`。如果点击日志已经是 \`subtree intercepts pointer events\`，只允许对这个已收窄的按钮使用 \`click({ force: true })\`，不要对整页模糊按钮直接 force，也不要把 \`保存并继续\` 误当成最终提交。`);
+  parts.push(`11.1 对多步表单 / Ant Tabs 最后一页的“保存 / 提交”，不要直接写 \`page.getByRole('button', { name: /保\\s*存|提\\s*交/i }).first()\`，更不要把最终主动作固化成 \`getByRole('button', { name: /^保\\s*存$/ }).first()\`。必须先收窄到当前可见 \`.ant-tabs-tabpane-active\` / 当前步骤容器 / 当前 Modal / Drawer 内，先尝试定位 \`/保\\s*存|提\\s*交|确\\s*定/i\` 的最后一个主动作；如果当前 pane 内根本找不到这个最终主动作，不要立刻退化成整页 \`page.getByRole(...).last()\`，而是改成准备少量 \`candidateContainers\`，至少覆盖末页锚点附近容器、\`attachmentAnchor\` 的祖先链、当前可见 tabpane / form，以及可见 footer/action-bar 容器，并继续排除 \`保存并继续\` / \`上一步\`。footer/action-bar 这类 selector 不要统一写成 \`.first()\`；每类 selector 至少枚举前 2-3 个可见命中，依次 push 进 \`candidateContainers\`。如果这些 scoped 容器都 miss，但 \`attachmentAnchor\` 已可见，只允许额外尝试一次更窄的 \`page.getByRole('button', { name: /^提\\s*交$/ }).first()\`；不要把 selector 锁死在 \`.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible\` 这类单一路径。\`attachmentAnchor\` 刚 visible 时底部 action bar 可能还在异步挂载，不要只跑一轮 \`count()\` 就立刻 throw；给 scoped candidate scan + exact submit fallback 一个 3-5 秒的短时轮询窗口（例如每 200ms 重试一次），命中后再 \`scrollIntoViewIfNeeded()\`。如果点击日志已经是 \`subtree intercepts pointer events\`，只允许对这个已收窄的按钮使用 \`click({ force: true })\`，不要对整页模糊按钮直接 force，也不要把 \`保存并继续\` 误当成最终提交。`);
   parts.push(`12. 对接口 JSON 里的共享变量/主键提取，优先直接复用：
    - const createJson = await __e2e.readJsonResponse(await createResp);
    - const businessId = __e2e.pickJsonValue(createJson, { label: 'businessId', paths: ${renderJsStringArray(BUSINESS_ID_JSON_PATHS)} });
@@ -1981,7 +2021,9 @@ export function buildPrompt(
   parts.push(`13.3 如果 \`VerificationPlan\` / 固定骨架已经给出 \`recordLookup.detailEntry\`，必须优先沿用这条结构化详情入口，而不是自由手写“点查看再猜容器”：
    - 例如 \`detailEntry{ trigger=row_action; actionLabel=查看; target=drawer_or_modal }\`
    - 先命中目标行，再写 \`await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')\`
-   - 若 target 是 \`drawer_or_modal\`，立刻等待 \`__e2e.waitForVisibleAntdModal(...)\`，并把返回容器继续传给 \`__e2e.readDetailField(...)\`
+   - 若 target 是 \`drawer_or_modal\` 且详情标题已知，先写 \`let detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000, required: false })\`
+   - modal miss 后再写 \`detailScope = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false })\`
+   - 两者都 miss 时直接 \`throw new Error('状态证据缺失：列表行已命中，但“查看”后未出现可用详情弹层或详情页')\`，再把 \`detailScope\` 继续传给 \`__e2e.readDetailField(...)\`
    - 若 target 是 \`page\`，优先等待 \`detailReadyLocator\` 或 URL ready 后再读字段
    - 不要改写成整页 \`page.getByText('查看').click()\`，也不要点击后再去猜当前可见容器。`);
   parts.push(`14. 对详情页 / 详情抽屉字段验收，优先直接复用：
@@ -2017,14 +2059,14 @@ export function buildPrompt(
    - if (fallbackExpectedStatus) expect(String(fallbackExpectedStatus)).toContain('新入库');
    - 如果 fallback 行已经命中、但当前结构化来源只是宽泛的 \`listResponse: { urlIncludes: '/business', method: 'GET' }\`，不要把这次响应当成唯一结构化状态来源；先补 \`const rowKey = ((await recordCheck.row.getAttribute('data-row-key')) || '').trim()\`，再从已命中 \`rowText\` 里保守提取 \`const derivedBusinessId = shared.businessId || ((/^[A-Za-z0-9_-]{6,64}$/.test(rowKey) && !/^1\\d{10}$/.test(rowKey)) ? rowKey : '') || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')\`
    - 如果 recent events 已经出现 \`json record not found -> /business/detail/:id -> Cannot read properties of null (reading 'forEach')\`，说明详情页自身可能不稳；这时要先走上面的 \`derivedBusinessId -> pickJsonRecord(...paths=['businessId','id'])\` 回填，不要立刻再次开详情
-   - 如果 \`derivedBusinessId\` 非空，优先继续 \`await page.goto(\`#/business/detail/\${derivedBusinessId}\`, { waitUntil: 'domcontentloaded' })\`，然后按当前商机 family 先读 \`const detailStatus = await __e2e.readDetailField(page, { label: '商机进展', required: false }) || await __e2e.readDetailField(page, { label: '状态', required: false })\`；只有 \`derivedBusinessId\` 也为空时，才保留“未提供详情入口”的错误收口
-   - 如果 fallback 行已命中、列表响应也还没有状态，不要写 \`else if (shared.businessId) { await page.goto(...) } else { throw ... }\` 这类分支；若 \`recordLookup.detailEntry\` / 已知“查看”动作 / 详情标题可用，优先直接对 \`recordCheck.row\` 执行 \`await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')\`，随后等待 \`__e2e.waitForVisibleAntdModal(...)\` 或现成 \`detailReadyLocator\`，再读 \`状态\`。
-   - 可直接收敛成这类骨架：\`await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')\` -> \`const detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000 })\` -> \`const statusText = await __e2e.readDetailField(page, { label: '商机进展', scope: detailScope, titleIncludes: '商机详情', required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailScope, titleIncludes: '商机详情', required: false })\`\n   - 若 \`statusText\` 仍为空，再抛出“状态证据缺失：列表行已命中，但列表响应、详情抽屉与详情页都未返回状态”；不要在 row 已命中时直接 \`throw new Error('状态证据缺失：列表行已命中，但无法从列表响应或详情获取状态')\`。
+   - 如果 \`derivedBusinessId\` 非空，优先继续 \`await page.goto(\`#/business/detail/\${derivedBusinessId}\`, { waitUntil: 'domcontentloaded' })\`；若当前链路已经给出 \`detailSurface.titleIncludes\` / 详情标题（如 \`商机详情\`），不要在 \`goto\` 后直接 \`readDetailField(...)\`，而是先写 \`const detailSurface = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false })\`\n   - 并在 \`!detailSurface\` 时直接 \`throw new Error('详情页无效：detailUrl 未出现商机详情 surface')\`\n   - 只有 \`detailSurface\` 已拿到时，才继续 \`const detailStatus = await __e2e.readDetailField(page, { label: '商机进展', scope: detailSurface, titleIncludes: '商机详情', required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailSurface, titleIncludes: '商机详情', required: false })\`\n   - 若当前链路没有 \`detailSurface.titleIncludes\`、但有稳定 \`detailReadyLocator\`，也应先等待 ready 再读字段；不要在明显错误页上裸读状态。只有 \`derivedBusinessId\` 也为空时，才保留“未提供详情入口”的错误收口
+   - 如果 fallback 行已命中、列表响应也还没有状态，不要写 \`else if (shared.businessId) { await page.goto(...) } else { throw ... }\` 这类分支；若 \`recordLookup.detailEntry\` / 已知“查看”动作 / 详情标题可用，优先直接对 \`recordCheck.row\` 执行 \`await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')\`，随后先 \`waitForVisibleAntdModal(... required:false)\`，modal miss 后再 \`waitForVisibleDetailSurface(... required:false)\`，再读 \`状态\`。
+   - 可直接收敛成这类骨架：\`await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')\` -> \`let detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000, required: false })\` -> \`if (!detailScope) { detailScope = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false }); }\` -> \`if (!detailScope) throw new Error('状态证据缺失：列表行已命中，但“查看”后未出现可用详情弹层或详情页')\` -> \`const statusText = await __e2e.readDetailField(page, { label: '商机进展', scope: detailScope, titleIncludes: '商机详情', required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailScope, titleIncludes: '商机详情', required: false })\`\n   - 若 \`statusText\` 仍为空，再抛出“状态证据缺失：列表行已命中，但列表响应、详情抽屉与详情页都未返回状态”；不要在 row 已命中时直接 \`throw new Error('状态证据缺失：列表行已命中，但无法从列表响应或详情获取状态')\`。
    - 如果当前链路没有 \`detailEntry / actionLabel / 详情标题 / detailReadyLocator\`，不要擅自写 \`await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')\`；\`businessId\` 非空时可优先走 \`detailUrl\`，为空时则保留 row 作为身份证据，结构化列表响应仍然拿不到状态就直接抛出“状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口”。
    - 只有当 fallback 行文本、fallback 列表响应、详情字段三处都拿不到状态时，才允许抛出“状态证据缺失”错误。`);
   parts.push(`15.2 如果列表行已经命中、列表响应里也拿不到状态，而当前页面还停留在列表页，不要直接在裸列表页上调用 \`__e2e.readDetailField(page, { label: '状态' })\` 然后判空：
-   - 如果当前链路已经有稳定 \`detailUrl\` / \`detailReadyLocator\`，优先直接沿用这条详情页链：\`await page.goto(detailUrl, { waitUntil: 'domcontentloaded' })\` 或等待现成的详情页 ready 锚点，然后按当前商机 family 先读 \`__e2e.readDetailField(page, { label: '商机进展', required: false })\`，再回退 \`__e2e.readDetailField(page, { label: '状态', required: false })\`
-   - 只有当没有稳定 \`detailUrl\`，且 \`recordLookup.detailEntry\` 明确指向 \`drawer_or_modal\` 或项目里已知详情标题时，才把命中的目标行当作详情入口，写 \`await __e2e.clickAntdRowAction(page, targetRow, '查看')\` + \`await __e2e.waitForVisibleAntdModal(...)\`
+   - 如果当前链路已经有稳定 \`detailUrl\` / \`detailReadyLocator\`，优先直接沿用这条详情页链：\`await page.goto(detailUrl, { waitUntil: 'domcontentloaded' })\` 或等待现成的详情页 ready 锚点。若当前链路已经给出 \`detailSurface.titleIncludes\` / 详情标题（如 \`商机详情\`），不要在 \`goto\` 后直接 \`readDetailField(...)\`，而是先写 \`const detailSurface = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false })\`，并在 \`!detailSurface\` 时直接 \`throw new Error('详情页无效：detailUrl 未出现商机详情 surface')\`\n   - 只有 \`detailSurface\` 已拿到时，才继续 \`__e2e.readDetailField(page, { label: '商机进展', scope: detailSurface, titleIncludes: '商机详情', required: false })\`，再回退 \`__e2e.readDetailField(page, { label: '状态', scope: detailSurface, titleIncludes: '商机详情', required: false })\`；不要退化成裸 page-scope 读取
+   - 只有当没有稳定 \`detailUrl\`，且 \`recordLookup.detailEntry\` 明确指向 \`drawer_or_modal\` 或项目里已知详情标题时，才把命中的目标行当作详情入口，写 \`await __e2e.clickAntdRowAction(page, targetRow, '查看')\` + \`waitForVisibleAntdModal(... required:false) -> waitForVisibleDetailSurface(... required:false)\`
    - 即使 \`businessId\` 为空，只要 \`recordCheck.mode === 'table_row'\` 且 \`recordCheck.row\` 已命中，也不要直接 \`else { throw new Error('状态证据缺失...') }\`；优先继续沿用这条 \`row -> detailEntry / detailReadyLocator\` 回退链，不要在已经跳过详情页后又回到列表抛“未提供详情入口”。
    - 如果确实拿到了详情弹层容器，再写 \`const statusText = await __e2e.readDetailField(page, { label: '商机进展', scope: detailScope, required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailScope, required: false })\`
    - 如果详情抽屉/详情页仍然没有状态字段，再抛出“状态证据缺失”；不要在列表页裸读字段后直接失败。`);
@@ -2039,6 +2081,10 @@ export function buildPrompt(
     parts.push(`\n## 创建商机向导锚点规则
 1. 进入 \`#/business/createbusiness\` 后，不要写 \`await expect(page.getByText('创建商机').first()).toBeVisible()\`；页面里可能同时存在隐藏统计文案“本月创建商机”，\`.first()\` 很容易命中隐藏节点。
 2. 第一页优先断言 \`page.getByRole('heading', { name: '商机联系人信息' }).first()\`、\`page.getByText('请填写正确的商机联系人信息').first()\` 或 \`label[title="商机来源"]\`，不要把裸“创建商机”文本当成唯一入口锚点。
+2.1 如果第一页 ready 阶段需要容纳多个候选锚点，不要写 \`await expect(contactStepHeading.or(sourceLabel)).toBeVisible(...)\`；Playwright strict mode 在两个锚点同时可见时会直接失败。
+   - 更稳的写法是先选一个主锚点，例如 \`const contactStepHeading = page.getByRole('heading', { name: '商机联系人信息' }).first()\`；若它不可见，再单独断言 \`const sourceLabel = page.locator('label[title="商机来源"]').first()\` 或第一页联系人/手机号字段。
+   - 需要显式回退时，可先 \`const headingVisible = await contactStepHeading.isVisible().catch(() => false)\`，再按顺序分支；不要把多个 locator 合成一个 union locator。
+   - 也不要在删掉 \`.or()\` 之后，又立刻把主锚点和备用锚点都写成必须同时成立的 \`toBeVisible()\`。
 3. 第二/第三页优先断言当前步骤专属锚点，如“关联产品意向信息”“附件信息”“上传录音文件”“上传图片”，不要反复回到裸“创建商机”文本。
 4. \`请填写正确的商机联系人信息\` 这类文案通常是第一页静态步骤说明，只能作为“已经进入当前步骤”的正向锚点；不要在填写后或翻页后写“它应该消失”的负断言，也不要对 \`.ant-form-item-explain-error\` / \`.ant-form-explain\` 直接做 \`toHaveCount(0)\`。
 5. 第三页提交后，如果 URL 已回到 \`#/business/businesslist\`、关键提交响应成功，或列表里已能检索到新记录，就不要把 toast 作为唯一成功条件。
@@ -2053,6 +2099,14 @@ export function buildPrompt(
    - 先用 \`附件信息 / 上传录音文件 / 上传图片\` 这些末页锚点确认当前真的在最后一步
    - 再只在当前可见步骤容器内定位 \`/保\\s*存|提\\s*交|确\\s*定/i\` 的最后一个按钮
    - 不要把 \`保存并继续\` / \`上一步\` 当成最终提交，也不要在未确认已到附件页前就直接找最终按钮
+8.3 如果当前 pane 内没有命中最终按钮，不要把 fallback 直接退化成 \`page.getByRole('button', { name: /^(?!.*保存并继续)(?!.*上一步).*(保\\s*存|提\\s*交|确\\s*定).*$/i }).last()\`：
+   - 先继续复用 \`附件信息 / 上传录音文件 / 上传图片\` 这些末页锚点，准备少量 \`candidateContainers\`
+   - 不要只试一个最近祖先；\`candidateContainers\` 至少补上 \`attachmentAnchor\` 的前 3-4 层可见祖先链，以及可见 \`footer / action-bar\` 容器
+   - 按末页锚点附近容器 / \`attachmentAnchor\` 祖先链 / 当前可见 tabpane / 当前可见 form / 当前 modal|drawer / 可见 footer-action bar 的顺序逐个尝试 scoped locator
+   - footer/action-bar 这类 selector 不要统一写成 \`.first()\`；每类 selector 至少枚举前 2-3 个可见命中，依次 push 进 \`candidateContainers\`
+   - 如果这些 scoped 容器都 miss，但 \`attachmentAnchor\` 已可见，可额外尝试一次更窄的 page-level exact submit fallback：\`page.getByRole('button', { name: /^提\\s*交$/ }).first()\`；不要重新放宽成整页 \`/保\\s*存|提\\s*交|确\\s*定/\` regex + \`.last()\`
+   - \`attachmentAnchor\` 刚 visible 时底部 action bar 可能还没挂稳，不要只跑一轮 \`count()\` 就立刻 throw；给 scoped candidate scan + exact submit fallback 一个 3-5 秒的短时轮询窗口（例如每 200ms 重试一次）
+   - 只要某个 scoped locator \`count() > 0\` 就停在该容器，命中后再 \`scrollIntoViewIfNeeded()\` / \`click({ force: true })\`；不要对整页 regex + \`.last()\` 盲等 30 秒
 9. 第三页提交响应如果返回 \`businessId\` / \`id\` / \`data.id\`，必须立刻提取并保存。优先写 \`const createJson = await __e2e.readJsonResponse(await createResp)\` 再用 \`__e2e.pickJsonValue(createJson, { label: 'businessId', paths: ${renderJsStringArray(BUSINESS_ID_JSON_PATHS)} })\` 提取。回到列表校验时，优先使用 \`page.locator('input#businessList_keywords:visible').first()\` 按 \`businessId\` 检索，并等待列表查询接口完成，再用 \`await __e2e.findAntdTableRow(page, { hasTexts: [businessId, '新入库'] })\` 定位。
 9.1 不论是按 \`businessId\` 还是按 fallback 手机号回查，切到“我创建的”后都不要看到搜索框就立刻填值；先短超时检查当前可见列表是否已经出现目标行，例如：
    - \`const currentVisibleRow = primaryValue ? await (async () => { try { return await __e2e.findAntdTableRow(page, { hasTexts: [primaryValue], timeoutMs: 1200 }); } catch { return null; } })() : null;\`
@@ -2189,7 +2243,7 @@ await __e2e.ensureLoggedIn(page, { targetUrl: TARGET_URL });
 20. 如果列表目标动作收在行尾三点菜单 / \`.ant-dropdown-trigger\` 里，优先复用执行环境内置的 \`__e2e.clickAntdRowAction(page, targetRow, '动作名')\`，不要臆造行内可见按钮
 21. 禁止写 \`page.getByText(/成功/i).first()\` 这类宽泛成功断言；应优先等待具体 toast/弹窗标题、目标 Drawer/Modal 消失、接口响应成功或业务状态字段发生变化
 21.1 中间步骤的“保存并继续 / 下一步”如果只是切到下一块表单且接口并不明确，禁止发明宽泛的 \`waitForApiResponse({ urlIncludes: '/business', method: 'POST' })\`；优先等待下一块表单标题或字段出现
-21.2 对多步表单 / Ant Tabs 最后一页的“保存 / 提交”，禁止直接写 \`page.getByRole('button', { name: /保\\s*存|提\\s*交/i }).first()\`，也禁止把最终主动作写死成 \`getByRole('button', { name: /^保\\s*存$/ }).first()\`；必须先 scope 到当前可见 \`.ant-tabs-tabpane-active\` / 当前步骤容器，先尝试定位 \`/保\\s*存|提\\s*交|确\\s*定/i\` 的最后一个主动作；如果当前 pane 内根本找不到这个最终主动作，就回退到更稳的页面级可见主动作链，并继续排除 \`保存并继续\` / \`上一步\`，不要把 selector 锁死在 \`.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible\` 这类单一路径；命中后再 \`scrollIntoViewIfNeeded()\`。如果仍是 \`subtree intercepts pointer events\` 才允许对这个 scoped button 使用 \`click({ force: true })\`，同时不要把 \`保存并继续\` 误当最终提交
+21.2 对多步表单 / Ant Tabs 最后一页的“保存 / 提交”，禁止直接写 \`page.getByRole('button', { name: /保\\s*存|提\\s*交/i }).first()\`，也禁止把最终主动作写死成 \`getByRole('button', { name: /^保\\s*存$/ }).first()\`；必须先 scope 到当前可见 \`.ant-tabs-tabpane-active\` / 当前步骤容器，先尝试定位 \`/保\\s*存|提\\s*交|确\\s*定/i\` 的最后一个主动作；如果当前 pane 内根本找不到这个最终主动作，不要立刻退化成整页 \`page.getByRole(...).last()\`，而是改成准备少量 \`candidateContainers\`，至少覆盖末页锚点附近容器、\`attachmentAnchor\` 祖先链、当前可见 tabpane / form，以及可见 footer/action-bar 容器，并继续排除 \`保存并继续\` / \`上一步\`。footer/action-bar 这类 selector 不要统一写成 \`.first()\`；每类 selector 至少枚举前 2-3 个可见命中，依次 push 进 \`candidateContainers\`。如果这些 scoped 容器都 miss，但 \`attachmentAnchor\` 已可见，只允许额外尝试一次更窄的 \`page.getByRole('button', { name: /^提\\s*交$/ }).first()\`；不要把 selector 锁死在 \`.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible\` 这类单一路径。\`attachmentAnchor\` 刚 visible 时底部 action bar 可能还没挂稳，不要只跑一轮 \`count()\` 就立刻 throw；给 scoped candidate scan + exact submit fallback 一个 3-5 秒的短时轮询窗口（例如每 200ms 重试一次），命中后再 \`scrollIntoViewIfNeeded()\`。如果仍是 \`subtree intercepts pointer events\` 才允许对这个 scoped button 使用 \`click({ force: true })\`，同时不要把 \`保存并继续\` 误当最终提交
 22. 对播放录音 / 预览媒体 / 打开详情 / 下载文件这类触发型动作，优先等待业务响应成功、资源 URL 返回或对应容器出现；禁止使用 \`Promise.race([...catch(() => false)])\` 这类会把较早失败误判成整体失败的写法
 23. 有统一登录信息时，优先使用执行环境内置的 \`__e2e.ensureLoggedIn(page, { targetUrl: TARGET_URL })\` 或 \`__e2e.loginWithEnvAuth(page)\`；不要重复手写 \`page.goto(LOGIN_URL)\` 并猜登录页 DOM
 24. 如果当前页已经是登录页，禁止再额外跳一次 \`LOGIN_URL\` 根地址；那可能把页面从真实登录页跳回首页壳，导致后续手机号/验证码输入框全部消失
@@ -2199,7 +2253,8 @@ await __e2e.ensureLoggedIn(page, { targetUrl: TARGET_URL });
 28. 不要删除 \`SLOT_START / SLOT_END\` 标记，也不要新增第二个 \`test(...)\`；最终脚本只能有一个主测试用例
 29. 最终代码不得残留任何 \`__PLAN_SLOT_\` 占位符；如果某个 slot 无法确定实现，应在该 slot 内抛出带原因的业务错误，而不是保留模板占位实现
 30. 除非任务描述或 cleanupNotes 明确要求恢复现场，否则不要在脚本尾部自动把刚修改的业务数据改回去
-31. 如果 \`VerificationPlan\` 或固定骨架已经给出 \`recordLookup.detailEntry\`，必须保留这条详情入口链：命中目标行 -> \`__e2e.clickAntdRowAction(...)\` -> \`__e2e.waitForVisibleAntdModal(...)\` / \`detailReadyLocator\` -> \`__e2e.readDetailField(...)\`。禁止改写成全局点击“查看”或点击后再猜容器。`);
+31. 如果 \`VerificationPlan\` 或固定骨架已经给出 \`recordLookup.detailEntry\`，必须保留这条详情入口链：命中目标行 -> \`__e2e.clickAntdRowAction(...)\` -> 若 target=\`drawer_or_modal\` 且标题已知则先 \`__e2e.waitForVisibleAntdModal(... required:false)\`、再 \`__e2e.waitForVisibleDetailSurface(... required:false)\` -> \`__e2e.readDetailField(...)\`。禁止改写成全局点击“查看”或点击后再猜容器。
+31.1 如果当前链路已经有稳定 \`detailUrl\`，且同时给出了 \`detailSurface.titleIncludes\` / 详情标题（如 \`商机详情\`），第一次 \`readDetailField(...)\` 前必须先写 \`const detailSurface = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false })\`；若未出现有效 surface，直接 \`throw new Error('详情页无效：detailUrl 未出现商机详情 surface')\`，不要把错误页继续当正常详情页去读字段。`);
 
   return parts.join('\n');
 }
@@ -2318,7 +2373,26 @@ export function buildRepairPrompt(
     /保\\\\s\*存\|提\\\\s\*交\|确\\\\s\*定/.test(`${repair.executionError}\n${repair.previousCode}`)
   ) {
     diagnosisHints.push(
-      "这次不是最终按钮文案还不够宽，而是你把定位链锁死在 `.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible` 这个当前 pane selector 上了。修复时仍先优先看当前可见步骤容器；但如果 scoped locator `count() === 0` 或该 pane 里根本找不到 `/保\\s*存|提\\s*交|确\\s*定/i` 的最终主动作，就立刻回退到更稳的页面级可见主动作链，并继续排除 `保存并继续` / `上一步`；不要继续只对这个单一 pane 做 `scrollIntoViewIfNeeded()` 直到超时。"
+      "这次不是最终按钮文案还不够宽，而是你把定位链锁死在 `.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible` 这个当前 pane selector 上了。修复时仍先优先看当前可见步骤容器；但如果 scoped locator `count() === 0` 或该 pane 里根本找不到 `/保\\s*存|提\\s*交|确\\s*定/i` 的最终主动作，就立刻切到更稳的 `candidateContainers` 链，至少补上末页锚点附近容器、`attachmentAnchor` 祖先链和可见 footer/action-bar 容器，逐个尝试 scoped locator，并继续排除 `保存并继续` / `上一步`；不要继续只对这个单一 pane 做 `scrollIntoViewIfNeeded()` 直到超时。"
+    );
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /scrollIntoViewIfNeeded|locator not found|toBeVisible/i.test(repair.executionError) &&
+    /page\.getByRole\('button', \{ name: \/[\s\S]*保存并继续[\s\S]*上一步[\s\S]*保\\\\s\*存\|提\\\\s\*交\|确\\\\s\*定[\s\S]*\/i \}\)\.last\(\)/.test(
+      `${repair.executionError}\n${repair.previousCode}`
+    )
+  ) {
+    diagnosisHints.push(
+      "这次不是最终按钮文案还不够宽，而是 fallback 已经退化成整页 page-level regex + `.last()` 盲等了。修复时不要继续写 `page.getByRole('button', { name: /^(?!.*保存并继续)(?!.*上一步).*(保\\s*存|提\\s*交|确\\s*定).*$/i }).last()`；先用 `附件信息 / 上传录音文件 / 上传图片` 确认末页，再准备少量 `candidateContainers`，按末页锚点附近容器 / 当前可见 tabpane / 当前可见 form / 当前 modal|drawer 的顺序逐个尝试 scoped locator。footer/action-bar 这类 selector 不要统一写成 `.first()`；每类 selector 至少枚举前 2-3 个可见命中。`attachmentAnchor` 刚 visible 时底部 action bar 可能还没挂稳，不要只跑一轮 `count()` 就立刻 throw；给 scoped candidate scan + exact submit fallback 一个 3-5 秒的短时轮询窗口（例如每 200ms 重试一次）。只要某个 scoped locator `count() > 0` 就停在该容器，命中后再 `scrollIntoViewIfNeeded()` / `click({ force: true })`；不要继续对整页 regex + `.last()` 盲等 30 秒。"
+    );
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /未在末页容器内找到最终提交按钮/.test(repair.executionError)
+  ) {
+    diagnosisHints.push(
+      "这次不是末页锚点没出现，而是当前 `candidateContainers` 还太浅，或在 `attachmentAnchor` 刚 visible 后就只跑了一轮 `count()`，把稍晚挂出来的底部 action bar 也误判成 miss。修复时不要继续保留单个 `attachmentAnchor.locator('xpath=ancestor::*[...] [1]')` 后直接 throw；先扩出 `attachmentAnchor` 的前 3-4 层可见祖先链，再补 `.ant-modal-footer:visible` / `.ant-drawer-footer:visible` / `[class*=\"footer\"]:visible` / `[class*=\"action\"]:visible` 这类可见容器。footer/action-bar 这类 selector 不要统一写成 `.first()`；每类 selector 至少枚举前 2-3 个可见命中，逐个尝试 scoped final submit button。若这些 scoped 容器都 miss，但 `attachmentAnchor` 已可见，再额外试一次更窄的 `page.getByRole('button', { name: /^提\\s*交$/ }).first()`；不要重新放宽成整页 `/保\\s*存|提\\s*交|确\\s*定/` regex + `.last()`。同时给这轮 scoped candidate scan + exact submit fallback 一个 3-5 秒的短时轮询窗口（例如每 200ms 重试一次）；只有轮询窗口内这些都 miss 后，才允许抛 `未在末页容器内找到最终提交按钮`。"
     );
   }
   if (
@@ -2343,22 +2417,28 @@ export function buildRepairPrompt(
   }
   if (
     looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /未找到可见弹框: titleIncludes=商机详情/.test(repair.executionError)
+  ) {
+    diagnosisHints.push(`这次不是“查看”动作没点到，而是详情面 ready 假设过严：脚本把 \`商机详情\` 写成了必须命中的 modal 标题。修复时不要继续保留 \`const detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000 })\` 这种 strict wait；若当前链路已经明确给出 \`detailEntry{ trigger=row_action; actionLabel=查看; target=drawer_or_modal }\` 或详情标题，改成 \`let detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000, required: false }); if (!detailScope) { detailScope = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false }); } if (!detailScope) throw new Error('状态证据缺失：列表行已命中，但“查看”后未出现可用详情弹层或详情页');\`。只有拿到 \`detailScope\` 后，才继续 \`__e2e.readDetailField(...)\` 读取 \`商机进展 / 状态\`。`);
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
     /状态证据缺失：列表行已命中，但列表响应和详情字段都未返回状态/.test(repair.executionError)
   ) {
-    diagnosisHints.push(`这次不是列表行没命中，而是你已经命中了目标行、也读过列表响应，但还没有真正进入详情面就直接把 \`readDetailField(page, { label: '状态' })\` 判空了。修复时不要继续在裸列表页上读状态；若当前链路已经有稳定 \`detailUrl\` / \`detailReadyLocator\`，优先直接沿用这条详情页链，先 \`await page.goto(detailUrl, { waitUntil: 'domcontentloaded' })\` 或等待详情页 ready，再优先用 \`__e2e.readDetailField(page, { label: '商机进展', required: false })\`，然后回退 \`__e2e.readDetailField(page, { label: '状态', required: false })\` 读取状态。只有当没有稳定 \`detailUrl\`、且 \`detailEntry\` 明确指向 \`drawer_or_modal\` 或项目里已知详情标题时，才对命中的 \`targetRow / recordCheck.row\` 执行 \`await __e2e.clickAntdRowAction(page, targetRow, '查看')\`，随后等待 \`__e2e.waitForVisibleAntdModal(...)\` 并把容器传给 \`__e2e.readDetailField(...)\`。只有详情抽屉/详情页里仍然没有状态字段时，才允许抛出“状态证据缺失”错误。`);
+    diagnosisHints.push(`这次不是列表行没命中，而是你已经命中了目标行、也读过列表响应，但还没有真正进入有效详情面就直接把 \`readDetailField(page, { label: '状态' })\` 判空了。修复时不要继续在裸列表页上读状态；若当前链路已经有稳定 \`detailUrl\` / \`detailReadyLocator\`，优先直接沿用这条详情页链，先 \`await page.goto(detailUrl, { waitUntil: 'domcontentloaded' })\` 或等待详情页 ready。若当前链路已经给出 \`detailSurface.titleIncludes\` / 详情标题（如 \`商机详情\`），不要在 \`goto\` 后直接 \`readDetailField(...)\`，而是先写 \`const detailSurface = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false }); if (!detailSurface) throw new Error('详情页无效：detailUrl 未出现商机详情 surface');\`，随后再用 \`__e2e.readDetailField(page, { label: '商机进展', scope: detailSurface, titleIncludes: '商机详情', required: false })\`，然后回退 \`__e2e.readDetailField(page, { label: '状态', scope: detailSurface, titleIncludes: '商机详情', required: false })\` 读取状态。只有当没有稳定 \`detailUrl\`、且 \`detailEntry\` 明确指向 \`drawer_or_modal\` 或项目里已知详情标题时，才对命中的 \`targetRow / recordCheck.row\` 执行 \`await __e2e.clickAntdRowAction(page, targetRow, '查看')\`，随后先 \`waitForVisibleAntdModal(... required:false)\`，modal miss 后再 \`waitForVisibleDetailSurface(... required:false)\`，把最终 \`detailScope\` 传给 \`__e2e.readDetailField(...)\`。只有详情抽屉/详情页里仍然没有状态字段时，才允许抛出“状态证据缺失”错误。`);
   }
   if (
     looksLikeBusinessCreateTask(snapshot, description, context) &&
     /状态证据缺失：列表行已命中，但无法从列表响应或详情(?:读取|获取)状态/.test(repair.executionError)
   ) {
-    diagnosisHints.push(`这次不是列表行没命中，而是 \`businessId\` 为空时，脚本在命中 \`recordCheck.row\` 后只写了“有主键就跳详情、没有主键就直接报错”的坏分支。修复时不要继续保留 \`else if (shared.businessId) { await page.goto(...) } else { throw ... }\`；若当前链路已经有 \`detailEntry\`、已知“查看”动作或详情标题（如 \`商机详情\`），优先直接对 \`recordCheck.row\` 执行 \`await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')\`，随后等待 \`const detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000 })\` 或现成 \`detailReadyLocator\`，再用 \`__e2e.readDetailField(page, { label: '商机进展', scope: detailScope, titleIncludes: '商机详情', required: false }) || __e2e.readDetailField(page, { label: '状态', scope: detailScope, titleIncludes: '商机详情', required: false })\` 读取状态。只有列表响应、详情抽屉、详情页三处都拿不到状态时，才允许抛出“状态证据缺失”错误。`);
+    diagnosisHints.push(`这次不是列表行没命中，而是 \`businessId\` 为空时，脚本在命中 \`recordCheck.row\` 后只写了“有主键就跳详情、没有主键就直接报错”的坏分支。修复时不要继续保留 \`else if (shared.businessId) { await page.goto(...) } else { throw ... }\`；若当前链路已经有 \`detailEntry\`、已知“查看”动作或详情标题（如 \`商机详情\`），优先直接对 \`recordCheck.row\` 执行 \`await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')\`，随后先写 \`let detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000, required: false }); if (!detailScope) { detailScope = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false }); } if (!detailScope) throw new Error('状态证据缺失：列表行已命中，但“查看”后未出现可用详情弹层或详情页');\`，再用 \`__e2e.readDetailField(page, { label: '商机进展', scope: detailScope, titleIncludes: '商机详情', required: false }) || __e2e.readDetailField(page, { label: '状态', scope: detailScope, titleIncludes: '商机详情', required: false })\` 读取状态。只有列表响应、详情抽屉、详情页三处都拿不到状态时，才允许抛出“状态证据缺失”错误。`);
   }
   if (
     looksLikeBusinessCreateTask(snapshot, description, context) &&
     /Expected substring:\s*"新入库"/.test(repair.executionError) &&
     /Received string:\s*"无意向 有意向/i.test(repair.executionError)
   ) {
-    diagnosisHints.push(`这次不是详情状态真的变成了“无意向 / 有意向”，而是 \`readDetailField(page, { label: '状态' })\` 命中了详情里的意向标签/动作区。修复时不要继续直接对这串文本断言“新入库”；优先沿用结构化 \`detailEntry / detailSurface\` 链：先命中 \`targetRow\`，再写 \`await __e2e.clickAntdRowAction(page, targetRow, '查看')\`，随后等待 \`const detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000 })\`，并优先用 \`__e2e.readDetailField(page, { label: '商机进展', scope: detailScope, titleIncludes: '商机详情', required: false })\`，再回退 \`__e2e.readDetailField(page, { label: '状态', scope: detailScope, titleIncludes: '商机详情', required: false })\` 读取真实状态。若读到的仍是“无意向 / 有意向”这类意向标签，不要把它当业务状态；应优先回退到 \`matchedRecord\` 的状态字段，或继续在详情面找真实状态字段。`);
+    diagnosisHints.push(`这次不是详情状态真的变成了“无意向 / 有意向”，而是 \`readDetailField(page, { label: '状态' })\` 命中了详情里的意向标签/动作区。修复时不要继续直接对这串文本断言“新入库”；优先沿用结构化 \`detailEntry / detailSurface\` 链：先命中 \`targetRow\`，再写 \`await __e2e.clickAntdRowAction(page, targetRow, '查看')\`，随后先写 \`let detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000, required: false }); if (!detailScope) { detailScope = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false }); } if (!detailScope) throw new Error('状态证据缺失：列表行已命中，但“查看”后未出现可用详情弹层或详情页');\`，并优先用 \`__e2e.readDetailField(page, { label: '商机进展', scope: detailScope, titleIncludes: '商机详情', required: false })\`，再回退 \`__e2e.readDetailField(page, { label: '状态', scope: detailScope, titleIncludes: '商机详情', required: false })\` 读取真实状态。若读到的仍是“无意向 / 有意向”这类意向标签，不要把它当业务状态；应优先回退到 \`matchedRecord\` 的状态字段，或继续在详情面找真实状态字段。`);
   }
   const shortUnexpectedStatusMatch = repair.executionError.match(/Received string:\s*"([^"\n]{1,12})"/);
   if (
@@ -2380,6 +2460,14 @@ export function buildRepairPrompt(
     )
   ) {
     diagnosisHints.push(`这次不是列表没命中，而是 helper 已经命中了目标行后，你又立刻对同一条 row locator 重复写了 \`await expect(recordCheck.row).toContainText(primaryValue)\` / \`await expect(currentVisibleRow).toContainText(leadMobile)\` 这类主值断言，结果把本来已命中的记录重新打回 \`locator(...).nth(...)\` 行漂移。修复时删除这条重复身份断言，把 helper 命中本身当作身份证据；若还要读行内文本，只做一次 \`const rowText = await recordCheck.row.innerText().catch(() => '')\` 的保守读取。即使 \`rowText\` 为空，只要 \`recordCheck.response\` / \`matchedRecord\` / 详情字段还在，就继续沿这些结构化证据闭环，不要因为 stale row 直接失败。`);
+  }
+  if (
+    /getByText\('我创建的'\)\.first\(\)/.test(repair.executionError) &&
+    /business\/businesslist|商机列表/.test(`${snapshot.url}\n${repair.previousCode}\n${description}`) &&
+    (/新建商机/.test(repair.previousCode) || /页面就绪|进入商机列表页并确认页面就绪|列表加载/.test(`${repair.failedStepTitle}\n${repair.previousCode}`)) &&
+    !/switchBusinessListOwnershipView/.test(repair.previousCode)
+  ) {
+    diagnosisHints.push("这次不是还没进入商机列表，而是页面 ready 阶段把裸 `getByText('我创建的').first()` 当成稳定锚点了。修复时删除这条断言，把本步收口成“URL 已回列表 + 新建商机按钮可见 + `input#businessList_keywords:visible` 或列表容器 ready”；真正的“我创建的”切换留给后续 `__e2e.switchBusinessListOwnershipView(...)` 所在步骤，不要在页面 ready 阶段先做裸文本可见性判断。");
   }
   if (
     /(我创建的|我跟进的|归属|范围)/.test(repair.executionError) &&
@@ -2431,6 +2519,15 @@ export function buildRepairPrompt(
     /本月创建商机|Received:\s*hidden|unexpected value "hidden"/i.test(repair.executionError)
   ) {
     diagnosisHints.push('当前不是没进入创建商机页，而是 `getByText(\'创建商机\').first()` 命中了隐藏统计文案（如“本月创建商机”）。修复时删除这条断言，改用 `await expect(page.getByRole(\'heading\', { name: \'商机联系人信息\' }).first()).toBeVisible(...)`、`await expect(page.getByText(\'请填写正确的商机联系人信息\').first()).toBeVisible(...)` 或 `await expect(page.locator(\'label[title="商机来源"]\').first()).toBeVisible(...)` 这类当前步骤专属且可见的锚点。');
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /strict mode violation/.test(repair.executionError) &&
+    /getByRole\('heading', \{ name: '商机联系人信息' \}\)\.first\(\)\.or\(locator\('label\[title="商机来源"\]'\)\.first\(\)\)/.test(
+      `${repair.executionError}\n${repair.previousCode}`
+    )
+  ) {
+    diagnosisHints.push("这次不是没进入创建商机页，而是第一页 ready 把两个可见锚点用 `.or()` 合成了一条 expect，触发了 Playwright strict mode。修复时删除 `contactStepHeading.or(sourceLabel)` 这类 union locator；先选 `const contactStepHeading = page.getByRole('heading', { name: '商机联系人信息' }).first()` 作为主锚点，若它可见就直接断言它，否则再单独检查 `const sourceLabel = page.locator('label[title=\"商机来源\"]').first()` 或第一页联系人/手机号字段。需要回退时先 `const headingVisible = await contactStepHeading.isVisible().catch(() => false);` 再按顺序分支；不要在删掉 `.or()` 后又立刻把主锚点和备用锚点都写成必须同时成立的 `toBeVisible()`。");
   }
   if (
     looksLikeBusinessCreateTask(snapshot, description, context) &&
@@ -2521,6 +2618,19 @@ export function buildRepairPrompt(
   }
   if (
     looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /状态证据缺失：列表行已命中，但(?:列表响应未返回状态|未获取到.+状态证据|列表响应未命中状态（含 derivedBusinessId 回填）)/.test(
+      repair.executionError
+    ) &&
+    /statusEvidenceRecordCheck|recordCheck\.row|pickJsonRecord|shared\.businessId|contactMobile|leadMobile|businessId/.test(
+      `${repair.previousCode}\n${recentEventText}`
+    )
+  ) {
+    diagnosisHints.push(
+      "这次不是列表 GET 根本没回来，而是 row 已命中、`statusEvidenceRecordCheck.response` 也在，但脚本仍只按手机号/联系人去 `pickJsonRecord(...)`，最后直接抛了“列表响应未返回状态”。修复时不要继续保留 `throw new Error('状态证据缺失：列表行已命中，但列表响应未返回状态')` 作为首选分支；先在已命中分支里补 `const rowText = await recordCheck.row.innerText().catch(() => '')`、`const rowKey = ((await recordCheck.row.getAttribute('data-row-key')) || '').trim()`、`const derivedBusinessId = shared.businessId || ((/^[A-Za-z0-9_-]{6,64}$/.test(rowKey) && !/^1\\d{10}$/.test(rowKey)) ? rowKey : '') || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')`，再补 `const matchedRecordByDerivedBusinessId = !matchedRecord && listJson && derivedBusinessId ? __e2e.pickJsonRecord(listJson, { label: 'derivedBusinessId', value: derivedBusinessId, paths: ['businessId', 'id'], required: false }) : null;`，然后把 `matchedRecord || matchedRecordByDerivedBusinessId` 当成状态来源。只有这条结构化回填仍拿不到状态时，才继续 detailUrl / detailEntry fallback；不要在 row 已命中后继续把“列表响应未返回状态”当默认收口。"
+    );
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
     /未找到行操作：查看/.test(repair.executionError) &&
     /statusEvidenceRecordCheck|pickJsonRecord|readDetailField|recordCheck\.row/.test(repair.previousCode) &&
     !/createOrder|data-createOrder|生成订单/.test(`${repair.previousCode}\n${recentEventText}`)
@@ -2544,7 +2654,26 @@ export function buildRepairPrompt(
     /\/business\/detail\/|detail field not found|Cannot read properties of null \(reading 'forEach'\)/.test(recentEventText)
   ) {
     diagnosisHints.push(
-      "这次不是没有详情入口，而是脚本其实已经进入过商机详情路由，但详情状态字段读取还不稳。修复时不要在跳过 detailUrl 后又回到列表抛“未提供详情入口”；保留这条 detail fallback，优先写 `const detailStatus = await __e2e.readDetailField(page, { label: '商机进展', required: false }) || await __e2e.readDetailField(page, { label: '状态', required: false })`。如果 `detailStatus` 仍为空，再抛 `详情字段缺失：状态` 或保留当前 detail 证据，让下一轮继续修字段读取；不要把已经存在的 detail 路由退化成“未提供详情入口”。"
+      "这次不是没有详情入口，而是脚本其实已经进入过商机详情路由，但 `detailUrl` 打开的很可能不是有效详情 surface。修复时不要在跳过 detailUrl 后又回到列表抛“未提供详情入口”，也不要继续在 `goto` 后直接 `readDetailField(...)`；保留这条 detail fallback，先写 `const detailSurface = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false }); if (!detailSurface) throw new Error('详情页无效：detailUrl 未出现商机详情 surface');`。只有 `detailSurface` 已拿到时，才继续 `const detailStatus = await __e2e.readDetailField(page, { label: '商机进展', scope: detailSurface, titleIncludes: '商机详情', required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailSurface, titleIncludes: '商机详情', required: false })`。如果这条 `detailSurface` guard 失败，就保留显式 `详情页无效` 收口，不要把已经存在的 detail 路由退化成“未提供详情入口”。"
+    );
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /状态证据缺失：列表行已命中，但列表响应、详情抽屉与详情页都未返回状态/.test(repair.executionError) &&
+    /\/business\/detail\/|detail surface invalid page|Cannot read properties of null \(reading 'forEach'\)/.test(recentEventText) &&
+    /page\.goto\(|readDetailField\(page,\s*\{\s*label:\s*'(商机进展|状态)'/.test(repair.previousCode)
+  ) {
+    diagnosisHints.push(
+      "这次不是详情页里真的没有状态字段，而是 `detailUrl` 已经落到 invalid detail surface 后，脚本还把它收口成了泛化“状态证据缺失”。修复时不要继续保留 `throw new Error('状态证据缺失：列表行已命中，但列表响应、详情抽屉与详情页都未返回状态')` 作为 detailUrl 分支的第一收口；先保留 detail fallback，紧接着写 `const detailSurface = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false }); if (!detailSurface) throw new Error('详情页无效：detailUrl 未出现商机详情 surface');`。只有在 `detailSurface` 存在后，才允许 `const detailStatus = await __e2e.readDetailField(page, { label: '商机进展', scope: detailSurface, titleIncludes: '商机详情', required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailSurface, titleIncludes: '商机详情', required: false })`。如果当前链路没有显式 `detailEntry / actionLabel / detailReadyLocator`，就保留这条 `详情页无效` 错误，不要再把错误页退化成泛化“状态证据缺失”。"
+    );
+  }
+  if (
+    looksLikeBusinessCreateTask(snapshot, description, context) &&
+    /详情页无效：detailUrl 未出现.+surface/.test(repair.executionError) &&
+    /\/business\/detail\/|detail surface invalid page|页面好像不见了|请联系管理员/.test(recentEventText)
+  ) {
+    diagnosisHints.push(
+      "这次不是详情字段 label 还不够多，而是 `detailUrl` 打开的根本不是有效详情页 surface。修复时不要继续在同一个 `#/business/detail/...` 页面上重复 `readDetailField(...)`；先保留这条 invalid detail 证据，并保留 `const detailSurface = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false }); if (!detailSurface) throw new Error('详情页无效：detailUrl 未出现商机详情 surface');` 这条 guard。只有当前链路已经明确给出 `detailEntry / actionLabel / detailReadyLocator` 时，才允许改走目标行的显式详情入口；若没有显式详情入口，就回到 `statusEvidenceRecordCheck.response -> __e2e.pickJsonRecord(...) -> __e2e.pickJsonValue(...)` 继续补结构化状态来源，并保留 `throw new Error('详情页无效：detailUrl 未出现商机详情 surface')` 这条收口，不要把它重新退化成“detail field not found”或“未提供详情入口”。"
     );
   }
   if (

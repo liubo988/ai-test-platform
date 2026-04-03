@@ -1,4 +1,5 @@
 import type { IntentActionDSL } from './intent-action-dsl';
+import type { IntentE2EPriorityScenarioFamily, IntentTrackedE2EPriorityScenarioFamily } from './intent-e2e-priority-scenario-family';
 import { listIntentProjectRecipes } from './intent-project-recipe-registry';
 import { looksLikeIntentStableIdentifierVariable } from './intent-shared-variable-utils';
 import type { AuthConfig, PageSnapshot } from './page-analyzer';
@@ -19,6 +20,7 @@ export type IntentRecipe = {
   slug: string;
   title: string;
   description: string;
+  family?: IntentTrackedE2EPriorityScenarioFamily;
   matchers: IntentRecipeMatcher;
   requiredContext: string[];
   executorPlan: string[];
@@ -54,9 +56,12 @@ export interface SelectIntentRecipeRegistryInput {
   dsl: IntentActionDSL;
   auth?: AuthConfig;
   snapshot: Pick<PageSnapshot, 'url' | 'title' | 'frames'>;
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily;
   preferredCapabilitySlugs?: string[];
   performanceBySlug?: Record<string, IntentRecipePerformanceFeedback>;
 }
+
+const INTENT_RECIPE_FAMILY_SCORE_WEIGHT = 3;
 
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
   const seen = new Set<string>();
@@ -208,6 +213,16 @@ function scoreIntentRecipe(
 
   if (score < 4) return null;
 
+  if (
+    input.priorityScenarioFamily &&
+    input.priorityScenarioFamily !== 'untracked' &&
+    recipe.family &&
+    recipe.family === input.priorityScenarioFamily
+  ) {
+    score += INTENT_RECIPE_FAMILY_SCORE_WEIGHT;
+    matchedSignals.push(`family=${input.priorityScenarioFamily}`);
+  }
+
   return {
     recipe,
     score,
@@ -243,6 +258,7 @@ const BUILTIN_INTENT_RECIPES: IntentRecipe[] = [
     slug: 'ui.antd-modal-drawer-save',
     title: 'Ant Design Modal / Drawer 保存收敛',
     description: '针对弹框或抽屉内填写后保存的高频稳定链，固定接口等待与提交后收敛观察。',
+    family: 'modal_or_drawer_save',
     matchers: {
       summaryIncludes: ['保存', '提交', '弹框', '弹窗', '抽屉', 'drawer', 'modal'],
       requiredActions: ['observe_submit_state'],
@@ -268,6 +284,7 @@ const BUILTIN_INTENT_RECIPES: IntentRecipe[] = [
     slug: 'assert.antd-table-primary-key-search',
     title: 'Ant Design 表格主键检索与详情回退',
     description: '提交成功后优先围绕稳定标识回查列表，必要时回退详情页/详情抽屉做字段校验。',
+    family: 'list_search_detail',
     matchers: {
       requiresStableIdentifier: true,
       summaryIncludes: ['列表', '检索', '回查', '详情', 'detail', 'drawer'],
@@ -347,6 +364,7 @@ const BUILTIN_INTENT_RECIPES: IntentRecipe[] = [
     slug: 'business.create',
     title: '商机创建主链路',
     description: '针对 `#/business/createbusiness` 向导式创建场景的固定执行与验收模板。',
+    family: 'business_create_list_verify',
     matchers: {
       targetUrlIncludes: ['/business/createbusiness'],
       summaryIncludes: ['创建商机', '新增商机', 'createbusiness'],
@@ -376,6 +394,7 @@ const BUILTIN_INTENT_RECIPES: IntentRecipe[] = [
     slug: 'business.create-to-order',
     title: '商机创建后生成订单',
     description: '商机创建成功后回列表触发生成订单，以 createOrder 成功和提交收敛作为主断言。',
+    family: 'business_to_order',
     matchers: {
       targetUrlIncludes: ['/business/createbusiness'],
       summaryIncludes: ['生成订单', 'createorder', '商机转订单', '转订单', '订单信息'],
@@ -401,6 +420,7 @@ const BUILTIN_INTENT_RECIPES: IntentRecipe[] = [
     slug: 'business.list-ownership-switch',
     title: '商机列表归属视角切换',
     description: '切换“我创建的 / 我跟进的 / 归属 / 范围”后，再继续检索和断言目标商机。',
+    family: 'list_ownership_switch',
     matchers: {
       targetUrlIncludes: ['/business/businesslist'],
       summaryIncludes: ['我创建的', '我跟进的', '归属', '范围'],

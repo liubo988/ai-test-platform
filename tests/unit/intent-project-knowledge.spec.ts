@@ -938,6 +938,113 @@ describe('intent-project-knowledge', () => {
     expect(renderIntentProjectKnowledge(resolution)).toBe('');
   });
 
+  it('reloads same-path knowledge content when the file changes without manual cache reset', () => {
+    const baseDsl = buildIntentActionDSL({
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/business/businesslist',
+      featureDescription: '切换到我创建的后校验商机进展为新入库',
+      expectedOutcome: '目标商机状态为新入库',
+      steps: [
+        {
+          stepUid: 'step_1',
+          stepType: 'assert',
+          title: '校验商机进展状态',
+          target: '商机列表',
+          instruction: '切换到我创建的后，校验目标商机进展状态为新入库',
+          expectedResult: '目标商机状态为新入库',
+          extractVariable: '',
+        },
+      ],
+    });
+
+    const input = {
+      snapshot: {
+        url: 'https://example.com/business/businesslist',
+        title: '商机列表',
+        buttons: [
+          {
+            text: '新建商机',
+            id: 'new-business',
+            type: 'button',
+            ariaLabel: '新建商机',
+            title: '新建商机',
+            className: 'ant-btn ant-btn-primary',
+            isIconOnly: false,
+          },
+        ],
+        headings: [{ level: 'H1', text: '商机列表' }],
+        bodyTextExcerpt: '我创建的 商机进展 新入库',
+        frames: [],
+      },
+      description: '新建商机后切换到我创建的，校验商机进展为新入库',
+      dsl: baseDsl,
+    };
+
+    fs.writeFileSync(
+      knowledgeFile,
+      JSON.stringify(
+        {
+          version: 1,
+          rules: [
+            {
+              id: 'unrelated.checkout',
+              title: '无关结算规则',
+              match: {
+                urlIncludes: ['/checkout'],
+                descriptionIncludes: ['提交订单'],
+              },
+              promptNotes: [],
+              capabilitySlugs: [],
+              addGlobalRules: [],
+              addPreferredPrimitives: [],
+              addOutputContract: [],
+              stepPatches: [],
+            },
+          ],
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    expect(resolveIntentProjectKnowledge(input).matches).toEqual([]);
+
+    fs.writeFileSync(
+      knowledgeFile,
+      JSON.stringify(
+        {
+          version: 1,
+          rules: [
+            {
+              id: 'business.status-detail',
+              title: '商机状态详情规则',
+              match: {
+                urlIncludes: ['/business/businesslist'],
+                descriptionIncludes: ['商机进展', '新入库'],
+              },
+              promptNotes: ['列表命中后优先打开详情。'],
+              capabilitySlugs: ['ui.click-antd-row-action'],
+              addGlobalRules: ['若 detailUrl 无效，优先从目标行打开详情。'],
+              addPreferredPrimitives: [],
+              addOutputContract: [],
+              stepPatches: [],
+            },
+          ],
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const resolution = resolveIntentProjectKnowledge(input);
+
+    expect(resolution.matches).toHaveLength(1);
+    expect(resolution.matches[0]?.ruleId).toBe('business.status-detail');
+    expect(resolution.matches[0]?.promptNotes).toContain('列表命中后优先打开详情。');
+  });
+
   it('prioritizes historically stable rules and deprioritizes rollback-risk rules', () => {
     fs.writeFileSync(
       knowledgeFile,

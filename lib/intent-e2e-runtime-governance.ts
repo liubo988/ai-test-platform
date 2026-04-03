@@ -39,7 +39,9 @@ export interface IntentE2ERuntimeGovernanceIssue {
     | 'fixture_owner_missing'
     | 'fixture_idempotency_key_missing'
     | 'fixture_setup_ref_missing'
-    | 'fixture_cleanup_ref_missing';
+    | 'fixture_cleanup_ref_missing'
+    | 'fixture_setup_ref_invalid'
+    | 'fixture_cleanup_ref_invalid';
   message: string;
 }
 
@@ -65,6 +67,26 @@ function hasCredentialFields(value?: IntentE2ECredentialReference | null): boole
 function hasFixtureFields(value?: IntentE2EFixtureGovernance | null): boolean {
   if (!value) return false;
   return Boolean(value.strategy || value.setupRef || value.cleanupRef || value.owner || value.idempotencyKey);
+}
+
+export function isIntentE2EFixtureRef(value: unknown): boolean {
+  const normalized = normalizeString(value);
+  if (!normalized) return false;
+
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.protocol !== 'fixture:') return false;
+    if (!parsed.hostname.trim()) return false;
+    if (parsed.search || parsed.hash) return false;
+    const segments = [parsed.hostname, ...parsed.pathname.split('/').filter(Boolean)].map((segment) => decodeURIComponent(segment));
+    return segments.every((segment) => /^[A-Za-z0-9._-]+$/.test(segment));
+  } catch {
+    return false;
+  }
+}
+
+export function hasIntentE2EFixtureContract(value?: IntentE2EFixtureGovernance | null): boolean {
+  return hasFixtureFields(value);
 }
 
 export function hasIntentE2ERuntimeGovernance(value?: IntentE2ERuntimeGovernance | null): boolean {
@@ -172,7 +194,7 @@ export function shouldEnforceIntentE2ERuntimeGovernance(governance?: IntentE2ERu
   if (fixture && (fixture.strategy && fixture.strategy !== 'none')) {
     return true;
   }
-  if (fixture && (fixture.setupRef || fixture.cleanupRef || fixture.owner || fixture.idempotencyKey)) {
+  if (hasIntentE2EFixtureContract(fixture)) {
     return true;
   }
 
@@ -273,6 +295,20 @@ export function validateIntentE2ERuntimeGovernance(input: {
         message: 'fixture.strategy = setup_cleanup 时必须提供 fixture.cleanupRef。',
       });
     }
+  }
+
+  if (fixture?.setupRef && !isIntentE2EFixtureRef(fixture.setupRef)) {
+    issues.push({
+      code: 'fixture_setup_ref_invalid',
+      message: 'fixture.setupRef 只支持 repo-owned 的 fixture:// 引用，不允许任意自由脚本或其它协议。',
+    });
+  }
+
+  if (fixture?.cleanupRef && !isIntentE2EFixtureRef(fixture.cleanupRef)) {
+    issues.push({
+      code: 'fixture_cleanup_ref_invalid',
+      message: 'fixture.cleanupRef 只支持 repo-owned 的 fixture:// 引用，不允许任意自由脚本或其它协议。',
+    });
   }
 
   return issues;
