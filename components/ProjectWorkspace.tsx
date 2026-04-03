@@ -64,6 +64,10 @@ import {
 } from '@/lib/workspace-platform-query-state';
 import { readExecutionEntryNavigationTargets } from '@/lib/execution-entry-navigation';
 import { buildExecutionWorkspaceLinkActions } from '@/lib/execution-workspace-link-contract';
+import {
+  buildIntentDraftWorkbenchHref,
+  INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE,
+} from '@/lib/intent-e2e-draft-launch';
 
 type ProjectStatus = 'active' | 'archived';
 type ModuleStatus = 'active' | 'archived';
@@ -203,22 +207,6 @@ type IntentDraftDetail = IntentDraftItem & {
   generationModel: string;
   generationPrompt: string;
   generatedFiles: Array<{ name: string; content: string; language: string }>;
-};
-
-type IntentDraftTestRunResponse = {
-  runId?: string;
-  run?: {
-    runId?: string;
-  };
-  error?: string;
-};
-
-type IntentLaunchDecisionValue = 'auto_run' | 'needs_bootstrap' | 'needs_fixture' | 'needs_clarify' | 'draft_only';
-
-type IntentDraftLaunchDecisionResponse = {
-  decision?: IntentLaunchDecisionValue;
-  reasons?: string[];
-  error?: string;
 };
 
 type IntentDraftMutationResponse = {
@@ -2386,75 +2374,16 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
     setActionNotice('');
 
     try {
-      const detail = 'attachments' in draft ? normalizeIntentDraftDetail(draft) : await fetchIntentDraftDetail(draft.intentDraftUid);
-      const inputText = detail.input.trim() || detail.featureDescription.trim() || detail.title.trim();
-      if (!inputText) {
-        throw new Error('当前意图草稿缺少可执行的目标描述');
-      }
-
-      const payload = {
-        input: inputText,
-        targetUrl: detail.targetUrl.trim() || detail.targetUrlHint.trim(),
-        projectUid: detail.projectUid || projectUid,
-        moduleUid: detail.moduleUid || draft.moduleUid,
-        attachments: detail.attachments.map((item) => ({
-          name: item.name,
-          dataUrl: item.dataUrl,
-          purpose: item.purpose,
-        })),
-        llmConfig: Object.keys(detail.llmConfig || {}).length > 0 ? detail.llmConfig : undefined,
-      };
-
-      const launchDecisionRes = await fetch('/api/intent-e2e/launch-decision', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const launchDecisionJson = (await launchDecisionRes.json().catch(() => null)) as IntentDraftLaunchDecisionResponse | null;
-      if (!launchDecisionRes.ok || !launchDecisionJson?.decision) {
-        throw new Error(launchDecisionJson?.error || '计算自动测试启动决策失败');
-      }
-
-      const nextParams = new URLSearchParams();
-      nextParams.set('projectUid', detail.projectUid || projectUid);
-      if (detail.moduleUid || draft.moduleUid) {
-        nextParams.set('moduleUid', detail.moduleUid || draft.moduleUid);
-      }
-      nextParams.set('draftUid', detail.intentDraftUid);
-
-      if (launchDecisionJson.decision !== 'auto_run') {
-        nextParams.set('launchDecision', launchDecisionJson.decision);
-        for (const reason of launchDecisionJson.reasons || []) {
-          const normalized = reason.trim();
-          if (normalized) {
-            nextParams.append('launchReason', normalized);
-          }
-        }
-        setIntentDraftDetailOpen(false);
-        setIntentDraftsModalOpen(false);
-        router.push(`/intent-e2e?${nextParams.toString()}`);
-        return;
-      }
-
-      const res = await fetch('/api/intent-e2e/runs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const json = (await res.json().catch(() => null)) as IntentDraftTestRunResponse | null;
-      const runId = json?.runId || json?.run?.runId || '';
-      if (!res.ok || !runId) {
-        throw new Error(json?.error || '启动意图测试流程失败');
-      }
-
-      if (typeof window !== 'undefined') {
-        window.sessionStorage.setItem('intent-e2e:last-run-id', runId);
-      }
-
-      nextParams.set('runId', runId);
       setIntentDraftDetailOpen(false);
       setIntentDraftsModalOpen(false);
-      router.push(`/intent-e2e?${nextParams.toString()}`);
+      router.push(
+        buildIntentDraftWorkbenchHref({
+          projectUid: draft.projectUid || projectUid,
+          moduleUid: draft.moduleUid,
+          draftUid: draft.intentDraftUid,
+          launchMode: INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE,
+        })
+      );
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '启动意图测试流程失败');
     } finally {

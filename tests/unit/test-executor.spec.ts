@@ -1221,6 +1221,63 @@ describe('test-executor worker template rendering', () => {
   );
 
   it(
+    'keeps the matched Ant Design row usable after a table rerender reorders rows',
+    async () => {
+      const result = await executeTest(
+        `test('find antd table row stays stable after rerender', async ({ page }) => {
+          await page.goto('about:blank');
+          await page.setContent(\`
+            <div class="ant-table-wrapper">
+              <div class="ant-table-body">
+                <table>
+                  <tbody>
+                    <tr id="other-row" data-row-key="biz-0">
+                      <td>李四</td>
+                      <td>18800000000</td>
+                    </tr>
+                    <tr id="target-row" data-row-key="biz-1">
+                      <td>张三</td>
+                      <td>13912345678</td>
+                      <td>新入库</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          \`);
+
+          const targetRow = await __e2e.findAntdTableRow(page, {
+            hasTexts: ['张三', '13912345678', '新入库'],
+            timeoutMs: 1200,
+          });
+
+          await page.evaluate(() => {
+            const tbody = document.querySelector('.ant-table-body tbody');
+            if (!tbody) return;
+            tbody.innerHTML = \`
+              <tr id="target-row-rerendered" data-row-key="biz-1">
+                <td>张三</td>
+                <td>13912345678</td>
+                <td>新入库</td>
+              </tr>
+            \`;
+          });
+
+          await expect(targetRow).toHaveAttribute('data-row-key', 'biz-1');
+          await expect(targetRow).toContainText('13912345678');
+        });`,
+        'worker-find-antd-table-row-stable-after-rerender'
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+    },
+    20000
+  );
+
+  it(
     'fails loudly when multiple unique Ant Design table records match the same row query',
     async () => {
       const result = await executeTest(

@@ -33,6 +33,13 @@ import {
   type IntentStarterAssetPromotionDecision,
 } from '@/lib/intent-starter-asset-promotion';
 import {
+  INTENT_DRAFT_LAUNCH_QUERY_PARAM,
+  INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE,
+  normalizeIntentDraftLaunchMode,
+  shouldOverrideDraftAutoRunLaunchDecision,
+  shouldTreatQueryLaunchDecisionAsHardBlock,
+} from '@/lib/intent-e2e-draft-launch';
+import {
   isIntentProjectKnowledgeDraftCandidateDeferredByDefault,
   isIntentProjectKnowledgeDraftCandidateDeprioritized,
   isIntentProjectKnowledgeDraftCandidateMergeRecommended,
@@ -507,9 +514,13 @@ type IntentBlockedLaunchDecision = IntentLaunchDecisionResponse & {
 };
 
 type IntentDraftLaunchDetail = {
+  title: string;
   input: string;
+  featureDescription: string;
   targetUrl: string;
   targetUrlHint: string;
+  projectUid: string;
+  moduleUid: string;
   attachments: Array<{
     name?: string;
     dataUrl: string;
@@ -3564,7 +3575,7 @@ function hydrateStreamStateFromResult(result: IntentRunResult): StreamState {
         tone: result.finalResult.success ? 'success' : 'error',
         text:
           result.finalResult.success
-            ? '自动测试完成：PASS'
+            ? '自动测试完成：通过'
             : result.finalFailureTriage
             ? `自动测试结束：${intentFailureClassLabel(result.finalFailureTriage.failureClass)}`
             : '自动测试结束：仍有失败',
@@ -3754,7 +3765,7 @@ function applyIntentStreamEvent(state: StreamState, event: IntentStreamEvent): S
         feed: pushFeed(
           state.feed,
           event.result.finalResult.success
-            ? '自动测试完成：PASS'
+            ? '自动测试完成：通过'
             : event.result.finalFailureTriage
             ? `自动测试结束：${intentFailureClassLabel(event.result.finalFailureTriage.failureClass)}`
             : '自动测试结束：仍有失败',
@@ -3866,7 +3877,7 @@ function hydrateStreamStateFromRunRecord(run: IntentRunRecord): StreamState {
                 tone: normalizedResult.finalResult.success ? 'success' : 'error',
                 text:
                   normalizedResult.finalResult.success
-                    ? '自动测试完成：PASS'
+                    ? '自动测试完成：通过'
                     : normalizedResult.finalFailureTriage
                     ? `自动测试结束：${intentFailureClassLabel(normalizedResult.finalFailureTriage.failureClass)}`
                     : '自动测试结束：仍有失败',
@@ -3983,9 +3994,13 @@ async function fetchIntentDraftLaunchDetail(projectUid: string, draftUid: string
   }
 
   return {
+    title: typeof json.item.title === 'string' ? json.item.title : '',
     input: typeof json.item.input === 'string' ? json.item.input : '',
+    featureDescription: typeof json.item.featureDescription === 'string' ? json.item.featureDescription : '',
     targetUrl: typeof json.item.targetUrl === 'string' ? json.item.targetUrl : '',
     targetUrlHint: typeof json.item.targetUrlHint === 'string' ? json.item.targetUrlHint : '',
+    projectUid: typeof json.item.projectUid === 'string' ? json.item.projectUid : projectUid,
+    moduleUid: typeof json.item.moduleUid === 'string' ? json.item.moduleUid : '',
     attachments: Array.isArray(json.item.attachments)
       ? json.item.attachments
           .filter((item) => item && typeof item === 'object' && typeof item.dataUrl === 'string' && item.dataUrl.trim())
@@ -3996,6 +4011,32 @@ async function fetchIntentDraftLaunchDetail(projectUid: string, draftUid: string
           }))
       : [],
     llmConfig: json.item.llmConfig && typeof json.item.llmConfig === 'object' ? json.item.llmConfig : {},
+  };
+}
+
+function buildIntentDraftLaunchPayload(
+  draftDetail: IntentDraftLaunchDetail,
+  options: { fallbackProjectUid?: string; fallbackModuleUid?: string } = {}
+): Record<string, unknown> | null {
+  const inputText = draftDetail.input.trim() || draftDetail.featureDescription.trim() || draftDetail.title.trim();
+  if (!inputText) {
+    return null;
+  }
+
+  const projectUid = draftDetail.projectUid.trim() || options.fallbackProjectUid?.trim() || '';
+  const moduleUid = draftDetail.moduleUid.trim() || options.fallbackModuleUid?.trim() || '';
+
+  return {
+    input: inputText,
+    targetUrl: draftDetail.targetUrl.trim() || draftDetail.targetUrlHint.trim(),
+    projectUid: projectUid || undefined,
+    moduleUid: moduleUid || undefined,
+    attachments: draftDetail.attachments.map((item) => ({
+      name: item.name,
+      dataUrl: item.dataUrl,
+      purpose: item.purpose,
+    })),
+    llmConfig: Object.keys(draftDetail.llmConfig || {}).length > 0 ? draftDetail.llmConfig : undefined,
   };
 }
 
@@ -4210,6 +4251,7 @@ export default function IntentE2EWorkbench({
   const searchWorkspaceModuleUid = searchParams.get('moduleUid') || '';
   const searchIntentDraftUid = searchParams.get('draftUid') || '';
   const searchRequestedRunId = searchParams.get('runId') || '';
+  const searchDraftLaunchMode = normalizeIntentDraftLaunchMode(searchParams.get(INTENT_DRAFT_LAUNCH_QUERY_PARAM));
   const searchLaunchDecision = searchParams.get('launchDecision') || '';
   const searchLaunchReasons = useMemo(
     () => uniqueStrings(searchParams.getAll('launchReason')),
@@ -4241,6 +4283,7 @@ export default function IntentE2EWorkbench({
   const [activeRunId, setActiveRunId] = useState('');
   const [workbenchCollapsed, setWorkbenchCollapsed] = useState(false);
   const [restoreChecked, setRestoreChecked] = useState(false);
+  const [draftLaunchHydratedKey, setDraftLaunchHydratedKey] = useState('');
   const [knowledgeDraftMinSeenCount, setKnowledgeDraftMinSeenCount] = useState(2);
   const [knowledgeDraftMinResolvedCount, setKnowledgeDraftMinResolvedCount] = useState(1);
   const [knowledgeDraftMaxCandidates, setKnowledgeDraftMaxCandidates] = useState(12);
@@ -4308,6 +4351,8 @@ export default function IntentE2EWorkbench({
   const launchFormHydratedRunIdRef = useRef('');
   const launchFormHydratedDraftKeyRef = useRef('');
   const launchLlmOverrideRef = useRef<IntentLaunchLlmOverride | null>(null);
+  const draftLaunchDetailRef = useRef<IntentDraftLaunchDetail | null>(null);
+  const draftAutoLaunchHandledKeyRef = useRef('');
   const inputHelpPopoverRef = useRef<HTMLDivElement | null>(null);
   const collapseContextRef = useRef('');
   const workspaceSaveNavigation = useMemo(
@@ -5324,26 +5369,26 @@ export default function IntentE2EWorkbench({
 
     return (
       <div className="space-y-4">
-        <section className="intent-e2e-hero relative overflow-hidden rounded-[32px] border border-black/5 bg-[linear-gradient(135deg,rgba(255,255,255,0.98),rgba(251,248,242,0.96)_54%,rgba(243,246,249,0.95))] px-5 py-5 text-slate-950 shadow-[0_24px_60px_rgba(44,37,28,0.08)] md:px-6 md:py-6">
+        <section className="intent-e2e-hero relative overflow-hidden rounded-[28px] border border-[#e7e2d8] bg-white/90 px-5 py-5 text-slate-950 shadow-[0_12px_28px_rgba(15,23,42,0.04)] md:px-6 md:py-6">
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute -right-12 -top-12 h-48 w-48 rounded-full bg-[radial-gradient(circle,rgba(214,225,241,0.5),rgba(214,225,241,0)_70%)] blur-2xl"
+            className="pointer-events-none absolute -right-10 -top-10 h-32 w-32 rounded-full bg-[radial-gradient(circle,rgba(214,225,241,0.22),rgba(214,225,241,0)_70%)] blur-2xl"
           />
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute left-10 top-0 h-36 w-36 rounded-full bg-[radial-gradient(circle,rgba(255,242,223,0.8),rgba(255,242,223,0)_72%)] blur-2xl"
+            className="pointer-events-none absolute left-10 top-0 h-28 w-28 rounded-full bg-[radial-gradient(circle,rgba(255,242,223,0.3),rgba(255,242,223,0)_72%)] blur-2xl"
           />
-          <div className="relative space-y-4">
-            <div className="space-y-4">
+          <div className="relative space-y-3">
+            <div className="space-y-3">
               <div className="min-w-0">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-[13px] font-medium uppercase tracking-[0.22em] text-[#8c7656]">Intent Workbench</p>
+                  <p className="text-[12px] font-medium uppercase tracking-[0.18em] text-[#8c7656]">Intent Workbench</p>
                   <div className="flex items-center gap-2">
                     {showCollapseControl && (
                       <button
                         type="button"
                         onClick={() => setWorkbenchCollapsed(true)}
-                        className="inline-flex h-9 items-center justify-center rounded-full border border-[#d7d0c5] bg-white/88 px-3 text-[12px] text-slate-600 shadow-[0_8px_22px_rgba(44,37,28,0.06)] transition hover:border-[#c6baaa] hover:text-slate-900"
+                        className="inline-flex h-9 items-center justify-center rounded-full border border-[#e1dad0] bg-[#fbfaf7] px-3 text-[12px] text-slate-600 transition hover:border-[#cabda8] hover:text-slate-900"
                         title="收起"
                       >
                         收起
@@ -5353,17 +5398,17 @@ export default function IntentE2EWorkbench({
                       <Link
                         href="/"
                         title="返回项目"
-                        className="inline-flex h-9 items-center justify-center rounded-full border border-[#d7d0c5] bg-white/88 px-3.5 text-[12px] text-slate-600 shadow-[0_8px_22px_rgba(44,37,28,0.06)] transition hover:border-[#c6baaa] hover:text-slate-900"
+                        className="inline-flex h-9 items-center justify-center rounded-full border border-[#e1dad0] bg-[#fbfaf7] px-3.5 text-[12px] text-slate-600 transition hover:border-[#cabda8] hover:text-slate-900"
                       >
                         返回项目
                       </Link>
                     )}
                   </div>
                 </div>
-                <h2 className="mt-3 text-[21px] font-semibold leading-[1.16] tracking-[-0.05em] text-slate-950 md:text-[27px] xl:text-[28px]">
-                  讲清任务，AI 自动规划、执行与修复
+                <h2 className="mt-3 text-[20px] font-semibold leading-[1.2] tracking-[-0.04em] text-slate-950 md:text-[24px] xl:text-[25px]">
+                  配置任务与自动测试
                 </h2>
-                <p className="mt-2.5 text-[14px] leading-6 text-slate-600">{subtitle}</p>
+                <p className="mt-2 max-w-2xl text-[14px] leading-6 text-slate-600">{subtitle}</p>
               </div>
 
               <div className="space-y-2.5">
@@ -5372,7 +5417,7 @@ export default function IntentE2EWorkbench({
                     type="submit"
                     {...submitButtonProps}
                     disabled={running || configLoading}
-                    className="inline-flex h-10 min-w-0 items-center justify-center rounded-[18px] bg-[#1f1a15] px-3 text-[11px] font-medium text-white shadow-[0_14px_28px_rgba(34,27,20,0.18)] transition hover:bg-[#171310] disabled:cursor-not-allowed disabled:bg-slate-400"
+                    className="inline-flex h-10 min-w-0 items-center justify-center rounded-[16px] bg-[#171717] px-3 text-[12px] font-medium text-white transition hover:bg-black disabled:cursor-not-allowed disabled:bg-slate-400"
                   >
                     {running ? (canceling ? '正在停止…' : 'AI 正在自动执行…') : '开始自动测试'}
                   </button>
@@ -5380,7 +5425,7 @@ export default function IntentE2EWorkbench({
                     type="button"
                     onClick={stopIntentTest}
                     disabled={!running || !activeRunId || canceling}
-                    className="inline-flex h-10 min-w-0 items-center justify-center rounded-[18px] border border-[#ead7b6] bg-[#fbf3e8]/92 px-3 text-[11px] font-medium text-[#8d6330] transition hover:bg-[#f8ebd8] disabled:cursor-not-allowed disabled:opacity-50"
+                    className="inline-flex h-10 min-w-0 items-center justify-center rounded-[16px] border border-[#e2ccb0] bg-[#faf3e8] px-3 text-[12px] font-medium text-[#8d6330] transition hover:bg-[#f6ecde] disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {canceling ? '停止中…' : '停止当前测试'}
                   </button>
@@ -5391,14 +5436,14 @@ export default function IntentE2EWorkbench({
                       clearBlockedLaunchDecision({ syncQuery: launchedFromIntentDraft });
                     }}
                     disabled={running}
-                    className="inline-flex h-10 min-w-0 items-center justify-center rounded-[18px] border border-[#ddd5ca] bg-white/78 px-3 text-[11px] font-medium text-slate-700 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+                    className="inline-flex h-10 min-w-0 items-center justify-center rounded-[16px] border border-[#e1dad0] bg-[#fbfaf7] px-3 text-[12px] font-medium text-slate-700 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     清空结果
                   </button>
                 </div>
 
-                <div className="overflow-hidden rounded-[24px] border border-[#e8ddd0] bg-white/42">
-                  <div className="grid gap-px bg-[#e8ddd0] sm:grid-cols-3">
+                <div className="overflow-hidden rounded-[20px] border border-[#ebe5da] bg-[#faf8f3]">
+                  <div className="grid gap-px bg-[#ebe5da] sm:grid-cols-3">
                     {heroSummaryTabs.map((item) => {
                       const active = item.key === activeHeroSummaryTab.key;
 
@@ -5410,8 +5455,8 @@ export default function IntentE2EWorkbench({
                           onClick={() => setHeroSummaryView(item.key)}
                           className={`px-3.5 py-3 text-left transition ${
                             active
-                              ? 'bg-[#fbf7ef] text-slate-950'
-                              : 'bg-[rgba(255,255,255,0.38)] text-slate-600 hover:bg-white/72'
+                              ? 'bg-white text-slate-950'
+                              : 'bg-[#faf8f3] text-slate-600 hover:bg-white'
                           }`}
                         >
                           <div className="flex items-center justify-between gap-2">
@@ -5430,8 +5475,8 @@ export default function IntentE2EWorkbench({
               </div>
             </div>
 
-            <section className="rounded-[30px] border border-white/80 bg-white/52 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.88)] backdrop-blur-[2px] md:p-5">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#e7dfd3] pb-3">
+            <section className="rounded-[26px] border border-[#e7e2d8] bg-[#fcfaf6] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.92)] md:p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#ece6db] pb-3">
                 <div>
                   <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-[#8c7656]">Task Brief</p>
                   <p className="mt-1 text-sm font-medium text-slate-900">把这次任务一次写完整</p>
@@ -5442,7 +5487,7 @@ export default function IntentE2EWorkbench({
               </div>
 
               <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.08fr)_minmax(320px,0.92fr)]">
-                <div className="rounded-[24px] border border-[#e7dfd3] bg-white/72 p-4">
+                <div className="rounded-[22px] border border-[#ebe5da] bg-white p-4">
                   <div className="flex flex-wrap items-center gap-2">
                     <label htmlFor="intent-e2e-input" className="text-[13px] font-medium tracking-[0.08em] text-slate-400">
                       测试目标
@@ -5481,31 +5526,31 @@ export default function IntentE2EWorkbench({
                     onChange={(targetEvent) => setInput(targetEvent.target.value)}
                     rows={embedded ? 2 : 4}
                     placeholder="例如：登录后台后创建一个商机，保存成功后看到新建记录，并且列表中状态为待跟进。"
-                    className="mt-3 min-h-[208px] w-full rounded-[22px] border border-[#dfd8ce] bg-white/86 px-4 py-3.5 text-sm leading-6 text-slate-900 shadow-[inset_0_1px_0_rgba(255,255,255,0.94),0_8px_18px_rgba(90,72,44,0.03)] outline-none transition placeholder:text-slate-400 focus:border-[#c9bba7] xl:min-h-[280px]"
+                    className="mt-3 min-h-[208px] w-full rounded-[20px] border border-[#dfd8ce] bg-white px-4 py-3.5 text-sm leading-6 text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-[#c9bba7] xl:min-h-[280px]"
                   />
                 </div>
 
                 <div className="space-y-4">
-                  <div className="rounded-[24px] border border-[#e7dfd3] bg-white/72 p-4">
+                  <div className="rounded-[22px] border border-[#ebe5da] bg-white p-4">
                     <label className="block">
                       <span className="text-[13px] font-medium uppercase tracking-[0.14em] text-slate-400">Target URL</span>
                       <input
                         value={targetUrl}
                         onChange={(targetEvent) => setTargetUrl(targetEvent.target.value)}
                         placeholder="https://example.com/checkout"
-                        className="mt-2.5 h-11 w-full rounded-2xl border border-[#ddd2c4] bg-white/84 px-4 text-sm text-slate-800 outline-none transition focus:border-[#c9bba7]"
+                        className="mt-2.5 h-11 w-full rounded-2xl border border-[#ddd2c4] bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-[#c9bba7]"
                       />
                       <p className="mt-2 text-[13px] leading-6 text-slate-500">尽量给真实入口，能减少 AI 在多层导航里的试探。</p>
                     </label>
                   </div>
 
-                  <div className="rounded-[24px] border border-[#e7dfd3] bg-white/72 p-4">
+                  <div className="rounded-[22px] border border-[#ebe5da] bg-white p-4">
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <p className="text-[13px] font-medium uppercase tracking-[0.14em] text-slate-400">截图 / 参考图</p>
                         <p className="mt-1 text-[13px] leading-6 text-slate-500">补目标页、关键区域或成功态即可。</p>
                       </div>
-                      <label className="inline-flex h-9 cursor-pointer items-center justify-center rounded-full border border-[#ddd2c4] bg-white/88 px-3.5 text-[13px] text-slate-700 transition hover:bg-white">
+                      <label className="inline-flex h-9 cursor-pointer items-center justify-center rounded-full border border-[#ddd2c4] bg-[#fbfaf7] px-3.5 text-[13px] text-slate-700 transition hover:bg-white">
                         上传图片
                         <input type="file" accept="image/*" multiple onChange={handleAttachmentChange} className="hidden" />
                       </label>
@@ -6221,6 +6266,7 @@ export default function IntentE2EWorkbench({
       if (!launchedFromIntentDraft) return;
 
       replaceWorkbenchSearchParams((nextParams) => {
+        nextParams.delete(INTENT_DRAFT_LAUNCH_QUERY_PARAM);
         nextParams.delete('launchDecision');
         nextParams.delete('launchReason');
         if (!decision || decision === 'auto_run') {
@@ -6278,6 +6324,8 @@ export default function IntentE2EWorkbench({
   const restoreLaunchFormFromDraft = useCallback(
     async (notice?: string) => {
       if (!searchWorkspaceProjectUid.trim() || !searchIntentDraftUid.trim()) {
+        draftLaunchDetailRef.current = null;
+        setDraftLaunchHydratedKey('');
         if (notice) setRestoreNotice(notice);
         return false;
       }
@@ -6286,10 +6334,12 @@ export default function IntentE2EWorkbench({
       const draftKey = `${searchWorkspaceProjectUid.trim()}:${searchIntentDraftUid.trim()}`;
       const llmOverride = normalizeIntentLaunchLlmOverride(draftDetail.llmConfig) || null;
 
+      draftLaunchDetailRef.current = draftDetail;
       launchLlmOverrideRef.current = llmOverride;
       launchFormHydratedRunIdRef.current = '';
       launchFormHydratedDraftKeyRef.current = draftKey;
-      setInput(draftDetail.input.trim() || '');
+      setDraftLaunchHydratedKey(draftKey);
+      setInput(draftDetail.input.trim() || draftDetail.featureDescription.trim() || draftDetail.title.trim() || '');
       setTargetUrl(draftDetail.targetUrl.trim() || draftDetail.targetUrlHint.trim() || '');
       setAttachments(
         draftDetail.attachments.map((item, index) => ({
@@ -6341,6 +6391,15 @@ export default function IntentE2EWorkbench({
 
     const decision = normalizeIntentLaunchDecisionValue(searchLaunchDecision);
     if (!decision || decision === 'auto_run') {
+      return;
+    }
+
+    if (!shouldTreatQueryLaunchDecisionAsHardBlock(decision)) {
+      if (decision === 'draft_only') {
+        setRestoreNotice((current) =>
+          current || '系统建议先保留草稿：最近相似任务失败压力偏高。当前已恢复草稿上下文，如仍要验证，可继续手动开始自动测试。'
+        );
+      }
       return;
     }
 
@@ -6743,7 +6802,7 @@ export default function IntentE2EWorkbench({
 
     async function restoreRun() {
       const requestedRunId = searchRequestedRunId.trim();
-      if (!requestedRunId) {
+      if (!requestedRunId || requestedRunId === activeRunId) {
         return;
       }
 
@@ -6788,7 +6847,7 @@ export default function IntentE2EWorkbench({
     return () => {
       active = false;
     };
-  }, [applyRunRecord, embedded, hydrateLaunchFormFromRun, removeRunIdFromUrl, restoreLaunchFormFromDraft, searchRequestedRunId, startRunStream]);
+  }, [activeRunId, applyRunRecord, embedded, hydrateLaunchFormFromRun, removeRunIdFromUrl, restoreLaunchFormFromDraft, searchRequestedRunId, startRunStream]);
 
   useEffect(() => {
     if (embedded) {
@@ -6797,7 +6856,11 @@ export default function IntentE2EWorkbench({
     }
     if (typeof window === 'undefined') return;
     if (searchRequestedRunId.trim()) return;
-    if (isBlockedIntentLaunchDecision(normalizeIntentLaunchDecisionValue(searchLaunchDecision))) {
+    if (searchDraftLaunchMode === INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE) {
+      setRestoreChecked(true);
+      return;
+    }
+    if (shouldTreatQueryLaunchDecisionAsHardBlock(searchLaunchDecision)) {
       window.sessionStorage.removeItem(RUN_ID_STORAGE_KEY);
       setRestoreChecked(true);
       return;
@@ -6851,7 +6914,127 @@ export default function IntentE2EWorkbench({
     return () => {
       active = false;
     };
-  }, [applyRunRecord, embedded, hydrateLaunchFormFromRun, restoreLaunchFormFromDraft, searchLaunchDecision, searchRequestedRunId, startRunStream]);
+  }, [
+    applyRunRecord,
+    embedded,
+    hydrateLaunchFormFromRun,
+    restoreLaunchFormFromDraft,
+    searchDraftLaunchMode,
+    searchLaunchDecision,
+    searchRequestedRunId,
+    startRunStream,
+  ]);
+
+  useEffect(() => {
+    if (embedded) return;
+    if (searchDraftLaunchMode !== INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE) return;
+    if (searchRequestedRunId.trim() || activeRunId) return;
+
+    const projectUid = searchWorkspaceProjectUid.trim();
+    const draftUid = searchIntentDraftUid.trim();
+    const draftKey = `${projectUid}:${draftUid}`;
+    if (!projectUid || !draftUid || draftLaunchHydratedKey !== draftKey) {
+      return;
+    }
+    if (draftAutoLaunchHandledKeyRef.current === draftKey) {
+      return;
+    }
+
+    const draftDetail = draftLaunchDetailRef.current;
+    const payload = draftDetail
+      ? buildIntentDraftLaunchPayload(draftDetail, {
+          fallbackProjectUid: projectUid,
+          fallbackModuleUid: searchWorkspaceModuleUid.trim() || workspaceModuleUid,
+        })
+      : null;
+
+    draftAutoLaunchHandledKeyRef.current = draftKey;
+
+    if (!payload) {
+      setRunError('当前意图草稿缺少可执行的目标描述');
+      replaceWorkbenchSearchParams((nextParams) => {
+        nextParams.delete(INTENT_DRAFT_LAUNCH_QUERY_PARAM);
+        nextParams.delete('launchDecision');
+        nextParams.delete('launchReason');
+      });
+      return;
+    }
+
+    const launchPayload = payload;
+
+    let active = true;
+
+    async function autoLaunchDraftFlow() {
+      clearExecutionState();
+
+      try {
+        const launchDecision = await requestIntentLaunchDecision(launchPayload);
+        if (launchDecision.decision !== 'auto_run' && !shouldOverrideDraftAutoRunLaunchDecision(launchDecision.decision)) {
+          if (!active) return;
+          applyBlockedLaunchDecision(launchDecision, {
+            source: 'route',
+            syncQuery: true,
+          });
+          return;
+        }
+
+        if (!active) return;
+        if (launchDecision.decision === 'draft_only') {
+          setRestoreNotice('检测到最近相似任务失败压力偏高；这次来自草稿页的显式“测试流程”启动，已继续开跑。');
+        }
+
+        setRunning(true);
+        setStreamState({
+          ...createEmptyStreamState(),
+          stage: 'received',
+          message: '正在创建服务端运行…',
+          feed: [{ id: createFeedId(), tone: 'info', text: '正在创建服务端运行…' }],
+        });
+
+        const run = await createIntentRun(launchPayload);
+        if (!active) return;
+        applyRunRecord(run);
+        if (typeof window !== 'undefined') {
+          window.sessionStorage.setItem(RUN_ID_STORAGE_KEY, run.runId);
+        }
+        replaceWorkbenchSearchParams((nextParams) => {
+          nextParams.delete(INTENT_DRAFT_LAUNCH_QUERY_PARAM);
+          nextParams.delete('launchDecision');
+          nextParams.delete('launchReason');
+          nextParams.set('runId', run.runId);
+        });
+        await startRunStream(run.runId, run.events.length);
+      } catch (error: unknown) {
+        if (!active) return;
+        setRunning(false);
+        setCanceling(false);
+        setRunError(error instanceof Error ? error.message : 'AI 意图驱动 E2E 执行失败');
+        replaceWorkbenchSearchParams((nextParams) => {
+          nextParams.delete(INTENT_DRAFT_LAUNCH_QUERY_PARAM);
+        });
+      }
+    }
+
+    void autoLaunchDraftFlow();
+    return () => {
+      active = false;
+    };
+  }, [
+    activeRunId,
+    applyBlockedLaunchDecision,
+    applyRunRecord,
+    clearExecutionState,
+    draftLaunchHydratedKey,
+    embedded,
+    replaceWorkbenchSearchParams,
+    searchDraftLaunchMode,
+    searchIntentDraftUid,
+    searchRequestedRunId,
+    searchWorkspaceModuleUid,
+    searchWorkspaceProjectUid,
+    startRunStream,
+    workspaceModuleUid,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -7672,7 +7855,7 @@ export default function IntentE2EWorkbench({
 
   return (
     <main
-      className={`intent-e2e-workbench relative isolate font-['SF_Pro_Display','SF_Pro_Text','PingFang_SC','Helvetica_Neue',sans-serif] text-slate-900 ${
+      className={`intent-e2e-workbench relative isolate bg-[linear-gradient(180deg,#f8f6f2_0%,#f3f1eb_100%)] font-['SF_Pro_Display','SF_Pro_Text','PingFang_SC','Helvetica_Neue',sans-serif] text-slate-900 ${
         embedded ? 'max-h-[80vh] overflow-y-auto overscroll-contain' : 'min-h-screen xl:h-screen xl:overflow-hidden'
       }`}
     >
@@ -7680,26 +7863,26 @@ export default function IntentE2EWorkbench({
         <>
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute left-[6%] top-10 h-44 w-44 rounded-full bg-[radial-gradient(circle,rgba(244,220,194,0.58),rgba(244,220,194,0)_72%)] blur-3xl"
+            className="pointer-events-none absolute left-[7%] top-14 h-36 w-36 rounded-full bg-[radial-gradient(circle,rgba(244,220,194,0.34),rgba(244,220,194,0)_72%)] blur-3xl"
           />
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute right-[8%] top-4 h-56 w-56 rounded-full bg-[radial-gradient(circle,rgba(216,228,245,0.68),rgba(216,228,245,0)_70%)] blur-3xl"
+            className="pointer-events-none absolute right-[9%] top-8 h-44 w-44 rounded-full bg-[radial-gradient(circle,rgba(216,228,245,0.42),rgba(216,228,245,0)_70%)] blur-3xl"
           />
         </>
       )}
       <div
         className={`intent-e2e-shell mx-auto ${
-          embedded ? 'max-w-[1080px] px-3 py-3 md:px-4' : 'max-w-[1640px] px-5 py-7 md:px-7 lg:px-10 xl:h-full xl:px-12'
+          embedded ? 'max-w-[1080px] px-3 py-3 md:px-4' : 'max-w-[1560px] px-4 py-6 md:px-6 lg:px-8 xl:h-full xl:px-10'
         }`}
       >
         <section
-          className={`grid gap-5 ${
+          className={`grid gap-4 ${
             embedded
               ? 'mt-3 lg:grid-cols-[minmax(0,1fr)_350px]'
               : showCollapsedWorkbenchRail
-                ? 'mt-1 xl:h-full xl:min-h-0 xl:grid-cols-[84px_minmax(0,1fr)] xl:items-stretch'
-                : 'mt-1 xl:h-full xl:min-h-0 xl:grid-cols-[minmax(320px,24%)_minmax(0,76%)] xl:items-stretch'
+                ? 'mt-1 xl:h-full xl:min-h-0 xl:grid-cols-[76px_minmax(0,1fr)] xl:items-stretch'
+                : 'mt-1 xl:h-full xl:min-h-0 xl:grid-cols-[minmax(320px,22%)_minmax(0,78%)] xl:items-stretch'
           }`}
         >
           <form id={intentWorkbenchFormId} onSubmit={runIntentTest} className={embedded ? 'space-y-4' : 'xl:h-full xl:min-h-0'}>
@@ -7708,17 +7891,17 @@ export default function IntentE2EWorkbench({
                 subtitle: '左侧输入任务，右侧查看执行、上下文与治理。',
               })
             ) : showCollapsedWorkbenchRail ? (
-              <section className="intent-e2e-hero relative overflow-hidden rounded-[26px] border border-black/5 bg-[linear-gradient(135deg,rgba(255,255,255,0.98),rgba(251,248,242,0.96)_54%,rgba(243,246,249,0.95))] px-2.5 py-3 text-slate-950 shadow-[0_24px_60px_rgba(44,37,28,0.08)] xl:h-full">
+              <section className="intent-e2e-hero relative overflow-hidden rounded-[24px] border border-[#e7e2d8] bg-white/90 px-2 py-3 text-slate-950 shadow-[0_12px_28px_rgba(15,23,42,0.04)] xl:h-full">
                 <div
                   aria-hidden="true"
-                  className="pointer-events-none absolute -right-10 -top-10 h-40 w-40 rounded-full bg-[radial-gradient(circle,rgba(214,225,241,0.46),rgba(214,225,241,0)_70%)] blur-2xl"
+                  className="pointer-events-none absolute -right-8 -top-8 h-28 w-28 rounded-full bg-[radial-gradient(circle,rgba(214,225,241,0.24),rgba(214,225,241,0)_70%)] blur-2xl"
                 />
                 <div className="relative flex h-full flex-col items-center justify-between">
                   <div className="flex w-full flex-col items-center gap-3">
-                    <span className="inline-flex h-10 w-10 items-center justify-center rounded-[20px] bg-[#1f1a15] text-[11px] font-semibold uppercase tracking-[0.2em] text-white shadow-[0_14px_28px_rgba(31,26,21,0.18)]">
-                      LOG
+                    <span className="inline-flex h-10 w-10 items-center justify-center rounded-[18px] border border-[#ded7cc] bg-[#faf7f1] text-[13px] font-semibold text-slate-700">
+                      志
                     </span>
-                    <span className={`rounded-full border px-2 py-1 text-[9px] font-medium ${railStatusBadge.className}`}>
+                    <span className={`whitespace-nowrap rounded-full border px-2 py-1 text-[10px] font-medium ${railStatusBadge.className}`}>
                       {railStatusBadge.label}
                     </span>
                     {(runError || restoreNotice) && (
@@ -7735,7 +7918,7 @@ export default function IntentE2EWorkbench({
                     <button
                       type="button"
                       onClick={() => setWorkbenchCollapsed(false)}
-                      className="inline-flex h-11 w-11 items-center justify-center rounded-[18px] bg-[#1f1a15] text-[11px] font-medium leading-4 text-white shadow-[0_12px_24px_rgba(31,26,21,0.16)] transition hover:bg-[#171310]"
+                      className="inline-flex h-11 w-11 items-center justify-center rounded-[16px] border border-[#ded7cc] bg-white text-[11px] font-medium leading-4 text-slate-700 shadow-[0_8px_20px_rgba(15,23,42,0.04)] transition hover:border-[#cabda8] hover:text-slate-950"
                       title="展开日志"
                     >
                       展开
@@ -7743,14 +7926,14 @@ export default function IntentE2EWorkbench({
                     <button
                       type="button"
                       onClick={() => setRailView('workbench')}
-                      className="inline-flex h-11 w-11 items-center justify-center rounded-[18px] border border-[#d7d0c5] bg-white/88 text-[10px] leading-4 text-slate-600 shadow-[0_10px_22px_rgba(44,37,28,0.05)] transition hover:border-[#c6baaa] hover:text-slate-900"
+                      className="inline-flex h-11 w-11 items-center justify-center rounded-[16px] border border-[#ded7cc] bg-white text-[10px] leading-4 text-slate-600 shadow-[0_8px_20px_rgba(15,23,42,0.04)] transition hover:border-[#cabda8] hover:text-slate-900"
                       title="编辑任务"
                     >
                       任务
                     </button>
                     <Link
                       href="/"
-                      className="inline-flex h-11 w-11 items-center justify-center rounded-[18px] border border-[#d7d0c5] bg-white/88 text-[11px] leading-4 text-slate-600 shadow-[0_10px_22px_rgba(44,37,28,0.05)] transition hover:border-[#c6baaa] hover:text-slate-900"
+                      className="inline-flex h-11 w-11 items-center justify-center rounded-[16px] border border-[#ded7cc] bg-white text-[11px] leading-4 text-slate-600 shadow-[0_8px_20px_rgba(15,23,42,0.04)] transition hover:border-[#cabda8] hover:text-slate-900"
                       title="返回项目"
                     >
                       返回
@@ -7759,14 +7942,14 @@ export default function IntentE2EWorkbench({
                 </div>
               </section>
             ) : (
-              <section className="intent-e2e-feed-panel relative overflow-hidden rounded-[32px] border border-black/5 bg-[linear-gradient(135deg,rgba(255,255,255,0.98),rgba(251,248,242,0.96)_54%,rgba(243,246,249,0.95))] px-5 py-5 text-slate-950 shadow-[0_24px_60px_rgba(44,37,28,0.08)] md:px-6 md:py-6 xl:flex xl:h-full xl:min-h-0 xl:flex-col">
+              <section className="intent-e2e-feed-panel relative overflow-hidden rounded-[28px] border border-[#e7e2d8] bg-white/90 px-5 py-5 text-slate-950 shadow-[0_12px_28px_rgba(15,23,42,0.04)] md:px-6 md:py-6 xl:flex xl:h-full xl:min-h-0 xl:flex-col">
                 <div
                   aria-hidden="true"
-                  className="pointer-events-none absolute -right-12 top-6 h-44 w-44 rounded-full bg-[radial-gradient(circle,rgba(214,225,241,0.52),rgba(214,225,241,0)_70%)] blur-2xl"
+                  className="pointer-events-none absolute -right-10 top-6 h-32 w-32 rounded-full bg-[radial-gradient(circle,rgba(214,225,241,0.24),rgba(214,225,241,0)_70%)] blur-2xl"
                 />
                 <div
                   aria-hidden="true"
-                  className="pointer-events-none absolute left-8 top-0 h-32 w-32 rounded-full bg-[radial-gradient(circle,rgba(255,242,223,0.82),rgba(255,242,223,0)_72%)] blur-2xl"
+                  className="pointer-events-none absolute left-8 top-0 h-24 w-24 rounded-full bg-[radial-gradient(circle,rgba(255,242,223,0.4),rgba(255,242,223,0)_72%)] blur-2xl"
                 />
                 <div className="relative flex min-h-0 flex-1 flex-col">
                   <div className="shrink-0">
@@ -7776,8 +7959,8 @@ export default function IntentE2EWorkbench({
                           实时日志
                         </h2>
                       </div>
-                      <div className="shrink-0 rounded-full border border-[#e1d8cb] bg-white/80 px-3 py-1 text-[11px] font-medium text-slate-500 shadow-[0_8px_20px_rgba(44,37,28,0.05)]">
-                        日志控制台
+                      <div className="shrink-0 rounded-full border border-[#e6dfd4] bg-[#faf7f1] px-3 py-1 text-[11px] font-medium text-slate-500">
+                        执行台
                       </div>
                     </div>
 
@@ -7785,28 +7968,28 @@ export default function IntentE2EWorkbench({
                       <button
                         type="button"
                         onClick={() => setRailView('workbench')}
-                        className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-[16px] border border-[#d7d0c5] bg-white/90 px-3 text-[12px] font-medium text-slate-700 shadow-[0_10px_24px_rgba(44,37,28,0.05)] transition hover:border-[#c6baaa] hover:bg-white hover:text-slate-950"
+                        className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-[14px] border border-[#e1dad0] bg-[#fbfaf7] px-3 text-[12px] font-medium text-slate-700 transition hover:border-[#cabda8] hover:bg-white hover:text-slate-950"
                       >
                         编辑任务
                       </button>
                       <button
                         type="button"
                         onClick={() => setRailView('live')}
-                        className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-[16px] border border-[#ddc59f] bg-[#f8ecdc]/96 px-3 text-[12px] font-medium text-[#7a5c33] shadow-[0_10px_24px_rgba(122,92,51,0.08)] transition hover:bg-[#f5e6d3]"
+                        className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-[14px] border border-[#dcc7a7] bg-[#f8f1e5] px-3 text-[12px] font-medium text-[#7a5c33] transition hover:bg-[#f5ecde]"
                       >
                         查看画面
                       </button>
                       <button
                         type="button"
                         onClick={() => setWorkbenchCollapsed(true)}
-                        className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-[16px] border border-[#d7d0c5] bg-white/82 px-3 text-[12px] font-medium text-slate-600 shadow-[0_10px_24px_rgba(44,37,28,0.04)] transition hover:border-[#c6baaa] hover:bg-white hover:text-slate-900"
+                        className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-[14px] border border-[#e1dad0] bg-[#fbfaf7] px-3 text-[12px] font-medium text-slate-600 transition hover:border-[#cabda8] hover:bg-white hover:text-slate-900"
                         title="收起左栏"
                       >
                         收起
                       </button>
                       <Link
                         href="/"
-                        className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-[16px] border border-[#d7d0c5] bg-white/82 px-3 text-[12px] font-medium text-slate-600 shadow-[0_10px_24px_rgba(44,37,28,0.04)] transition hover:border-[#c6baaa] hover:bg-white hover:text-slate-900"
+                        className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-[14px] border border-[#e1dad0] bg-[#fbfaf7] px-3 text-[12px] font-medium text-slate-600 transition hover:border-[#cabda8] hover:bg-white hover:text-slate-900"
                       >
                         返回项目
                       </Link>
@@ -7814,7 +7997,7 @@ export default function IntentE2EWorkbench({
 
                   </div>
 
-                  <div className="mt-4 flex min-h-[520px] flex-1 flex-col overflow-hidden rounded-[26px] border border-[#e2d8ca] bg-[linear-gradient(180deg,rgba(255,252,247,0.99),rgba(248,242,234,0.96))] shadow-[inset_0_1px_0_rgba(255,255,255,0.92),0_18px_36px_rgba(91,73,47,0.08)] xl:min-h-0">
+                  <div className="mt-4 flex min-h-[520px] flex-1 flex-col overflow-hidden rounded-[24px] border border-[#e7e2d8] bg-[#fcfaf6] shadow-[inset_0_1px_0_rgba(255,255,255,0.92),0_10px_24px_rgba(15,23,42,0.04)] xl:min-h-0">
                     <div className={`shrink-0 border-b px-4 py-4 ${liveLogStatus.toneClassName}`}>
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
@@ -7824,7 +8007,7 @@ export default function IntentE2EWorkbench({
                           </div>
                           <p className="mt-2 text-[13px] leading-6 opacity-80">{liveLogStatus.detail}</p>
                         </div>
-                        <span className="rounded-full border border-black/5 bg-white/78 px-2.5 py-1 text-[12px] font-medium text-current">
+                        <span className="whitespace-nowrap rounded-full border border-black/5 bg-white/78 px-2.5 py-1 text-[12px] font-medium text-current">
                           {liveLogStatus.badgeLabel}
                         </span>
                       </div>
@@ -11432,17 +11615,17 @@ export default function IntentE2EWorkbench({
               , governancePortalHost)}
           </form>
 
-          <aside className={embedded ? 'space-y-4' : 'intent-e2e-scroll space-y-4 xl:h-full xl:min-h-0 xl:overflow-y-auto xl:overscroll-contain xl:pl-2'}>
-            <section className="intent-e2e-command-deck overflow-hidden rounded-[32px] border border-black/5 bg-[linear-gradient(180deg,rgba(248,244,237,0.94),rgba(242,238,231,0.92))] shadow-[0_28px_70px_rgba(44,37,28,0.1)] backdrop-blur-xl">
-              <div className="border-b border-[#ddd5ca] bg-[linear-gradient(180deg,rgba(250,247,241,0.98),rgba(242,238,231,0.94))] px-5 py-5">
+          <aside className={embedded ? 'space-y-4' : 'intent-e2e-scroll space-y-4 xl:h-full xl:min-h-0 xl:overflow-y-auto xl:overscroll-contain xl:pl-1'}>
+            <section className="intent-e2e-command-deck overflow-hidden rounded-[28px] border border-[#e7e2d8] bg-white/90 shadow-[0_12px_28px_rgba(15,23,42,0.04)] backdrop-blur-xl">
+              <div className="border-b border-[#ece6db] bg-[#fcfaf6] px-5 py-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-[19px] font-semibold tracking-[-0.03em] text-slate-950">执行与反馈中心</p>
+                    <p className="text-[18px] font-semibold tracking-[-0.03em] text-slate-950">执行与反馈中心</p>
                   </div>
                 </div>
 
-                <div className="mt-4 overflow-x-auto pb-1">
-                  <div className="inline-flex min-w-max items-center gap-1 rounded-[18px] border border-[#e5dbcf] bg-white/58 p-1">
+                <div className="mt-3 overflow-x-auto pb-1">
+                  <div className="inline-flex min-w-max items-center gap-1 rounded-[16px] border border-[#ebe5da] bg-[#faf8f3] p-1">
                     {railTabs.map((item) => {
                       const active = item.key === activeRailTab.key;
 
@@ -11456,15 +11639,15 @@ export default function IntentE2EWorkbench({
                               setDetailView('compile');
                             }
                           }}
-                          className={`inline-flex items-center gap-2 rounded-[14px] px-3 py-2 text-[14px] font-medium transition ${
+                          className={`inline-flex items-center gap-2 rounded-[12px] px-3 py-2 text-[13px] font-medium transition ${
                             active
-                              ? 'bg-white text-slate-950 shadow-[0_6px_18px_rgba(44,37,28,0.08)]'
-                              : 'text-slate-500 hover:bg-white/70 hover:text-slate-900'
+                              ? 'bg-white text-slate-950 shadow-[0_6px_18px_rgba(15,23,42,0.05)]'
+                              : 'text-slate-500 hover:bg-white hover:text-slate-900'
                           }`}
                         >
                           <span>{item.label}</span>
                           {active && (
-                            <span className="rounded-full bg-[#f5efe5] px-2 py-0.5 text-[12px] font-medium text-[#8c7656]">
+                            <span className="rounded-full bg-[#f5efe5] px-2 py-0.5 text-[11px] font-medium text-[#8c7656]">
                               {item.countLabel}
                             </span>
                           )}
@@ -11500,7 +11683,7 @@ export default function IntentE2EWorkbench({
                       <p className="text-sm font-medium">测试已停止</p>
                       <p className="mt-1 text-xs opacity-80">已保留当前流式上下文和 {displayAttempts.length} 次尝试记录，方便继续诊断。</p>
                     </div>
-                    <span className="rounded-full border px-3 py-1 text-xs font-medium">STOPPED</span>
+                    <span className="rounded-full border px-3 py-1 text-xs font-medium">已停止</span>
                   </div>
                 </div>
               ) : displayFinalResult ? (
@@ -11529,7 +11712,7 @@ export default function IntentE2EWorkbench({
                           </span>
                         )}
                         <span className="rounded-full border px-3 py-1 text-xs font-medium">
-                          {displayTerminalStatus === 'canceled' ? 'CANCELED' : displayFinalResult.success ? 'PASS' : 'FAIL'}
+                          {displayTerminalStatus === 'canceled' ? '已取消' : displayFinalResult.success ? '通过' : '失败'}
                         </span>
                       </div>
                     </div>
@@ -11757,7 +11940,7 @@ export default function IntentE2EWorkbench({
 
                 {railView === 'context' && (
                   <div className="space-y-4">
-                    <div className="intent-e2e-detail-launcher rounded-[26px] border border-black/5 bg-white/92 p-4 shadow-[0_12px_28px_rgba(44,37,28,0.06)]">
+                    <div className="intent-e2e-detail-launcher rounded-[22px] border border-[#e9e3d8] bg-[#fcfaf6] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.92)]">
                       <p className="text-[13px] font-medium uppercase tracking-[0.18em] text-slate-400">Execution Context</p>
                       <p className="mt-1.5 text-base font-semibold tracking-[-0.02em] text-slate-950">登录、模型与执行边界</p>
                       <p className="mt-1 text-[14px] leading-6 text-slate-600">
@@ -11770,7 +11953,7 @@ export default function IntentE2EWorkbench({
 
                 {railView === 'workbench' && !embedded && (
                   <div className="space-y-4">
-                    <div className="intent-e2e-detail-launcher rounded-[26px] border border-black/5 bg-white/92 p-4 shadow-[0_12px_28px_rgba(44,37,28,0.06)]">
+                    <div className="intent-e2e-detail-launcher rounded-[22px] border border-[#e9e3d8] bg-[#fcfaf6] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.92)]">
                       <p className="text-[13px] font-medium uppercase tracking-[0.18em] text-slate-400">Intent Workbench</p>
                       <p className="mt-1.5 text-base font-semibold tracking-[-0.02em] text-slate-950">任务描述、入口与参考图</p>
                       <p className="mt-1 text-[14px] leading-6 text-slate-600">
@@ -11787,7 +11970,7 @@ export default function IntentE2EWorkbench({
 
                 {railView === 'governance' && !embedded && (
                   <div className="space-y-4">
-                    <div className="intent-e2e-detail-launcher rounded-[26px] border border-black/5 bg-white/92 p-4 shadow-[0_12px_28px_rgba(44,37,28,0.06)]">
+                    <div className="intent-e2e-detail-launcher rounded-[22px] border border-[#e9e3d8] bg-[#fcfaf6] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.92)]">
                       <p className="text-[13px] font-medium uppercase tracking-[0.18em] text-slate-400">Governance</p>
                       <p className="mt-1.5 text-base font-semibold tracking-[-0.02em] text-slate-950">知识草稿、洞察、审计与回滚</p>
                       <p className="mt-1 text-[14px] leading-6 text-slate-600">
@@ -11800,7 +11983,7 @@ export default function IntentE2EWorkbench({
 
                 {railView === 'compile' && (
                   <div className="space-y-4">
-                    <div className="intent-e2e-detail-launcher rounded-[26px] border border-black/5 bg-white/92 p-4 shadow-[0_12px_28px_rgba(44,37,28,0.06)]">
+                    <div className="intent-e2e-detail-launcher rounded-[22px] border border-[#e9e3d8] bg-[#fcfaf6] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.92)]">
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
                           <p className="text-[13px] font-medium uppercase tracking-[0.18em] text-slate-400">Execution Details</p>
@@ -11846,7 +12029,7 @@ export default function IntentE2EWorkbench({
                       </div>
                     </div>
 
-                    <div className="intent-e2e-detail-launcher rounded-[26px] border border-black/5 bg-white/92 p-4 shadow-[0_12px_28px_rgba(44,37,28,0.06)]">
+                    <div className="intent-e2e-detail-launcher rounded-[22px] border border-[#e9e3d8] bg-[#fcfaf6] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.92)]">
                       <p className="text-[13px] font-medium uppercase tracking-[0.14em] text-slate-400">Current Snapshot</p>
                       <p className="mt-2 text-sm text-slate-800">{activeDetailPreview}</p>
                     </div>
@@ -11866,7 +12049,7 @@ export default function IntentE2EWorkbench({
                       </p>
                     </div>
                     <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${statusPillTone(displayFinalResult.success)}`}>
-                      {displayFinalResult.success ? 'PASS' : 'FAIL'}
+                      {displayFinalResult.success ? '通过' : '失败'}
                     </span>
                   </div>
 
@@ -12279,7 +12462,7 @@ export default function IntentE2EWorkbench({
 
                 {railView === 'live' && (
                   <div className="space-y-4">
-                    <div className="intent-e2e-browser-stage overflow-hidden rounded-[28px] border border-black/5 bg-[linear-gradient(180deg,rgba(252,249,243,0.97),rgba(245,241,233,0.96))] px-4 py-4 shadow-[0_18px_44px_rgba(44,37,28,0.08)] xl:flex xl:min-h-0 xl:flex-col">
+                    <div className="intent-e2e-browser-stage overflow-hidden rounded-[24px] border border-[#e9e3d8] bg-[#fcfaf6] px-4 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.04)] xl:flex xl:min-h-0 xl:flex-col">
                       <div className="flex items-center justify-between gap-3">
                         <div>
                           <p className="text-[14px] leading-6 text-slate-600">
@@ -12289,7 +12472,7 @@ export default function IntentE2EWorkbench({
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${railStatusBadge.className}`}>
+                          <span className={`whitespace-nowrap rounded-full border px-3 py-1 text-[11px] font-medium ${railStatusBadge.className}`}>
                             {railStatusBadge.label}
                           </span>
                           {browserSessionId && (
