@@ -690,6 +690,44 @@ describe('intent-e2e-service stream', () => {
     expect(events.at(-1)?.type).toBe('final_result');
   });
 
+  it('rejects partial generated code when the LLM stream errors before a complete event', async () => {
+    vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 2 } as any);
+    vi.mocked(generateTest).mockReturnValue(
+      toAsyncGenerator([
+        { type: 'thinking', content: '先搭建页面进入逻辑。' },
+        { type: 'code', content: "test('broken-partial', async ({ page }) => {\n  const leadContactName = `" },
+        { type: 'error', content: 'LLM 调用失败: LLM 请求超时 (60000ms)' },
+      ])
+    );
+
+    const events: IntentE2EStreamEvent[] = [];
+
+    await expect(
+      runIntentDrivenE2EStream(
+        {
+          input: '访问结算页并提交，最终看到成功页',
+        },
+        (event) => {
+          events.push(event);
+        }
+      )
+    ).rejects.toThrow('LLM 调用失败: LLM 请求超时 (60000ms)');
+
+    expect(vi.mocked(executeTest)).not.toHaveBeenCalled();
+    expect(vi.mocked(repairTest)).not.toHaveBeenCalled();
+    expect(events.some((event) => event.type === 'attempt_started' && event.attempt === 1 && event.kind === 'generate')).toBe(true);
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'attempt_event' &&
+          event.attempt === 1 &&
+          event.kind === 'generate' &&
+          event.event.type === 'error' &&
+          event.event.content.includes('LLM 请求超时')
+      )
+    ).toBe(true);
+  });
+
   it('reuses shared session storage state across consecutive runs', async () => {
     const firstStorageState = {
       cookies: [

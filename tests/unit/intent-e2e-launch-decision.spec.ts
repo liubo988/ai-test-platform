@@ -113,6 +113,38 @@ describe('resolveIntentE2ELaunchDecision', () => {
     expect(decision.reasons).toEqual(['insufficient_request_context']);
   });
 
+  it('keeps image-led generic requests blocked until the user adds real task context', () => {
+    const decision = resolveIntentE2ELaunchDecision({
+      input: '如图，帮我测一下',
+      targetUrl: 'https://example.com/business/list',
+      projectUid: 'proj_checkout',
+      assetAvailability: readyProjectAssets,
+      attachments: [{ name: 'business-list.png' }],
+      requiresFixture: false,
+    });
+
+    expect(decision.decision).toBe('needs_clarify');
+    expect(decision.reasons).toEqual(['insufficient_request_context']);
+    expect(decision.signals.hasTargetUrl).toBe(true);
+    expect(decision.signals.attachmentCount).toBe(1);
+  });
+
+  it('allows image-led requests to auto run once concrete steps and assertions are present', () => {
+    const decision = resolveIntentE2ELaunchDecision({
+      input: '根据截图在商机列表搜索刚创建的记录，并校验商机进展状态为新入库',
+      targetUrl: 'https://example.com/business/list',
+      projectUid: 'proj_checkout',
+      assetAvailability: readyProjectAssets,
+      attachments: [{ name: 'expected-state.png' }],
+      requiresFixture: false,
+    });
+
+    expect(decision.decision).toBe('auto_run');
+    expect(decision.reasons).toEqual(['launch_ready']);
+    expect(decision.signals.hasTargetUrl).toBe(true);
+    expect(decision.signals.attachmentCount).toBe(1);
+  });
+
   it('returns draft_only when failure pressure is high and no higher-priority blocker exists', () => {
     const decision = resolveIntentE2ELaunchDecision({
       input: '登录后搜索商机并进入详情页校验字段',

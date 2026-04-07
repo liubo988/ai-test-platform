@@ -88,24 +88,55 @@ function looksLikeMutatingIntentText(value: string): boolean {
   );
 }
 
+function normalizeCompactText(value: string): string {
+  return String(value || '')
+    .replace(/[\s,，。.!！?？:：;；'"`“”‘’、\-_/\\()[\]{}【】<>《》]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+function looksLikeClarifyOnlyIntentText(value: string): boolean {
+  const compact = normalizeCompactText(value);
+  if (!compact) return true;
+
+  return /^(如图|见图|按图|看图|测一下|测试一下|跑一下|试一下|帮我测|帮我跑|帮我测一下|帮我跑一下|帮我生成|帮我测试|帮我看一下|看一下|看下|这个页面|这个功能|这个流程|这个任务)$/.test(
+    compact
+  );
+}
+
+function hasTaskSpecificSignal(value: string): boolean {
+  return /(登录|进入|打开|访问|跳转|搜索|筛选|切换|点击|选择|输入|填写|提交|保存|新增|新建|创建|编辑|修改|删除|校验|验证|断言|检查|详情|列表|弹窗|抽屉|接口|响应|状态|字段|结果|成功|失败|表单|business|order|create|open|visit|enter|search|filter|click|select|input|fill|submit|save|verify|assert|check|detail|list|modal|drawer|response|status|field|result|success|fail)/i.test(
+    value
+  );
+}
+
 function needsClarify(input: {
   normalizedInput: string;
   hasTargetUrl: boolean;
   attachmentCount: number;
 }): boolean {
   if (!input.normalizedInput) {
-    return !input.hasTargetUrl && input.attachmentCount === 0;
-  }
-
-  if (input.hasTargetUrl || input.attachmentCount > 0) {
-    return false;
-  }
-
-  if (input.normalizedInput.length < 6) {
     return true;
   }
 
-  return /^(测一下|跑一下|试试|测试下|帮我测|帮我跑|这个页面|这个功能|如图|见图|看一下|帮我生成)$/i.test(input.normalizedInput);
+  const hasSpecificSignal = hasTaskSpecificSignal(input.normalizedInput);
+  if (looksLikeClarifyOnlyIntentText(input.normalizedInput)) {
+    return true;
+  }
+
+  if (!input.hasTargetUrl && input.attachmentCount === 0) {
+    if (input.normalizedInput.length < 6 && !hasSpecificSignal) {
+      return true;
+    }
+
+    return !hasSpecificSignal && normalizeCompactText(input.normalizedInput).length < 10;
+  }
+
+  if (!hasSpecificSignal) {
+    return true;
+  }
+
+  return false;
 }
 
 function createNeutralAssetAvailability(projectUid: string): IntentE2EProjectAssetAvailability {

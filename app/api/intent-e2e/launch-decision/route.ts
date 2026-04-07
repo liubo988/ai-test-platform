@@ -15,25 +15,7 @@ export async function POST(req: NextRequest) {
     const assetAvailability = buildIntentE2EProjectAssetAvailability({
       projectUid: request.projectUid,
     });
-    const recentTerminalRuns = request.projectUid
-      ? await listRecentIntentE2ETerminalRunSnapshots({
-          projectUid: request.projectUid,
-          moduleUid: request.moduleUid,
-          limit: 50,
-        })
-      : [];
-    const repeatedFailureSuppression = resolveIntentE2ERepeatedFailureSuppressionFromData(recentTerminalRuns, {
-      requestInput: request.input,
-      targetUrl: request.targetUrl,
-    });
-    const launchRepeatedFailureSuppression =
-      repeatedFailureSuppression.shouldSuppress && repeatedFailureSuppression.recommendedDecision
-        ? {
-            recommendedDecision: repeatedFailureSuppression.recommendedDecision,
-            reason: repeatedFailureSuppression.reason,
-          }
-        : null;
-    const launchDecision = resolveIntentE2ELaunchDecision({
+    const baselineLaunchDecision = resolveIntentE2ELaunchDecision({
       input: request.input,
       targetUrl: request.targetUrl,
       projectUid: request.projectUid,
@@ -41,11 +23,42 @@ export async function POST(req: NextRequest) {
       attachments: request.attachments,
       runtimeGovernance: request.runtimeGovernance,
       assetAvailability,
-      failurePressureSummary: repeatedFailureSuppression.shouldSuppress
-        ? repeatedFailureSuppression.failurePressureSummary
-        : null,
-      repeatedFailureSuppression: launchRepeatedFailureSuppression,
+      failurePressureSummary: null,
+      repeatedFailureSuppression: null,
     });
+    let launchDecision = baselineLaunchDecision;
+
+    if (request.projectUid && baselineLaunchDecision.decision === 'auto_run') {
+      const recentTerminalRuns = await listRecentIntentE2ETerminalRunSnapshots({
+        projectUid: request.projectUid,
+        moduleUid: request.moduleUid,
+        limit: 20,
+      });
+      const repeatedFailureSuppression = resolveIntentE2ERepeatedFailureSuppressionFromData(recentTerminalRuns, {
+        requestInput: request.input,
+        targetUrl: request.targetUrl,
+      });
+      const launchRepeatedFailureSuppression =
+        repeatedFailureSuppression.shouldSuppress && repeatedFailureSuppression.recommendedDecision
+          ? {
+              recommendedDecision: repeatedFailureSuppression.recommendedDecision,
+              reason: repeatedFailureSuppression.reason,
+            }
+          : null;
+      launchDecision = resolveIntentE2ELaunchDecision({
+        input: request.input,
+        targetUrl: request.targetUrl,
+        projectUid: request.projectUid,
+        moduleUid: request.moduleUid,
+        attachments: request.attachments,
+        runtimeGovernance: request.runtimeGovernance,
+        assetAvailability,
+        failurePressureSummary: repeatedFailureSuppression.shouldSuppress
+          ? repeatedFailureSuppression.failurePressureSummary
+          : null,
+        repeatedFailureSuppression: launchRepeatedFailureSuppression,
+      });
+    }
 
     const response = NextResponse.json({
       ...launchDecision,

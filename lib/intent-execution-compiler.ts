@@ -217,6 +217,34 @@ function buildPriorityScenarioFamilyVerificationHints(
   }
 }
 
+function buildVerificationArtifactReuseHints(
+  plan: IntentExecutionPlan,
+  verificationPlan?: IntentVerificationPlan
+): string[] {
+  if (!verificationPlan?.checks.length) return [];
+
+  const stepByUid = new Map(plan.steps.map((step) => [step.planStepUid, step]));
+  const artifactReuseAccessors = uniqueStrings(
+    verificationPlan.checks
+      .flatMap((check) => check.relatedPlanStepUids || [])
+      .map((uid) => stepByUid.get(uid))
+      .filter((step): step is IntentExecutionPlanStep => Boolean(step))
+      .filter(
+        (step) =>
+          step.preferredHelpers.includes('__e2e.resolvePrimaryRecord') ||
+          step.preferredHelpers.includes('__e2e.findAntdTableRow') ||
+          step.preferredHelpers.includes('__e2e.readDetailField')
+      )
+      .map((step) => toArtifactsAccessor(step.planStepUid))
+  );
+
+  if (artifactReuseAccessors.length === 0) return [];
+
+  return [
+    `若 ${artifactReuseAccessors.join(' / ')} 已写入 recordCheck / status / source 等定位证据，最终验收先直接复用这些 artifacts；只有这些 artifacts 缺少状态证据，或当前页面已离开原列表/详情上下文时，才补一次 __e2e.resolvePrimaryRecord(...) / __e2e.readDetailField(...)。`,
+  ];
+}
+
 function buildDefaultJsonRecordCollectionPaths(): string[] {
   return [
     'data.list',
@@ -840,6 +868,7 @@ function buildStatusEvidenceRecordLines(
     lines: [
       `const ${statusEvidenceRecordAccessor} = ${recordAccessor}.response ? ${recordAccessor} : ${recordAccessor}.row ? await __e2e.resolvePrimaryRecord(page, {`,
       ...resolvePrimaryRecordArgs,
+      `  preferCurrentVisibleRow: false,`,
       `  maxLookupAttempts: 1,`,
       `  retryIntervalMs: 200,`,
       `}) : ${recordAccessor};`,
@@ -1037,12 +1066,14 @@ function buildDirectDetailUrlFallbackLines(
 function buildRowStatusFallbackLines(
   baseName: string,
   rowAccessor: string,
+  statusEvidenceRecordAccessor: string,
   matchedRecordAccessor: string,
   relatedSteps: IntentExecutionPlanStep[],
   check: IntentVerificationPlanCheck,
   detailFieldLabels: string[],
   sharedVariable: string,
   primaryAccessor: string,
+  candidatePaths: string[],
   detailFallbackLines: string[],
   detailUrlExpression: string,
   detailReadyLocatorExpression: string
@@ -1065,6 +1096,7 @@ function buildRowStatusFallbackLines(
     `${baseName}ExpectedStatusAssertion`,
     `${baseName}ExpectedStatusAssertion`
   );
+  const listPayloadIdentifier = toSafeIdentifier(`${baseName}ListPayload`, `${baseName}ListPayload`);
   const supportsDerivedBusinessIdFallback =
     Boolean(matchedRecordAccessor) &&
     shouldEnableDerivedBusinessIdStatusFallback(sharedVariable, check, relatedSteps, detailUrlExpression);
@@ -1089,12 +1121,19 @@ function buildRowStatusFallbackLines(
 
   return [
     `const ${rowTextIdentifier} = await ${rowAccessor}.innerText().catch(() => '');`,
+    `const ${expectedStatusAssertionIdentifier} = ${expectedStatusAssertionExpression};`,
+    `const ${listPayloadIdentifier} = ${statusEvidenceRecordAccessor}.response ? await __e2e.readJsonResponse(${statusEvidenceRecordAccessor}.response, { required: false }) : null;`,
+    `const ${matchedRecordAccessor} = ${listPayloadIdentifier} ? __e2e.pickJsonRecord(${listPayloadIdentifier}, { label: ${JSON.stringify(
+      sharedVariable
+    )}, value: ${primaryAccessor}, paths: ${renderJsStringArray(candidatePaths)}, collectionPaths: ${renderJsStringArray(
+      buildDefaultJsonRecordCollectionPaths()
+    )}, required: false }) : null;`,
     ...(
       supportsDerivedBusinessIdFallback
         ? [
             `const ${rowKeyIdentifier} = ((await ${rowAccessor}.getAttribute('data-row-key')) || '').trim();`,
             `const ${derivedBusinessIdIdentifier} = ${toSharedAccessor('businessId')} || ((/^[A-Za-z0-9_-]{6,64}$/.test(${rowKeyIdentifier}) && !/^1\\d{10}$/.test(${rowKeyIdentifier})) ? ${rowKeyIdentifier} : '') || (((${rowTextIdentifier}.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item))) || '');`,
-            `const ${matchedRecordByDerivedBusinessIdIdentifier} = !${matchedRecordAccessor} && ${baseName}ListPayload && ${derivedBusinessIdIdentifier} ? __e2e.pickJsonRecord(${baseName}ListPayload, { label: 'derivedBusinessId', value: ${derivedBusinessIdIdentifier}, paths: ['businessId', 'id'], required: false }) : null;`,
+            `const ${matchedRecordByDerivedBusinessIdIdentifier} = !${matchedRecordAccessor} && ${listPayloadIdentifier} && ${derivedBusinessIdIdentifier} ? __e2e.pickJsonRecord(${listPayloadIdentifier}, { label: 'derivedBusinessId', value: ${derivedBusinessIdIdentifier}, paths: ['businessId', 'id'], required: false }) : null;`,
             `const ${resolvedMatchedRecordIdentifier} = ${matchedRecordAccessor} || ${matchedRecordByDerivedBusinessIdIdentifier};`,
           ]
         : detailUrlRequiresPrimary
@@ -1111,10 +1150,7 @@ function buildRowStatusFallbackLines(
           )}, required: false }) : ''`
         : "''"
     };`,
-    `const ${expectedStatusAssertionIdentifier} = ${expectedStatusAssertionExpression};`,
-    `if (${expectedStatusAssertionIdentifier} && ${rowTextIdentifier}.includes(String(${expectedStatusAssertionIdentifier}))) {`,
-    `  expect(${rowTextIdentifier}).toContain(String(${expectedStatusAssertionIdentifier}));`,
-    `} else if (${expectedStatusIdentifier}) {`,
+    `if (${expectedStatusIdentifier}) {`,
     `  expect(String(${expectedStatusIdentifier})).toContain(String(${expectedStatusAssertionIdentifier}));`,
     `} else {`,
     ...(
@@ -1432,28 +1468,19 @@ function buildVerificationSkeletonLines(check: IntentVerificationPlanCheck, rela
           resolvePrimaryRecordArgs,
           needsRowStatusEvidenceFallback
         );
-        const rowMatchedRecordLines =
-          statusEvidenceRecord.lines.length > 0
-            ? buildRecordMatchedRecordLines(
-                baseName,
-                statusEvidenceRecord.accessor,
-                sharedVariable,
-                primaryAccessor,
-                candidatePaths,
-                recordBackedDetailFields.length > 0
-              )
-            : matchedRecordLines;
         const rowStatusFallbackLines =
           needsRowStatusEvidenceFallback
             ? buildRowStatusFallbackLines(
                 baseName,
                 `${baseName}Record.row`,
+                statusEvidenceRecord.accessor,
                 matchedRecordAccessor,
                 relatedSteps,
                 check,
                 detailFieldLabels,
                 sharedVariable,
                 primaryAccessor,
+                candidatePaths,
                 implicitRowDetailEntryLines,
                 detailUrlExpression,
                 recordLookup?.detailReadyLocator || ''
@@ -1473,7 +1500,7 @@ function buildVerificationSkeletonLines(check: IntentVerificationPlanCheck, rela
             rowDetailEntryLines.length > 0
               ? [...matchedRecordLines, ...rowDetailEntryLines].map((line) => `  ${line}`)
               : rowStatusFallbackLines.length > 0
-              ? [...statusEvidenceRecord.lines, ...rowMatchedRecordLines, ...rowStatusFallbackLines].map((line) => `  ${line}`)
+              ? [...statusEvidenceRecord.lines, ...rowStatusFallbackLines].map((line) => `  ${line}`)
               : matchedRecordLines.length > 0
               ? [
                   ...matchedRecordLines,
@@ -1675,10 +1702,13 @@ function buildStepInstructions(
     step.preferredHelpers.includes('__e2e.findAntdTableRow')
   ) {
     instructions.push(
-      `如果 ${primarySharedVariable} 已经作为共享稳定标识从响应里真实提取，优先写 const currentVisibleRow = ${toSharedAccessor(primarySharedVariable)} ? await (async () => { try { return await __e2e.findAntdTableRow(page, { hasTexts: [${toSharedAccessor(primarySharedVariable)}], timeoutMs: 1200 }); } catch { return null; } })() : null; const recordCheck = currentVisibleRow ? { primaryValue: ${toSharedAccessor(primarySharedVariable)}, mode: 'table_row', row: currentVisibleRow, response: null } : await __e2e.resolvePrimaryRecord(page, { primaryValue: ${toSharedAccessor(primarySharedVariable)}, listResponse, rowHasTexts: [${toSharedAccessor(primarySharedVariable)}, '辅助身份字段'], detailUrl }); 若列表检索控件已知，再显式补 keywordInput/searchButton；未知时可先省略，让 helper 自动探测可见搜索框和搜索按钮。一旦把 keywordInput/searchButton 传给 helper，就不要在同一分支先手写 keywordInput.fill(...) + searchButton.click() 再让 helper 重复搜索；helper 会自己负责检索，双重搜索很容易触发重复列表刷新或页面脚本异常。对于“提交后回列表验收”这类场景，先短超时检查当前可见列表是否已经出现目标行，不要看到搜索框就立刻填值搜索；只有当前列表未命中时，才让 helper 保守做列表收敛轮询（例如传 maxLookupAttempts / retryIntervalMs）。列表命中后先把该行当作目标记录已命中的身份证据；如果预期状态没有出现在同一行可见文本 / 状态单元格，不要在这里硬失败，优先改读列表响应或详情字段。若 currentVisibleRow 已命中但后面还需要状态证据，而 recordCheck.response 会是 null，不要直接退化成开详情读裸状态字段；先补一跳只为拿结构化列表响应（例如 statusEvidenceRecordCheck = recordCheck.response ? recordCheck : currentVisibleRow ? await __e2e.resolvePrimaryRecord(page, { primaryValue: ${toSharedAccessor(primarySharedVariable)}, listResponse, rowHasTexts, maxLookupAttempts: 1, retryIntervalMs: 200, detailUrl }) : recordCheck），再从 statusEvidenceRecordCheck.response -> __e2e.pickJsonRecord(...) -> __e2e.pickJsonValue(...状态 paths...) 读取状态。未命中则直接回退详情页 / 详情抽屉，并优先用 __e2e.readDetailField(...) 做字段验收。`
+      `如果 ${primarySharedVariable} 已经作为共享稳定标识从响应里真实提取，优先写 const currentVisibleRow = ${toSharedAccessor(primarySharedVariable)} ? await (async () => { try { return await __e2e.findAntdTableRow(page, { hasTexts: [${toSharedAccessor(primarySharedVariable)}], timeoutMs: 1200 }); } catch { return null; } })() : null; const recordCheck = currentVisibleRow ? { primaryValue: ${toSharedAccessor(primarySharedVariable)}, mode: 'table_row', row: currentVisibleRow, response: null } : await __e2e.resolvePrimaryRecord(page, { primaryValue: ${toSharedAccessor(primarySharedVariable)}, listResponse, rowHasTexts: [${toSharedAccessor(primarySharedVariable)}, '辅助身份字段'], detailUrl }); 若列表检索控件已知，再显式补 keywordInput/searchButton；未知时可先省略，让 helper 自动探测可见搜索框和搜索按钮。一旦把 keywordInput/searchButton 传给 helper，就不要在同一分支先手写 keywordInput.fill(...) + searchButton.click() 再让 helper 重复搜索；helper 会自己负责检索，双重搜索很容易触发重复列表刷新或页面脚本异常。对于“提交后回列表验收”这类场景，先短超时检查当前可见列表是否已经出现目标行，不要看到搜索框就立刻填值搜索；只有当前列表未命中时，才让 helper 保守做列表收敛轮询（例如传 maxLookupAttempts / retryIntervalMs）。列表命中后先把该行当作目标记录已命中的身份证据；如果预期状态没有出现在同一行可见文本 / 状态单元格，不要在这里硬失败，优先改读列表响应或详情字段。若 currentVisibleRow 已命中但后面还需要状态证据，而 recordCheck.response 会是 null，不要直接退化成开详情读裸状态字段；先补一跳只为拿结构化列表响应（例如 statusEvidenceRecordCheck = recordCheck.response ? recordCheck : currentVisibleRow ? await __e2e.resolvePrimaryRecord(page, { primaryValue: ${toSharedAccessor(primarySharedVariable)}, listResponse, rowHasTexts, preferCurrentVisibleRow: false, maxLookupAttempts: 1, retryIntervalMs: 200, detailUrl }) : recordCheck），再从 statusEvidenceRecordCheck.response -> __e2e.pickJsonRecord(...) -> __e2e.pickJsonValue(...状态 paths...) 读取状态。未命中则直接回退详情页 / 详情抽屉，并优先用 __e2e.readDetailField(...) 做字段验收。`
     );
     instructions.push(
       `如果 \`currentVisibleRow\` / \`recordCheck.row\` 已经由 helper 命中，不要紧接着再写 \`await expect(recordCheck.row).toContainText(primaryValue)\` 或 \`await expect(currentVisibleRow).toContainText(primaryValue)\` 去证明同一个身份；helper 命中本身已经是身份证据，这类重复断言很容易重新落回 \`locator(...).nth(...)\` 行漂移。若还需要行内可见文本，只做一次 \`const rowText = await recordCheck.row.innerText().catch(() => '')\` 的保守读取。`
+    );
+    instructions.push(
+      `如果这次 \`rowText\` 已经直接包含预期业务状态（例如“新入库”），也只能把它当作辅助线索，不要再把裸 \`rowText\` 当最终成功条件。优先继续补同一条结构化列表记录（\`statusEvidenceRecordCheck -> __e2e.readJsonResponse(...) -> __e2e.pickJsonRecord(...)\`）或详情字段；\`rowText\` 只用于辅助派生 \`derivedBusinessId\` / \`detailUrl\`。`
     );
     instructions.push(
       `若 recordCheck.response 可用，优先继续用 __e2e.readJsonResponse(recordCheck.response, { required: false }) + __e2e.pickJsonRecord(...) 找到命中的列表记录，再为详情字段生成 expected value。若行文本里缺少状态，优先用 matchedRecord 里的状态字段做断言；列表 JSON 仍拿不到状态时，再走 detailUrl / detailEntry + __e2e.readDetailField(...)。如果最终状态 / 详情字段仍为空，不要写 expect(statusText || '').toContain(...) 这类空串断言；应抛出明确的“状态/详情字段证据缺失”错误。`
@@ -1712,6 +1742,9 @@ function buildStepInstructions(
     );
     instructions.push(
       `如果 \`currentVisibleRow\` / \`recordCheck.row\` 已经由 helper 命中，不要再补 \`await expect(recordCheck.row).toContainText(${toSharedAccessor(primarySharedVariable)})\` 这类重复身份断言；helper 命中本身已经足够。若还需要可见文本，改成一次性的 \`innerText().catch(() => '')\` 读取，并在拿到列表响应 / 详情证据时优先继续走结构化链。`
+    );
+    instructions.push(
+      `如果当前 \`rowText\` 已经直出预期业务状态（例如“新入库”），也不要直接把裸 \`rowText\` 当作最终状态证据。优先继续读取 \`statusEvidenceRecordCheck.response -> listJson -> matchedRecord\`；若结构化列表记录仍拿不到状态，再走详情页 / 详情抽屉字段回退。`
     );
     instructions.push(
       `如果 row 已命中、\`statusEvidenceRecordCheck.response\` 也已返回，但 \`matchedRecord\` 仍按 ${toSharedAccessor(primarySharedVariable)} 未命中，不要直接停在“列表响应未返回状态”。对商机列表这类 family，先在已命中分支里补 \`const rowKey = ((await recordCheck.row.getAttribute('data-row-key')) || '').trim()\`，再用当前 \`rowText\` 保守派生 \`const derivedBusinessId = ((/^[A-Za-z0-9_-]{6,64}$/.test(rowKey) && !/^1\\d{10}$/.test(rowKey)) ? rowKey : '') || ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '')\`，随后优先写 \`const matchedRecordByDerivedBusinessId = !matchedRecord && listJson && derivedBusinessId ? __e2e.pickJsonRecord(listJson, { label: 'derivedBusinessId', value: derivedBusinessId, paths: ['businessId', 'id'], required: false }) : null;\`，并把 \`matchedRecord || matchedRecordByDerivedBusinessId\` 当成状态来源；只有这条结构化回填仍为空时，才继续 detailUrl / detailEntry fallback。`
@@ -1782,6 +1815,11 @@ function buildVerificationHint(check: IntentVerificationPlanCheck, relatedSteps:
   ]
     .filter(Boolean)
     .join('；');
+  const relatedArtifactAccessors = uniqueStrings(relatedSteps.map((step) => toArtifactsAccessor(step.planStepUid)));
+  const relatedArtifactReuseHint =
+    relatedArtifactAccessors.length > 0
+      ? ` 若 ${relatedArtifactAccessors.join(' / ')} 已写入 recordCheck / status / source，verification 先直接复用这些产物；只有它们缺少结构化状态证据，或当前页面已离开原列表/详情上下文时，才补一次 __e2e.resolvePrimaryRecord(...) / __e2e.readDetailField(...)。`
+      : '';
 
   switch (check.kind) {
     case 'response':
@@ -1790,7 +1828,7 @@ function buildVerificationHint(check: IntentVerificationPlanCheck, relatedSteps:
         : '优先断言关键接口响应成功，不要只看模糊成功文案。';
     case 'table_row':
       return sharedVariable && shouldPreferResolvePrimaryRecord(check, relatedSteps, sharedVariable)
-        ? `优先用 ${toSharedAccessor(sharedVariable)} 这个共享稳定标识/唯一身份文本回查目标记录。对于“提交后回列表验收”这类收敛场景，不要看到搜索框就立刻填值；先短超时用 __e2e.findAntdTableRow(page, { hasTexts: [${toSharedAccessor(sharedVariable)}], timeoutMs: 1200 }) 检查当前可见列表是否已经命中，只有当前列表未命中时，才调用 __e2e.resolvePrimaryRecord(...) 触发关键词搜索。若已知列表检索控件，再显式传 keywordInput/searchButton；未知时优先省略，让 helper 自动探测。只要已经把 keywordInput/searchButton 传给 helper，就不要在外层再手写一次 fill + click 预搜索，否则很容易触发双重刷新。进入 helper 后再让它保守轮询几次列表结果（例如 maxLookupAttempts / retryIntervalMs），不要手写一次 search 后立刻失败。若列表命中，先把目标行当作已命中的身份凭证；不要紧接着再写 \`await expect(recordCheck.row).toContainText(primaryValue)\` 或 \`await expect(currentVisibleRow).toContainText(primaryValue)\` 去证明同一个身份，这类重复断言很容易把表格行重新打回 \`locator(...).nth(...)\` 漂移。若还需要行内文本，只做一次 \`row.innerText().catch(() => '')\` 的保守读取。若预期状态没有出现在该行可见文本 / 状态单元格，不要直接判死，而要优先读取 recordCheck.response -> __e2e.pickJsonRecord(...) -> 状态字段，再在必要时回退详情页 / 详情抽屉用 __e2e.readDetailField(...) 逐项校验 ${detailFieldSummary}。如果当前共享变量只是手机号/联系人这类 fallback 标识，不要额外合成假的 detailUrl；优先把它当作列表收敛主键，只有 detailUrl / detailEntry 已真实存在时再启用详情回退。${fallbackDerivedBusinessIdHint}${helperParamSummary ? ` 当前已结构化 helper 参数：${helperParamSummary}。` : ''}`
+        ? `优先用 ${toSharedAccessor(sharedVariable)} 这个共享稳定标识/唯一身份文本回查目标记录。对于“提交后回列表验收”这类收敛场景，不要看到搜索框就立刻填值；先短超时用 __e2e.findAntdTableRow(page, { hasTexts: [${toSharedAccessor(sharedVariable)}], timeoutMs: 1200 }) 检查当前可见列表是否已经命中，只有当前列表未命中时，才调用 __e2e.resolvePrimaryRecord(...) 触发关键词搜索。若已知列表检索控件，再显式传 keywordInput/searchButton；未知时优先省略，让 helper 自动探测。只要已经把 keywordInput/searchButton 传给 helper，就不要在外层再手写一次 fill + click 预搜索，否则很容易触发双重刷新。进入 helper 后再让它保守轮询几次列表结果（例如 maxLookupAttempts / retryIntervalMs），不要手写一次 search 后立刻失败。若列表命中，先把目标行当作已命中的身份凭证；不要紧接着再写 \`await expect(recordCheck.row).toContainText(primaryValue)\` 或 \`await expect(currentVisibleRow).toContainText(primaryValue)\` 去证明同一个身份，这类重复断言很容易把表格行重新打回 \`locator(...).nth(...)\` 漂移。若还需要行内文本，只做一次 \`row.innerText().catch(() => '')\` 的保守读取。若预期状态没有出现在该行可见文本 / 状态单元格，不要直接判死，而要优先读取 recordCheck.response -> __e2e.pickJsonRecord(...) -> 状态字段，再在必要时回退详情页 / 详情抽屉用 __e2e.readDetailField(...) 逐项校验 ${detailFieldSummary}。${relatedArtifactReuseHint}如果当前共享变量只是手机号/联系人这类 fallback 标识，不要额外合成假的 detailUrl；优先把它当作列表收敛主键，只有 detailUrl / detailEntry 已真实存在时再启用详情回退。${fallbackDerivedBusinessIdHint}${helperParamSummary ? ` 当前已结构化 helper 参数：${helperParamSummary}。` : ''}`
         : sharedVariable
         ? `若已提取共享变量，优先按 ${sharedVariable} 缩小检索范围，再用 __e2e.findAntdTableRow(...) 定位结果行。`
         : '优先先缩小检索范围，再用 __e2e.findAntdTableRow(...) 做最终列表验收。';
@@ -1829,6 +1867,7 @@ function buildVerificationInstructions(
       `${verificationPlan.intent === 'review' ? '复核约束' : '验收约束'}：${normalizeText(item)}`
     ),
     '这里只补最终验收，不要把前面步骤的主动作重新执行一遍。',
+    ...buildVerificationArtifactReuseHints(plan, verificationPlan),
     ...buildPriorityScenarioFamilyVerificationHints(priorityScenarioFamily),
   ];
 

@@ -64,6 +64,7 @@ export interface IntentE2ERunRequestSummary {
   targetUrl: string;
   attachmentCount: number;
   hasAuth: boolean;
+  intentDraftUid?: string;
   systemOnboarding?: IntentE2ESystemOnboardingManifestSummary;
   cicdProfile: IntentE2ECiCdProfile;
   runControl?: ResolvedIntentE2ERunControl;
@@ -252,6 +253,7 @@ function buildRequestSummary(request: IntentE2ERunRequest): IntentE2ERunRequestS
     targetUrl: request.targetUrl?.trim() || '',
     attachmentCount: request.attachments?.length || 0,
     hasAuth: Boolean(request.auth?.loginUrl || request.auth?.username || request.auth?.password || request.auth?.loginDescription),
+    ...(request.intentDraftUid?.trim() ? { intentDraftUid: request.intentDraftUid.trim() } : {}),
     systemOnboarding: cloneIntentE2ESystemOnboardingSummary(request.systemOnboarding),
     cicdProfile: resolveIntentE2ECiCdProfile(request.cicdProfile),
     ...(runControl ? { runControl: resolveIntentE2ERunControl(runControl) } : {}),
@@ -272,6 +274,7 @@ function cloneRunState(state: IntentE2ERunRecord): IntentE2ERunRecord {
     ...state,
     request: {
       ...state.request,
+      ...(state.request.intentDraftUid?.trim() ? { intentDraftUid: state.request.intentDraftUid.trim() } : {}),
       systemOnboarding: cloneIntentE2ESystemOnboardingSummary(state.request.systemOnboarding),
       cicdProfile: state.request.cicdProfile,
       runControl: state.request.runControl ? { ...state.request.runControl } : undefined,
@@ -723,6 +726,9 @@ function normalizeLoadedRunState(snapshot: IntentE2ERunSnapshotRecord): IntentE2
           ? Math.max(0, Math.floor(requestCandidate.attachmentCount))
           : 0,
       hasAuth: typeof requestCandidate?.hasAuth === 'boolean' ? requestCandidate.hasAuth : false,
+      ...(typeof requestCandidate?.intentDraftUid === 'string' && requestCandidate.intentDraftUid.trim()
+        ? { intentDraftUid: requestCandidate.intentDraftUid.trim() }
+        : {}),
       ...(normalizedSystemOnboarding ? { systemOnboarding: normalizedSystemOnboarding } : {}),
       cicdProfile: resolveIntentE2ECiCdProfile(requestCandidate?.cicdProfile),
       ...(normalizedRunControl ? { runControl: normalizedRunControl } : {}),

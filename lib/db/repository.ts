@@ -655,7 +655,7 @@ export interface IntentE2ERunSnapshotRecord {
 export interface ListIntentE2ERunSnapshotsParams {
   projectUid?: string;
   moduleUid?: string;
-  status?: IntentE2ERunSnapshotStatus | 'terminal' | 'all';
+  status?: IntentE2ERunSnapshotStatus | 'active' | 'terminal' | 'all';
   limit?: number;
 }
 
@@ -3274,7 +3274,9 @@ export async function listIntentE2ERunSnapshots(params: ListIntentE2ERunSnapshot
     args.push(moduleUid);
   }
 
-  if (status === 'terminal') {
+  if (status === 'active') {
+    where.push(`status IN ('created', 'running')`);
+  } else if (status === 'terminal') {
     where.push(`status IN ('passed', 'failed', 'canceled')`);
   } else if (status !== 'all') {
     where.push('status = ?');
@@ -3285,7 +3287,7 @@ export async function listIntentE2ERunSnapshots(params: ListIntentE2ERunSnapshot
     `SELECT *
      FROM intent_e2e_runs
      ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
-     ORDER BY COALESCE(ended_at, updated_at, created_at) DESC, id DESC
+     ORDER BY updated_at DESC, id DESC
      LIMIT ?`,
     [...args, limit]
   );

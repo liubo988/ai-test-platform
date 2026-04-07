@@ -96,7 +96,8 @@ describe('intent runner adapter', () => {
         username: 'tester',
         password: 'secret',
       },
-      hooks
+      hooks,
+      {}
     );
   });
 

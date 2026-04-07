@@ -123,7 +123,8 @@ describe('test-generator prompt builder', () => {
     expect(prompt).toContain('helper 命中本身已经是身份证据');
     expect(prompt).toContain('recordCheck.response` 会是 `null`');
     expect(prompt).toContain('不要直接退化成“开详情 + 读裸状态字段”');
-    expect(prompt).toContain('const statusEvidenceRecordCheck = recordCheck.response ? recordCheck : currentVisibleRow ? await __e2e.resolvePrimaryRecord(page, { primaryValue, keywordInput, searchButton, listResponse: { urlIncludes: \'/business\', method: \'GET\' }, rowHasTexts, maxLookupAttempts: 1, retryIntervalMs: 200, detailUrl }) : recordCheck;');
+    expect(prompt).toContain('如果 `const rowText = await recordCheck.row.innerText().catch(() => \'\')` 已经直接包含预期业务状态');
+    expect(prompt).toContain('const statusEvidenceRecordCheck = recordCheck.response ? recordCheck : currentVisibleRow ? await __e2e.resolvePrimaryRecord(page, { primaryValue, keywordInput, searchButton, listResponse: { urlIncludes: \'/business\', method: \'GET\' }, rowHasTexts, preferCurrentVisibleRow: false, maxLookupAttempts: 1, retryIntervalMs: 200, detailUrl }) : recordCheck;');
     expect(prompt).toContain('不要看到搜索框就立刻填值');
     expect(prompt).toContain('不要在同一分支先手写 `await keywordInput.fill(primaryValue)`');
     expect(prompt).toContain('不要默认再把 `leadContactName` 拼回 fallback `rowHasTexts`');
@@ -159,7 +160,7 @@ describe('test-generator prompt builder', () => {
     expect(prompt).toContain('状态只在可见时再断言，不要默认把它写成唯一匹配前提');
     expect(prompt).toContain("不要继续写 `await expect(targetRow).toContainText('新入库')`");
     expect(prompt).toContain('rowHasTexts: [businessId, leadMobile]');
-    expect(prompt).toContain('若状态不在行文本 / 状态单元格里');
+    expect(prompt).toContain('状态没有出现在可见行文本 / 状态单元格里');
     expect(prompt).toContain('recordLookup.detailEntry');
     expect(prompt).toContain('detailEntry{ trigger=row_action; actionLabel=查看; target=drawer_or_modal }');
     expect(prompt).toContain("await __e2e.clickAntdRowAction(page, recordCheck.row, '查看')");
@@ -788,7 +789,7 @@ Error: element(s) not found`,
           'await keywordInput.fill(shared.createdOpportunityKey);',
           'await searchButton.click();',
           "artifacts['plan_step_5'] = await listResp;",
-          "const statusEvidenceRecordCheck = recordCheck.response ? recordCheck : await __e2e.resolvePrimaryRecord(page, { primaryValue, keywordInput, searchButton, listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts, maxLookupAttempts: 1, retryIntervalMs: 200 });",
+          "const statusEvidenceRecordCheck = recordCheck.response ? recordCheck : await __e2e.resolvePrimaryRecord(page, { primaryValue, keywordInput, searchButton, listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts, preferCurrentVisibleRow: false, maxLookupAttempts: 1, retryIntervalMs: 200 });",
           "const verifyResp = __e2e.waitForApiResponse(page, { urlIncludes: '/business', method: 'GET' });",
           'await keywordInput.fill(shared.createdOpportunityKey);',
           'await searchButton.click();',
@@ -1579,7 +1580,8 @@ Received string:    "5204612026-03-27 13:08:29中铁上海工程局集团有限�
     expect(prompt).toContain("artifacts['plan_step_5']");
     expect(prompt).toContain("const fallbackListJson = artifacts['plan_step_5'] ? await __e2e.readJsonResponse(artifacts['plan_step_5'], { required: false }) : null;");
     expect(prompt).toContain("__e2e.pickJsonRecord(..., { label: 'leadMobile', value: leadMobile, paths: ['mobile', 'phone', 'contactPhone', 'contactMobile'], required: false })");
-    expect(prompt).toContain('只有当 fallback 行文本、fallback 列表响应、详情字段三处都拿不到状态时');
+    expect(prompt).toContain('只有当 fallback 列表响应和详情字段都拿不到状态，且 `rowText` 也派生不出可用 `derivedBusinessId / detailUrl` 线索时');
+    expect(prompt).not.toContain('只有当 fallback 行文本、fallback 列表响应、详情字段三处都拿不到状态时');
   });
 
   it('adds detail-entry repair hints when the row is matched but list JSON and bare detail reads still lack status', () => {
@@ -2439,7 +2441,7 @@ Error: element(s) not found`,
       '',
       {
         previousCode: [
-          "const statusEvidenceRecordCheck = recordCheck.response ? recordCheck : currentVisibleRow ? await __e2e.resolvePrimaryRecord(page, { primaryValue, keywordInput, searchButton, listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts, maxLookupAttempts: 1, retryIntervalMs: 200, detailUrl }) : recordCheck;",
+          "const statusEvidenceRecordCheck = recordCheck.response ? recordCheck : currentVisibleRow ? await __e2e.resolvePrimaryRecord(page, { primaryValue, keywordInput, searchButton, listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts, preferCurrentVisibleRow: false, maxLookupAttempts: 1, retryIntervalMs: 200, detailUrl }) : recordCheck;",
           "const matchedRecord = listJson ? __e2e.pickJsonRecord(listJson, { label: shared.businessId ? 'businessId' : 'leadMobile', value: primaryValue, paths: shared.businessId ? ['businessId', 'id'] : ['mobile', 'phone', 'contactPhone', 'contactMobile'], required: false }) : null;",
           "await __e2e.clickAntdRowAction(page, recordCheck.row, '查看');",
           "const detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000 });",
@@ -2520,7 +2522,7 @@ Error: element(s) not found`,
       '',
       {
         previousCode: [
-          "const statusEvidenceRecordCheck = recordCheck.response ? recordCheck : await __e2e.resolvePrimaryRecord(page, { primaryValue: shared.businessId || shared.contactMobile, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: shared.businessId ? [shared.businessId, shared.contactMobile] : [shared.contactMobile], maxLookupAttempts: 1, retryIntervalMs: 200, detailUrl: shared.businessId ? `#/business/detail/${shared.businessId}` : undefined });",
+          "const statusEvidenceRecordCheck = recordCheck.response ? recordCheck : await __e2e.resolvePrimaryRecord(page, { primaryValue: shared.businessId || shared.contactMobile, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: shared.businessId ? [shared.businessId, shared.contactMobile] : [shared.contactMobile], preferCurrentVisibleRow: false, maxLookupAttempts: 1, retryIntervalMs: 200, detailUrl: shared.businessId ? `#/business/detail/${shared.businessId}` : undefined });",
           "const listJson = statusEvidenceRecordCheck.response ? await __e2e.readJsonResponse(statusEvidenceRecordCheck.response, { required: false }) : null;",
           "const matchedRecord = listJson ? __e2e.pickJsonRecord(listJson, { label: shared.businessId ? 'businessId' : 'leadMobile', value: shared.businessId || shared.contactMobile, paths: shared.businessId ? ['businessId', 'id'] : ['mobile', 'phone', 'contactPhone', 'contactMobile'], required: false }) : null;",
           "const rowText = await recordCheck.row.innerText().catch(() => '');",
@@ -2562,7 +2564,7 @@ Error: element(s) not found`,
       '',
       {
         previousCode: [
-          "const statusEvidenceRecordCheck = recordCheck.response ? recordCheck : await __e2e.resolvePrimaryRecord(page, { primaryValue: shared.businessId || shared.contactMobile, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: shared.businessId ? [shared.businessId, shared.contactMobile] : [shared.contactMobile], maxLookupAttempts: 1, retryIntervalMs: 200, detailUrl: shared.businessId ? `#/business/detail/${shared.businessId}` : undefined });",
+          "const statusEvidenceRecordCheck = recordCheck.response ? recordCheck : await __e2e.resolvePrimaryRecord(page, { primaryValue: shared.businessId || shared.contactMobile, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: shared.businessId ? [shared.businessId, shared.contactMobile] : [shared.contactMobile], preferCurrentVisibleRow: false, maxLookupAttempts: 1, retryIntervalMs: 200, detailUrl: shared.businessId ? `#/business/detail/${shared.businessId}` : undefined });",
           "const listJson = statusEvidenceRecordCheck.response ? await __e2e.readJsonResponse(statusEvidenceRecordCheck.response, { required: false }) : null;",
           "const matchedRecord = listJson ? __e2e.pickJsonRecord(listJson, { label: shared.businessId ? 'businessId' : 'leadMobile', value: shared.businessId || shared.contactMobile, paths: shared.businessId ? ['businessId', 'id'] : ['mobile', 'phone', 'contactPhone', 'contactMobile'], required: false }) : null;",
           "const rowText = await recordCheck.row.innerText().catch(() => '');",

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { normalizeIntentE2ERequestBody } from '@/lib/ai/intent-e2e-request';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { archiveProjectIntentDraft, getProjectIntentDraftByUid } from '@/lib/db/repository';
-import { updateProjectIntentDraftRecord } from '@/lib/services/project-intent-draft-service';
+import { getProjectIntentDraftDetailResult, updateProjectIntentDraftRecord } from '@/lib/services/project-intent-draft-service';
 import { applyActorCookie, requireProjectRole, toErrorResponse } from '@/lib/server/project-actor';
 
 type UpdateIntentDraftBody = {
@@ -26,8 +26,8 @@ export async function GET(
     await ensureDbBootstrap();
     const { projectUid, draftUid } = await ctx.params;
     const { actor } = await requireProjectRole(req, projectUid, ['owner', 'editor', 'viewer'], '当前操作者没有权限查看该意图草稿');
-    const item = await getProjectIntentDraftByUid(draftUid);
-    if (!item || item.projectUid !== projectUid) {
+    const item = await getProjectIntentDraftDetailResult({ projectUid, intentDraftUid: draftUid });
+    if (!item) {
       return NextResponse.json({ error: '意图草稿不存在' }, { status: 404 });
     }
 

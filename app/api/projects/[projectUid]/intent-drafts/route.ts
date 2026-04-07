@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { normalizeIntentE2ERequestBody } from '@/lib/ai/intent-e2e-request';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
-import { listProjectIntentDrafts } from '@/lib/db/repository';
-import { createProjectIntentDraftRecord } from '@/lib/services/project-intent-draft-service';
+import { createProjectIntentDraftRecord, listProjectIntentDraftSummaryResults } from '@/lib/services/project-intent-draft-service';
 import { applyActorCookie, requireProjectRole, toErrorResponse } from '@/lib/server/project-actor';
 
 type CreateIntentDraftBody = {
@@ -34,7 +33,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ projectUid:
     const status = (searchParams.get('status') || 'active') as 'active' | 'imported' | 'archived' | 'all';
     const limit = toLimit(searchParams.get('limit'));
 
-    const items = await listProjectIntentDrafts({
+    const items = await listProjectIntentDraftSummaryResults({
       projectUid,
       moduleUid: moduleUid || undefined,
       status,

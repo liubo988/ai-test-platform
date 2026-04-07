@@ -257,6 +257,10 @@ describe('project-intent-task-service', () => {
       createdAt: '2026-03-17T00:00:00.000Z',
       updatedAt: '2026-03-17T00:00:00.000Z',
       workspacePath: '/projects/proj_1?module=mod_1',
+      activeRunId: '',
+      activeRunStatus: '',
+      activeRunStage: '',
+      activeRunUpdatedAt: '',
     });
   });
 
@@ -324,6 +328,10 @@ describe('project-intent-task-service', () => {
       createdAt: '2026-03-17T00:00:00.000Z',
       updatedAt: '2026-03-17T00:00:00.000Z',
       workspacePath: '/projects/proj_1?module=mod_1',
+      activeRunId: '',
+      activeRunStatus: '',
+      activeRunStage: '',
+      activeRunUpdatedAt: '',
     });
   });
 

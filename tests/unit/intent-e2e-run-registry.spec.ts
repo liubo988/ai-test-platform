@@ -461,14 +461,17 @@ describe('intent-e2e-run-registry', () => {
       input: '访问结算页并提交，最终看到成功页面',
       projectUid: 'proj_1',
       moduleUid: 'mod_1',
+      intentDraftUid: 'idraft_checkout',
     });
     const started = startIntentE2ERun(created.runId, {
       input: '访问结算页并提交，最终看到成功页面',
       projectUid: 'proj_1',
       moduleUid: 'mod_1',
+      intentDraftUid: 'idraft_checkout',
     });
 
     expect(started.status).toBe('running');
+    expect(started.request.intentDraftUid).toBe('idraft_checkout');
     expect(started.events[0]).toMatchObject({
       type: 'stage',
       stage: 'received',
@@ -555,6 +558,11 @@ describe('intent-e2e-run-registry', () => {
       expect.objectContaining({
         projectUid: 'proj_1',
         moduleUid: 'mod_1',
+        state: expect.objectContaining({
+          request: expect.objectContaining({
+            intentDraftUid: 'idraft_checkout',
+          }),
+        }),
       })
     );
   });
@@ -938,6 +946,7 @@ describe('intent-e2e-run-registry', () => {
         targetUrl: 'https://example.com/checkout',
         attachmentCount: 1,
         hasAuth: true,
+        intentDraftUid: 'idraft_checkout',
         llm: {
           provider: 'openai',
           model: 'gpt-5.4',
@@ -970,6 +979,7 @@ describe('intent-e2e-run-registry', () => {
     const loaded = await loadIntentE2ERun('intent-run-persisted');
 
     expect(loaded?.runId).toBe('intent-run-persisted');
+    expect(loaded?.request.intentDraftUid).toBe('idraft_checkout');
     expect(loaded?.testType).toBe('browser_e2e');
     expect(loaded?.runnerType).toBe('playwright_runner');
     expect(loaded?.status).toBe('passed');

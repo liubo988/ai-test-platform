@@ -6,11 +6,11 @@ vi.mock('@/lib/db/bootstrap', () => ({
 }));
 
 vi.mock('@/lib/db/repository', () => ({
-  listProjectIntentDrafts: vi.fn(),
 }));
 
 vi.mock('@/lib/services/project-intent-draft-service', () => ({
   createProjectIntentDraftRecord: vi.fn(),
+  listProjectIntentDraftSummaryResults: vi.fn(),
 }));
 
 vi.mock('@/lib/server/project-actor', () => ({
@@ -26,8 +26,7 @@ vi.mock('@/lib/server/project-actor', () => ({
 
 import { GET, POST } from '../../app/api/projects/[projectUid]/intent-drafts/route';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
-import { listProjectIntentDrafts } from '@/lib/db/repository';
-import { createProjectIntentDraftRecord } from '@/lib/services/project-intent-draft-service';
+import { createProjectIntentDraftRecord, listProjectIntentDraftSummaryResults } from '@/lib/services/project-intent-draft-service';
 import { applyActorCookie, requireProjectRole } from '@/lib/server/project-actor';
 
 describe('project intent drafts route', () => {
@@ -40,7 +39,7 @@ describe('project intent drafts route', () => {
       actor: { userUid: 'usr_1', displayName: 'Viewer' },
       membership: { role: 'viewer' },
     } as never);
-    vi.mocked(listProjectIntentDrafts).mockResolvedValue([
+    vi.mocked(listProjectIntentDraftSummaryResults).mockResolvedValue([
       {
         intentDraftUid: 'idraft_1',
         projectUid: 'proj_1',
@@ -62,6 +61,11 @@ describe('project intent drafts route', () => {
         importedAt: '',
         createdAt: '2026-03-17T00:00:00.000Z',
         updatedAt: '2026-03-17T00:00:00.000Z',
+        workspacePath: '/projects/proj_1?module=mod_1',
+        activeRunId: 'intent-run-1',
+        activeRunStatus: 'running',
+        activeRunStage: 'planning',
+        activeRunUpdatedAt: '2026-03-17T00:05:00.000Z',
       },
     ] as never);
 
@@ -75,7 +79,7 @@ describe('project intent drafts route', () => {
       ['owner', 'editor', 'viewer'],
       '当前操作者没有权限查看该项目的意图草稿'
     );
-    expect(listProjectIntentDrafts).toHaveBeenCalledWith({
+    expect(listProjectIntentDraftSummaryResults).toHaveBeenCalledWith({
       projectUid: 'proj_1',
       moduleUid: 'mod_1',
       status: 'active',

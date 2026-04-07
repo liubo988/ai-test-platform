@@ -108,6 +108,7 @@ describe('intent-e2e-request', () => {
   it('accepts prefilled draft assets for run fast-path reuse', () => {
     const request = normalizeIntentE2ERequestBody({
       input: '  创建商机并验证新入库状态  ',
+      intentDraftUid: '  idraft_1  ',
       targetUrl: ' https://example.com/#/business/businesslist ',
       prefilledScenarioCard: {
         title: '  创建商机并验证新入库状态  ',
@@ -134,6 +135,7 @@ describe('intent-e2e-request', () => {
       targetUrl: 'https://example.com/#/business/businesslist',
       featureDescription: '从草稿复用 ScenarioCard',
     });
+    expect(request.intentDraftUid).toBe('idraft_1');
     expect(request.prefilledPlanCode).toContain("test('draft-prefill'");
   });
 });

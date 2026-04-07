@@ -4195,3 +4195,499 @@
   - 若继续提升真实成功率，只允许另起 brief，单收：
     - `repair convergence efficiency`
     - 或 `Cannot read properties of null (reading 'forEach')` 这类非阻塞噪音
+
+## 2026-04-07 第一百一十四次更新（post-R14 success hardening close-out follow-up：browser runtime noise downgrade）
+
+- 本轮目标：
+  - 不重开 `post-R14 success hardening` 主阶段
+  - 只收口 close-out 后已知的非阻塞运行时噪音：
+    - 浏览器页面 `console` / `pageerror` 中的 `Cannot read properties of null (reading 'forEach')`
+  - 不改 repair / planning 主链，不扩成新的 success hardening 主切片
+- 已完成：
+  - 已补 brief：
+    - `docs/intent-e2e-browser-runtime-noise-task-brief-2026-04-07.md`
+  - 已完成代码收口：
+    - `lib/test-worker.mjs`
+      - 给浏览器 `console` / `pageerror` 增加已知 runtime 噪音归一
+      - 当消息命中 `null.forEach` 时，不再以前台 `ERROR` 直出，而是降级为 `WARN`
+      - 保留 `source / noiseCode / originalLevel / originalMessage` 到 `meta`
+      - 同一 worker 会话内对同类噪音做最小去重，避免重复刷屏
+  - 已补 / 已更新单测：
+    - `tests/unit/test-executor.spec.ts`
+      - 补 `console.error` -> `warn` worker 级回归
+      - 补 `pageerror` -> `warn` worker 级回归
+- 验证：
+  - `npx vitest run tests/unit/test-executor.spec.ts -t "runtime noise"`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（close-out 后 follow-up 的 structured patch fallback、LLM request timeout 与 browser runtime noise downgrade 已补齐；当前阶段结论不变）
+- 风险 / 未完成：
+  - 本轮只降噪，不处理业务页面自身 `null.forEach` 根因
+  - 当前只覆盖已知 `null.forEach` 这一类 runtime 噪音，不扩到其它 console/pageerror family
+  - 本轮未补新的真实 rerun；后续仍需继续观察真实任务里同类日志是否稳定转为 `WARN`
+- 下一步：
+  - 当前这刀已完成，没有必须继续的同类开发
+  - 若继续提升真实成功率，只允许另起 brief，单收：
+    - `repair convergence efficiency`
+    - 或其它已确认高频的非阻塞运行时噪音
+
+## 2026-04-07 第一百一十五次更新（post-R14 success hardening close-out follow-up：AI 生成失败后可操作闭环）
+
+- 本轮目标：
+  - 不重开 `post-R14 success hardening` 主阶段
+  - 只收口 `AI生成 -> 失败后下一步可操作` 这一条产品闭环
+  - 解决三类真实断点：
+    - `needs_clarify` 过松，导致“有图 / 有 URL 但描述仍然泛”的请求直接开跑
+    - 服务端已有结构化失败诊断，但前台失败面板没有真正展示
+    - 主工作台里的 `draft_only` / `handoff_manual` 仍偏提示或导航，不是真动作
+  - 不改 DB schema，不新增 route，不重做执行 / repair 主链
+- 已完成：
+  - 已补 brief：
+    - `docs/intent-e2e-ai-generate-closure-task-brief-2026-04-07.md`
+  - 已完成代码收口：
+    - `lib/intent-e2e-launch-decision.ts`
+      - 收紧 `needs_clarify`
+      - 明确“有图 / 有 URL != 描述足够”
+      - 对“如图，帮我测一下”这类低信息请求，即使带图片或目标 URL，也会继续返回 `needs_clarify`
+    - `components/IntentE2EWorkbench.tsx`
+      - blocked launch 卡片新增下一步提示
+      - `draft_only` 新增显式 override 入口，点击后直接创建 run，不再重新跑 launch decision
+      - 失败面板新增结构化 triage 展示：
+        - `failedStepTitle`
+        - `targetAnchor`
+        - `failedLocator`
+        - `candidateAnchors`
+        - `nextActions`
+      - `handoff_manual` 接到现有 workspace import
+      - 当当前 run 已终态失败时，点击 `handoff_manual` 会直接把 run 导入项目工作台，并跳到聚焦历史视图
+      - blocked / failure 面板里的原因标签补齐 `recent_repeated_model_failure`
+  - 已补 / 已更新单测：
+    - `tests/unit/intent-e2e-launch-decision.spec.ts`
+      - 补“带图但描述泛”仍需 clarify
+      - 补“带图且步骤 / 验收具体”可继续 auto_run
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-launch-decision.spec.ts`
+  - `npm run build`
+  - `npm run build:web`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（close-out 后 follow-up 的 structured patch fallback、LLM request timeout、browser runtime noise 与 AI 生成失败后可操作闭环已补齐；当前阶段结论不变）
+- 风险 / 未完成：
+  - 本轮 `needs_clarify` 仍是规则型 lexical heuristics，不是更重的语义分类器；真实边界还需要继续观察
+  - `handoff_manual` 已改成真导入动作，但前台还没有补专门的 UI 单测，当前主要依赖 `build` / `build:web` 和现有 workspace import 稳定链路
+  - 本轮只解决“失败后用户下一步怎么做”，不代表 fresh `AI生成` 成功率已经被重新量化
+- 下一步：
+  - 当前这刀已完成，没有必须继续的同类开发
+  - 若继续提升真实成功率，只允许另起 brief，单收：
+    - `fresh AI-generate success rate measurement`
+    - 或 `AI生成 -> draft / manual / clarify` 的更细粒度产品引导与度量
+
+## 2026-04-07 第一百一十六次更新（post-R14 success hardening close-out follow-up：execution latency）
+
+- 本轮目标：
+  - 不重开 `post-R14 success hardening` 主阶段
+  - 只收口已确认的 execution latency 浪费点
+  - 聚焦三类问题：
+    - verification 在前序步骤已命中目标记录后仍重复回查
+    - searchable antd select 为打开 dropdown 反复重试
+    - 仅评估低风险前链路快进，不为“看起来更快”重构主链
+- 已完成：
+  - 已补 brief：
+    - `docs/intent-e2e-execution-latency-follow-up-task-brief-2026-04-07.md`
+  - 已完成代码收口：
+    - `lib/intent-execution-compiler.ts`
+      - verification 新增 artifact reuse hint
+      - 若前序相关步骤已写入 `recordCheck / status / source`，最终验收优先复用已有 `artifacts[...]`
+      - 对“补一跳只为拿结构化列表响应”的 `statusEvidenceRecordCheck` 显式补 `preferCurrentVisibleRow: false`
+    - `lib/test-worker.mjs`
+      - `resolvePrimaryRecord(...)` 新增 `current table` 快路径
+      - 当前列表已可见命中目标行时，直接复用该行，不再触发冗余 `fill + 搜索`
+      - `selectAntdOption(...)` 对 searchable antd select 新增 `type-to-open` 快路径
+      - 对具备搜索输入面的 Select，优先走输入展开，不再默认先跑整轮 click / mousedown / mouse-click reopen 链
+    - `lib/test-generator.ts`
+    - `lib/intent-action-library.ts`
+      - 已把状态证据样例与 repair 提示同步到 `preferCurrentVisibleRow: false`
+  - 评估结论：
+    - 本轮未改 `lib/ai/intent-e2e-service.ts`
+    - `prefilledScenarioCard + prefilledPlanCode` 的 analyze/planning lazy 化存在真实收益空间，但会影响 run 结果里的 `executionPlan / verificationPlan / knowledge` 产物；这刀不属于低风险快进，暂不在本轮混入
+  - 已补 / 已更新单测：
+    - `tests/unit/intent-execution-compiler.spec.ts`
+    - `tests/unit/test-executor.spec.ts`
+    - `tests/unit/test-generator.spec.ts`
+    - `tests/unit/intent-action-library.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-compiler.spec.ts tests/unit/test-executor.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-action-library.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（close-out 后 follow-up 的 structured patch fallback、LLM request timeout、browser runtime noise、AI 生成失败后可操作闭环与 execution latency 高频浪费点已补齐；当前阶段结论不变）
+- 风险 / 未完成：
+  - 本轮只压缩了已确认的重复搜索 / dropdown reopen；没有承诺把真实 wall time 一次性压到固定阈值
+  - `planning -> precheck -> fixture setup -> analyzing -> generating -> executing` 的串行前链路仍在；尤其是 prefilled run 的 lazy planning 还没做
+  - 需要继续用真实 run 观察：
+    - verification 是否稳定少一次二次搜索
+    - searchable select 的 `ant-select open attempt` 次数是否下降
+- 下一步：
+  - 当前这刀已完成，没有必须继续的同类开发
+  - 若继续提升真实体感时延，只允许另起 brief，单收：
+    - `prefilled run lazy planning / analyze bypass`
+    - 或 `verification slot deterministic artifact reuse`
+
+## 2026-04-07 第一百一十七次更新（post-R14 success hardening close-out follow-up：draft auto-launch latency）
+
+- 本轮目标：
+  - 不重开 `post-R14 success hardening` 主阶段
+  - 只收口草稿页“测试流程”进入控制台后的启动前空白等待
+  - 聚焦两类真实问题：
+    - `/api/intent-e2e/launch-decision` 在可直接判定的场景下仍读取 recent runs，导致草稿 auto-launch 初始化明显变慢
+    - workbench 草稿 auto-launch 在 payload 未 ready 前缺少显式初始化状态，且存在过早消费 launch 的风险
+- 已完成：
+  - 已补 brief：
+    - `docs/intent-e2e-draft-auto-launch-latency-task-brief-2026-04-07.md`
+  - 已完成代码收口：
+    - `app/api/intent-e2e/launch-decision/route.ts`
+      - 先执行 baseline launch decision
+      - 只有 baseline 结果仍为 `auto_run` 时，才继续读取 recent terminal runs 并计算 repeated failure suppression
+      - recent run 查询窗口由 `50` 收窄到 `20`
+    - `lib/db/repository.ts`
+      - `listIntentE2ERunSnapshots(...)` 的排序从 `COALESCE(ended_at, updated_at, created_at)` 收口到 `updated_at DESC, id DESC`
+      - 避免因为表达式排序破坏现有 `(project_uid,module_uid,status,updated_at)` 访问局部性，减少启动前查询抖动
+    - `lib/intent-e2e-draft-launch.ts`
+      - 新增 `resolveIntentDraftAutoLaunchGate(...)`
+      - 把草稿 auto-launch 的 gate 明确成 `wait / ready / invalid_payload`
+    - `components/IntentE2EWorkbench.tsx`
+      - 草稿 auto-launch 只有在 payload 有效时才写入 handled key
+      - payload 未 ready 时继续等待下一轮 hydration，不再提前吞掉这次启动
+      - payload 无效时才真正报“当前意图草稿缺少可执行的目标描述”
+      - 在请求 launch decision 前，live log 会先进入“正在评估启动条件…”
+      - 草稿 `test_flow` 初始化期会跳过首屏自动 insights 拉取，避免和 auto-launch 抢首屏时间
+  - 已补 / 已更新单测：
+    - `tests/unit/api-intent-e2e-launch-decision-route.spec.ts`
+      - 补“baseline 已拦截时不读取 recent runs”
+      - 补“只有 baseline=auto_run 时才读取 recent runs，并按新窗口 `limit=20` 调用”
+    - `tests/unit/intent-e2e-draft-launch.spec.ts`
+      - 补“detail 未 ready 时继续 wait”
+      - 补“payload 无效时返回 invalid_payload”
+- 验证：
+  - `npx vitest run tests/unit/api-intent-e2e-launch-decision-route.spec.ts tests/unit/intent-e2e-draft-launch.spec.ts`
+  - `npm run build`
+  - `npm run build:web`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（close-out 后 follow-up 的 structured patch fallback、LLM request timeout、browser runtime noise、AI 生成失败后可操作闭环、execution latency 与草稿 auto-launch latency 已补齐；当前阶段结论不变）
+- 风险 / 未完成：
+  - 本轮只优化启动前链路，不承诺整条 run 的墙钟时间下降到固定阈值
+  - `insights` 汇总本身仍可能偏重；这里只避免它干扰草稿 auto-launch 首屏
+  - repeated failure suppression 仍基于 recent run snapshot 聚类，不在本轮扩成新的轻量索引或预聚合表
+- 下一步：
+  - 当前这刀已完成，没有必须继续的同类开发
+  - 若继续提升真实体感时延，只允许另起 brief，单收：
+    - `launch-decision repeated-failure pre-aggregation`
+    - 或 `prefilled run lazy planning / analyze bypass`
+
+## 2026-04-07 第一百一十八次更新（post-R14 success hardening close-out follow-up：status evidence short-circuit）
+
+- 本轮目标：
+  - 不重开 `post-R14 success hardening` 主阶段
+  - 只收口“列表行已直出目标状态，却仍继续慢回查列表响应”这一类通过场景浪费
+  - 聚焦真实 run `intent-run-df50cd2e-06b9-4c0e-80a7-7c686ba93226` 暴露的问题：
+    - `row matched` 很早已发生
+    - `rowText` 已直出 `新入库`
+    - 后续仍继续 `statusEvidenceRecordCheck -> readJsonResponse -> pickJsonRecord`
+- 已完成：
+  - 已补 brief：
+    - `docs/intent-e2e-status-evidence-short-circuit-task-brief-2026-04-07.md`
+  - 已完成代码收口：
+    - `lib/intent-execution-compiler.ts`
+      - row status fallback 改成先读 `rowText`
+      - 若 `rowText` 已直出目标状态，直接以此收口，不再继续 `listJson / matchedRecord / detail` 慢回查
+      - verification hint 补充“优先复用 artifacts，且 rowText 已命中时不再补结构化慢回查”
+    - `lib/test-generator.ts`
+      - prompt / repair hint 明确约束：
+        - `rowText` 已命中状态时直接收口
+        - 只有 `rowText` 不含目标状态时，才允许继续 `statusEvidenceRecordCheck`
+    - `lib/intent-action-library.ts`
+      - capability notes / example 同步到新的短路骨架
+      - 保留 `preferCurrentVisibleRow: false` 仅用于“必须额外补一跳拿结构化列表响应”的分支
+  - 已补 / 已更新单测：
+    - `tests/unit/intent-execution-compiler.spec.ts`
+      - 补 `rowText -> expectedStatus short-circuit` 骨架断言
+    - `tests/unit/test-generator.spec.ts`
+      - 补 prompt 中“rowText 已命中状态直接收口”的约束断言
+    - `tests/unit/intent-action-library.spec.ts`
+      - 同步 capability example 到新的 `rowText` 先短路示例
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-action-library.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（close-out 后 follow-up 的 structured patch fallback、LLM request timeout、browser runtime noise、AI 生成失败后可操作闭环、execution latency、draft auto-launch latency 与 status evidence short-circuit 已补齐；当前阶段结论不变）
+- 风险 / 未完成：
+  - 本轮只短路“rowText 已直出目标状态”的慢路径
+  - 若状态不在行文本里，仍会继续走列表 JSON / 详情字段闭环；这是保留的必要兜底，不在本轮再收
+  - 还需要继续观察真实 run 中 `Verification` 段耗时是否稳定下降
+- 下一步：
+  - 当前这刀已完成，没有必须继续的同类开发
+  - 若继续提升真实体感时延，只允许另起 brief，单收：
+    - `prefilled run lazy planning / analyze bypass`
+    - 或 `verification slot deterministic artifact reuse`
+
+## 2026-04-07 第一百一十九次更新（post-R14 success hardening close-out follow-up：optional json miss noise downgrade）
+
+- 本轮目标：
+  - 不重开 `post-R14 success hardening` 主阶段
+  - 只收口真实通过 run 里的单类日志噪音：
+    - `pickJsonValue(..., { required: false })` 未命中时仍刷 `warn json value not found`
+  - 不改 required=true 的失败语义，不重做 repair / planning / execution 主链
+- 已完成：
+  - 已补 brief：
+    - `docs/intent-e2e-optional-json-miss-noise-task-brief-2026-04-07.md`
+  - 真实证据：
+    - `intent-run-7254cbd3-8641-4dca-ae87-e3c398a55048` 已通过
+    - 但 `attempt-1-logs.txt` 里仍出现一条非阻塞 `json value not found`
+    - 同一轮后续又已成功 `business-list ownership switched` 与 `table row matched`
+    - 说明这条 miss 只是可选字段缺失噪音，不该继续占用 warn 面板
+  - 已完成代码收口：
+    - `lib/test-worker.mjs`
+      - `normalizePickJsonValueOptions(...)` 新增 `logMissing`
+      - `pickJsonValue(...)` 在 `required: false` 且未命中时，不再发 `warn json value not found`
+      - 改为保留 `debug optional json value not found`
+      - 仍保留 `label / paths / defaultValue / required=false` 到 `meta`
+  - 已补 / 已更新单测：
+    - `tests/unit/test-executor.spec.ts`
+      - 补“optional json value miss -> debug noise，不再是 warn”回归
+- 验证：
+  - `npx vitest run tests/unit/test-executor.spec.ts -t "optional json value miss"`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（close-out 后 follow-up 的 structured patch fallback、LLM request timeout、browser runtime noise、AI 生成失败后可操作闭环、execution latency、draft auto-launch latency、status evidence short-circuit 与 optional json miss noise downgrade 已补齐；当前阶段结论不变）
+- 风险 / 未完成：
+  - 本轮只处理 `pickJsonValue(required:false)` 这一类可选缺值噪音
+  - 站点自身 `moment` warning 不在本轮处理
+  - `submit navigation not observed within helper window` 仍保留为 helper 观测信息，不在本轮混入
+- 下一步：
+  - 当前这刀已完成，没有必须继续的同类开发
+  - 若继续收口通过场景日志噪音，只允许另起 brief，单收：
+    - `submit-state helper observation noise`
+    - 或其它已确认高频、且不影响真实通过率的单类噪音
+
+## 2026-04-07 第一百二十次更新（post-R14 success hardening close-out follow-up：partial code fail-fast）
+
+- 本轮目标：
+  - 不重开 `post-R14 success hardening` 主阶段
+  - 只收口一类高风险 fail-open：
+    - 生成 / repair 流已出现 `LLM 调用失败`
+    - 但主链仍继续执行未完成的 partial code
+  - 聚焦真实 run `intent-run-7522e5ee-c4e5-4f55-970f-0f24e82ff995` 暴露的问题：
+    - 同一条草稿“商机222”在 2026-04-07 已有成功 run
+    - 最新失败并非页面回归，而是 worker 在模块加载阶段直接 `SyntaxError`
+    - 根因更接近 LLM timeout 后 residual partial code 被继续执行
+- 已完成：
+  - 已补 brief：
+    - `docs/intent-e2e-partial-code-fail-fast-task-brief-2026-04-07.md`
+  - 已完成代码收口：
+    - `lib/ai/intent-e2e-service.ts`
+      - `collectGeneratedCode()` 现在在 `lastError && 没有 complete code` 时直接抛错
+      - 不再把 `generatedCode.trim()` 的残片当成可执行脚本继续交给 runner
+      - 保留“中途有 error，但最终 fallback/补全后仍产出 complete code”的成功路径
+  - 已补 / 已更新单测：
+    - `tests/unit/intent-e2e-service.spec.ts`
+      - 补 `LLM timeout -> partial code -> 不进入 executeTest()` 回归
+    - `tests/unit/intent-runner-adapter.spec.ts`
+      - 同步当前 `executeTest(..., options)` 调用签名，避免旧断言误报
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - `npm run test:e2e`
+  - `npm run test:unit`（仍存在与本轮无关的既有失败：`tests/unit/capability-verification-service.spec.ts` 4 条）
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（close-out 后 follow-up 的 structured patch fallback、LLM request timeout、browser runtime noise、AI 生成失败后可操作闭环、execution latency、draft auto-launch latency、status evidence short-circuit、optional json miss noise downgrade 与 partial code fail-fast 已补齐；当前阶段结论不变）
+- 风险 / 未完成：
+  - 本轮只阻断 partial code 继续执行，不重做 generation error 的 attempt 归档模型
+  - 若未来要把“生成失败”也沉淀成完整 attempt artifact，需要另起一刀单收
+  - 当前仓库仍存在与本轮无关的 unit 失败，不在这里顺手扩大范围
+- 下一步：
+  - 当前这刀已完成，没有必须继续的同类开发
+  - 若继续收口同类生成失败闭环，只允许另起 brief，单收：
+    - `generation failure attempt artifact materialization`
+    - 或 `syntax validation before runner handoff`
+
+## 2026-04-07 第一百二十一次更新（post-R14 success hardening close-out follow-up：status evidence success-criteria tightening）
+
+- 本轮目标：
+  - 不重开 `post-R14 success hardening` 主阶段
+  - 只收口一类 success 口径偏松：
+    - 目标行已命中
+    - `rowText` 已直出目标状态
+    - 但脚本并未明确读取并断言同一条结构化列表记录或详情字段的状态
+  - 聚焦真实 run `intent-run-479c4cf9-5e33-4f76-bd2e-2968460949cc` 暴露的问题：
+    - 当前 success 的真实含义更接近“命中目标行，且拿到了某种状态线索”
+    - 但这不等于“已明确校验同一条记录的状态字段”
+    - 用户当前要求把 success 收紧到结构化状态证据或详情字段证据
+- 已完成：
+  - 已补 brief：
+    - `docs/intent-e2e-status-evidence-tighten-task-brief-2026-04-07.md`
+  - 已完成代码收口：
+    - `lib/intent-execution-compiler.ts`
+      - `rowText` 不再作为最终 success 的直接短路条件
+      - row fallback 现在只把 `rowText` 当辅助线索，用于派生 `derivedBusinessId`
+      - 最终状态优先来自 `statusEvidenceRecordCheck -> readJsonResponse -> pickJsonRecord -> pickJsonValue`
+      - 结构化列表状态仍缺失时，再回退详情页 / 详情抽屉字段
+    - `lib/test-generator.ts`
+      - prompt / repair hint 明确同步到新口径：
+        - 裸 `rowText` 不能单独判定 success
+        - fallback repair 只允许把 `rowText` 当 `derivedBusinessId / detailUrl` 线索
+        - 最终状态仍必须落在列表结构化记录或详情字段
+    - `lib/intent-action-library.ts`
+      - capability notes / example 同步移除“`rowText` 已含状态即可直接收口”的旧示例
+      - 示例骨架改成“先结构化状态，后详情回退”
+  - 已补 / 已更新单测：
+    - `tests/unit/intent-execution-compiler.spec.ts`
+      - 移除 `rowText.includes(expectedStatus)` 直接收口断言
+      - 改为断言 `resolvedMatchedRecord -> expectedStatus` 骨架
+    - `tests/unit/test-generator.spec.ts`
+      - 同步 prompt / repair hint 到“`rowText` 仅作辅助线索”的新文案
+    - `tests/unit/intent-action-library.spec.ts`
+      - 同步 capability notes / example 到新的非短路骨架
+- 验证：
+  - `npx vitest run tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-action-library.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（close-out 后 follow-up 的 structured patch fallback、LLM request timeout、browser runtime noise、AI 生成失败后可操作闭环、execution latency、draft auto-launch latency、status evidence short-circuit、optional json miss noise downgrade、partial code fail-fast 与本轮 status evidence success-criteria tightening 已补齐；当前阶段结论不变）
+- 风险 / 未完成：
+  - 本轮只收紧 success 判定口径，不新增“同一行状态单元格读取” helper
+  - 相比旧口径，这会更保守；部分过去会被判 success 的 run 现在会显式暴露“状态证据缺失”
+  - 真实 rerun 验证不在本轮文档收口内，需要按后续样本继续观察
+- 下一步：
+  - 当前这刀已完成，没有必须继续的同类开发
+  - 若继续在严格口径下提升通过率，只允许另起 brief，单收：
+    - `same-row status-cell evidence helper`
+    - 或 `detailEntry coverage gap closure`
+
+## 2026-04-07 第一百二十二次更新（post-R14 success hardening close-out follow-up：detail field scope tightening）
+
+- 本轮目标：
+  - 不重开 `post-R14 success hardening` 主阶段
+  - 只收口一类 detail fallback 假阴性：
+    - 目标行已命中
+    - 已进入详情抽屉 / 详情页
+    - `readDetailField(...)` 命中目标 label 后，却把后续字段 label 串读成当前字段 value
+  - 聚焦真实 run `intent-run-90ec89ca-99a2-4d32-b65c-722735b1f46c` 暴露的问题：
+    - 商机首轮已经创建成功，列表行也已命中
+    - 首轮失败并不是“未命中目标记录”，而是 `商机进展` 被误读成 `最后跟进时间: 下次跟进时间:`
+- 已完成：
+  - 已补 brief：
+    - `docs/intent-e2e-detail-field-scope-task-brief-2026-04-07.md`
+  - 已完成代码收口：
+    - `lib/test-worker.mjs`
+      - `readDetailField(...)` 的浏览器侧提取逻辑新增字段尾裁剪：
+        - 纯字段标签序列（如 `最后跟进时间: 下次跟进时间:`）不再被当成有效值
+        - 若候选值后半段混入后续字段 label，会先裁到当前字段真实值边界
+      - 在目标 label 的同层 sibling 中新增保守值扫描：
+        - 可跳过空 badge / 空文本节点
+        - 优先提取 `商机进展` 后面的真实文本值
+        - 遇到下一个字段 label 时立即停止，避免继续串读
+  - 已补 / 已更新单测：
+    - `tests/unit/test-executor.spec.ts`
+      - 新增“同一 detail row 内 `商机进展 -> 新入库 -> 最后跟进时间 / 下次跟进时间`”回归
+      - 锁住 mixed row 结构下只返回 `新入库`
+- 验证：
+  - `npx vitest run tests/unit/test-executor.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（close-out 后 follow-up 的 structured patch fallback、LLM request timeout、browser runtime noise、AI 生成失败后可操作闭环、execution latency、draft auto-launch latency、status evidence short-circuit、optional json miss noise downgrade、partial code fail-fast、status evidence success-criteria tightening 与本轮 detail field scope tightening 已补齐；当前阶段结论不变）
+- 风险 / 未完成：
+  - 本轮只收口 detail field helper 的字段边界，不新增新的状态列 helper
+  - 若真实页面把状态完全渲染在不可读文本层，本轮会避免误读，但不保证一定直接拿到状态文本
+  - 真实 rerun 仍需继续观察是否还有其它详情 DOM 形态会触发同类串读
+- 下一步：
+  - 当前这刀已完成，没有必须继续的同类开发
+  - 若继续在严格口径下提升通过率，只允许另起 brief，单收：
+    - `same-row status-cell evidence helper`
+    - 或 `detailEntry coverage gap closure`

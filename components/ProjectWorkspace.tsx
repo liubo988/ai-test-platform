@@ -73,6 +73,7 @@ import {
 type ProjectStatus = 'active' | 'archived';
 type ModuleStatus = 'active' | 'archived';
 type ConfigStatus = 'active' | 'archived';
+type IntentDraftActiveRunStatus = 'created' | 'running' | '';
 type WorkspacePlatformQuerySource = PlatformQuerySource;
 type WorkspacePlatformQuery = PlatformMaterializedQuery;
 type WorkspacePlatformIndex = PlatformMaterializedQueryIndex;
@@ -186,6 +187,10 @@ type IntentDraftItem = {
   createdAt: string;
   updatedAt: string;
   workspacePath: string;
+  activeRunId: string;
+  activeRunStatus: IntentDraftActiveRunStatus;
+  activeRunStage: string;
+  activeRunUpdatedAt: string;
 };
 
 type IntentDraftDetail = IntentDraftItem & {
@@ -1040,6 +1045,11 @@ function normalizeIntentDraftItem(item: IntentDraftItem): IntentDraftItem {
     planError: typeof item?.planError === 'string' ? item.planError : '',
     importedConfigUid: typeof item?.importedConfigUid === 'string' ? item.importedConfigUid : '',
     importedPlanUid: typeof item?.importedPlanUid === 'string' ? item.importedPlanUid : '',
+    workspacePath: typeof item?.workspacePath === 'string' ? item.workspacePath : '',
+    activeRunId: typeof item?.activeRunId === 'string' ? item.activeRunId : '',
+    activeRunStatus: item?.activeRunStatus === 'created' || item?.activeRunStatus === 'running' ? item.activeRunStatus : '',
+    activeRunStage: typeof item?.activeRunStage === 'string' ? item.activeRunStage : '',
+    activeRunUpdatedAt: typeof item?.activeRunUpdatedAt === 'string' ? item.activeRunUpdatedAt : '',
     status:
       item?.status === 'imported' || item?.status === 'archived'
         ? item.status
@@ -1140,6 +1150,28 @@ function intentDraftStatusLabel(status: IntentDraftItem['status']): string {
     default:
       return '待导入';
   }
+}
+
+function canEditIntentDraftStatus(status: IntentDraftItem['status']): boolean {
+  return status !== 'archived';
+}
+
+function hasActiveIntentDraftRun(draft: Pick<IntentDraftItem, 'activeRunId' | 'activeRunStatus'>): boolean {
+  return Boolean(draft.activeRunId && (draft.activeRunStatus === 'created' || draft.activeRunStatus === 'running'));
+}
+
+function intentDraftActiveRunTone(status: IntentDraftActiveRunStatus, stage: string): string {
+  if (status === 'created' || stage === 'queued') {
+    return 'bg-amber-50 text-amber-700 ring-amber-200';
+  }
+  return 'bg-violet-50 text-violet-700 ring-violet-200';
+}
+
+function intentDraftActiveRunLabel(status: IntentDraftActiveRunStatus, stage: string): string {
+  if (status === 'created' || stage === 'queued') {
+    return '排队中';
+  }
+  return '执行中';
 }
 
 function normalizeTaskFlowForForm(flowDefinition: FlowDefinition | null | undefined, targetUrl: string, taskMode: TaskMode): FlowDefinition {
@@ -2299,8 +2331,8 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
     setActionNotice('');
     try {
       const detail = await fetchIntentDraftDetail(intentDraftUid);
-      if (detail.status !== 'active') {
-        throw new Error('只有待导入的意图草稿可以修改');
+      if (!canEditIntentDraftStatus(detail.status)) {
+        throw new Error('已归档的意图草稿无法修改');
       }
       setIntentDraftEditorSeed(toIntentDraftSeed(detail));
       setIntentDraftEditorOpen(true);
@@ -2377,12 +2409,14 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
     try {
       setIntentDraftDetailOpen(false);
       setIntentDraftsModalOpen(false);
+      const existingRunId = draft.activeRunId.trim();
       router.push(
         buildIntentDraftWorkbenchHref({
           projectUid: draft.projectUid || projectUid,
           moduleUid: draft.moduleUid,
           draftUid: draft.intentDraftUid,
-          launchMode: INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE,
+          runId: existingRunId || undefined,
+          launchMode: existingRunId ? '' : INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE,
         })
       );
     } catch (err: unknown) {
@@ -4214,6 +4248,16 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                             <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600 ring-1 ring-slate-200">
                               {taskModeLabel(draft.taskMode)}
                             </span>
+                            {hasActiveIntentDraftRun(draft) && (
+                              <span
+                                className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${intentDraftActiveRunTone(
+                                  draft.activeRunStatus,
+                                  draft.activeRunStage
+                                )}`}
+                              >
+                                {intentDraftActiveRunLabel(draft.activeRunStatus, draft.activeRunStage)}
+                              </span>
+                            )}
                           </div>
                           <p className="mt-2 line-clamp-2 text-sm leading-6 text-slate-600">{draft.featureDescription || draft.input}</p>
                           <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
@@ -4228,6 +4272,12 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                           {draft.planError && (
                             <p className="mt-2 text-xs leading-5 text-amber-700">{draft.planError}</p>
                           )}
+                          {hasActiveIntentDraftRun(draft) && (
+                            <p className="mt-2 text-xs leading-5 text-violet-700">
+                              当前关联 Run {compactRunId(draft.activeRunId)}
+                              {draft.activeRunUpdatedAt ? ` · ${formatRelativeMoment(draft.activeRunUpdatedAt)}` : ''}
+                            </p>
+                          )}
                         </div>
 
                         <div className="flex flex-wrap items-center justify-end gap-2">
@@ -4241,7 +4291,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                             onClick={() => void openEditIntentDraft(draft.intentDraftUid)}
                             disabled={
                               !canEditContent ||
-                              draft.status !== 'active' ||
+                              !canEditIntentDraftStatus(draft.status) ||
                               intentDraftEditingUid === draft.intentDraftUid ||
                               intentDraftTestingUid === draft.intentDraftUid ||
                               intentDraftActioningUid === draft.intentDraftUid ||
@@ -4263,7 +4313,11 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                             }
                             className="h-8 rounded-lg border border-slate-900 bg-white px-3 text-xs font-medium text-slate-900 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
                           >
-                            {intentDraftTestingUid === draft.intentDraftUid ? '启动中...' : '测试流程'}
+                            {intentDraftTestingUid === draft.intentDraftUid
+                              ? '打开中...'
+                              : hasActiveIntentDraftRun(draft)
+                                ? '继续测试'
+                                : '测试流程'}
                           </button>
                           <button
                             onClick={() => void importIntentDraft(draft)}
@@ -4336,6 +4390,16 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                         <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${intentDraftStatusTone(intentDraftDetail.status)}`}>
                           {intentDraftStatusLabel(intentDraftDetail.status)}
                         </span>
+                        {hasActiveIntentDraftRun(intentDraftDetail) && (
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${intentDraftActiveRunTone(
+                              intentDraftDetail.activeRunStatus,
+                              intentDraftDetail.activeRunStage
+                            )}`}
+                          >
+                            {intentDraftActiveRunLabel(intentDraftDetail.activeRunStatus, intentDraftDetail.activeRunStage)}
+                          </span>
+                        )}
                       </div>
                       <p className="mt-3 text-xs leading-5 text-slate-500">{intentDraftDetail.featureDescription || intentDraftDetail.input}</p>
                       <div className="mt-3 space-y-2 text-[11px] text-slate-500">
@@ -4344,6 +4408,12 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                         <p>步骤：{intentDraftDetail.flowStepCount}</p>
                         <p>更新时间：{formatMoment(intentDraftDetail.updatedAt || intentDraftDetail.createdAt)}</p>
                         <p className="break-all">入口：{intentDraftDetail.targetUrl || intentDraftDetail.targetUrlHint || '-'}</p>
+                        {hasActiveIntentDraftRun(intentDraftDetail) && (
+                          <p>
+                            当前关联 Run {compactRunId(intentDraftDetail.activeRunId)}
+                            {intentDraftDetail.activeRunUpdatedAt ? ` · ${formatRelativeMoment(intentDraftDetail.activeRunUpdatedAt)}` : ''}
+                          </p>
+                        )}
                       </div>
                     </section>
 
@@ -4457,7 +4527,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                         onClick={() => void openEditIntentDraft(intentDraftDetail.intentDraftUid)}
                         disabled={
                           !canEditContent ||
-                          intentDraftDetail.status !== 'active' ||
+                          !canEditIntentDraftStatus(intentDraftDetail.status) ||
                           intentDraftEditingUid === intentDraftDetail.intentDraftUid ||
                           intentDraftTestingUid === intentDraftDetail.intentDraftUid ||
                           intentDraftActioningUid === intentDraftDetail.intentDraftUid ||
@@ -4480,7 +4550,11 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                         }
                         className="h-10 rounded-xl border border-slate-900 px-4 text-sm font-medium text-slate-900 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
                       >
-                        {intentDraftTestingUid === intentDraftDetail.intentDraftUid ? '启动中...' : '测试流程'}
+                        {intentDraftTestingUid === intentDraftDetail.intentDraftUid
+                          ? '打开中...'
+                          : hasActiveIntentDraftRun(intentDraftDetail)
+                            ? '继续测试'
+                            : '测试流程'}
                       </button>
                       <button
                         type="button"

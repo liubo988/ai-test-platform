@@ -4,6 +4,7 @@ import {
   canRunIntentDraftTestFlowStatus,
   INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE,
   normalizeIntentDraftLaunchMode,
+  resolveIntentDraftAutoLaunchGate,
   shouldOverrideDraftAutoRunLaunchDecision,
   shouldTreatQueryLaunchDecisionAsHardBlock,
 } from '@/lib/intent-e2e-draft-launch';
@@ -31,6 +32,17 @@ describe('intent-e2e draft launch helpers', () => {
     ).toBe('/intent-e2e?projectUid=proj_default&draftUid=draft_1');
   });
 
+  it('can resume a specific run while preserving draft context', () => {
+    expect(
+      buildIntentDraftWorkbenchHref({
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        draftUid: 'draft_1',
+        runId: ' intent-run-1 ',
+      })
+    ).toBe('/intent-e2e?projectUid=proj_default&moduleUid=mod_checkout&draftUid=draft_1&runId=intent-run-1');
+  });
+
   it('normalizes the supported draft launch mode only', () => {
     expect(normalizeIntentDraftLaunchMode('test_flow')).toBe(INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE);
     expect(normalizeIntentDraftLaunchMode(' draft_only ')).toBe('');
@@ -55,5 +67,37 @@ describe('intent-e2e draft launch helpers', () => {
     expect(canRunIntentDraftTestFlowStatus('imported')).toBe(true);
     expect(canRunIntentDraftTestFlowStatus('archived')).toBe(false);
     expect(canRunIntentDraftTestFlowStatus('')).toBe(false);
+  });
+
+  it('keeps waiting when draft hydration finished but launch detail is not ready yet', () => {
+    expect(
+      resolveIntentDraftAutoLaunchGate({
+        projectUid: 'proj_default',
+        draftUid: 'draft_1',
+        hydratedKey: 'proj_default:draft_1',
+        handledKey: '',
+        draftDetailReady: false,
+        payloadReady: false,
+      })
+    ).toEqual({
+      status: 'wait',
+      draftKey: 'proj_default:draft_1',
+    });
+  });
+
+  it('marks hydrated drafts with empty payload as invalid instead of waiting forever', () => {
+    expect(
+      resolveIntentDraftAutoLaunchGate({
+        projectUid: 'proj_default',
+        draftUid: 'draft_1',
+        hydratedKey: 'proj_default:draft_1',
+        handledKey: '',
+        draftDetailReady: true,
+        payloadReady: false,
+      })
+    ).toEqual({
+      status: 'invalid_payload',
+      draftKey: 'proj_default:draft_1',
+    });
   });
 });

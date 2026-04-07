@@ -99,6 +99,7 @@ export function normalizeIntentE2ERequestBody(body: unknown): IntentE2ERunReques
     targetUrl,
     projectUid: typeof record.projectUid === 'string' ? record.projectUid.trim() : '',
     moduleUid: typeof record.moduleUid === 'string' ? record.moduleUid.trim() : '',
+    intentDraftUid: typeof record.intentDraftUid === 'string' ? record.intentDraftUid.trim() : '',
     onboardingManifestId: typeof record.onboardingManifestId === 'string' ? record.onboardingManifestId.trim() : '',
     cicdProfile: normalizeIntentE2ECiCdProfile(record.cicdProfile),
     auth: normalizeAuth(record.auth),

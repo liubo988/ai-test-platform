@@ -157,6 +157,100 @@ describe('test-executor worker template rendering', () => {
   );
 
   it(
+    'downgrades known browser console runtime noise to warn logs',
+    async () => {
+      const logs: Array<{ level: string; message: string; meta?: any }> = [];
+      const result = await executeTest(
+        `test('worker browser console noise', async ({ page }) => {
+          await page.setContent('<!doctype html><html><body>console noise</body></html>');
+          await page.evaluate(() => {
+            try {
+              const bad = null;
+              bad.forEach(() => {});
+            } catch (error) {
+              const text = error && typeof error.message === 'string' ? error.message : String(error || 'unknown error');
+              console.error(text);
+            }
+          });
+          await page.waitForTimeout(80);
+          expect(true).toBe(true);
+        });`,
+        'worker-browser-console-runtime-noise',
+        undefined,
+        {
+          onLog(payload) {
+            logs.push(payload);
+          },
+        }
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+      expect(logs.some((item) => item.level === 'error' && /Cannot read properties of null \(reading 'forEach'\)/.test(item.message))).toBe(false);
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          level: 'warn',
+          message: 'page runtime noise suppressed: null.forEach',
+          meta: expect.objectContaining({
+            source: 'console',
+            noiseCode: 'page_runtime_null_foreach',
+            originalLevel: 'error',
+            originalMessage: "Cannot read properties of null (reading 'forEach')",
+          }),
+        })
+      );
+    },
+    20000
+  );
+
+  it(
+    'downgrades known browser pageerror runtime noise to warn logs',
+    async () => {
+      const logs: Array<{ level: string; message: string; meta?: any }> = [];
+      const result = await executeTest(
+        `test('worker browser pageerror noise', async ({ page }) => {
+          await page.setContent(\`<!doctype html><html><body><script>
+            setTimeout(() => {
+              const bad = null;
+              bad.forEach(() => {});
+            }, 0);
+          <\/script></body></html>\`);
+          await page.waitForTimeout(120);
+          expect(true).toBe(true);
+        });`,
+        'worker-browser-pageerror-runtime-noise',
+        undefined,
+        {
+          onLog(payload) {
+            logs.push(payload);
+          },
+        }
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+      expect(logs.some((item) => item.level === 'error' && /pageerror: Cannot read properties of null \(reading 'forEach'\)/.test(item.message))).toBe(false);
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          level: 'warn',
+          message: 'page runtime noise suppressed: null.forEach',
+          meta: expect.objectContaining({
+            source: 'pageerror',
+            noiseCode: 'page_runtime_null_foreach',
+            originalLevel: 'error',
+            originalMessage: "pageerror: Cannot read properties of null (reading 'forEach')",
+          }),
+        })
+      );
+    },
+    20000
+  );
+
+  it(
     'reads response json and extracts primary keys through shared helpers',
     async () => {
       const result = await executeTest(
@@ -267,6 +361,54 @@ describe('test-executor worker template rendering', () => {
         success: true,
         error: null,
       });
+    },
+    20000
+  );
+
+  it(
+    'downgrades optional json value misses to debug noise instead of warn',
+    async () => {
+      const logs: Array<{ level: string; message: string; meta?: any }> = [];
+      const result = await executeTest(
+        `test('worker optional json value miss noise', async () => {
+          const payload = {
+            data: {
+              customerName: 'Acme',
+            },
+          };
+
+          const businessId = __e2e.pickJsonValue(payload, {
+            label: 'businessId',
+            paths: ['businessId', 'data.businessId', 'id'],
+            required: false,
+          });
+
+          expect(businessId).toBe('');
+        });`,
+        'worker-optional-json-value-miss-noise',
+        undefined,
+        {
+          onLog(payload) {
+            logs.push(payload);
+          },
+        }
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          level: 'debug',
+          message: 'optional json value not found',
+          meta: expect.objectContaining({
+            label: 'businessId',
+            required: false,
+          }),
+        })
+      );
+      expect(logs.some((item) => item.message === 'json value not found')).toBe(false);
     },
     20000
   );
@@ -673,6 +815,173 @@ describe('test-executor worker template rendering', () => {
         success: true,
         error: null,
       });
+    },
+    20000
+  );
+
+  it(
+    'reuses the current visible table row before triggering a redundant primary lookup search',
+    async () => {
+      const logs: Array<{ level: string; message: string; meta?: any }> = [];
+      const result = await executeTest(
+        `test('resolve primary record from current table', async ({ page }) => {
+          await page.goto('about:blank');
+          await page.setContent(\`
+            <div class="search">
+              <input id="businessList_keywords" />
+              <button id="search-btn" type="button">搜索</button>
+            </div>
+            <div class="ant-table-wrapper">
+              <table>
+                <tbody>
+                  <tr id="target-row" data-row-key="biz-1">
+                    <td>BIZ-001</td>
+                    <td>新入库</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          \`);
+
+          await page.evaluate(() => {
+            const button = document.getElementById('search-btn');
+            if (!(button instanceof HTMLElement)) return;
+            button.addEventListener('click', () => {
+              document.body.setAttribute('data-search-triggered', 'yes');
+            });
+          });
+
+          const recordCheck = await __e2e.resolvePrimaryRecord(page, {
+            primaryValue: 'BIZ-001',
+            keywordInput: page.locator('#businessList_keywords'),
+            searchButton: page.locator('#search-btn'),
+            rowHasTexts: ['BIZ-001'],
+            timeoutMs: 2000,
+          });
+
+          expect(recordCheck.mode).toBe('table_row');
+          expect(recordCheck.row).toBeTruthy();
+          await expect(recordCheck.row).toHaveAttribute('id', 'target-row');
+          expect(await page.locator('body').getAttribute('data-search-triggered')).toBe(null);
+        });`,
+        'worker-resolve-primary-record-current-table',
+        undefined,
+        {
+          onLog(payload) {
+            logs.push(payload);
+          },
+        }
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          level: 'info',
+          message: 'primary record resolved in current table',
+          meta: expect.objectContaining({
+            via: 'current_table',
+          }),
+        })
+      );
+      expect(logs.some((item) => item.message === 'primary lookup retry scheduled')).toBe(false);
+    },
+    20000
+  );
+
+  it(
+    'prefers the searchable type-to-open fast path before dropdown reopen retries',
+    async () => {
+      const logs: Array<{ level: string; message: string; meta?: any }> = [];
+      const result = await executeTest(
+        `test('select antd option via type-to-open fast path', async ({ page }) => {
+          await page.goto('about:blank');
+          await page.setContent(\`
+            <div id="company-row">
+              <div class="ant-select ant-select-show-search">
+                <div class="ant-select-selector">
+                  <span class="ant-select-selection-search">
+                    <input id="company-input" class="ant-select-selection-search-input" role="combobox" aria-autocomplete="list" />
+                  </span>
+                </div>
+              </div>
+            </div>
+          \`);
+
+          await page.evaluate(() => {
+            const row = document.getElementById('company-row');
+            const input = document.getElementById('company-input');
+            if (!(row instanceof HTMLElement) || !(input instanceof HTMLInputElement)) return;
+
+            const removeDropdown = () => {
+              document.querySelectorAll('.ant-select-dropdown').forEach((node) => node.remove());
+            };
+
+            const renderDropdown = (keyword) => {
+              removeDropdown();
+              if (!String(keyword || '').trim()) return;
+
+              const dropdown = document.createElement('div');
+              dropdown.className = 'ant-select-dropdown';
+              dropdown.style.display = 'block';
+
+              const option = document.createElement('div');
+              option.className = 'ant-select-item ant-select-item-option';
+              option.setAttribute('title', '北京云企');
+
+              const content = document.createElement('div');
+              content.className = 'ant-select-item-option-content';
+              content.textContent = '北京云企';
+              option.appendChild(content);
+              option.addEventListener('click', () => {
+                row.setAttribute('data-selected-label', '北京云企');
+                removeDropdown();
+              });
+
+              dropdown.appendChild(option);
+              document.body.appendChild(dropdown);
+            };
+
+            input.addEventListener('input', () => {
+              renderDropdown(input.value);
+            });
+          });
+
+          const row = page.locator('#company-row').first();
+          await __e2e.selectAntdOption(page, row, {
+            label: '北京云企',
+            searchText: '北京云企',
+          });
+
+          await expect(page.locator('#company-row')).toHaveAttribute('data-selected-label', '北京云企');
+        });`,
+        'worker-select-antd-option-type-to-open-fast-path',
+        undefined,
+        {
+          onLog(payload) {
+            logs.push(payload);
+          },
+        }
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          level: 'info',
+          message: 'ant-select dropdown opened',
+          meta: expect.objectContaining({
+            strategy: 'type-to-open',
+          }),
+        })
+      );
+      expect(
+        logs.some((item) => item.message === 'ant-select open attempt' && item.meta?.strategy === 'click')
+      ).toBe(false);
     },
     20000
   );
@@ -1158,6 +1467,49 @@ describe('test-executor worker template rendering', () => {
           expect(statusText).toBe('新入库');
         });`,
         'worker-read-detail-field-avoids-earlier-sibling-values'
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+    },
+    20000
+  );
+
+  it(
+    'trims trailing sibling field labels when reading detail status from a mixed detail row',
+    async () => {
+      const result = await executeTest(
+        `test('read detail field trims trailing labels in mixed detail row', async ({ page }) => {
+          await page.goto('about:blank');
+          await page.setContent(\`
+            <div class="ant-drawer-content">
+              <div class="detail-panel">
+                <div class="detail-row">
+                  <span class="label">跟进人:</span>
+                  <span class="value">/</span>
+                  <span class="label">商机进展:</span>
+                  <span class="ant-badge ant-badge-status ant-badge-not-a-wrapper">
+                    <span class="ant-badge-status-dot"></span>
+                    <span class="ant-badge-status-text"></span>
+                  </span>
+                  新入库
+                  <span class="label">最后跟进时间:</span>
+                  <span class="value"></span>
+                  <span class="label">下次跟进时间:</span>
+                  <span class="value"></span>
+                </div>
+              </div>
+            </div>
+          \`);
+
+          const detailPanel = page.locator('.detail-panel').first();
+          const progressText = await __e2e.readDetailField(page, { label: '商机进展', scope: detailPanel });
+
+          expect(progressText).toBe('新入库');
+        });`,
+        'worker-read-detail-field-trims-trailing-labels'
       );
 
       expect(result).toMatchObject({

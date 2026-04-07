@@ -136,6 +136,7 @@ export interface IntentE2ERunRequest {
   targetUrl?: string;
   projectUid?: string;
   moduleUid?: string;
+  intentDraftUid?: string;
   onboardingManifestId?: string;
   systemOnboarding?: IntentE2ESystemOnboardingManifestSummary;
   cicdProfile?: IntentE2ECiCdProfile;
@@ -460,7 +461,13 @@ async function collectGeneratedCode(
 
   throwIfAborted(signal);
 
-  const code = completedCode.trim() || generatedCode.trim();
+  const normalizedCompletedCode = completedCode.trim();
+  const normalizedGeneratedCode = generatedCode.trim();
+  if (lastError && !normalizedCompletedCode) {
+    throw new Error(lastError);
+  }
+
+  const code = normalizedCompletedCode || normalizedGeneratedCode;
   if (!code) {
     throw new Error(lastError || 'AI 未生成可执行脚本');
   }

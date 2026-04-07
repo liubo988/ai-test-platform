@@ -154,12 +154,14 @@ describe('intent-execution-compiler', () => {
     expect(template.code).toContain('不要在外层再手写一次 fill + click 预搜索');
     expect(template.code).toContain('固定骨架 [verify_success_1]：');
     expect(template.code).toContain('const verify_success_1Resp = await artifacts["plan_step_1"];');
+    expect(template.code).toContain('若 artifacts["plan_step_2"] 已写入 recordCheck / status / source 等定位证据，最终验收先直接复用这些 artifacts');
     expect(template.code).toContain('const verify_success_2CurrentVisibleRow = shared.businessId ? await (async () => {');
     expect(template.code).toContain('hasTexts: [shared.businessId],');
     expect(template.code).toContain('timeoutMs: 1200,');
     expect(template.code).toContain('const verify_success_2Record = verify_success_2CurrentVisibleRow');
     expect(template.code).toContain(': await __e2e.resolvePrimaryRecord(page, {');
     expect(template.code).toContain('const verify_success_2StatusEvidenceRecordCheck = verify_success_2Record.response ? verify_success_2Record : verify_success_2Record.row ? await __e2e.resolvePrimaryRecord(page, {');
+    expect(template.code).toContain('preferCurrentVisibleRow: false,');
     expect(template.code).toContain('maxLookupAttempts: 1,');
     expect(template.code).toContain('retryIntervalMs: 200,');
     expect(template.code).toContain('不要紧接着再对同一 row locator 重复做 toContainText(primaryValue)');
@@ -174,12 +176,13 @@ describe('intent-execution-compiler', () => {
     expect(template.code).toContain("const verify_success_2DerivedBusinessId = shared.businessId || ((/^[A-Za-z0-9_-]{6,64}$/.test(verify_success_2RowKey) && !/^1\\d{10}$/.test(verify_success_2RowKey)) ? verify_success_2RowKey : '') || (((verify_success_2RowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item))) || '');");
     expect(template.code).toContain("const verify_success_2MatchedRecordByDerivedBusinessId = !verify_success_2MatchedRecord && verify_success_2ListPayload && verify_success_2DerivedBusinessId ? __e2e.pickJsonRecord(verify_success_2ListPayload, { label: 'derivedBusinessId', value: verify_success_2DerivedBusinessId, paths: ['businessId', 'id'], required: false }) : null;");
     expect(template.code).toContain('const verify_success_2ResolvedMatchedRecord = verify_success_2MatchedRecord || verify_success_2MatchedRecordByDerivedBusinessId;');
+    expect(template.code).toContain('const verify_success_2ExpectedStatus = verify_success_2ResolvedMatchedRecord ? __e2e.pickJsonValue(verify_success_2ResolvedMatchedRecord, { label: "状态"');
     expect(template.code).toContain('__e2e.pickJsonValue(verify_success_2ResolvedMatchedRecord, { label: "状态"');
     expect(template.code).toContain('const verify_success_2ExpectedStatusAssertion = "TODO_EXPECTED_状态";');
-    expect(template.code).toContain(
-      'if (verify_success_2ExpectedStatusAssertion && verify_success_2RowText.includes(String(verify_success_2ExpectedStatusAssertion))) {'
-    );
-    expect(template.code).toContain('expect(verify_success_2RowText).toContain(String(verify_success_2ExpectedStatusAssertion));');
+    expect(template.code).toContain('if (verify_success_2ExpectedStatus) {');
+    expect(template.code).toContain('expect(String(verify_success_2ExpectedStatus)).toContain(String(verify_success_2ExpectedStatusAssertion));');
+    expect(template.code).not.toContain('if (verify_success_2ExpectedStatusAssertion && verify_success_2RowText.includes(String(verify_success_2ExpectedStatusAssertion))) {');
+    expect(template.code).not.toContain('expect(verify_success_2RowText).toContain(String(verify_success_2ExpectedStatusAssertion));');
     expect(template.code).toContain('__e2e.readDetailField(page, { label: "联系人", required: false })');
     expect(template.code).toContain('__e2e.pickJsonValue(verify_success_2MatchedRecord, { label: "状态"');
     expect(template.code).toContain('throw new Error("详情字段缺失：状态");');
@@ -1431,6 +1434,7 @@ describe('intent-execution-compiler', () => {
     expect(template.code).toContain('primaryValue: shared.contactPhone,');
     expect(template.code).toContain('rowHasTexts: [shared.contactPhone, "新入库"],');
     expect(template.code).toContain('const verify_phone_lookupStatusEvidenceRecordCheck = verify_phone_lookupRecord.response ? verify_phone_lookupRecord : verify_phone_lookupRecord.row ? await __e2e.resolvePrimaryRecord(page, {');
+    expect(template.code).toContain('preferCurrentVisibleRow: false,');
     expect(template.code).toContain('const verify_phone_lookupListPayload = verify_phone_lookupStatusEvidenceRecordCheck.response ? await __e2e.readJsonResponse(verify_phone_lookupStatusEvidenceRecordCheck.response, { required: false }) : null;');
     expect(template.code).toContain("const verify_phone_lookupDerivedBusinessId = shared.businessId || ((/^[A-Za-z0-9_-]{6,64}$/.test(verify_phone_lookupRowKey) && !/^1\\d{10}$/.test(verify_phone_lookupRowKey)) ? verify_phone_lookupRowKey : '') || (((verify_phone_lookupRowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item))) || '');");
     expect(template.code).toContain("const verify_phone_lookupMatchedRecordByDerivedBusinessId = !verify_phone_lookupMatchedRecord && verify_phone_lookupListPayload && verify_phone_lookupDerivedBusinessId ? __e2e.pickJsonRecord(verify_phone_lookupListPayload, { label: 'derivedBusinessId', value: verify_phone_lookupDerivedBusinessId, paths: ['businessId', 'id'], required: false }) : null;");

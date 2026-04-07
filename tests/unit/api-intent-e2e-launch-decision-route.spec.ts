@@ -93,37 +93,6 @@ describe('POST /api/intent-e2e/launch-decision', () => {
       repairMemoryPath: '/tmp/repair-memory.json',
       reasons: ['project_knowledge_missing'],
     } as never);
-    vi.mocked(listRecentIntentE2ETerminalRunSnapshots).mockResolvedValue([] as never);
-    vi.mocked(resolveIntentE2ERepeatedFailureSuppressionFromData).mockReturnValue({
-      shouldSuppress: false,
-      scenarioFamily: 'complex_enterprise_flow',
-      priorityScenarioFamily: 'business_create_list_verify',
-      targetPath: '/business/create',
-      matchedSnapshotSignature: '',
-      matchedRunCount: 0,
-      matchedFailedRuns: 0,
-      recentFailureStreak: 0,
-      dominantQualityBucket: '',
-      dominantBlockerKind: '',
-      latestFailureClass: '',
-      recommendedDecision: '',
-      reason: '',
-      latestFinishedAt: '',
-      representativeRunIds: [],
-      failurePressureSummary: {
-        recentFailedReviewCapabilityCount: 0,
-        recentFailedVerifyCapabilityCount: 0,
-        recentFailedReviewExecutionCount: 0,
-        recentFailedVerifyExecutionCount: 0,
-        recentFailureWindowDays: 14,
-        highFailureCandidateCount: 0,
-        highFailureRepairCount: 0,
-        highFailureGovernanceCount: 0,
-        latestRepairObservationAt: '',
-        latestRepairObservationSummary: '',
-        latestRepairObservationVerifierCheckUids: [],
-      },
-    } as never);
     vi.mocked(resolveIntentE2ELaunchDecision).mockReturnValue({
       decision: 'needs_bootstrap',
       reasons: ['project_bootstrap_required', 'project_knowledge_missing'],
@@ -163,15 +132,8 @@ describe('POST /api/intent-e2e/launch-decision', () => {
       undefined
     );
     expect(buildIntentE2EProjectAssetAvailability).toHaveBeenCalledWith({ projectUid: 'proj_1' });
-    expect(listRecentIntentE2ETerminalRunSnapshots).toHaveBeenCalledWith({
-      projectUid: 'proj_1',
-      moduleUid: 'mod_1',
-      limit: 50,
-    });
-    expect(resolveIntentE2ERepeatedFailureSuppressionFromData).toHaveBeenCalledWith([], {
-      requestInput: '新建商机并提交后回列表校验',
-      targetUrl: 'https://example.com/business/create',
-    });
+    expect(listRecentIntentE2ETerminalRunSnapshots).not.toHaveBeenCalled();
+    expect(resolveIntentE2ERepeatedFailureSuppressionFromData).not.toHaveBeenCalled();
     expect(resolveIntentE2ELaunchDecision).toHaveBeenCalledWith(
       expect.objectContaining({
         input: '新建商机并提交后回列表校验',
@@ -277,23 +239,41 @@ describe('POST /api/intent-e2e/launch-decision', () => {
         latestRepairObservationVerifierCheckUids: ['verify_1'],
       },
     } as never);
-    vi.mocked(resolveIntentE2ELaunchDecision).mockReturnValue({
-      decision: 'draft_only',
-      reasons: ['recent_repeated_model_failure', 'high_failure_pressure'],
-      signals: {
-        projectUid: 'proj_2',
-        moduleUid: 'mod_2',
-        hasTargetUrl: true,
-        attachmentCount: 0,
-        assetStatus: 'ready',
-        requiresFixture: false,
-        hasFixtureContract: false,
-        hasHighFailurePressure: true,
-        hasRepeatedFailureSuppression: true,
-        repeatedFailureDecision: 'draft_only',
-        repeatedFailureReason: 'recent_repeated_model_failure',
-      },
-    } as never);
+    vi.mocked(resolveIntentE2ELaunchDecision)
+      .mockReturnValueOnce({
+        decision: 'auto_run',
+        reasons: ['launch_ready'],
+        signals: {
+          projectUid: 'proj_2',
+          moduleUid: 'mod_2',
+          hasTargetUrl: true,
+          attachmentCount: 0,
+          assetStatus: 'ready',
+          requiresFixture: false,
+          hasFixtureContract: false,
+          hasHighFailurePressure: false,
+          hasRepeatedFailureSuppression: false,
+          repeatedFailureDecision: '',
+          repeatedFailureReason: '',
+        },
+      } as never)
+      .mockReturnValueOnce({
+        decision: 'draft_only',
+        reasons: ['recent_repeated_model_failure', 'high_failure_pressure'],
+        signals: {
+          projectUid: 'proj_2',
+          moduleUid: 'mod_2',
+          hasTargetUrl: true,
+          attachmentCount: 0,
+          assetStatus: 'ready',
+          requiresFixture: false,
+          hasFixtureContract: false,
+          hasHighFailurePressure: true,
+          hasRepeatedFailureSuppression: true,
+          repeatedFailureDecision: 'draft_only',
+          repeatedFailureReason: 'recent_repeated_model_failure',
+        },
+      } as never);
 
     const req = new NextRequest('http://localhost/api/intent-e2e/launch-decision', {
       method: 'POST',
@@ -310,9 +290,17 @@ describe('POST /api/intent-e2e/launch-decision', () => {
     expect(listRecentIntentE2ETerminalRunSnapshots).toHaveBeenCalledWith({
       projectUid: 'proj_2',
       moduleUid: 'mod_2',
-      limit: 50,
+      limit: 20,
     });
-    expect(resolveIntentE2ELaunchDecision).toHaveBeenCalledWith(
+    expect(resolveIntentE2ELaunchDecision).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        failurePressureSummary: null,
+        repeatedFailureSuppression: null,
+      })
+    );
+    expect(resolveIntentE2ELaunchDecision).toHaveBeenNthCalledWith(
+      2,
       expect.objectContaining({
         failurePressureSummary: expect.objectContaining({
           recentFailedVerifyExecutionCount: 3,

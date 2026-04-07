@@ -11,6 +11,7 @@ vi.mock('@/lib/db/repository', () => ({
 }));
 
 vi.mock('@/lib/services/project-intent-draft-service', () => ({
+  getProjectIntentDraftDetailResult: vi.fn(),
   updateProjectIntentDraftRecord: vi.fn(),
 }));
 
@@ -28,7 +29,7 @@ vi.mock('@/lib/server/project-actor', () => ({
 import { DELETE, GET, PUT } from '../../app/api/projects/[projectUid]/intent-drafts/[draftUid]/route';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { archiveProjectIntentDraft, getProjectIntentDraftByUid } from '@/lib/db/repository';
-import { updateProjectIntentDraftRecord } from '@/lib/services/project-intent-draft-service';
+import { getProjectIntentDraftDetailResult, updateProjectIntentDraftRecord } from '@/lib/services/project-intent-draft-service';
 import { applyActorCookie, requireProjectRole } from '@/lib/server/project-actor';
 
 describe('project intent draft detail route', () => {
@@ -37,7 +38,7 @@ describe('project intent draft detail route', () => {
   });
 
   it('gets an intent draft detail after permission checks', async () => {
-    vi.mocked(getProjectIntentDraftByUid).mockResolvedValue({
+    vi.mocked(getProjectIntentDraftDetailResult).mockResolvedValue({
       intentDraftUid: 'idraft_1',
       projectUid: 'proj_1',
       moduleUid: 'mod_1',
@@ -58,6 +59,11 @@ describe('project intent draft detail route', () => {
       importedAt: '',
       createdAt: '2026-03-17T00:00:00.000Z',
       updatedAt: '2026-03-17T00:00:00.000Z',
+      workspacePath: '/projects/proj_1?module=mod_1',
+      activeRunId: 'intent-run-1',
+      activeRunStatus: 'running',
+      activeRunStage: 'planning',
+      activeRunUpdatedAt: '2026-03-17T00:05:00.000Z',
       attachments: [],
       llmConfig: {},
       scenarioCard: null,
@@ -84,7 +90,10 @@ describe('project intent draft detail route', () => {
       ['owner', 'editor', 'viewer'],
       '当前操作者没有权限查看该意图草稿'
     );
-    expect(getProjectIntentDraftByUid).toHaveBeenCalledWith('idraft_1');
+    expect(getProjectIntentDraftDetailResult).toHaveBeenCalledWith({
+      projectUid: 'proj_1',
+      intentDraftUid: 'idraft_1',
+    });
     expect(applyActorCookie).toHaveBeenCalledTimes(1);
     expect(res.status).toBe(200);
   });

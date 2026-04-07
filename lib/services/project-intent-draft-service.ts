@@ -1,4 +1,5 @@
-import { generateScenarioCard, type ScenarioAttachment } from '@/lib/ai/scenario-card';
+import { generateScenarioCard, type ScenarioAttachment, type ScenarioCard } from '@/lib/ai/scenario-card';
+import type { IntentE2ERunStatus } from '@/lib/ai/intent-e2e-run-registry';
 import {
   createPlanCases,
   createProjectIntentDraft,
@@ -8,9 +9,16 @@ import {
   getProjectByUid,
   getProjectIntentDraftByUid,
   insertProjectActivityLog,
+  listIntentE2ERunSnapshots,
+  listProjectIntentDrafts,
   markProjectIntentDraftImported,
   updateProjectIntentDraft,
-  type ProjectIntentDraftInput,
+} from '@/lib/db/repository';
+import type {
+  IntentE2ERunSnapshotRecord,
+  ProjectIntentDraftInput,
+  ProjectIntentDraftRecord,
+  ProjectIntentDraftSummaryRecord,
 } from '@/lib/db/repository';
 import type { LLMRuntimeOverrides } from '@/lib/llm/provider-config';
 import { getWorkspaceLLMRuntimeOverrides, mergeLLMRuntimeOverrides } from '@/lib/llm/workspace-config';
@@ -53,6 +61,30 @@ export interface CreateProjectIntentDraftResult {
   workspacePath: string;
 }
 
+export type ProjectIntentDraftActiveRunStatus = Extract<IntentE2ERunStatus, 'created' | 'running'> | '';
+
+export interface ProjectIntentDraftActiveRunSummary {
+  activeRunId: string;
+  activeRunStatus: ProjectIntentDraftActiveRunStatus;
+  activeRunStage: string;
+  activeRunUpdatedAt: string;
+}
+
+export interface ProjectIntentDraftSummaryResult extends CreateProjectIntentDraftResult, ProjectIntentDraftActiveRunSummary {}
+
+export interface ProjectIntentDraftDetailResult extends ProjectIntentDraftSummaryResult {
+  attachments: ScenarioAttachment[];
+  llmConfig: LLMRuntimeOverrides;
+  scenarioCard: ScenarioCard | null;
+  scenarioLlmMeta: unknown;
+  planTitle: string;
+  planCode: string;
+  planSummary: string;
+  generationModel: string;
+  generationPrompt: string;
+  generatedFiles: Array<{ name: string; content: string; language: string }>;
+}
+
 export interface ImportProjectIntentDraftInput {
   projectUid: string;
   intentDraftUid: string;
@@ -84,6 +116,15 @@ export interface ImportProjectIntentDraftResult {
   workspacePath: string;
 }
 
+const ACTIVE_RUN_HEARTBEAT_STALE_MS = 5 * 60 * 1000;
+type ActiveIntentE2ERunSnapshot = IntentE2ERunSnapshotRecord & {
+  status: Extract<IntentE2ERunStatus, 'created' | 'running'>;
+};
+
+function canUpdateIntentDraftStatus(status: ProjectIntentDraftRecord['status']): boolean {
+  return status !== 'archived';
+}
+
 function buildProjectAuth(project: Awaited<ReturnType<typeof getProjectByUid>>) {
   if (!project?.authRequired) return undefined;
 
@@ -95,7 +136,50 @@ function buildProjectAuth(project: Awaited<ReturnType<typeof getProjectByUid>>) 
   };
 }
 
-function buildResult(item: Awaited<ReturnType<typeof createProjectIntentDraft>>): CreateProjectIntentDraftResult {
+function createEmptyActiveRunSummary(): ProjectIntentDraftActiveRunSummary {
+  return {
+    activeRunId: '',
+    activeRunStatus: '',
+    activeRunStage: '',
+    activeRunUpdatedAt: '',
+  };
+}
+
+function isActiveIntentRunStatus(status: string): status is Extract<IntentE2ERunStatus, 'created' | 'running'> {
+  return status === 'created' || status === 'running';
+}
+
+function parseTimestampMs(value: string): number {
+  const ts = Date.parse(value);
+  return Number.isFinite(ts) ? ts : 0;
+}
+
+function buildWorkspacePath(projectUid: string, moduleUid: string): string {
+  const normalizedProjectUid = projectUid.trim();
+  const normalizedModuleUid = moduleUid.trim();
+  return normalizedModuleUid ? `/projects/${normalizedProjectUid}?module=${normalizedModuleUid}` : `/projects/${normalizedProjectUid}`;
+}
+
+function readIntentDraftUidFromRunSnapshotState(state: unknown): string {
+  if (!state || typeof state !== 'object' || Array.isArray(state)) return '';
+  const record = state as Record<string, unknown>;
+  if (!record.request || typeof record.request !== 'object' || Array.isArray(record.request)) return '';
+  const request = record.request as Record<string, unknown>;
+  return typeof request.intentDraftUid === 'string' ? request.intentDraftUid.trim() : '';
+}
+
+function isFreshActiveRunSnapshot(snapshot: IntentE2ERunSnapshotRecord, now = Date.now()): snapshot is ActiveIntentE2ERunSnapshot {
+  if (!isActiveIntentRunStatus(snapshot.status)) return false;
+  const heartbeatAt = snapshot.updatedAt || snapshot.startedAt || snapshot.createdAt;
+  const heartbeatTs = parseTimestampMs(heartbeatAt);
+  if (!heartbeatTs) return false;
+  return now - heartbeatTs <= ACTIVE_RUN_HEARTBEAT_STALE_MS;
+}
+
+function toProjectIntentDraftSummaryResult(
+  item: ProjectIntentDraftSummaryRecord,
+  activeRun: ProjectIntentDraftActiveRunSummary = createEmptyActiveRunSummary()
+): ProjectIntentDraftSummaryResult {
   return {
     intentDraftUid: item.intentDraftUid,
     projectUid: item.projectUid,
@@ -117,7 +201,74 @@ function buildResult(item: Awaited<ReturnType<typeof createProjectIntentDraft>>)
     importedAt: item.importedAt,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
-    workspacePath: `/projects/${item.projectUid}?module=${item.moduleUid}`,
+    workspacePath: buildWorkspacePath(item.projectUid, item.moduleUid),
+    ...activeRun,
+  };
+}
+
+function toProjectIntentDraftDetailResult(
+  item: ProjectIntentDraftRecord,
+  activeRun: ProjectIntentDraftActiveRunSummary = createEmptyActiveRunSummary()
+): ProjectIntentDraftDetailResult {
+  return {
+    ...toProjectIntentDraftSummaryResult(item, activeRun),
+    attachments: item.attachments,
+    llmConfig: item.llmConfig,
+    scenarioCard: item.scenarioCard,
+    scenarioLlmMeta: item.scenarioLlmMeta,
+    planTitle: item.planTitle,
+    planCode: item.planCode,
+    planSummary: item.planSummary,
+    generationModel: item.generationModel,
+    generationPrompt: item.generationPrompt,
+    generatedFiles: item.generatedFiles,
+  };
+}
+
+async function resolveIntentDraftActiveRunMap(input: {
+  projectUid: string;
+  moduleUid?: string;
+  draftUids?: string[];
+}): Promise<Map<string, ProjectIntentDraftActiveRunSummary>> {
+  const projectUid = input.projectUid.trim();
+  if (!projectUid) return new Map();
+
+  const moduleUid = input.moduleUid?.trim() || '';
+  const draftUidSet = new Set((input.draftUids || []).map((item) => item.trim()).filter(Boolean));
+  if (draftUidSet.size === 0 && Array.isArray(input.draftUids)) return new Map();
+
+  const snapshots = await listIntentE2ERunSnapshots({
+    projectUid,
+    moduleUid: moduleUid || undefined,
+    status: 'active',
+    limit: 100,
+  });
+  const now = Date.now();
+  const activeRunMap = new Map<string, ProjectIntentDraftActiveRunSummary>();
+
+  for (const snapshot of snapshots) {
+    if (!isFreshActiveRunSnapshot(snapshot, now)) continue;
+    const draftUid = readIntentDraftUidFromRunSnapshotState(snapshot.state);
+    if (!draftUid || (draftUidSet.size > 0 && !draftUidSet.has(draftUid))) continue;
+
+    const summary = {
+      activeRunId: snapshot.runId,
+      activeRunStatus: snapshot.status,
+      activeRunStage: snapshot.stage,
+      activeRunUpdatedAt: snapshot.updatedAt,
+    } satisfies ProjectIntentDraftActiveRunSummary;
+    const current = activeRunMap.get(draftUid);
+    if (!current || parseTimestampMs(summary.activeRunUpdatedAt) >= parseTimestampMs(current.activeRunUpdatedAt)) {
+      activeRunMap.set(draftUid, summary);
+    }
+  }
+
+  return activeRunMap;
+}
+
+function buildResult(item: Awaited<ReturnType<typeof createProjectIntentDraft>>): CreateProjectIntentDraftResult {
+  return {
+    ...toProjectIntentDraftSummaryResult(item),
   };
 }
 
@@ -221,6 +372,52 @@ export async function createProjectIntentDraftRecord(
   return buildResult(item);
 }
 
+export async function listProjectIntentDraftSummaryResults(input: {
+  projectUid: string;
+  moduleUid?: string;
+  status?: 'active' | 'imported' | 'archived' | 'all';
+  limit?: number;
+}): Promise<ProjectIntentDraftSummaryResult[]> {
+  const projectUid = input.projectUid.trim();
+  if (!projectUid) throw new Error('缺少 projectUid，无法加载意图草稿');
+
+  const items = await listProjectIntentDrafts({
+    projectUid,
+    moduleUid: input.moduleUid?.trim() || undefined,
+    status: input.status,
+    limit: input.limit,
+  });
+  const activeRunMap = await resolveIntentDraftActiveRunMap({
+    projectUid,
+    moduleUid: input.moduleUid,
+    draftUids: items.map((item) => item.intentDraftUid),
+  });
+
+  return items.map((item) => toProjectIntentDraftSummaryResult(item, activeRunMap.get(item.intentDraftUid)));
+}
+
+export async function getProjectIntentDraftDetailResult(input: {
+  projectUid: string;
+  intentDraftUid: string;
+}): Promise<ProjectIntentDraftDetailResult | null> {
+  const projectUid = input.projectUid.trim();
+  const intentDraftUid = input.intentDraftUid.trim();
+  if (!projectUid || !intentDraftUid) return null;
+
+  const item = await getProjectIntentDraftByUid(intentDraftUid);
+  if (!item || item.projectUid !== projectUid) {
+    return null;
+  }
+
+  const activeRunMap = await resolveIntentDraftActiveRunMap({
+    projectUid,
+    moduleUid: item.moduleUid,
+    draftUids: [item.intentDraftUid],
+  });
+
+  return toProjectIntentDraftDetailResult(item, activeRunMap.get(item.intentDraftUid));
+}
+
 export async function updateProjectIntentDraftRecord(
   input: UpdateProjectIntentDraftInput
 ): Promise<CreateProjectIntentDraftResult> {
@@ -233,8 +430,8 @@ export async function updateProjectIntentDraftRecord(
   if (!draft || draft.projectUid !== projectUid) {
     throw new Error('意图草稿不存在');
   }
-  if (draft.status !== 'active') {
-    throw new Error('只有待导入的意图草稿可以修改');
+  if (!canUpdateIntentDraftStatus(draft.status)) {
+    throw new Error('已归档的意图草稿无法修改');
   }
 
   const item = await updateProjectIntentDraft(

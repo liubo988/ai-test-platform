@@ -70,6 +70,7 @@ export async function cleanupProjectGraph(projectUid: string, emails: string[] =
   });
 
   try {
+    await connection.execute(`DELETE FROM intent_e2e_runs WHERE project_uid = ?`, [projectUid]);
     await connection.execute(`DELETE FROM execution_artifacts WHERE project_uid = ?`, [projectUid]);
     await connection.execute(`DELETE FROM execution_stream_events WHERE project_uid = ?`, [projectUid]);
     await connection.execute(`DELETE FROM llm_conversations WHERE project_uid = ?`, [projectUid]);

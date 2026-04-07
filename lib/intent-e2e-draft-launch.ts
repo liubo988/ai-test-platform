@@ -2,6 +2,7 @@ export const INTENT_DRAFT_LAUNCH_QUERY_PARAM = 'draftLaunch';
 export const INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE = 'test_flow';
 
 export type IntentDraftLaunchMode = typeof INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE;
+export type IntentDraftAutoLaunchGateStatus = 'wait' | 'ready' | 'invalid_payload';
 
 export function normalizeIntentDraftLaunchMode(value: string | null | undefined): IntentDraftLaunchMode | '' {
   return (value || '').trim() === INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE ? INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE : '';
@@ -11,6 +12,7 @@ export function buildIntentDraftWorkbenchHref(options: {
   projectUid: string;
   moduleUid?: string;
   draftUid: string;
+  runId?: string;
   launchMode?: IntentDraftLaunchMode | '';
 }): string {
   const params = new URLSearchParams();
@@ -19,6 +21,9 @@ export function buildIntentDraftWorkbenchHref(options: {
     params.set('moduleUid', options.moduleUid.trim());
   }
   params.set('draftUid', options.draftUid.trim());
+  if (options.runId?.trim()) {
+    params.set('runId', options.runId.trim());
+  }
 
   const launchMode = normalizeIntentDraftLaunchMode(options.launchMode);
   if (launchMode) {
@@ -40,4 +45,42 @@ export function shouldOverrideDraftAutoRunLaunchDecision(decision: string | null
 export function canRunIntentDraftTestFlowStatus(status: string | null | undefined): boolean {
   const normalized = (status || '').trim();
   return normalized === 'active' || normalized === 'imported';
+}
+
+export function resolveIntentDraftAutoLaunchGate(input: {
+  projectUid?: string | null;
+  draftUid?: string | null;
+  hydratedKey?: string | null;
+  handledKey?: string | null;
+  draftDetailReady?: boolean;
+  payloadReady?: boolean;
+}): {
+  status: IntentDraftAutoLaunchGateStatus;
+  draftKey: string;
+} {
+  const projectUid = (input.projectUid || '').trim();
+  const draftUid = (input.draftUid || '').trim();
+  const draftKey = projectUid && draftUid ? `${projectUid}:${draftUid}` : '';
+
+  if (!draftKey) {
+    return { status: 'wait', draftKey: '' };
+  }
+
+  if ((input.hydratedKey || '').trim() !== draftKey) {
+    return { status: 'wait', draftKey };
+  }
+
+  if ((input.handledKey || '').trim() === draftKey) {
+    return { status: 'wait', draftKey };
+  }
+
+  if (!input.draftDetailReady) {
+    return { status: 'wait', draftKey };
+  }
+
+  if (!input.payloadReady) {
+    return { status: 'invalid_payload', draftKey };
+  }
+
+  return { status: 'ready', draftKey };
 }
