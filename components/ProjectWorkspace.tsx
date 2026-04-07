@@ -66,6 +66,7 @@ import { readExecutionEntryNavigationTargets } from '@/lib/execution-entry-navig
 import { buildExecutionWorkspaceLinkActions } from '@/lib/execution-workspace-link-contract';
 import {
   buildIntentDraftWorkbenchHref,
+  canRunIntentDraftTestFlowStatus,
   INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE,
 } from '@/lib/intent-e2e-draft-launch';
 
@@ -2364,7 +2365,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
       setError(readOnlyHint || '当前操作者没有编辑权限');
       return;
     }
-    if (draft.status !== 'active') {
+    if (!canRunIntentDraftTestFlowStatus(draft.status)) {
       setError('当前草稿已不可直接发起测试流程');
       return;
     }
@@ -2430,11 +2431,15 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
 
       if (item.planCreated && item.planUid) {
         await openPlanPreviewByUid(item.planUid);
-        setActionNotice(`已将意图草稿「${item.configName}」导入正式任务，并写入脚本 v${item.planVersion}。后续请通过任务卡片上的“执行”按钮运行测试。`);
+        setActionNotice(
+          `已将意图草稿「${item.configName}」导入正式任务，并写入脚本 v${item.planVersion}。后续可继续从草稿点击“测试流程”验证，也可以通过任务卡片上的“执行”按钮运行正式任务。`
+        );
         return;
       }
 
-      setActionNotice(`已将意图草稿「${item.configName}」导入正式任务，但没有可导入脚本：${item.planError || '未知原因'}。可后续在任务卡片里点击“生成”补脚本。`);
+      setActionNotice(
+        `已将意图草稿「${item.configName}」导入正式任务，但没有可导入脚本：${item.planError || '未知原因'}。你仍可继续从草稿点击“测试流程”验证，或后续在任务卡片里点击“生成”补脚本。`
+      );
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '导入意图草稿失败');
     } finally {
@@ -4250,7 +4255,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                             onClick={() => void runIntentDraftTestFlow(draft)}
                             disabled={
                               !canEditContent ||
-                              draft.status !== 'active' ||
+                              !canRunIntentDraftTestFlowStatus(draft.status) ||
                               intentDraftEditingUid === draft.intentDraftUid ||
                               intentDraftTestingUid === draft.intentDraftUid ||
                               intentDraftActioningUid === draft.intentDraftUid ||
@@ -4467,7 +4472,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                         onClick={() => void runIntentDraftTestFlow(intentDraftDetail)}
                         disabled={
                           !canEditContent ||
-                          intentDraftDetail.status !== 'active' ||
+                          !canRunIntentDraftTestFlowStatus(intentDraftDetail.status) ||
                           intentDraftEditingUid === intentDraftDetail.intentDraftUid ||
                           intentDraftTestingUid === intentDraftDetail.intentDraftUid ||
                           intentDraftActioningUid === intentDraftDetail.intentDraftUid ||

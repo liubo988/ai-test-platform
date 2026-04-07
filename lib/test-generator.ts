@@ -720,6 +720,26 @@ function buildLegacyCodeFallbackReason(
   return `${cause}，当前显式回退到自由代码生成（legacy fallback，非主链）...`;
 }
 
+function buildStructuredSlotPatchFallbackReason(errorMessage: string): string {
+  const normalizedError = String(errorMessage || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .slice(0, 160);
+  return normalizedError
+    ? `结构化 slot patch 失败（${normalizedError}），当前显式回退到自由代码生成（legacy fallback，非主链）...`
+    : '结构化 slot patch 失败，当前显式回退到自由代码生成（legacy fallback，非主链）...';
+}
+
+function buildStructuredRepairPatchFallbackReason(errorMessage: string): string {
+  const normalizedError = String(errorMessage || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .slice(0, 160);
+  return normalizedError
+    ? `结构化 repair patch 失败（${normalizedError}），当前 repair 显式回退到自由代码修复（legacy fallback，非主链）...`
+    : '结构化 repair patch 失败，当前 repair 显式回退到自由代码修复（legacy fallback，非主链）...';
+}
+
 function buildCompiledExecutionTemplateSection(
   planning: ResolvedPromptPlanningContext,
   auth: AuthConfig | undefined,
@@ -2818,7 +2838,13 @@ async function* streamStructuredSlotPatchGeneration(
   },
   runtimeOverrides?: LLMRuntimeOverrides,
   signal?: AbortSignal
-): AsyncGenerator<GenerateEvent> {
+): AsyncGenerator<
+  GenerateEvent,
+  {
+    success: boolean;
+    errorMessage?: string;
+  }
+> {
   throwIfAborted(signal);
 
   try {
@@ -2854,9 +2880,13 @@ async function* streamStructuredSlotPatchGeneration(
     const code = extractGeneratedCode(applyIntentExecutionSlotPatch(baseCode, normalizedPatch));
     validateGeneratedCodeSyntax(code, 'slot patch');
     yield { type: 'complete', content: code };
+    return { success: true };
   } catch (err: any) {
     if (err?.name === 'AbortError') throw err;
-    yield { type: 'error', content: `LLM 结构化 slot patch 失败: ${err?.message || '未知错误'}` };
+    return {
+      success: false,
+      errorMessage: String(err?.message || '未知错误'),
+    };
   }
 }
 
@@ -2873,7 +2903,13 @@ async function* streamStructuredRepairPatchGeneration(
   },
   runtimeOverrides?: LLMRuntimeOverrides,
   signal?: AbortSignal
-): AsyncGenerator<GenerateEvent> {
+): AsyncGenerator<
+  GenerateEvent,
+  {
+    success: boolean;
+    errorMessage?: string;
+  }
+> {
   throwIfAborted(signal);
 
   try {
@@ -2920,9 +2956,13 @@ async function* streamStructuredRepairPatchGeneration(
     const code = extractGeneratedCode(applyIntentExecutionSlotPatch(baseCode, repairOutput.patch));
     validateGeneratedCodeSyntax(code, 'repair patch');
     yield { type: 'complete', content: code };
+    return { success: true };
   } catch (err: any) {
     if (err?.name === 'AbortError') throw err;
-    yield { type: 'error', content: `LLM 结构化 repair patch 失败: ${err?.message || '未知错误'}` };
+    return {
+      success: false,
+      errorMessage: String(err?.message || '未知错误'),
+    };
   }
 }
 
@@ -3005,7 +3045,7 @@ export async function* generateTest(
       context,
       resolvedPlanning
     );
-    yield* streamStructuredSlotPatchGeneration(
+    const structuredPatchResult = yield* streamStructuredSlotPatchGeneration(
       prompt,
       compiledTemplate.code,
       targetSlotUids,
@@ -3016,10 +3056,17 @@ export async function* generateTest(
       runtimeOverrides,
       signal
     );
-    return;
+    if (structuredPatchResult.success) {
+      return;
+    }
+    yield {
+      type: 'thinking',
+      content: buildStructuredSlotPatchFallbackReason(structuredPatchResult.errorMessage || ''),
+    };
+  } else {
+    yield { type: 'thinking', content: buildLegacyCodeFallbackReason('generate', resolvedPlanning) };
   }
 
-  yield { type: 'thinking', content: buildLegacyCodeFallbackReason('generate', resolvedPlanning) };
   yield { type: 'thinking', content: '正在构造自由代码 Prompt 并调用 LLM...' };
   const prompt = buildPrompt(snapshot, description, auth, edgeCases, existingExample, context, resolvedPlanning);
   yield* streamCodeGeneration(prompt, runtimeOverrides, signal);
@@ -3092,7 +3139,7 @@ export async function* repairTest(
       resolvedPlanning,
       structuredRepairContext
     );
-    yield* streamStructuredRepairPatchGeneration(
+    const structuredRepairResult = yield* streamStructuredRepairPatchGeneration(
       prompt,
       structuredRepair.baseCode,
       compiledTemplate,
@@ -3106,10 +3153,17 @@ export async function* repairTest(
       runtimeOverrides,
       signal
     );
-    return;
+    if (structuredRepairResult.success) {
+      return;
+    }
+    yield {
+      type: 'thinking',
+      content: buildStructuredRepairPatchFallbackReason(structuredRepairResult.errorMessage || ''),
+    };
+  } else {
+    yield { type: 'thinking', content: buildLegacyCodeFallbackReason('repair', resolvedPlanning) };
   }
 
-  yield { type: 'thinking', content: buildLegacyCodeFallbackReason('repair', resolvedPlanning) };
   yield { type: 'thinking', content: '正在构造自由代码修复 Prompt 并调用 LLM...' };
   const prompt = buildRepairPrompt(snapshot, description, auth, edgeCases, existingExample, repair, context, resolvedPlanning);
   yield* streamCodeGeneration(prompt, runtimeOverrides, signal);

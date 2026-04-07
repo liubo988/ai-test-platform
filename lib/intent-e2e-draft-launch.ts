@@ -36,3 +36,8 @@ export function shouldTreatQueryLaunchDecisionAsHardBlock(decision: string | nul
 export function shouldOverrideDraftAutoRunLaunchDecision(decision: string | null | undefined): boolean {
   return (decision || '').trim() === 'draft_only';
 }
+
+export function canRunIntentDraftTestFlowStatus(status: string | null | undefined): boolean {
+  const normalized = (status || '').trim();
+  return normalized === 'active' || normalized === 'imported';
+}

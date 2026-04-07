@@ -17,6 +17,7 @@ describe('llm-client structured', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     Object.assign(process.env, ORIGINAL_ENV);
   });
@@ -99,5 +100,51 @@ describe('llm-client structured', () => {
     const secondPayload = JSON.parse(String(secondInit?.body || '{}'));
 
     expect(secondPayload.max_output_tokens).toBeGreaterThan(firstPayload.max_output_tokens);
+  });
+
+  it('times out a hanging structured responses request instead of hanging indefinitely', async () => {
+    vi.useFakeTimers();
+    process.env.OPENAI_REQUEST_TIMEOUT_MS = '10';
+    process.env.OPENAI_RESPONSES_MAX_ATTEMPTS = '2';
+
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      const signal = init?.signal;
+      return new Promise<Response>((_resolve, reject) => {
+        const rejectAbort = () => {
+          const error = new Error('aborted');
+          error.name = 'AbortError';
+          reject(error);
+        };
+
+        if (signal?.aborted) {
+          rejectAbort();
+          return;
+        }
+
+        signal?.addEventListener('abort', rejectAbort, { once: true });
+      });
+    });
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { callLLMStructured } = await import('@/lib/llm-client');
+    const request = callLLMStructured<{ title: string }>({
+      prompt: '返回严格 JSON',
+      schemaName: 'timeout_demo',
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['title'],
+        properties: {
+          title: { type: 'string' },
+        },
+      },
+    });
+    const expectation = expect(request).rejects.toThrow('LLM 请求超时 (10ms)');
+
+    await vi.advanceTimersByTimeAsync(20);
+
+    await expectation;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

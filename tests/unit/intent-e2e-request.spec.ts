@@ -104,4 +104,36 @@ describe('intent-e2e-request', () => {
     expect(request.onboardingManifestId).toBe('vendor_portal_staging');
     expect(request.cicdProfile).toBe('pr_gate');
   });
+
+  it('accepts prefilled draft assets for run fast-path reuse', () => {
+    const request = normalizeIntentE2ERequestBody({
+      input: '  创建商机并验证新入库状态  ',
+      targetUrl: ' https://example.com/#/business/businesslist ',
+      prefilledScenarioCard: {
+        title: '  创建商机并验证新入库状态  ',
+        taskMode: 'scenario',
+        targetUrl: ' https://example.com/#/business/businesslist ',
+        featureDescription: '从草稿复用 ScenarioCard',
+        flowDefinition: {
+          version: 1,
+          entryUrl: 'https://example.com/#/business/businesslist',
+          sharedVariables: ['businessId'],
+          expectedOutcome: '列表出现新记录',
+          cleanupNotes: '',
+          steps: [],
+        },
+        successCriteria: ['列表出现新记录'],
+        visualAnchors: ['新建商机按钮'],
+        notes: ['复用草稿资产'],
+      },
+      prefilledPlanCode: "test('draft-prefill', async ({ page }) => { await page.goto('https://example.com/#/business/businesslist'); });",
+    });
+
+    expect(request.prefilledScenarioCard).toMatchObject({
+      title: '创建商机并验证新入库状态',
+      targetUrl: 'https://example.com/#/business/businesslist',
+      featureDescription: '从草稿复用 ScenarioCard',
+    });
+    expect(request.prefilledPlanCode).toContain("test('draft-prefill'");
+  });
 });

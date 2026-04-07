@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildIntentDraftWorkbenchHref,
+  canRunIntentDraftTestFlowStatus,
   INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE,
   normalizeIntentDraftLaunchMode,
   shouldOverrideDraftAutoRunLaunchDecision,
@@ -47,5 +48,12 @@ describe('intent-e2e draft launch helpers', () => {
     expect(shouldOverrideDraftAutoRunLaunchDecision('draft_only')).toBe(true);
     expect(shouldOverrideDraftAutoRunLaunchDecision('needs_fixture')).toBe(false);
     expect(shouldOverrideDraftAutoRunLaunchDecision('')).toBe(false);
+  });
+
+  it('allows imported drafts to keep launching the test flow', () => {
+    expect(canRunIntentDraftTestFlowStatus('active')).toBe(true);
+    expect(canRunIntentDraftTestFlowStatus('imported')).toBe(true);
+    expect(canRunIntentDraftTestFlowStatus('archived')).toBe(false);
+    expect(canRunIntentDraftTestFlowStatus('')).toBe(false);
   });
 });

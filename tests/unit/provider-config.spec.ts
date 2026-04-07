@@ -21,6 +21,7 @@ describe('provider-config', () => {
     process.env.LLM_VISION_ENABLED = 'false';
     process.env.LLM_SELF_HEAL_RETRIES = '3';
     process.env.LLM_MAX_PLAN_STEPS = '6';
+    process.env.OPENAI_REQUEST_TIMEOUT_MS = '45000';
     process.env.OPENAI_MODEL = 'gpt-4-turbo';
 
     const { getLLMRuntimeConfig } = await import('@/lib/llm/provider-config');
@@ -34,6 +35,7 @@ describe('provider-config', () => {
     expect(config.visionEnabled).toBe(false);
     expect(config.selfHealRetries).toBe(3);
     expect(config.maxPlanSteps).toBe(6);
+    expect(config.requestTimeoutMs).toBe(45_000);
   });
 
   it('allows request-level runtime overrides without mutating server env', async () => {

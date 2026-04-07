@@ -11,6 +11,7 @@ export interface LLMRuntimeConfig {
   visionEnabled: boolean;
   selfHealRetries: number;
   maxPlanSteps: number;
+  requestTimeoutMs: number;
   responsesRetryDelayMs: number;
   responsesMaxAttempts: number;
 }
@@ -70,6 +71,7 @@ export function getLLMRuntimeConfig(overrides: LLMRuntimeOverrides = {}): LLMRun
     visionEnabled: readBoolean(overrides.visionEnabled, readBoolean(process.env.LLM_VISION_ENABLED, true)),
     selfHealRetries: readNumber(overrides.selfHealRetries, readNumber(process.env.LLM_SELF_HEAL_RETRIES, 2, 0), 0),
     maxPlanSteps: readNumber(overrides.maxPlanSteps, readNumber(process.env.LLM_MAX_PLAN_STEPS, 8, 1), 1),
+    requestTimeoutMs: readNumber(process.env.OPENAI_REQUEST_TIMEOUT_MS, 60_000, 0),
     responsesRetryDelayMs: readNumber(process.env.OPENAI_RETRY_DELAY_MS, 350, 0),
     responsesMaxAttempts: readNumber(process.env.OPENAI_RESPONSES_MAX_ATTEMPTS, 2, 1),
   };

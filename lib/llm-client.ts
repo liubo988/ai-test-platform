@@ -147,6 +147,68 @@ function extractResponsesText(data: any): string {
   return '';
 }
 
+function buildLLMRequestTimeoutMessage(timeoutMs: number): string {
+  return `LLM 请求超时 (${timeoutMs}ms)`;
+}
+
+function createLLMRequestTimeoutContext(config: LLMRuntimeConfig, parentSignal?: AbortSignal): {
+  signal?: AbortSignal;
+  didTimeout: () => boolean;
+  cleanup: () => void;
+} {
+  const timeoutMs = Math.max(0, Number(config.requestTimeoutMs || 0));
+  if (timeoutMs <= 0) {
+    return {
+      signal: parentSignal,
+      didTimeout: () => false,
+      cleanup: () => {},
+    };
+  }
+
+  const controller = new AbortController();
+  let timedOut = false;
+
+  const abortWithReason = (reason?: unknown) => {
+    if (controller.signal.aborted) return;
+    try {
+      controller.abort(reason);
+    } catch {
+      controller.abort();
+    }
+  };
+
+  const onParentAbort = () => {
+    abortWithReason(parentSignal?.reason);
+  };
+
+  if (parentSignal?.aborted) {
+    onParentAbort();
+  } else {
+    parentSignal?.addEventListener('abort', onParentAbort, { once: true });
+  }
+
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    abortWithReason(new Error(buildLLMRequestTimeoutMessage(timeoutMs)));
+  }, timeoutMs);
+
+  return {
+    signal: controller.signal,
+    didTimeout: () => timedOut,
+    cleanup: () => {
+      clearTimeout(timeoutId);
+      parentSignal?.removeEventListener('abort', onParentAbort);
+    },
+  };
+}
+
+function normalizeLLMRequestError(error: unknown, config: LLMRuntimeConfig, didTimeout: boolean): unknown {
+  if (didTimeout) {
+    return new Error(buildLLMRequestTimeoutMessage(Math.max(0, Number(config.requestTimeoutMs || 0))));
+  }
+  return error;
+}
+
 export async function* callLLMStream(
   prompt: string,
   systemPrompt?: string,
@@ -167,45 +229,52 @@ async function* callLLMStreamResponses(
   config: LLMRuntimeConfig,
   signal?: AbortSignal
 ): AsyncGenerator<StreamChunk> {
-  const resp = await createResponsesRequest(
-    {
-      model: config.model,
-      instructions: systemPrompt || 'You are a senior Playwright E2E testing expert.',
-      input: prompt,
-      stream: true,
-      temperature: 0.3,
-    },
-    getResponsesRequestOptions(config, signal)
-  );
+  const timeoutContext = createLLMRequestTimeoutContext(config, signal);
+  try {
+    const resp = await createResponsesRequest(
+      {
+        model: config.model,
+        instructions: systemPrompt || 'You are a senior Playwright E2E testing expert.',
+        input: prompt,
+        stream: true,
+        temperature: 0.3,
+      },
+      getResponsesRequestOptions(config, timeoutContext.signal)
+    );
 
-  const reader = resp.body?.getReader();
-  if (!reader) throw new Error('LLM 响应无可读流');
+    const reader = resp.body?.getReader();
+    if (!reader) throw new Error('LLM 响应无可读流');
 
-  const decoder = new TextDecoder();
-  let buffer = '';
+    const decoder = new TextDecoder();
+    let buffer = '';
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('data: ')) continue;
-      const data = trimmed.slice(6);
-      if (data === '[DONE]') return;
-      try {
-        const json = JSON.parse(data);
-        if (json.type === 'response.output_text.delta' && json.delta) {
-          yield { type: 'text', content: json.delta };
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data: ')) continue;
+        const data = trimmed.slice(6);
+        if (data === '[DONE]') return;
+        try {
+          const json = JSON.parse(data);
+          if (json.type === 'response.output_text.delta' && json.delta) {
+            yield { type: 'text', content: json.delta };
+          }
+        } catch {
+          // ignore malformed chunks
         }
-      } catch {
-        // ignore malformed chunks
       }
     }
+  } catch (error) {
+    throw normalizeLLMRequestError(error, config, timeoutContext.didTimeout());
+  } finally {
+    timeoutContext.cleanup();
   }
 }
 
@@ -221,45 +290,52 @@ async function* callLLMStreamChat(
     { role: 'user', content: prompt },
   ];
 
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: getHeaders(config),
-    body: JSON.stringify({ model: config.model, messages, stream: true, temperature: 0.3 }),
-    signal,
-  });
+  const timeoutContext = createLLMRequestTimeoutContext(config, signal);
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: getHeaders(config),
+      body: JSON.stringify({ model: config.model, messages, stream: true, temperature: 0.3 }),
+      signal: timeoutContext.signal,
+    });
 
-  if (!resp.ok) {
-    const errText = await resp.text();
-    throw new Error(`LLM 请求失败: ${resp.status} ${errText}`);
-  }
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`LLM 请求失败: ${resp.status} ${errText}`);
+    }
 
-  const reader = resp.body?.getReader();
-  if (!reader) throw new Error('LLM 响应无可读流');
+    const reader = resp.body?.getReader();
+    if (!reader) throw new Error('LLM 响应无可读流');
 
-  const decoder = new TextDecoder();
-  let buffer = '';
+    const decoder = new TextDecoder();
+    let buffer = '';
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('data: ')) continue;
-      const data = trimmed.slice(6);
-      if (data === '[DONE]') return;
-      try {
-        const json = JSON.parse(data);
-        const content = json.choices?.[0]?.delta?.content;
-        if (content) yield { type: 'text', content };
-      } catch {
-        // ignore malformed chunks
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data: ')) continue;
+        const data = trimmed.slice(6);
+        if (data === '[DONE]') return;
+        try {
+          const json = JSON.parse(data);
+          const content = json.choices?.[0]?.delta?.content;
+          if (content) yield { type: 'text', content };
+        } catch {
+          // ignore malformed chunks
+        }
       }
     }
+  } catch (error) {
+    throw normalizeLLMRequestError(error, config, timeoutContext.didTimeout());
+  } finally {
+    timeoutContext.cleanup();
   }
 }
 
@@ -282,18 +358,25 @@ async function callLLMResponses(
   config: LLMRuntimeConfig,
   signal?: AbortSignal
 ): Promise<string> {
-  const resp = await createResponsesRequest(
-    {
-      model: config.model,
-      instructions: systemPrompt || 'You are a helpful assistant.',
-      input: prompt,
-      temperature: 0.3,
-    },
-    getResponsesRequestOptions(config, signal)
-  );
+  const timeoutContext = createLLMRequestTimeoutContext(config, signal);
+  try {
+    const resp = await createResponsesRequest(
+      {
+        model: config.model,
+        instructions: systemPrompt || 'You are a helpful assistant.',
+        input: prompt,
+        temperature: 0.3,
+      },
+      getResponsesRequestOptions(config, timeoutContext.signal)
+    );
 
-  const data = await resp.json();
-  return extractResponsesText(data);
+    const data = await resp.json();
+    return extractResponsesText(data);
+  } catch (error) {
+    throw normalizeLLMRequestError(error, config, timeoutContext.didTimeout());
+  } finally {
+    timeoutContext.cleanup();
+  }
 }
 
 async function callLLMChat(
@@ -307,21 +390,28 @@ async function callLLMChat(
     { role: 'system', content: systemPrompt || 'You are a helpful assistant.' },
     { role: 'user', content: prompt },
   ];
+  const timeoutContext = createLLMRequestTimeoutContext(config, signal);
 
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: getHeaders(config),
-    body: JSON.stringify({ model: config.model, messages, temperature: 0.3 }),
-    signal,
-  });
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: getHeaders(config),
+      body: JSON.stringify({ model: config.model, messages, temperature: 0.3 }),
+      signal: timeoutContext.signal,
+    });
 
-  if (!resp.ok) {
-    const errText = await resp.text();
-    throw new Error(`LLM 请求失败: ${resp.status} ${errText}`);
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`LLM 请求失败: ${resp.status} ${errText}`);
+    }
+
+    const json = await resp.json();
+    return json.choices?.[0]?.message?.content || '';
+  } catch (error) {
+    throw normalizeLLMRequestError(error, config, timeoutContext.didTimeout());
+  } finally {
+    timeoutContext.cleanup();
   }
-
-  const json = await resp.json();
-  return json.choices?.[0]?.message?.content || '';
 }
 
 export async function callLLMStructured<T>(
@@ -363,27 +453,34 @@ async function callLLMStructuredResponses<T>(
   config: LLMRuntimeConfig,
   signal?: AbortSignal
 ): Promise<T> {
-  const resp = await createResponsesRequest(
-    {
-      model: config.model,
-      instructions: request.systemPrompt || 'You are a strict JSON generator.',
-      input: buildResponsesInput(request.prompt, config.visionEnabled ? request.imageDataUrls : []),
-      text: {
-        format: {
-          type: 'json_schema',
-          name: request.schemaName,
-          strict: true,
-          schema: request.schema,
+  const timeoutContext = createLLMRequestTimeoutContext(config, signal);
+  try {
+    const resp = await createResponsesRequest(
+      {
+        model: config.model,
+        instructions: request.systemPrompt || 'You are a strict JSON generator.',
+        input: buildResponsesInput(request.prompt, config.visionEnabled ? request.imageDataUrls : []),
+        text: {
+          format: {
+            type: 'json_schema',
+            name: request.schemaName,
+            strict: true,
+            schema: request.schema,
+          },
         },
+        temperature: request.temperature ?? 0.2,
+        max_output_tokens: request.maxOutputTokens ?? 1600,
       },
-      temperature: request.temperature ?? 0.2,
-      max_output_tokens: request.maxOutputTokens ?? 1600,
-    },
-    getResponsesRequestOptions(config, signal)
-  );
+      getResponsesRequestOptions(config, timeoutContext.signal)
+    );
 
-  const data = await resp.json();
-  return parseJsonFromText<T>(extractResponsesText(data), '结构化 LLM');
+    const data = await resp.json();
+    return parseJsonFromText<T>(extractResponsesText(data), '结构化 LLM');
+  } catch (error) {
+    throw normalizeLLMRequestError(error, config, timeoutContext.didTimeout());
+  } finally {
+    timeoutContext.cleanup();
+  }
 }
 
 async function callLLMStructuredChat<T>(
@@ -396,34 +493,41 @@ async function callLLMStructuredChat<T>(
     { role: 'system', content: request.systemPrompt || 'You are a strict JSON generator.' },
     { role: 'user', content: buildChatUserContent(request.prompt, config.visionEnabled ? request.imageDataUrls : []) },
   ];
+  const timeoutContext = createLLMRequestTimeoutContext(config, signal);
 
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: getHeaders(config),
-    body: JSON.stringify({
-      model: config.model,
-      messages,
-      response_format: {
-        type: 'json_schema',
-        json_schema: {
-          name: request.schemaName,
-          strict: true,
-          schema: request.schema,
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: getHeaders(config),
+      body: JSON.stringify({
+        model: config.model,
+        messages,
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: request.schemaName,
+            strict: true,
+            schema: request.schema,
+          },
         },
-      },
-      temperature: request.temperature ?? 0.2,
-      max_tokens: request.maxOutputTokens ?? 1600,
-    }),
-    signal,
-  });
+        temperature: request.temperature ?? 0.2,
+        max_tokens: request.maxOutputTokens ?? 1600,
+      }),
+      signal: timeoutContext.signal,
+    });
 
-  if (!resp.ok) {
-    const errText = await resp.text();
-    throw new Error(`LLM 请求失败: ${resp.status} ${errText}`);
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`LLM 请求失败: ${resp.status} ${errText}`);
+    }
+
+    const json = await resp.json();
+    return parseJsonFromText<T>(json.choices?.[0]?.message?.content || '', '结构化 LLM');
+  } catch (error) {
+    throw normalizeLLMRequestError(error, config, timeoutContext.didTimeout());
+  } finally {
+    timeoutContext.cleanup();
   }
-
-  const json = await resp.json();
-  return parseJsonFromText<T>(json.choices?.[0]?.message?.content || '', '结构化 LLM');
 }
 
 export function getPublicLLMConfig(runtimeOverrides?: LLMRuntimeOverrides) {

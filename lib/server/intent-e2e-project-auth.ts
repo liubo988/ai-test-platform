@@ -8,7 +8,6 @@ import {
   buildIntentE2EProjectFixtureOwnerRef,
   hasIntentE2EFixtureContract,
   mergeIntentE2ERuntimeGovernance,
-  shouldEnforceIntentE2ERuntimeGovernance,
 } from '@/lib/intent-e2e-runtime-governance';
 import { resolveIntentProjectRuntimeGovernance } from '@/lib/intent-project-runtime-governance';
 import { requireProjectRole } from '@/lib/server/project-actor';
@@ -68,16 +67,17 @@ function buildProjectCredentialGovernance(
     return runtimeGovernance;
   }
 
-  const shouldDeriveCredentialOwnershipDefaults = shouldEnforceIntentE2ERuntimeGovernance(runtimeGovernance);
+  const resolvedAccountRef = buildIntentE2EProjectAccountRef(
+    project.projectUid,
+    mergedAuth?.username || project.loginUsername || ''
+  );
 
   return mergeIntentE2ERuntimeGovernance(runtimeGovernance, {
     credential: {
       source: 'project',
       secretRef: buildIntentE2EProjectCredentialRef(project.projectUid),
-      ...(shouldDeriveCredentialOwnershipDefaults && !runtimeGovernance?.credential?.accountRef
-        ? { accountRef: buildIntentE2EProjectAccountRef(project.projectUid, project.loginUsername || mergedAuth?.username || '') }
-        : {}),
-      ...(shouldDeriveCredentialOwnershipDefaults && !runtimeGovernance?.credential?.sessionMode ? { sessionMode: 'shared' } : {}),
+      ...(!runtimeGovernance?.credential?.accountRef ? { accountRef: resolvedAccountRef } : {}),
+      ...(!runtimeGovernance?.credential?.sessionMode ? { sessionMode: 'shared' } : {}),
     },
   });
 }

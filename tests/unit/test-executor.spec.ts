@@ -1221,6 +1221,71 @@ describe('test-executor worker template rendering', () => {
   );
 
   it(
+    'merges visible fixed-column clone text when reading a matched Ant Design row',
+    async () => {
+      const result = await executeTest(
+        `test('find antd table row merges clone text', async ({ page }) => {
+          await page.goto('about:blank');
+          await page.setContent(\`
+            <div class="ant-table-wrapper">
+              <div class="ant-table-fixed-left">
+                <table>
+                  <tbody class="ant-table-tbody">
+                    <tr id="fixed-left-row" data-row-key="biz-1">
+                      <td>张三</td>
+                      <td>13912345678</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="ant-table-body">
+                <table>
+                  <tbody>
+                    <tr id="main-row" data-row-key="biz-1">
+                      <td>张三</td>
+                      <td>13912345678</td>
+                      <td>抖音</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="ant-table-fixed-right">
+                <table>
+                  <tbody class="ant-table-tbody">
+                    <tr id="fixed-right-row" data-row-key="biz-1">
+                      <td>新入库</td>
+                      <td><button type="button">查看</button></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          \`);
+
+          const targetRow = await __e2e.findAntdTableRow(page, {
+            hasTexts: ['张三', '13912345678'],
+            timeoutMs: 1200,
+          });
+
+          await expect(targetRow).toHaveAttribute('id', 'main-row');
+          const rowText = await targetRow.innerText();
+          expect(rowText).toContain('张三');
+          expect(rowText).toContain('13912345678');
+          expect(rowText).toContain('抖音');
+          expect(rowText).toContain('新入库');
+        });`,
+        'worker-find-antd-table-row-merges-clone-text'
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+    },
+    20000
+  );
+
+  it(
     'keeps the matched Ant Design row usable after a table rerender reorders rows',
     async () => {
       const result = await executeTest(
@@ -1267,6 +1332,53 @@ describe('test-executor worker template rendering', () => {
           await expect(targetRow).toContainText('13912345678');
         });`,
         'worker-find-antd-table-row-stable-after-rerender'
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+    },
+    20000
+  );
+
+  it(
+    'keeps the matched Ant Design row key readable after the original row node is detached',
+    async () => {
+      const result = await executeTest(
+        `test('find antd table row preserves row key after detach', async ({ page }) => {
+          await page.goto('about:blank');
+          await page.setDefaultTimeout(800);
+          await page.setContent(\`
+            <div class="ant-table-wrapper">
+              <div class="ant-table-body">
+                <table>
+                  <tbody>
+                    <tr id="target-row" data-row-key="biz-1">
+                      <td>张三</td>
+                      <td>13912345678</td>
+                      <td>新入库</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          \`);
+
+          const targetRow = await __e2e.findAntdTableRow(page, {
+            hasTexts: ['张三', '13912345678', '新入库'],
+            timeoutMs: 1200,
+          });
+
+          await page.evaluate(() => {
+            const tbody = document.querySelector('.ant-table-body tbody');
+            if (!tbody) return;
+            tbody.innerHTML = '';
+          });
+
+          await expect(await targetRow.getAttribute('data-row-key')).toBe('biz-1');
+        });`,
+        'worker-find-antd-table-row-row-key-after-detach'
       );
 
       expect(result).toMatchObject({

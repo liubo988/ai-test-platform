@@ -521,6 +521,8 @@ type IntentDraftLaunchDetail = {
   targetUrlHint: string;
   projectUid: string;
   moduleUid: string;
+  scenarioCard: ScenarioCard | null;
+  planCode: string;
   attachments: Array<{
     name?: string;
     dataUrl: string;
@@ -4001,6 +4003,11 @@ async function fetchIntentDraftLaunchDetail(projectUid: string, draftUid: string
     targetUrlHint: typeof json.item.targetUrlHint === 'string' ? json.item.targetUrlHint : '',
     projectUid: typeof json.item.projectUid === 'string' ? json.item.projectUid : projectUid,
     moduleUid: typeof json.item.moduleUid === 'string' ? json.item.moduleUid : '',
+    scenarioCard:
+      json.item.scenarioCard && typeof json.item.scenarioCard === 'object' && !Array.isArray(json.item.scenarioCard)
+        ? (json.item.scenarioCard as ScenarioCard)
+        : null,
+    planCode: typeof json.item.planCode === 'string' ? json.item.planCode : '',
     attachments: Array.isArray(json.item.attachments)
       ? json.item.attachments
           .filter((item) => item && typeof item === 'object' && typeof item.dataUrl === 'string' && item.dataUrl.trim())
@@ -4031,6 +4038,8 @@ function buildIntentDraftLaunchPayload(
     targetUrl: draftDetail.targetUrl.trim() || draftDetail.targetUrlHint.trim(),
     projectUid: projectUid || undefined,
     moduleUid: moduleUid || undefined,
+    prefilledScenarioCard: draftDetail.scenarioCard || undefined,
+    prefilledPlanCode: draftDetail.planCode.trim() ? draftDetail.planCode : undefined,
     attachments: draftDetail.attachments.map((item) => ({
       name: item.name,
       dataUrl: item.dataUrl,

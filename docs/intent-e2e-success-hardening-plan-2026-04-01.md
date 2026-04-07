@@ -1213,6 +1213,83 @@ repair 输入补齐更可诊断的运行时证据，例如：
     - `repair convergence efficiency`
     - 或非阻塞运行时噪音
 
+## 2026-04-07 更新（post-closeout follow-up：structured patch fallback + LLM 请求超时保护）
+
+- 本轮目标：
+  - 不重开 `S1-S6`，也不新增 success hardening 主切片
+  - 只收口 close-out 后真实 rerun 暴露的 3 个执行面缺口：
+    - structured slot patch `fetch failed` 时 generate 直接结束
+    - structured repair patch `fetch failed` 时 repair 直接结束
+    - LLM 请求悬挂时 run 长时间停在 `generating`
+- 已完成：
+  - 已补 brief：
+    - `docs/intent-e2e-structured-slot-patch-fallback-task-brief-2026-04-07.md`
+    - `docs/intent-e2e-llm-request-timeout-task-brief-2026-04-07.md`
+    - `docs/intent-e2e-structured-repair-patch-fallback-task-brief-2026-04-07.md`
+  - 已在 `lib/test-generator.ts` 增加 generate / repair 两条对称降级：
+    - structured slot patch 失败时，显式回退到现有 legacy 自由代码生成
+    - structured repair patch 失败时，显式回退到现有 legacy 自由代码修复
+  - 已在 `lib/llm/provider-config.ts`、`lib/llm-client.ts`、`lib/openai-responses.js` 增加统一 LLM 请求超时保护：
+    - 默认 `requestTimeoutMs = 60000`
+    - `Responses API` 在 abort / timeout 后不再继续无意义重试
+  - 已补 / 已更新单测：
+    - `tests/unit/test-generator-structured.spec.ts`
+    - `tests/unit/provider-config.spec.ts`
+    - `tests/unit/llm-client.spec.ts`
+    - `tests/unit/llm-client-structured.spec.ts`
+    - `tests/unit/openai-responses.spec.ts`
+  - 已确认本轮真实 run 证据：
+    - `intent-run-9f6513c9-e066-4c75-85b5-c18d74f00f5b`
+      - 已命中旧草稿骨架保护
+      - 随后失败在：
+        - `LLM 结构化 slot patch 失败: fetch failed`
+    - `intent-run-1455594f-0002-49b4-a2f7-0dd0e1952a74`
+      - 首轮已进入执行
+      - 第 2 次 repair 失败在：
+        - `LLM 结构化 repair patch 失败: fetch failed`
+    - `intent-run-b7ec2d1a-fef5-4424-a94b-46464cb6b30d`
+      - 首轮 generate 直接通过
+      - 终态：
+        - `status = passed`
+        - `attempt 1 / generate / success = true`
+- 验证：
+  - `npx vitest run tests/unit/test-generator-structured.spec.ts`
+  - `npx vitest run tests/unit/provider-config.spec.ts tests/unit/llm-client.spec.ts tests/unit/llm-client-structured.spec.ts tests/unit/openai-responses.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+- 度量：
+  - `auto_run_rate`：`N/A`（本轮只补执行面降级与超时保护，不改入口分流）
+  - `blocked_rate`：`N/A`（本轮不改 blocked flow）
+  - `first_pass_rate`：
+    - follow-up 真实 rerun 样本 `1 / 1 = 100%`
+    - 样本：
+      - `intent-run-b7ec2d1a-fef5-4424-a94b-46464cb6b30d`
+  - `terminal_pass_rate`：
+    - follow-up 真实 rerun 样本 `1 / 1 = 100%`
+    - 样本：
+      - `intent-run-b7ec2d1a-fef5-4424-a94b-46464cb6b30d`
+  - `top_failure_reasons`：
+    - 修复前 follow-up 样本头部错误为：
+      - `LLM 结构化 slot patch 失败: fetch failed`
+      - `LLM 结构化 repair patch 失败: fetch failed`
+    - 修复后验证样本未再复现上述终态错误
+- 当前阶段状态：
+  - `S1`：已完成
+  - `S2`：已完成
+  - `S3`：已完成
+  - `S4`：已完成（代码切片与 family 粒度最小回写均已完成）
+  - `S5`：已完成
+  - `S6`：已完成
+- 风险 / 未完成：
+  - 本轮 follow-up 只收口执行面瞬时失败与悬挂，不代表开放式任务的整体 first pass 已经稳定
+  - repair fallback 虽已补齐并有单测覆盖，但最新真实通过样本没有进入 repair，因此真实 repair rerun 仍需后续样本继续观察
+  - `Cannot read properties of null (reading 'forEach')` 这类非阻塞噪音仍未纳入本轮
+- 下一步：
+  - 当前 md 范围内已无剩余必做切片
+  - 若继续 success hardening，只能另起 brief，单收：
+    - `repair convergence efficiency`
+    - 或非阻塞运行时噪音
+
 ## 目标口径
 
 ### 不建议承诺的目标

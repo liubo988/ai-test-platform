@@ -674,7 +674,9 @@ describe('intent-e2e-service stream', () => {
     expect(events.some((event) => event.type === 'description')).toBe(true);
     expect(events.some((event) => event.type === 'stage' && event.stage === 'prechecking')).toBe(true);
     expect(events.some((event) => event.type === 'stage' && event.stage === 'analyzing')).toBe(true);
-    expect(vi.mocked(precheckPageAccess)).toHaveBeenCalledWith('https://example.com/checkout', undefined);
+    expect(vi.mocked(precheckPageAccess)).toHaveBeenCalledWith('https://example.com/checkout', undefined, {
+      captureSnapshot: true,
+    });
     expect(vi.mocked(analyzePage)).toHaveBeenCalledWith('https://example.com/checkout', undefined, {
       storageState: { cookies: [], origins: [] },
     });
@@ -771,12 +773,18 @@ describe('intent-e2e-service stream', () => {
     };
 
     await runIntentDrivenE2EStream(sharedRunInput);
-    await runIntentDrivenE2EStream(sharedRunInput);
+    const events: IntentE2EStreamEvent[] = [];
+    await runIntentDrivenE2EStream(sharedRunInput, (event) => {
+      events.push(event);
+    });
 
     expect(vi.mocked(precheckPageAccess)).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(precheckPageAccess).mock.calls[0]?.[2]).toBeUndefined();
+    expect(vi.mocked(precheckPageAccess).mock.calls[0]?.[2]).toMatchObject({
+      captureSnapshot: true,
+    });
     expect(vi.mocked(precheckPageAccess).mock.calls[1]?.[2]).toMatchObject({
       storageState: firstStorageState,
+      captureSnapshot: true,
     });
     expect(vi.mocked(executeTest).mock.calls[0]?.[4]).toMatchObject({
       storageState: firstStorageState,
@@ -785,6 +793,12 @@ describe('intent-e2e-service stream', () => {
       storageState: refreshedStorageState,
     });
     expect(readIntentE2ESharedSessionCache('account://qa/shared-checkout')?.storageState).toEqual(refreshedStorageState);
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'stage' && event.message.includes('命中 shared session') && event.message.includes('耗时')
+      )
+    ).toBe(true);
   });
 
   it('clears stale shared session and retries precheck once before execution', async () => {
@@ -874,8 +888,11 @@ describe('intent-e2e-service stream', () => {
     expect(vi.mocked(precheckPageAccess)).toHaveBeenCalledTimes(2);
     expect(vi.mocked(precheckPageAccess).mock.calls[0]?.[2]).toMatchObject({
       storageState: staleStorageState,
+      captureSnapshot: true,
     });
-    expect(vi.mocked(precheckPageAccess).mock.calls[1]?.[2]).toBeUndefined();
+    expect(vi.mocked(precheckPageAccess).mock.calls[1]?.[2]).toMatchObject({
+      captureSnapshot: true,
+    });
     expect(vi.mocked(executeTest).mock.calls[0]?.[4]).toMatchObject({
       storageState: refreshedStorageState,
     });
@@ -996,6 +1013,7 @@ describe('intent-e2e-service stream', () => {
     });
     expect(vi.mocked(precheckPageAccess)).toHaveBeenCalledWith('https://example.com/#/business/businesslist', undefined, {
       ignoreFailureClasses: ['data_missing'],
+      captureSnapshot: true,
     });
     expect(vi.mocked(analyzePage)).toHaveBeenCalledWith('https://example.com/#/business/businesslist', undefined, {
       storageState: { cookies: [], origins: [] },
@@ -1132,6 +1150,7 @@ describe('intent-e2e-service stream', () => {
     });
     expect(vi.mocked(precheckPageAccess)).toHaveBeenCalledWith('https://example.com/#/business/businesslist', undefined, {
       ignoreFailureClasses: ['data_missing'],
+      captureSnapshot: true,
     });
     expect(vi.mocked(analyzePage)).toHaveBeenCalledWith('https://example.com/#/business/businesslist', undefined, {
       storageState: { cookies: [], origins: [] },
@@ -1991,6 +2010,154 @@ describe('intent-e2e-service stream', () => {
     }
   });
 
+  it('reuses precheck snapshot and skips analyzePage when no fixture setup is configured', async () => {
+    vi.mocked(precheckPageAccess).mockResolvedValueOnce({
+      status: 'ready',
+      url: 'https://example.com/checkout',
+      finalUrl: 'https://example.com/checkout',
+      title: 'Checkout',
+      bodyTextExcerpt: '提交成功',
+      storageState: { cookies: [], origins: [] },
+      snapshot: {
+        url: 'https://example.com/checkout',
+        title: 'Checkout Snapshot',
+        bodyTextExcerpt: '来自 precheck 的页面快照',
+        buttons: [],
+        links: [],
+        forms: [],
+        tooltipElements: [],
+        frames: [],
+        screenshot: '',
+      },
+    } as any);
+
+    const result = await runIntentDrivenE2EStream({
+      input: '访问结算页并提交，最终看到成功页',
+    });
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(precheckPageAccess)).toHaveBeenCalledWith('https://example.com/checkout', undefined, {
+      captureSnapshot: true,
+    });
+    expect(vi.mocked(analyzePage)).not.toHaveBeenCalled();
+    expect(vi.mocked(generateTest).mock.calls[0]?.[0]).toMatchObject({
+      title: 'Checkout Snapshot',
+      bodyTextExcerpt: '来自 precheck 的页面快照',
+    });
+  });
+
+  it('reuses draft scenario card and first-pass code to skip duplicate planning and generation', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+    const prefilledCode = "test('draft-prefill', async ({ page }) => { await page.goto('https://example.com/checkout'); });";
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        prefilledScenarioCard: scenarioCard,
+        prefilledPlanCode: prefilledCode,
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(generateScenarioCard)).not.toHaveBeenCalled();
+    expect(vi.mocked(generateTest)).not.toHaveBeenCalled();
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toBe(prefilledCode);
+    expect(typeof vi.mocked(executeTest).mock.calls[0]?.[1]).toBe('string');
+    expect(vi.mocked(executeTest).mock.calls[0]?.[2]).toBeUndefined();
+    expect(vi.mocked(executeTest).mock.calls[0]?.[3]).toMatchObject({
+      onLog: expect.any(Function),
+      onStep: expect.any(Function),
+    });
+    expect(vi.mocked(executeTest).mock.calls[0]?.[4]).toMatchObject({
+      storageState: { cookies: [], origins: [] },
+    });
+    expect(result.attempts[0]?.code).toBe(prefilledCode);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'planning',
+          message: expect.stringContaining('复用草稿 ScenarioCard'),
+        }),
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'generating',
+          message: expect.stringContaining('复用草稿首版脚本'),
+        }),
+      ])
+    );
+  });
+
+  it('skips stale draft first-pass code reuse when it matches the legacy final-submit family', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+    const stalePrefilledCode = `
+      test('draft-prefill', async ({ page }) => {
+        const attachmentAnchor = page.getByText(/附件信息|上传录音文件|上传图片/).first();
+        await expect(attachmentAnchor).toBeVisible({ timeout: 20000 });
+        const candidateContainers = [
+          attachmentAnchor.locator('xpath=ancestor::*[contains(@class,"ant-card") or contains(@class,"ant-tabs-tabpane") or self::form][1]'),
+          page.locator('.ant-tabs-tabpane-active:visible').first(),
+          page.locator('form:visible').first(),
+          page.locator('.ant-modal-content:visible, .ant-drawer-content:visible').last(),
+        ];
+        let submitButton = null;
+        for (const container of candidateContainers) {
+          const btn = container.getByRole('button', { name: /保\\s*存|提\\s*交|确\\s*定/i }).filter({ hasNotText: /保存并继续|上一步/ }).last();
+          if (await btn.count()) {
+            submitButton = btn;
+            break;
+          }
+        }
+        if (!submitButton) throw new Error('未找到最终提交按钮（已排除“保存并继续/上一步”）');
+      });
+    `.trim();
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '登录后台后创建一个商机，保存成功后，切换到商机列表 “我创建的” tab页。等到商机列表加载完成后，可以看到新建记录，并且列表中 “商机进展” 状态为新入库。',
+        prefilledScenarioCard: {
+          ...scenarioCard,
+          title: '创建商机后回列表校验状态',
+          targetUrl: 'https://example.com/#/business/businesslist',
+          featureDescription: '创建商机并在我创建的列表回查商机进展。',
+          flowDefinition: {
+            ...scenarioCard.flowDefinition,
+            entryUrl: 'https://example.com/#/business/businesslist',
+            expectedOutcome: '列表里出现新建商机且商机进展为新入库',
+          },
+        },
+        prefilledPlanCode: stalePrefilledCode,
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(generateScenarioCard)).not.toHaveBeenCalled();
+    expect(vi.mocked(generateTest)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).not.toBe(stalePrefilledCode);
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toContain("test('checkout-default'");
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'generating',
+          message: expect.stringContaining('已回退到当前生成链路'),
+        }),
+        expect.objectContaining({
+          type: 'attempt_log',
+          log: expect.objectContaining({
+            message: expect.stringContaining('命中已知旧的最终提交按钮定位骨架'),
+          }),
+        }),
+      ])
+    );
+  });
+
   it('continues with repair flow after a failed execution', async () => {
     vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 1 } as any);
     vi.mocked(analyzePage)
@@ -2624,6 +2791,7 @@ describe('intent-e2e-service stream', () => {
         strategy: 'setup_cleanup',
       },
     });
+    expect(vi.mocked(analyzePage)).toHaveBeenCalledTimes(1);
     expect(events.some((event) => event.type === 'stage' && event.message.includes('fixture setup'))).toBe(true);
     expect(events.some((event) => event.type === 'stage' && event.message.includes('fixture cleanup'))).toBe(true);
   });

@@ -384,6 +384,54 @@ describe('test-generator structured slot patch path', () => {
     );
   });
 
+  it('falls back to raw first-pass code generation when structured slot patch generation fails', async () => {
+    vi.mocked(callLLMStructured).mockRejectedValueOnce(new Error('fetch failed'));
+    vi.mocked(callLLMStream).mockImplementation(
+      (async function* () {
+        yield { content: '```javascript\n' };
+        yield { content: "test('raw fallback after structured failure', async () => {});\n" };
+        yield { content: '```' };
+      }) as never
+    );
+
+    const planning = createPlanning();
+    const events = await collect(
+      generateTest(
+        {
+          url: 'https://example.com/#/business/createbusiness',
+          title: '创建商机',
+          forms: [],
+          buttons: [],
+          tooltipElements: [],
+          links: [],
+          headings: [{ level: 'H1', text: '创建商机' }],
+          bodyTextExcerpt: '创建商机 表单 提交',
+          screenshot: '',
+        } as any,
+        '创建商机并回列表校验',
+        undefined,
+        {
+          taskMode: 'scenario',
+          scenarioEntryUrl: 'https://example.com/#/business/createbusiness',
+          expectedOutcome: '创建成功并能按 businessId 检索到记录',
+        },
+        undefined,
+        undefined,
+        planning as any
+      )
+    );
+
+    const content = events.map((event) => event.content).join('\n');
+    expect(vi.mocked(callLLMStructured)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(callLLMStream)).toHaveBeenCalledTimes(1);
+    expect(events.some((event) => event.type === 'error')).toBe(false);
+    expect(content).toContain('已将 ExecutionPlan 编译成受控脚手架，正在生成 slot patch...');
+    expect(content).toContain('结构化 slot patch 失败（fetch failed），当前显式回退到自由代码生成（legacy fallback，非主链）...');
+    expect(content).toContain('正在构造自由代码 Prompt 并调用 LLM...');
+    expect(events.at(-1)?.type).toBe('complete');
+    expect(content).toContain("test('raw fallback after structured failure'");
+  });
+
   it('short-circuits to a recipe-matched deterministic runtime template before LLM generation', async () => {
     const events = await collect(
       generateTest(
@@ -573,6 +621,96 @@ describe('test-generator structured slot patch path', () => {
     expect(JSON.stringify(vi.mocked(callLLMStructured).mock.calls[0]?.[0]?.schema || {})).not.toContain('plan_step_1');
   });
 
+  it('falls back to raw repair code generation when structured repair patch generation fails', async () => {
+    const planning = createPlanning();
+    const template = compileIntentExecutionTemplate({
+      executionPlan: planning.executionPlan,
+      verificationPlan: planning.verificationPlan,
+      description: '创建商机并回列表校验',
+    });
+    const previousCode = applyIntentExecutionSlotPatch(template.code, {
+      version: 1,
+      slots: [
+        {
+          slotUid: 'plan_step_1',
+          code: [
+            "const createResp = __e2e.waitForApiResponse(page, { urlIncludes: '/business', method: 'POST' });",
+            'await submitButton.click();',
+            "artifacts['plan_step_1'] = await createResp;",
+            "shared.businessId = 'BIZ-001';",
+          ].join('\n'),
+        },
+        {
+          slotUid: 'plan_step_2',
+          code: [
+            "const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [shared.businessId, '旧状态'] });",
+            "await expect(targetRow).toContainText(shared.businessId);",
+          ].join('\n'),
+        },
+        {
+          slotUid: 'verification',
+          code: [
+            "expect(shared.businessId).toBe('BIZ-001');",
+            "await expect.poll(() => page.url()).toContain('#/business/businesslist');",
+          ].join('\n'),
+        },
+      ],
+    });
+
+    vi.mocked(callLLMStructured).mockRejectedValueOnce(new Error('fetch failed'));
+    vi.mocked(callLLMStream).mockImplementation(
+      (async function* () {
+        yield { content: '```javascript\n' };
+        yield { content: "test('raw repair fallback after structured failure', async () => {});\n" };
+        yield { content: '```' };
+      }) as never
+    );
+
+    const events = await collect(
+      repairTest(
+        {
+          url: 'https://example.com/#/business/createbusiness',
+          title: '创建商机',
+          forms: [],
+          buttons: [],
+          tooltipElements: [],
+          links: [],
+          headings: [{ level: 'H1', text: '创建商机' }],
+          bodyTextExcerpt: '创建商机 表单 提交',
+          screenshot: '',
+        } as any,
+        '创建商机并回列表校验',
+        {
+          previousCode,
+          executionError: '未找到表格目标行：hasTexts=BIZ-001 | 新入库',
+          failedStepTitle: 'Step 2: 列表校验',
+          failureSummary: '判定为目标行未命中',
+        },
+        undefined,
+        {
+          taskMode: 'scenario',
+          scenarioEntryUrl: 'https://example.com/#/business/createbusiness',
+          expectedOutcome: '创建成功并能按 businessId 检索到记录',
+        },
+        undefined,
+        undefined,
+        planning as any
+      )
+    );
+
+    const content = events.map((event) => event.content).join('\n');
+    expect(vi.mocked(callLLMStructured)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(callLLMStream)).toHaveBeenCalledTimes(1);
+    expect(events.some((event) => event.type === 'error')).toBe(false);
+    expect(content).toContain('正在按失败 slot 定向修复：plan_step_2');
+    expect(content).toContain(
+      '结构化 repair patch 失败（fetch failed），当前 repair 显式回退到自由代码修复（legacy fallback，非主链）...'
+    );
+    expect(content).toContain('正在构造自由代码修复 Prompt 并调用 LLM...');
+    expect(events.at(-1)?.type).toBe('complete');
+    expect(content).toContain("test('raw repair fallback after structured failure'");
+  });
+
   it('rejects structured repair patches that introduce syntax errors before worker execution', async () => {
     const planning = createPlanning();
     const template = compileIntentExecutionTemplate({
@@ -630,6 +768,13 @@ describe('test-generator structured slot patch path', () => {
         },
       ],
     } as never);
+    vi.mocked(callLLMStream).mockImplementation(
+      (async function* () {
+        yield { content: '```javascript\n' };
+        yield { content: "test('raw repair fallback after syntax failure', async () => {});\n" };
+        yield { content: '```' };
+      }) as never
+    );
 
     const events = await collect(
       repairTest(
@@ -663,9 +808,12 @@ describe('test-generator structured slot patch path', () => {
       )
     );
 
-    expect(events.some((event) => event.type === 'complete')).toBe(false);
-    expect(events.map((event) => event.content).join('\n')).toContain('LLM 结构化 repair patch 失败');
-    expect(events.map((event) => event.content).join('\n')).toContain('repair patch 合并后脚本存在语法错误');
+    const content = events.map((event) => event.content).join('\n');
+    expect(events.some((event) => event.type === 'error')).toBe(false);
+    expect(events.at(-1)?.type).toBe('complete');
+    expect(content).toContain('repair patch 合并后脚本存在语法错误');
+    expect(content).toContain('当前 repair 显式回退到自由代码修复');
+    expect(content).toContain("test('raw repair fallback after syntax failure'");
   });
 
   it('targets the verification slot when repair failedStepTitle points to final verification', async () => {

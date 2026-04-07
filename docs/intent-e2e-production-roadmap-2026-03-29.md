@@ -4124,3 +4124,74 @@
   - 若继续提升真实成功率，只允许另起 brief，单收：
     - `repair convergence efficiency`
     - 或 `Cannot read properties of null (reading 'forEach')` 这类非阻塞噪音
+
+## 2026-04-07 第一百一十三次更新（post-R14 success hardening close-out follow-up：structured patch fallback + LLM request timeout）
+
+- 本轮目标：
+  - 不重开 `post-R14 success hardening` 主阶段
+  - 只收口 close-out 后真实 rerun 暴露的执行面瞬时失败：
+    - structured slot patch `fetch failed`
+    - structured repair patch `fetch failed`
+    - LLM 请求悬挂导致 run 长时间停在 `generating`
+  - 不改 route / DB / UI 契约，不扩成新的 success hardening 主切片
+- 已完成：
+  - 已补 brief：
+    - `docs/intent-e2e-structured-slot-patch-fallback-task-brief-2026-04-07.md`
+    - `docs/intent-e2e-llm-request-timeout-task-brief-2026-04-07.md`
+    - `docs/intent-e2e-structured-repair-patch-fallback-task-brief-2026-04-07.md`
+  - 已完成代码收口：
+    - `lib/test-generator.ts`
+      - generate 阶段 structured slot patch 失败时，显式回退到 legacy 自由代码生成
+      - repair 阶段 structured repair patch 失败时，显式回退到 legacy 自由代码修复
+    - `lib/llm/provider-config.ts`
+    - `lib/llm-client.ts`
+    - `lib/openai-responses.js`
+      - 补统一 `requestTimeoutMs`
+      - `Responses API` 在 abort / timeout 后不再继续无意义重试
+  - 已补 / 已更新单测：
+    - `tests/unit/test-generator-structured.spec.ts`
+    - `tests/unit/provider-config.spec.ts`
+    - `tests/unit/llm-client.spec.ts`
+    - `tests/unit/llm-client-structured.spec.ts`
+    - `tests/unit/openai-responses.spec.ts`
+  - 已确认真实 run 证据：
+    - `intent-run-9f6513c9-e066-4c75-85b5-c18d74f00f5b`
+      - 已命中旧草稿骨架保护
+      - 随后失败在：
+        - `LLM 结构化 slot patch 失败: fetch failed`
+    - `intent-run-1455594f-0002-49b4-a2f7-0dd0e1952a74`
+      - 首轮已进入执行
+      - 第 2 次 repair 失败在：
+        - `LLM 结构化 repair patch 失败: fetch failed`
+    - `intent-run-b7ec2d1a-fef5-4424-a94b-46464cb6b30d`
+      - 首轮 generate 直接通过
+      - 终态：
+        - `status = passed`
+        - `attempt 1 / generate / success = true`
+- 验证：
+  - `npx vitest run tests/unit/test-generator-structured.spec.ts`
+  - `npx vitest run tests/unit/provider-config.spec.ts tests/unit/llm-client.spec.ts tests/unit/llm-client-structured.spec.ts tests/unit/openai-responses.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+  - 真实 rerun：
+    - `intent-run-b7ec2d1a-fef5-4424-a94b-46464cb6b30d`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（close-out 后 follow-up 的 structured patch fallback 与 LLM request timeout 已补齐；当前阶段结论不变）
+- 风险 / 未完成：
+  - 本轮 follow-up 只收口执行面瞬时失败与悬挂，不代表开放式任务 first pass 已整体稳定
+  - repair fallback 虽已补齐并有单测覆盖，但最新真实通过样本没有进入 repair，真实 repair rerun 还需要后续样本继续观察
+  - `Cannot read properties of null (reading 'forEach')` 这类非阻塞噪音仍未纳入本轮
+- 下一步：
+  - 当前阶段没有新的必做开发
+  - 若继续提升真实成功率，只允许另起 brief，单收：
+    - `repair convergence efficiency`
+    - 或 `Cannot read properties of null (reading 'forEach')` 这类非阻塞噪音

@@ -49,7 +49,7 @@ describe('intent-e2e-project-auth', () => {
     vi.mocked(resolveIntentProjectRuntimeGovernance).mockImplementation((_projectUid, override) => override as never);
   });
 
-  it('injects project auth without promoting legacy project runs into enforced governance', async () => {
+  it('injects project auth with shared-session defaults without promoting legacy project runs into enforced governance', async () => {
     const req = new NextRequest('http://localhost/api/intent-e2e/runs');
     const result = await resolveIntentE2EProjectAuth(req, {
       input: '创建商机并校验状态',
@@ -68,6 +68,8 @@ describe('intent-e2e-project-auth', () => {
       credential: {
         source: 'project',
         secretRef: 'project://proj_1/auth/default',
+        accountRef: 'account://project/proj_1/owner%40example.com',
+        sessionMode: 'shared',
       },
     });
     expect(shouldEnforceIntentE2ERuntimeGovernance(result.request.runtimeGovernance)).toBe(false);

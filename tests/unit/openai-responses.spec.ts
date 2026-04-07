@@ -51,4 +51,42 @@ describe('openai-responses helper', () => {
       )
     ).toBe(true);
   });
+
+  it('does not retry when the request signal aborts', async () => {
+    const fetchMock: typeof fetch = vi.fn((input: URL | RequestInfo, init?: RequestInit) => {
+      const signal = init?.signal;
+      return new Promise<Response>((_resolve, reject) => {
+        const rejectAbort = () => {
+          const error = new Error('aborted');
+          error.name = 'AbortError';
+          reject(error);
+        };
+
+        if (signal?.aborted) {
+          rejectAbort();
+          return;
+        }
+
+        signal?.addEventListener('abort', rejectAbort, { once: true });
+      });
+    });
+    const controller = new AbortController();
+    const request = createResponsesRequest(
+      { model: 'gpt-5.3-codex', input: 'hello' },
+      {
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'test-key',
+        isAzure: false,
+        retryDelayMs: 0,
+        maxAttempts: 2,
+        fetchImpl: fetchMock,
+        signal: controller.signal,
+      }
+    );
+
+    controller.abort();
+
+    await expect(request).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });

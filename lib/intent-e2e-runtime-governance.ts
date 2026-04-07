@@ -186,8 +186,18 @@ export function mergeIntentE2ERuntimeGovernance(
   return hasIntentE2ERuntimeGovernance(merged) ? merged : undefined;
 }
 
+function isProjectCredentialSessionMetadataOnly(governance?: IntentE2ERuntimeGovernance): boolean {
+  if (!governance?.credential) return false;
+  if (governance.environmentProfile) return false;
+  if (hasFixtureFields(governance.fixture)) return false;
+
+  const credential = governance.credential;
+  return credential.source === 'project' && Boolean(credential.secretRef);
+}
+
 export function shouldEnforceIntentE2ERuntimeGovernance(governance?: IntentE2ERuntimeGovernance): boolean {
   if (!hasIntentE2ERuntimeGovernance(governance)) return false;
+  if (isProjectCredentialSessionMetadataOnly(governance)) return false;
   if (governance?.environmentProfile) return true;
 
   const fixture = governance?.fixture;
@@ -200,9 +210,6 @@ export function shouldEnforceIntentE2ERuntimeGovernance(governance?: IntentE2ERu
 
   const credential = governance?.credential;
   if (!credential) return false;
-  if (credential.source === 'project' && credential.secretRef && !credential.accountRef && !credential.sessionMode) {
-    return false;
-  }
 
   return Boolean(credential.secretRef || credential.accountRef || credential.sessionMode || credential.source === 'request');
 }

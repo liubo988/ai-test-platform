@@ -1,4 +1,4 @@
-import type { ScenarioAttachment } from '@/lib/ai/scenario-card';
+import { normalizeScenarioCard, type ScenarioAttachment, type ScenarioCard } from '@/lib/ai/scenario-card';
 import type { IntentE2ERunRequest } from '@/lib/ai/intent-e2e-service';
 import { normalizeIntentE2ERunControl } from '@/lib/intent-e2e-run-control';
 import { normalizeIntentE2ERuntimeGovernance } from '@/lib/intent-e2e-runtime-governance';
@@ -77,12 +77,26 @@ function normalizeLlmConfig(value: unknown): LLMRuntimeOverrides | undefined {
   return Object.keys(llmConfig).length > 0 ? llmConfig : undefined;
 }
 
+function normalizePrefilledScenarioCard(value: unknown, fallbackTargetUrl = ''): ScenarioCard | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const hasSignal =
+    typeof record.title === 'string' ||
+    typeof record.targetUrl === 'string' ||
+    typeof record.featureDescription === 'string' ||
+    (record.flowDefinition && typeof record.flowDefinition === 'object' && !Array.isArray(record.flowDefinition));
+
+  if (!hasSignal) return undefined;
+  return normalizeScenarioCard(value, fallbackTargetUrl);
+}
+
 export function normalizeIntentE2ERequestBody(body: unknown): IntentE2ERunRequest {
   const record = body && typeof body === 'object' && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+  const targetUrl = typeof record.targetUrl === 'string' ? record.targetUrl.trim() : '';
 
   return {
     input: typeof record.input === 'string' ? record.input.trim() : '',
-    targetUrl: typeof record.targetUrl === 'string' ? record.targetUrl.trim() : '',
+    targetUrl,
     projectUid: typeof record.projectUid === 'string' ? record.projectUid.trim() : '',
     moduleUid: typeof record.moduleUid === 'string' ? record.moduleUid.trim() : '',
     onboardingManifestId: typeof record.onboardingManifestId === 'string' ? record.onboardingManifestId.trim() : '',
@@ -92,5 +106,7 @@ export function normalizeIntentE2ERequestBody(body: unknown): IntentE2ERunReques
     llmConfig: normalizeLlmConfig(record.llmConfig),
     runControl: normalizeIntentE2ERunControl(record.runControl),
     runtimeGovernance: normalizeIntentE2ERuntimeGovernance(record.runtimeGovernance),
+    prefilledScenarioCard: normalizePrefilledScenarioCard(record.prefilledScenarioCard, targetUrl),
+    prefilledPlanCode: typeof record.prefilledPlanCode === 'string' && record.prefilledPlanCode.trim() ? record.prefilledPlanCode : undefined,
   };
 }

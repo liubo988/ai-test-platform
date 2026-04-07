@@ -144,6 +144,8 @@ export interface IntentE2ERunRequest {
   llmConfig?: LLMRuntimeOverrides;
   runControl?: IntentE2ERunControl;
   runtimeGovernance?: IntentE2ERuntimeGovernance;
+  prefilledScenarioCard?: ScenarioCard;
+  prefilledPlanCode?: string;
 }
 
 export interface IntentE2EAttempt {
@@ -464,6 +466,71 @@ async function collectGeneratedCode(
   }
 
   return { code, events };
+}
+
+function buildPrefilledScenarioCardOutput(
+  input: IntentE2ERunRequest
+): {
+  card: ScenarioCard;
+  llmMeta: IntentE2ERunResult['llmMeta'];
+} | null {
+  if (!input.prefilledScenarioCard) {
+    return null;
+  }
+
+  return {
+    card: input.prefilledScenarioCard,
+    llmMeta: {
+      provider: 'prefilled',
+      model: 'intent-draft',
+      visionEnabled: (input.attachments?.length || 0) > 0,
+      attachmentCount: input.attachments?.length || 0,
+    },
+  };
+}
+
+async function* streamPrefilledCodeReuse(code: string, signal?: AbortSignal): AsyncGenerator<GenerateEvent> {
+  throwIfAborted(signal);
+  yield {
+    type: 'thinking',
+    content: '已复用意图草稿首版脚本，跳过重新生成。',
+  };
+  throwIfAborted(signal);
+  yield {
+    type: 'complete',
+    content: code,
+  };
+}
+
+interface IntentE2EPrefilledPlanReuseDecision {
+  code?: string;
+  skipReason?: string;
+}
+
+function resolveIntentE2EPrefilledPlanReuseDecision(input: {
+  prefilledPlanCode?: string;
+}): IntentE2EPrefilledPlanReuseDecision {
+  const code = input.prefilledPlanCode?.trim() || '';
+  if (!code) {
+    return {};
+  }
+
+  const hitsLegacyBusinessCreateFinalSubmitFamily =
+    /未找到最终提交按钮（已排除“保存并继续\/上一步”）/.test(code) &&
+    /const candidateContainers = \[/.test(code) &&
+    /attachmentAnchor\.locator\('xpath=ancestor::\*\[contains\(@class,"ant-card"\) or contains\(@class,"ant-tabs-tabpane"\) or self::form]\[1\]'\)/.test(
+      code
+    );
+
+  if (hitsLegacyBusinessCreateFinalSubmitFamily) {
+    return {
+      skipReason: '草稿首版脚本命中已知旧的最终提交按钮定位骨架，已回退到当前生成链路。',
+    };
+  }
+
+  return {
+    code,
+  };
 }
 
 function buildFailureDiagnosisEventLines(triage?: IntentE2EFailureTriage | null): string[] {
@@ -2012,24 +2079,61 @@ type IntentE2EPrecheckResult =
   | {
       blocked: false;
       precheck: PageAccessPrecheckReadyResult;
+      meta: {
+        durationMs: number;
+        reuseMode: IntentE2EPrecheckReuseMode;
+      };
     }
   | {
       blocked: true;
       output: IntentE2ERunResult;
     };
 
+type IntentE2EPrecheckReuseMode = 'shared_session_hit' | 'shared_session_refreshed' | 'fresh_session';
+
 function buildPageAccessPrecheckOptions(
   ignoreFailureClasses: PageAccessPrecheckFailureClass[],
-  storageState?: PageAccessPrecheckReadyResult['storageState']
+  storageState?: PageAccessPrecheckReadyResult['storageState'],
+  captureSnapshot = false
 ): PageAccessPrecheckOptions | undefined {
-  if (ignoreFailureClasses.length === 0 && !storageState) {
+  if (ignoreFailureClasses.length === 0 && !storageState && !captureSnapshot) {
     return undefined;
   }
 
   return {
     ...(ignoreFailureClasses.length > 0 ? { ignoreFailureClasses: [...ignoreFailureClasses] } : {}),
     ...(storageState ? { storageState } : {}),
+    ...(captureSnapshot ? { captureSnapshot: true } : {}),
   };
+}
+
+function hasIntentE2EAuthConfig(auth?: AuthConfig): boolean {
+  return Boolean(auth?.loginUrl || auth?.username || auth?.password || auth?.loginDescription);
+}
+
+function formatIntentE2EDuration(durationMs: number): string {
+  const normalizedDuration = Math.max(0, Math.floor(durationMs));
+  if (normalizedDuration < 1000) {
+    return `${normalizedDuration}ms`;
+  }
+
+  const seconds = normalizedDuration / 1000;
+  return `${seconds.toFixed(seconds >= 10 ? 0 : 1)}s`;
+}
+
+function describeIntentE2EPrecheckReuseMode(
+  reuseMode: IntentE2EPrecheckReuseMode,
+  auth?: AuthConfig
+): string {
+  switch (reuseMode) {
+    case 'shared_session_hit':
+      return '命中 shared session';
+    case 'shared_session_refreshed':
+      return 'shared session 已刷新';
+    case 'fresh_session':
+    default:
+      return hasIntentE2EAuthConfig(auth) ? '完成显式登录前置检查' : '完成页面连通性检查';
+  }
 }
 
 async function runIntentE2EPrecheck(
@@ -2054,9 +2158,13 @@ async function runIntentE2EPrecheck(
   const precheckUrl = input.precheckUrl?.trim() || input.targetUrl;
   const sharedSessionKey = resolveIntentE2ESharedSessionCacheKey(input.runtimeGovernance);
   const sharedSession = sharedSessionKey ? readIntentE2ESharedSessionCache(sharedSessionKey) : null;
+  const precheckStartedAt = Date.now();
+  let reuseMode: IntentE2EPrecheckReuseMode = sharedSession?.storageState ? 'shared_session_hit' : 'fresh_session';
+  const captureSnapshot = !resolveIntentE2EFixtureRefForPhase(input.runtimeGovernance?.fixture, 'setup');
   const precheckOptions = buildPageAccessPrecheckOptions(
     input.precheckPolicy.ignoreFailureClasses,
-    sharedSession?.storageState
+    sharedSession?.storageState,
+    captureSnapshot
   );
   throwIfAborted(signal);
   await emit(listener, {
@@ -2083,7 +2191,8 @@ async function runIntentE2EPrecheck(
         stage: 'prechecking',
         message: 'shared session 已失效，正在回退到显式登录前置检查并刷新会话…',
       });
-      const fallbackOptions = buildPageAccessPrecheckOptions(input.precheckPolicy.ignoreFailureClasses);
+      reuseMode = 'shared_session_refreshed';
+      const fallbackOptions = buildPageAccessPrecheckOptions(input.precheckPolicy.ignoreFailureClasses, undefined, captureSnapshot);
       precheck = fallbackOptions
         ? await precheckPageAccess(precheckUrl, input.auth, fallbackOptions)
         : await precheckPageAccess(precheckUrl, input.auth);
@@ -2141,6 +2250,10 @@ async function runIntentE2EPrecheck(
     return {
       blocked: false,
       precheck,
+      meta: {
+        durationMs: Math.max(0, Date.now() - precheckStartedAt),
+        reuseMode,
+      },
     };
   } catch (error: unknown) {
     throwIfAborted(signal);
@@ -2198,23 +2311,26 @@ export async function runIntentDrivenE2EStream(
     throw new Error('请至少提供一句测试目标描述');
   }
   const runtimeConfig = getLLMRuntimeConfig(input.llmConfig);
+  const prefilledScenarioCardOutput = buildPrefilledScenarioCardOutput(input);
 
   throwIfAborted(signal);
   await emit(listener, {
     type: 'stage',
     stage: 'planning',
-    message: '正在把自然语言整理成 ScenarioCard…',
+    message: prefilledScenarioCardOutput ? '已复用草稿 ScenarioCard，跳过重新规划…' : '正在把自然语言整理成 ScenarioCard…',
   });
 
-  const scenarioCardOutput = await generateScenarioCard(
-    {
-      input: trimmedInput,
-      targetUrlHint: input.targetUrl,
-      attachments: input.attachments,
-    },
-    input.llmConfig,
-    signal
-  );
+  const scenarioCardOutput =
+    prefilledScenarioCardOutput ||
+    (await generateScenarioCard(
+      {
+        input: trimmedInput,
+        targetUrlHint: input.targetUrl,
+        attachments: input.attachments,
+      },
+      input.llmConfig,
+      signal
+    ));
 
   throwIfAborted(signal);
   await emit(listener, {
@@ -2325,23 +2441,28 @@ export async function runIntentDrivenE2EStream(
     return fixtureSetup.output;
   }
   const fixtureExecutionState = fixtureSetup.state;
+  const reusePrecheckSnapshot = !fixtureExecutionState?.setupRef && Boolean(precheck.precheck.snapshot);
 
   await emit(listener, {
     type: 'stage',
     stage: 'analyzing',
-    message: '前置检查通过，正在整理页面结构并收集执行上下文…',
+    message: reusePrecheckSnapshot
+      ? `前置检查通过（${describeIntentE2EPrecheckReuseMode(precheck.meta.reuseMode, input.auth)}，耗时 ${formatIntentE2EDuration(precheck.meta.durationMs)}），正在复用预检查快照整理页面结构并收集执行上下文…`
+      : `前置检查通过（${describeIntentE2EPrecheckReuseMode(precheck.meta.reuseMode, input.auth)}，耗时 ${formatIntentE2EDuration(precheck.meta.durationMs)}），正在整理页面结构并收集执行上下文…`,
   });
 
-  const snapshot = await withTimeout(
-    analyzePage(scenarioEntryUrl, input.auth, {
-      storageState: precheck.precheck.storageState,
-    }),
-    {
-      timeoutMs: INTENT_E2E_ANALYZE_TIMEOUT_MS,
-      message: `页面分析超时 (${INTENT_E2E_ANALYZE_TIMEOUT_MS}ms)，请检查目标页面 iframe / loading 状态或稍后重试`,
-      signal,
-    }
-  );
+  const snapshot = reusePrecheckSnapshot
+    ? (precheck.precheck.snapshot as PageSnapshot)
+    : await withTimeout(
+        analyzePage(scenarioEntryUrl, input.auth, {
+          storageState: precheck.precheck.storageState,
+        }),
+        {
+          timeoutMs: INTENT_E2E_ANALYZE_TIMEOUT_MS,
+          message: `页面分析超时 (${INTENT_E2E_ANALYZE_TIMEOUT_MS}ms)，请检查目标页面 iframe / loading 状态或稍后重试`,
+          signal,
+        }
+      );
   throwIfAborted(signal);
   const [rulePerformanceById, starterHelpers, recipePerformanceBySlug] = await Promise.all([
     loadIntentE2ERulePerformanceFeedback(projectUid),
@@ -2392,6 +2513,9 @@ export async function runIntentDrivenE2EStream(
   }> = [];
   const observedRepairClusterIds = new Set<string>();
   const runnerAdapter = resolveIntentRunnerAdapter(platformAssets.testType, platformAssets.runnerType);
+  const prefilledPlanReuseDecision = resolveIntentE2EPrefilledPlanReuseDecision({
+    prefilledPlanCode: input.prefilledPlanCode,
+  });
 
   let currentCode = '';
   let finalResult: TestResult | null = null;
@@ -2416,7 +2540,11 @@ export async function runIntentDrivenE2EStream(
       kind,
       message:
         kind === 'generate'
-          ? '正在生成更稳定的 Playwright 测试脚本…'
+          ? prefilledPlanReuseDecision.code
+            ? '已复用草稿首版脚本，跳过重新生成并直接进入执行…'
+            : prefilledPlanReuseDecision.skipReason
+            ? '草稿首版脚本命中已知旧骨架，已回退到当前生成链路…'
+            : '正在生成更稳定的 Playwright 测试脚本…'
           : `第 ${attempt} 次尝试：根据失败信息修复脚本…`,
     });
 
@@ -2503,14 +2631,31 @@ export async function runIntentDrivenE2EStream(
         },
       });
     }
+    if (kind === 'generate' && prefilledPlanReuseDecision.skipReason) {
+      await emit(listener, {
+        type: 'attempt_log',
+        attempt,
+        kind,
+        log: {
+          level: 'info',
+          message: prefilledPlanReuseDecision.skipReason,
+        },
+      });
+    }
 
     const generation =
       kind === 'generate'
-        ? await collectGeneratedCode(
-            generateTest(snapshot, description, input.auth, promptContext, input.llmConfig, signal, planning),
-            (event) => emit(listener, { type: 'attempt_event', attempt, kind, event }),
-            signal
-          )
+        ? prefilledPlanReuseDecision.code
+          ? await collectGeneratedCode(
+              streamPrefilledCodeReuse(prefilledPlanReuseDecision.code, signal),
+              (event) => emit(listener, { type: 'attempt_event', attempt, kind, event }),
+              signal
+            )
+          : await collectGeneratedCode(
+              generateTest(snapshot, description, input.auth, promptContext, input.llmConfig, signal, planning),
+              (event) => emit(listener, { type: 'attempt_event', attempt, kind, event }),
+              signal
+            )
         : await collectGeneratedCode(
             (() => {
               const latestTrace = repairInput?.recentEvents;

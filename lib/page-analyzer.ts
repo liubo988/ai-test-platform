@@ -101,6 +101,7 @@ export type PageAccessPrecheckFailureClass = 'auth_failed' | 'permission_blocked
 export interface PageAccessPrecheckOptions {
   ignoreFailureClasses?: PageAccessPrecheckFailureClass[];
   storageState?: Exclude<BrowserContextOptions['storageState'], undefined>;
+  captureSnapshot?: boolean;
 }
 
 export interface PageAccessPrecheckReadyResult {
@@ -110,6 +111,7 @@ export interface PageAccessPrecheckReadyResult {
   title: string;
   bodyTextExcerpt: string;
   storageState: Exclude<BrowserContextOptions['storageState'], undefined>;
+  snapshot?: PageSnapshot;
 }
 
 export interface PageAccessPrecheckBlockedResult {
@@ -645,76 +647,81 @@ export async function analyzePage(url: string, auth?: AuthConfig, options?: Anal
 
   try {
     await ensurePageAccess(page, url, auth);
-    await page.waitForTimeout(PAGE_TARGET_SETTLE_MS);
-
-    const title = await page.title();
-    const mainSurface = await collectSurfaceSnapshot(page, page, { enableHoverTooltips: true });
-    const frames: FrameSnapshot[] = [];
-
-    for (const frame of page.frames().slice(1)) {
-      if (!frame.url() || frame.url() === 'about:blank') continue;
-      try {
-        await frame.waitForLoadState('domcontentloaded', { timeout: PAGE_LOAD_STATE_TIMEOUT_MS }).catch(() => {});
-        await page.waitForTimeout(600);
-        const frameElement = await frame.frameElement().catch(() => null);
-        const frameMeta = frameElement
-          ? await frameElement
-              .evaluate((el) => ({
-                id: (el as HTMLIFrameElement).id || '',
-                name: (el as HTMLIFrameElement).name || '',
-                className: (el as HTMLIFrameElement).className || '',
-                src: (el as HTMLIFrameElement).src || '',
-              }))
-              .catch(() => ({ id: '', name: '', className: '', src: '' }))
-          : { id: '', name: '', className: '', src: '' };
-        const surface = await collectSurfaceSnapshot(frame, page);
-        if (
-          surface.forms.length === 0 &&
-          surface.buttons.length === 0 &&
-          surface.headings.length === 0 &&
-          !surface.bodyTextExcerpt
-        ) {
-          continue;
-        }
-        frames.push({
-          name: frame.name(),
-          url: frame.url(),
-          elementId: frameMeta.id || '',
-          elementName: frameMeta.name || '',
-          elementClassName: frameMeta.className || '',
-          selectorHint: toFrameSelectorHint({
-            id: frameMeta.id,
-            name: frameMeta.name || frame.name(),
-            src: frameMeta.src,
-            frameUrl: frame.url(),
-          }),
-          ...surface,
-        });
-      } catch {
-        // ignore frame analysis failures so the main page can still be used
-      }
-    }
-
-    const screenshotBuffer = await page.screenshot({ type: 'jpeg', quality: 75, fullPage: false });
-    const screenshot = screenshotBuffer.toString('base64');
-
+    const snapshot = await capturePageSnapshot(page, url);
     await browser.close();
-    return {
-      url,
-      title,
-      forms: mainSurface.forms,
-      buttons: mainSurface.buttons,
-      tooltipElements: mainSurface.tooltipElements,
-      links: mainSurface.links,
-      headings: mainSurface.headings,
-      bodyTextExcerpt: mainSurface.bodyTextExcerpt,
-      frames,
-      screenshot,
-    };
+    return snapshot;
   } catch (err: any) {
     await browser.close();
     throw new Error(`页面分析失败: ${err.message}`);
   }
+}
+
+async function capturePageSnapshot(page: Page, url: string): Promise<PageSnapshot> {
+  await page.waitForTimeout(PAGE_TARGET_SETTLE_MS);
+
+  const title = await page.title();
+  const mainSurface = await collectSurfaceSnapshot(page, page, { enableHoverTooltips: true });
+  const frames: FrameSnapshot[] = [];
+
+  for (const frame of page.frames().slice(1)) {
+    if (!frame.url() || frame.url() === 'about:blank') continue;
+    try {
+      await frame.waitForLoadState('domcontentloaded', { timeout: PAGE_LOAD_STATE_TIMEOUT_MS }).catch(() => {});
+      await page.waitForTimeout(600);
+      const frameElement = await frame.frameElement().catch(() => null);
+      const frameMeta = frameElement
+        ? await frameElement
+            .evaluate((el) => ({
+              id: (el as HTMLIFrameElement).id || '',
+              name: (el as HTMLIFrameElement).name || '',
+              className: (el as HTMLIFrameElement).className || '',
+              src: (el as HTMLIFrameElement).src || '',
+            }))
+            .catch(() => ({ id: '', name: '', className: '', src: '' }))
+        : { id: '', name: '', className: '', src: '' };
+      const surface = await collectSurfaceSnapshot(frame, page);
+      if (
+        surface.forms.length === 0 &&
+        surface.buttons.length === 0 &&
+        surface.headings.length === 0 &&
+        !surface.bodyTextExcerpt
+      ) {
+        continue;
+      }
+      frames.push({
+        name: frame.name(),
+        url: frame.url(),
+        elementId: frameMeta.id || '',
+        elementName: frameMeta.name || '',
+        elementClassName: frameMeta.className || '',
+        selectorHint: toFrameSelectorHint({
+          id: frameMeta.id,
+          name: frameMeta.name || frame.name(),
+          src: frameMeta.src,
+          frameUrl: frame.url(),
+        }),
+        ...surface,
+      });
+    } catch {
+      // ignore frame analysis failures so the main page can still be used
+    }
+  }
+
+  const screenshotBuffer = await page.screenshot({ type: 'jpeg', quality: 75, fullPage: false });
+  const screenshot = screenshotBuffer.toString('base64');
+
+  return {
+    url,
+    title,
+    forms: mainSurface.forms,
+    buttons: mainSurface.buttons,
+    tooltipElements: mainSurface.tooltipElements,
+    links: mainSurface.links,
+    headings: mainSurface.headings,
+    bodyTextExcerpt: mainSurface.bodyTextExcerpt,
+    frames,
+    screenshot,
+  };
 }
 
 export async function precheckPageAccess(
@@ -761,6 +768,14 @@ export async function precheckPageAccess(
       };
     }
 
+    let snapshot: PageSnapshot | undefined;
+    if (options?.captureSnapshot) {
+      try {
+        snapshot = await capturePageSnapshot(page, url);
+      } catch {
+        snapshot = undefined;
+      }
+    }
     const result: PageAccessPrecheckReadyResult = {
       status: 'ready',
       url,
@@ -768,6 +783,7 @@ export async function precheckPageAccess(
       title,
       bodyTextExcerpt,
       storageState: await context.storageState(),
+      ...(snapshot ? { snapshot } : {}),
     };
 
     await browser.close();
