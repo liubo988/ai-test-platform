@@ -1,0 +1,23 @@
+[Unit]
+Description=AI Test Platform (Docker)
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/ai-test-platform/current
+Environment=IMAGE_NAME=auto-test-platform:latest
+Environment=CONTAINER_NAME=auto-test-platform
+Environment=ENV_FILE=/opt/ai-test-platform/shared/.env.production
+ExecStartPre=-/usr/bin/docker rm -f auto-test-platform
+ExecStart=/usr/bin/docker run --name auto-test-platform --init --ipc=host -p 127.0.0.1:3666:3666 --env-file /opt/ai-test-platform/shared/.env.production -e NODE_ENV=production -e PORT=3666 -v /opt/ai-test-platform/shared/reports:/app/reports auto-test-platform:latest
+ExecStop=/usr/bin/docker stop auto-test-platform
+ExecStopPost=-/usr/bin/docker rm -f auto-test-platform
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

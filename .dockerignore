@@ -1,0 +1,14 @@
+.git
+.gitignore
+.next
+coverage
+dist
+node_modules
+playwright-report
+reports
+test-results
+tmp
+*.log
+.env
+.env.local
+.env.production

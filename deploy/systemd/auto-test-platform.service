@@ -1,0 +1,23 @@
+[Unit]
+Description=AI Test Platform
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=autotest
+Group=autotest
+WorkingDirectory=/opt/ai-test-platform/current
+Environment=NODE_ENV=production
+Environment=PORT=3666
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+EnvironmentFile=/opt/ai-test-platform/shared/.env.production
+ExecStart=/usr/bin/node server.mjs
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=30
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
