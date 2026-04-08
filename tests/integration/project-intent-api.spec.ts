@@ -7,6 +7,7 @@ import { DELETE as archiveKnowledge } from '../../app/api/projects/[projectUid]/
 import { POST as deriveCapabilities } from '../../app/api/projects/[projectUid]/knowledge/[documentUid]/derive-capabilities/route';
 import { GET as listKnowledge, POST as importKnowledge } from '../../app/api/projects/[projectUid]/knowledge/route';
 import { POST as restoreKnowledge } from '../../app/api/projects/[projectUid]/knowledge/[documentUid]/restore/route';
+import { buildIntentCapabilityFingerprint } from '../../lib/intent-capability-preset';
 import {
   addProjectMember,
   createTestModule,
@@ -752,5 +753,75 @@ describe.sequential('project intent API integration', () => {
     const restoredRecipePayload = await restoredRecipeRes.json();
     expect(restoredRecipePayload.knowledgeChunkCount).toBeGreaterThan(0);
     expect(restoredRecipePayload.recipe.supportingKnowledge.length).toBeGreaterThan(0);
+  });
+
+  it('recomputes source task fingerprint from the saved capability payload', async () => {
+    const fixture = await setupFixture();
+    const params = { params: Promise.resolve({ projectUid: fixture.projectUid }) };
+
+    const capabilityReq = createActorRequest(`http://localhost/api/projects/${fixture.projectUid}/capabilities`, fixture.ownerUid, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        slug: 'composite.business.create',
+        name: '创建商机',
+        description: '创建商机并回列表校验新入库。',
+        capabilityType: 'composite',
+        entryUrl: 'https://uat.example.com/#/business/businesslist',
+        triggerPhrases: ['创建商机', '我创建的'],
+        preconditions: ['已登录系统'],
+        steps: ['打开新建商机', '保存商机', '回列表校验状态'],
+        assertions: ['我创建的列表存在新建记录', '商机进展为新入库'],
+        cleanupNotes: '',
+        dependsOn: [],
+        sortOrder: 10,
+        meta: {
+          sourceTaskMode: 'scenario',
+          sourceTaskProjectUid: fixture.projectUid,
+          sourceTaskLatestPlanUid: 'plan_source_passed',
+          sourceTaskLatestExecutionStatus: 'passed',
+          sourceTaskCapabilityFingerprint: 'stale-fingerprint',
+          flowDefinition: {
+            version: 1,
+            entryUrl: 'https://uat.example.com/#/business/businesslist',
+            sharedVariables: ['businessId'],
+            expectedOutcome: '我创建的列表存在新建记录且商机进展为新入库。',
+            cleanupNotes: '',
+            steps: [
+              {
+                stepUid: 'step-1',
+                stepType: 'ui',
+                title: '打开新建商机',
+                target: '商机列表',
+                instruction: '点击新建商机。',
+                expectedResult: '进入新建商机表单。',
+                extractVariable: '',
+              },
+            ],
+          },
+        },
+      }),
+    });
+
+    const capabilityRes = await saveCapabilities(capabilityReq, params);
+    expect(capabilityRes.status).toBe(201);
+    const capabilityPayload = await capabilityRes.json();
+    const savedCapability = capabilityPayload.items[0];
+
+    expect(savedCapability.meta.sourceTaskCapabilityFingerprint).toBe(
+      buildIntentCapabilityFingerprint({
+        name: '创建商机',
+        description: '创建商机并回列表校验新入库。',
+        capabilityType: 'composite',
+        entryUrl: 'https://uat.example.com/#/business/businesslist',
+        triggerPhrases: ['创建商机', '我创建的'],
+        preconditions: ['已登录系统'],
+        steps: ['打开新建商机', '保存商机', '回列表校验状态'],
+        assertions: ['我创建的列表存在新建记录', '商机进展为新入库'],
+        cleanupNotes: '',
+        dependsOn: [],
+        meta: savedCapability.meta,
+      })
+    );
   });
 });

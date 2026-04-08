@@ -1,9 +1,11 @@
 import {
   archiveTestConfig,
   createTestConfig,
+  getPlanByUid,
   getProjectByUid,
   getProjectCapabilityByUid,
   getTestConfigByUid,
+  listTestConfigs,
   listProjectActivityLogs,
   listModulesByProject,
   listProjectCapabilities,
@@ -44,7 +46,13 @@ import {
   type IntentPromotionGraderAuditOutput,
   type IntentPromotionGraderSummary,
 } from '@/lib/intent-promotion-grader-output';
-import { getIntentCapabilityFlowDefinition } from '@/lib/intent-capability-preset';
+import {
+  buildIntentCapabilityFingerprint,
+  buildIntentCapabilityPreset,
+  buildIntentCapabilitySourceReuseFingerprint,
+  getIntentCapabilityFlowDefinition,
+  matchesIntentCapabilitySourceReuseFingerprint,
+} from '@/lib/intent-capability-preset';
 import {
   buildIntentSuppressedStarterHelperHistory,
   type IntentSuppressedStarterHelperHistoryItem,
@@ -871,14 +879,466 @@ function toCapabilityInput(
   };
 }
 
+function toRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+type CapabilityVerificationPreferredPlan = {
+  planUid: string;
+  reuseKind: 'verified_capability' | 'source_task';
+};
+
+type CapabilitySourceTaskMeta = {
+  sourceTaskProjectUid?: string;
+  sourceTaskModuleUid?: string;
+  sourceTaskConfigUid?: string;
+  sourceTaskLatestPlanUid: string;
+  sourceTaskLatestPlanVersion?: number;
+  sourceTaskLatestExecutionUid?: string;
+  sourceTaskLatestExecutionStatus: 'passed';
+  sourceTaskCapabilityFingerprint: string;
+};
+
+type CapabilityVerificationPreferredSourcePlanResult = {
+  preferredPlan: CapabilityVerificationPreferredPlan | null;
+  backfilledMeta: Record<string, unknown> | null;
+};
+
+function buildCapabilityFingerprintInput(capability: ProjectCapabilityRecord, meta: unknown = capability.meta) {
+  return {
+    name: capability.name,
+    description: capability.description,
+    capabilityType: capability.capabilityType,
+    entryUrl: capability.entryUrl,
+    triggerPhrases: capability.triggerPhrases,
+    preconditions: capability.preconditions,
+    steps: capability.steps,
+    assertions: capability.assertions,
+    cleanupNotes: capability.cleanupNotes,
+    dependsOn: capability.dependsOn,
+    meta,
+  };
+}
+
+function buildCapabilityVerificationPlanReuseFingerprint(capability: ProjectCapabilityRecord): string {
+  return buildIntentCapabilitySourceReuseFingerprint(buildCapabilityFingerprintInput(capability));
+}
+
+function matchesCapabilitySourceReuseFingerprint(
+  sourceTaskCapabilityFingerprint: string,
+  capability: ProjectCapabilityRecord,
+  meta: unknown = capability.meta
+): boolean {
+  return matchesIntentCapabilitySourceReuseFingerprint(
+    sourceTaskCapabilityFingerprint,
+    buildCapabilityFingerprintInput(capability, meta)
+  );
+}
+
+function buildCapabilitySourceTaskMeta(
+  capability: ProjectCapabilityRecord,
+  baseMeta: Record<string, unknown>,
+  source: {
+    projectUid?: string;
+    moduleUid?: string;
+    configUid?: string;
+    latestPlanUid: string;
+    latestPlanVersion?: number;
+    latestExecutionUid?: string;
+    sourceTaskCapabilityFingerprint?: string;
+  }
+): Record<string, unknown> {
+  const nextMeta: Record<string, unknown> = {
+    ...baseMeta,
+    sourceTaskLatestPlanUid: source.latestPlanUid.trim(),
+    sourceTaskLatestExecutionStatus: 'passed',
+  };
+
+  if (source.projectUid?.trim()) nextMeta.sourceTaskProjectUid = source.projectUid.trim();
+  else delete nextMeta.sourceTaskProjectUid;
+
+  if (source.moduleUid?.trim()) nextMeta.sourceTaskModuleUid = source.moduleUid.trim();
+  else delete nextMeta.sourceTaskModuleUid;
+
+  if (source.configUid?.trim()) nextMeta.sourceTaskConfigUid = source.configUid.trim();
+  else delete nextMeta.sourceTaskConfigUid;
+
+  if (Number.isFinite(Number(source.latestPlanVersion)) && Number(source.latestPlanVersion) > 0) {
+    nextMeta.sourceTaskLatestPlanVersion = Math.floor(Number(source.latestPlanVersion));
+  } else {
+    delete nextMeta.sourceTaskLatestPlanVersion;
+  }
+
+  if (source.latestExecutionUid?.trim()) nextMeta.sourceTaskLatestExecutionUid = source.latestExecutionUid.trim();
+  else delete nextMeta.sourceTaskLatestExecutionUid;
+
+  const sourceTaskCapabilityFingerprint = source.sourceTaskCapabilityFingerprint?.trim();
+  nextMeta.sourceTaskCapabilityFingerprint =
+    sourceTaskCapabilityFingerprint ||
+    buildIntentCapabilityFingerprint(buildCapabilityFingerprintInput(capability, nextMeta));
+
+  return nextMeta;
+}
+
+function extractCapabilitySourceTaskMeta(capability: ProjectCapabilityRecord): CapabilitySourceTaskMeta | null {
+  const meta = toRecord(capability.meta);
+  if (!meta) return null;
+
+  const sourceTaskLatestPlanUid =
+    typeof meta.sourceTaskLatestPlanUid === 'string' ? meta.sourceTaskLatestPlanUid.trim() : '';
+  const sourceTaskLatestExecutionStatus =
+    typeof meta.sourceTaskLatestExecutionStatus === 'string' ? meta.sourceTaskLatestExecutionStatus.trim() : '';
+
+  if (!sourceTaskLatestPlanUid || sourceTaskLatestExecutionStatus !== 'passed') {
+    return null;
+  }
+
+  const normalizedMeta = buildCapabilitySourceTaskMeta(capability, meta, {
+    projectUid: typeof meta.sourceTaskProjectUid === 'string' ? meta.sourceTaskProjectUid : '',
+    moduleUid: typeof meta.sourceTaskModuleUid === 'string' ? meta.sourceTaskModuleUid : '',
+    configUid: typeof meta.sourceTaskConfigUid === 'string' ? meta.sourceTaskConfigUid : '',
+    latestPlanUid: sourceTaskLatestPlanUid,
+    latestPlanVersion: Number(meta.sourceTaskLatestPlanVersion),
+    latestExecutionUid: typeof meta.sourceTaskLatestExecutionUid === 'string' ? meta.sourceTaskLatestExecutionUid : '',
+    sourceTaskCapabilityFingerprint:
+      typeof meta.sourceTaskCapabilityFingerprint === 'string' ? meta.sourceTaskCapabilityFingerprint : '',
+  });
+
+  return {
+    sourceTaskProjectUid:
+      typeof normalizedMeta.sourceTaskProjectUid === 'string' ? normalizedMeta.sourceTaskProjectUid : undefined,
+    sourceTaskModuleUid:
+      typeof normalizedMeta.sourceTaskModuleUid === 'string' ? normalizedMeta.sourceTaskModuleUid : undefined,
+    sourceTaskConfigUid:
+      typeof normalizedMeta.sourceTaskConfigUid === 'string' ? normalizedMeta.sourceTaskConfigUid : undefined,
+    sourceTaskLatestPlanUid: String(normalizedMeta.sourceTaskLatestPlanUid || '').trim(),
+    sourceTaskLatestPlanVersion: Number(normalizedMeta.sourceTaskLatestPlanVersion),
+    sourceTaskLatestExecutionUid:
+      typeof normalizedMeta.sourceTaskLatestExecutionUid === 'string' ? normalizedMeta.sourceTaskLatestExecutionUid : undefined,
+    sourceTaskLatestExecutionStatus: 'passed',
+    sourceTaskCapabilityFingerprint: String(normalizedMeta.sourceTaskCapabilityFingerprint || '').trim(),
+  };
+}
+
+function sourceTaskMetaNeedsBackfill(currentMeta: unknown, nextMeta: Record<string, unknown>): boolean {
+  const current = toRecord(currentMeta) || {};
+  const keys = [
+    'sourceTaskProjectUid',
+    'sourceTaskModuleUid',
+    'sourceTaskConfigUid',
+    'sourceTaskLatestPlanUid',
+    'sourceTaskLatestPlanVersion',
+    'sourceTaskLatestExecutionUid',
+    'sourceTaskLatestExecutionStatus',
+    'sourceTaskCapabilityFingerprint',
+  ] as const;
+
+  return keys.some((key) => {
+    const currentValue = current[key];
+    const nextValue = nextMeta[key];
+    return String(currentValue ?? '').trim() !== String(nextValue ?? '').trim();
+  });
+}
+
+function buildCapabilityPresetFingerprintFromTask(task: TestConfigRecord): string {
+  const preset = buildIntentCapabilityPreset({
+    sourceLabel: `任务「${task.name}」`,
+    name: task.name,
+    targetUrl: task.targetUrl,
+    featureDescription: task.featureDescription,
+    taskMode: task.taskMode,
+    flowDefinition: task.flowDefinition,
+    authSource: task.authSource,
+    sourceTaskProjectUid: task.projectUid,
+    sourceTaskModuleUid: task.moduleUid,
+    sourceTaskConfigUid: task.configUid,
+    sourceTaskLatestPlanUid: task.latestPlanUid,
+    sourceTaskLatestPlanVersion: task.latestPlanVersion,
+    sourceTaskLatestExecutionUid: task.latestExecutionUid,
+    sourceTaskLatestExecutionStatus: task.latestExecutionStatus,
+  });
+
+  return buildIntentCapabilitySourceReuseFingerprint({
+    name: preset.name,
+    description: preset.description,
+    capabilityType: preset.capabilityType,
+    entryUrl: preset.entryUrl,
+    triggerPhrases: preset.triggerPhrases,
+    preconditions: preset.preconditions,
+    steps: preset.steps,
+    assertions: preset.assertions,
+    cleanupNotes: preset.cleanupNotes,
+    dependsOn: preset.dependsOn,
+    meta: preset.meta,
+  });
+}
+
+async function inferCapabilitySourceTaskMetaFromPassedTasks(
+  capability: ProjectCapabilityRecord
+): Promise<Record<string, unknown> | null> {
+  const keyword = capability.name.trim();
+  if (!keyword) return null;
+
+  const result = await listTestConfigs({
+    projectUid: capability.projectUid,
+    status: 'active',
+    keyword,
+    page: 1,
+    pageSize: 100,
+  });
+
+  const matches = result.items
+    .filter((task) => task.projectUid === capability.projectUid)
+    .filter((task) => task.latestExecutionStatus === 'passed' && Boolean(task.latestPlanUid))
+    .map((task) => {
+      const taskFingerprint = buildCapabilityPresetFingerprintFromTask(task);
+      if (!matchesCapabilitySourceReuseFingerprint(taskFingerprint, capability)) {
+        return null;
+      }
+
+      const score =
+        (task.name.trim() === capability.name.trim() ? 2 : 0) +
+        (task.targetUrl.trim() === capability.entryUrl.trim() ? 1 : 0) +
+        (buildIntentCapabilityPreset({
+          sourceLabel: `任务「${task.name}」`,
+          name: task.name,
+          targetUrl: task.targetUrl,
+          featureDescription: task.featureDescription,
+          taskMode: task.taskMode,
+          flowDefinition: task.flowDefinition,
+          authSource: task.authSource,
+          sourceTaskProjectUid: task.projectUid,
+          sourceTaskModuleUid: task.moduleUid,
+          sourceTaskConfigUid: task.configUid,
+          sourceTaskLatestPlanUid: task.latestPlanUid,
+          sourceTaskLatestPlanVersion: task.latestPlanVersion,
+          sourceTaskLatestExecutionUid: task.latestExecutionUid,
+          sourceTaskLatestExecutionStatus: task.latestExecutionStatus,
+        }).slug === capability.slug
+          ? 4
+          : 0);
+
+      return {
+        task,
+        score,
+        meta: buildCapabilitySourceTaskMeta(capability, toRecord(capability.meta) || {}, {
+          projectUid: task.projectUid,
+          moduleUid: task.moduleUid,
+          configUid: task.configUid,
+          latestPlanUid: task.latestPlanUid,
+          latestPlanVersion: task.latestPlanVersion,
+          latestExecutionUid: task.latestExecutionUid,
+        }),
+      };
+    })
+    .filter((item): item is { task: TestConfigRecord; score: number; meta: Record<string, unknown> } => Boolean(item))
+    .sort((left, right) => {
+      if (right.score !== left.score) return right.score - left.score;
+      if (Number(right.task.latestPlanVersion || 0) !== Number(left.task.latestPlanVersion || 0)) {
+        return Number(right.task.latestPlanVersion || 0) - Number(left.task.latestPlanVersion || 0);
+      }
+      return String(right.task.updatedAt || '').localeCompare(String(left.task.updatedAt || ''));
+    });
+
+  if (matches.length === 0) return null;
+  if (matches.length > 1 && matches[0].score === matches[1].score && matches[0].task.configUid !== matches[1].task.configUid) {
+    return null;
+  }
+
+  return matches[0].meta;
+}
+
+function planHasBusinessListStatusEvidenceChain(planCode: string): boolean {
+  const code = String(planCode || '');
+  if (/__e2e\.readAntdTableCellByHeader\(/.test(code)) return true;
+
+  const hasStatusEvidenceLookup =
+    /const\s+statusEvidenceRecordCheck\s*=/.test(code) && /__e2e\.resolvePrimaryRecord\(/.test(code);
+  const hasStructuredRecordMatch =
+    /const\s+matchedRecord\b/.test(code) && /__e2e\.pickJsonRecord\(/.test(code);
+  const hasDetailFallback =
+    /__e2e\.readDetailField\(page,\s*\{\s*label:\s*['"]商机进展['"]/.test(code) ||
+    /__e2e\.readDetailField\(page,\s*\{\s*label:\s*['"]状态['"]/.test(code);
+  const hasTerminalStatusAssert = /toContain\(['"]新入库['"]\)/.test(code);
+
+  return hasStatusEvidenceLookup && hasStructuredRecordMatch && hasDetailFallback && hasTerminalStatusAssert;
+}
+
+function capabilityNeedsBusinessListVisibleRowStatusHardening(
+  capability: ProjectCapabilityRecord,
+  config: TestConfigRecord
+): boolean {
+  const targetUrl = `${config.targetUrl || capability.entryUrl || ''}`.trim();
+  if (!/business\/businesslist/i.test(targetUrl)) return false;
+
+  const verificationText = [
+    capability.name,
+    capability.description,
+    capability.entryUrl,
+    ...capability.triggerPhrases,
+    ...capability.steps,
+    ...capability.assertions,
+  ]
+    .join('\n')
+    .trim();
+
+  return /(商机进展|新入库)/.test(verificationText);
+}
+
+function sourcePlanSupportsCapabilityVerificationReuse(
+  sourcePlan: NonNullable<Awaited<ReturnType<typeof getPlanByUid>>>,
+  capability: ProjectCapabilityRecord,
+  config: TestConfigRecord
+): boolean {
+  if (!capabilityNeedsBusinessListVisibleRowStatusHardening(capability, config)) {
+    return true;
+  }
+
+  return planHasBusinessListStatusEvidenceChain(sourcePlan.planCode);
+}
+
+async function resolveCapabilityVerificationPreferredVerifiedPlan(
+  capability: ProjectCapabilityRecord,
+  config: TestConfigRecord
+): Promise<CapabilityVerificationPreferredPlan | null> {
+  const meta = toRecord(capability.meta);
+  if (!meta) return null;
+
+  const verifiedPlanUid = typeof meta.planUid === 'string' ? meta.planUid.trim() : '';
+  const verificationStatus = typeof meta.verificationStatus === 'string' ? meta.verificationStatus.trim() : '';
+  const lastVerificationStatus = typeof meta.lastVerificationStatus === 'string' ? meta.lastVerificationStatus.trim() : '';
+  const lastVerificationIntent =
+    meta.lastVerificationIntent === 'review' || meta.lastVerificationIntent === 'verify' ? meta.lastVerificationIntent : '';
+  const verifiedPlanReuseFingerprint =
+    typeof meta.verifiedPlanReuseFingerprint === 'string' ? meta.verifiedPlanReuseFingerprint.trim() : '';
+  const verifiedPlanTargetCapabilityUid =
+    typeof meta.verifiedPlanTargetCapabilityUid === 'string' ? meta.verifiedPlanTargetCapabilityUid.trim() : '';
+
+  if (
+    !verifiedPlanUid ||
+    verificationStatus !== 'execution_verified' ||
+    lastVerificationStatus !== 'passed' ||
+    lastVerificationIntent !== 'verify' ||
+    !verifiedPlanReuseFingerprint
+  ) {
+    return null;
+  }
+  if (verifiedPlanTargetCapabilityUid && verifiedPlanTargetCapabilityUid !== capability.capabilityUid) {
+    return null;
+  }
+  if (
+    !matchesIntentCapabilitySourceReuseFingerprint(verifiedPlanReuseFingerprint, {
+      name: capability.name,
+      description: capability.description,
+      capabilityType: capability.capabilityType,
+      entryUrl: capability.entryUrl,
+      triggerPhrases: capability.triggerPhrases,
+      preconditions: capability.preconditions,
+      steps: capability.steps,
+      assertions: capability.assertions,
+      cleanupNotes: capability.cleanupNotes,
+      dependsOn: capability.dependsOn,
+      meta: capability.meta,
+    })
+  ) {
+    return null;
+  }
+
+  const verifiedPlan = await getPlanByUid(verifiedPlanUid);
+  if (!verifiedPlan || verifiedPlan.projectUid !== capability.projectUid) return null;
+
+  const verifiedConfig = await getTestConfigByUid(verifiedPlan.configUid);
+  if (!verifiedConfig || verifiedConfig.projectUid !== capability.projectUid) return null;
+  if (verifiedConfig.targetUrl.trim() && config.targetUrl.trim() && verifiedConfig.targetUrl.trim() !== config.targetUrl.trim()) {
+    return null;
+  }
+
+  return {
+    planUid: verifiedPlan.planUid,
+    reuseKind: 'verified_capability',
+  };
+}
+
+async function resolveCapabilityVerificationPreferredSourcePlan(
+  capability: ProjectCapabilityRecord,
+  config: TestConfigRecord
+): Promise<CapabilityVerificationPreferredSourcePlanResult> {
+  async function resolveFromMeta(meta: Record<string, unknown>): Promise<CapabilityVerificationPreferredPlan | null> {
+    const sourceTaskLatestPlanUid =
+      typeof meta.sourceTaskLatestPlanUid === 'string' ? meta.sourceTaskLatestPlanUid.trim() : '';
+    const sourceTaskLatestExecutionStatus =
+      typeof meta.sourceTaskLatestExecutionStatus === 'string' ? meta.sourceTaskLatestExecutionStatus.trim() : '';
+    const sourceTaskCapabilityFingerprint =
+      typeof meta.sourceTaskCapabilityFingerprint === 'string' ? meta.sourceTaskCapabilityFingerprint.trim() : '';
+    const sourceTaskProjectUid = typeof meta.sourceTaskProjectUid === 'string' ? meta.sourceTaskProjectUid.trim() : '';
+    const sourceTaskConfigUid = typeof meta.sourceTaskConfigUid === 'string' ? meta.sourceTaskConfigUid.trim() : '';
+
+    if (!sourceTaskLatestPlanUid || sourceTaskLatestExecutionStatus !== 'passed' || !sourceTaskCapabilityFingerprint) {
+      return null;
+    }
+    if (sourceTaskProjectUid && sourceTaskProjectUid !== capability.projectUid) return null;
+    if (!matchesCapabilitySourceReuseFingerprint(sourceTaskCapabilityFingerprint, capability, meta)) {
+      return null;
+    }
+    if (capability.entryUrl.trim() && config.targetUrl.trim() && capability.entryUrl.trim() !== config.targetUrl.trim()) return null;
+
+    const sourcePlan = await getPlanByUid(sourceTaskLatestPlanUid);
+    if (!sourcePlan || sourcePlan.projectUid !== capability.projectUid) return null;
+    if (sourceTaskConfigUid && sourcePlan.configUid !== sourceTaskConfigUid) return null;
+
+    const sourceConfig = await getTestConfigByUid(sourcePlan.configUid);
+    if (!sourceConfig || sourceConfig.projectUid !== capability.projectUid) return null;
+    if (sourceConfig.targetUrl.trim() && config.targetUrl.trim() && sourceConfig.targetUrl.trim() !== config.targetUrl.trim()) return null;
+    if (!sourcePlanSupportsCapabilityVerificationReuse(sourcePlan, capability, config)) return null;
+
+    return {
+      planUid: sourcePlan.planUid,
+      reuseKind: 'source_task',
+    };
+  }
+
+  const explicitSourceMeta = extractCapabilitySourceTaskMeta(capability);
+  if (explicitSourceMeta) {
+    const nextMeta = buildCapabilitySourceTaskMeta(capability, toRecord(capability.meta) || {}, {
+      projectUid: explicitSourceMeta.sourceTaskProjectUid,
+      moduleUid: explicitSourceMeta.sourceTaskModuleUid,
+      configUid: explicitSourceMeta.sourceTaskConfigUid,
+      latestPlanUid: explicitSourceMeta.sourceTaskLatestPlanUid,
+      latestPlanVersion: explicitSourceMeta.sourceTaskLatestPlanVersion,
+      latestExecutionUid: explicitSourceMeta.sourceTaskLatestExecutionUid,
+      sourceTaskCapabilityFingerprint: explicitSourceMeta.sourceTaskCapabilityFingerprint,
+    });
+    const preferredPlan = await resolveFromMeta(nextMeta);
+    return {
+      preferredPlan,
+      backfilledMeta: preferredPlan && sourceTaskMetaNeedsBackfill(capability.meta, nextMeta) ? nextMeta : null,
+    };
+  }
+
+  const inferredMeta = await inferCapabilitySourceTaskMetaFromPassedTasks(capability);
+  if (!inferredMeta) {
+    return {
+      preferredPlan: null,
+      backfilledMeta: null,
+    };
+  }
+
+  const preferredPlan = await resolveFromMeta(inferredMeta);
+  return {
+    preferredPlan,
+    backfilledMeta: preferredPlan ? inferredMeta : null,
+  };
+}
+
 export async function createCapabilityVerificationConfig(input: {
   projectUid: string;
   capabilityUid: string;
   moduleUid?: string;
   actorLabel?: string;
   verificationIntent?: CapabilityVerificationIntent;
-}): Promise<{ config: TestConfigRecord; capability: ProjectCapabilityRecord }> {
-  const capability = await getProjectCapabilityByUid(input.capabilityUid);
+}): Promise<{ config: TestConfigRecord; capability: ProjectCapabilityRecord; preferredPlan: CapabilityVerificationPreferredPlan | null }> {
+  let capability = await getProjectCapabilityByUid(input.capabilityUid);
   if (!capability || capability.projectUid !== input.projectUid) {
     throw new Error('能力不存在');
   }
@@ -933,7 +1393,24 @@ export async function createCapabilityVerificationConfig(input: {
     { actorLabel: input.actorLabel || '能力验证' }
   );
 
-  return { config, capability };
+  let preferredPlan: CapabilityVerificationPreferredPlan | null = null;
+
+  if (input.verificationIntent !== 'review') {
+    preferredPlan = await resolveCapabilityVerificationPreferredVerifiedPlan(capability, config);
+    if (!preferredPlan) {
+      const sourcePlanResolution = await resolveCapabilityVerificationPreferredSourcePlan(capability, config);
+      preferredPlan = sourcePlanResolution.preferredPlan;
+      if (sourcePlanResolution.backfilledMeta) {
+        capability = await upsertProjectCapability(
+          capability.projectUid,
+          toCapabilityInput(capability, sourcePlanResolution.backfilledMeta),
+          { actorLabel: input.actorLabel || '能力验证' }
+        );
+      }
+    }
+  }
+
+  return { config, capability, preferredPlan };
 }
 
 export async function finalizeCapabilityVerification(input: {
@@ -966,12 +1443,16 @@ export async function finalizeCapabilityVerification(input: {
   });
   const nextMeta =
     input.status === 'passed'
-      ? buildExecutionVerifiedCapabilityMeta(attemptMeta, {
-          planUid: input.planUid,
-          executionUid: input.executionUid,
-          verifiedAt: checkedAt,
-          intent: verificationIntent,
-        })
+      ? {
+          ...buildExecutionVerifiedCapabilityMeta(attemptMeta, {
+            planUid: input.planUid,
+            executionUid: input.executionUid,
+            verifiedAt: checkedAt,
+            intent: verificationIntent,
+          }),
+          verifiedPlanReuseFingerprint: buildCapabilityVerificationPlanReuseFingerprint(capability),
+          verifiedPlanTargetCapabilityUid: capability.capabilityUid,
+        }
       : attemptMeta;
 
   await upsertProjectCapability(
@@ -992,9 +1473,14 @@ export async function finalizeCapabilityVerification(input: {
         verifiedAt: checkedAt,
         intent: verificationIntent,
       });
+      const nextChainMeta = {
+        ...chainMeta,
+        verifiedPlanReuseFingerprint: buildCapabilityVerificationPlanReuseFingerprint(chainCapability),
+        verifiedPlanTargetCapabilityUid: capability.capabilityUid,
+      };
       await upsertProjectCapability(
         chainCapability.projectUid,
-        toCapabilityInput(chainCapability, chainMeta),
+        toCapabilityInput(chainCapability, nextChainMeta),
         { actorLabel: input.actorLabel || '能力验证' }
       );
     }

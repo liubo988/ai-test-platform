@@ -33,6 +33,11 @@ export type CapabilityLastVerificationAttempt = {
   intent: CapabilityVerificationIntent | '';
 };
 
+export type CapabilityVerificationLaunchPolicy = {
+  primaryMode: 'verify';
+  canRepair: boolean;
+};
+
 function toRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -171,6 +176,14 @@ export function getCapabilityLastVerificationAttempt(meta: unknown): CapabilityL
     executionUid: typeof value?.lastVerificationExecutionUid === 'string' ? value.lastVerificationExecutionUid.trim() : '',
     checkedAt: typeof value?.lastVerificationAt === 'string' ? value.lastVerificationAt.trim() : '',
     intent: value?.lastVerificationIntent === 'review' || value?.lastVerificationIntent === 'verify' ? value.lastVerificationIntent : '',
+  };
+}
+
+export function resolveCapabilityVerificationLaunchPolicy(meta: unknown): CapabilityVerificationLaunchPolicy {
+  const lastAttempt = getCapabilityLastVerificationAttempt(meta);
+  return {
+    primaryMode: 'verify',
+    canRepair: lastAttempt.status === 'failed' && Boolean(lastAttempt.executionUid),
   };
 }
 

@@ -1,3 +1,8 @@
+-- Current MySQL schema snapshot for the main E2E platform database.
+-- 18 tables are included.
+-- Note: Termite protocol tables are NOT included here because they use SQLite (.termite.db),
+-- not MySQL. See scripts/termite-db-schema.sql if you need that separate store.
+
 CREATE TABLE IF NOT EXISTS test_projects (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   project_uid VARCHAR(64) NOT NULL,
@@ -331,4 +336,67 @@ CREATE TABLE IF NOT EXISTS execution_artifacts (
     ON UPDATE CASCADE ON DELETE CASCADE,
   CONSTRAINT fk_execution_artifacts_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
     ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS project_intent_drafts (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  intent_draft_uid VARCHAR(64) NOT NULL,
+  project_uid VARCHAR(64) NOT NULL,
+  module_uid VARCHAR(64) NOT NULL,
+  title VARCHAR(255) NOT NULL,
+  input_text TEXT NOT NULL,
+  target_url_hint TEXT NULL,
+  attachments_json JSON NULL,
+  llm_config_json JSON NULL,
+  scenario_card_json JSON NULL,
+  scenario_llm_meta_json JSON NULL,
+  plan_title VARCHAR(255) NULL,
+  plan_code LONGTEXT NULL,
+  plan_summary TEXT NULL,
+  generation_model VARCHAR(255) NULL,
+  generation_prompt LONGTEXT NULL,
+  generated_files_json JSON NULL,
+  plan_error TEXT NULL,
+  status ENUM('active', 'imported', 'archived') NOT NULL DEFAULT 'active',
+  imported_config_uid VARCHAR(64) NULL,
+  imported_plan_uid VARCHAR(64) NULL,
+  imported_at DATETIME(3) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_project_intent_drafts_uid (intent_draft_uid),
+  KEY idx_project_intent_drafts_project_status_updated (project_uid, status, updated_at),
+  KEY idx_project_intent_drafts_module_status_updated (module_uid, status, updated_at),
+  CONSTRAINT fk_project_intent_drafts_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
+    ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT fk_project_intent_drafts_module_uid FOREIGN KEY (module_uid) REFERENCES test_modules (module_uid)
+    ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT fk_project_intent_drafts_imported_config_uid FOREIGN KEY (imported_config_uid) REFERENCES test_configurations (config_uid)
+    ON UPDATE CASCADE ON DELETE SET NULL,
+  CONSTRAINT fk_project_intent_drafts_imported_plan_uid FOREIGN KEY (imported_plan_uid) REFERENCES test_plans (plan_uid)
+    ON UPDATE CASCADE ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS intent_e2e_runs (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  run_id VARCHAR(128) NOT NULL,
+  project_uid VARCHAR(64) NULL,
+  module_uid VARCHAR(64) NULL,
+  status ENUM('created', 'running', 'passed', 'failed', 'canceled') NOT NULL,
+  stage VARCHAR(32) NOT NULL,
+  request_input TEXT NOT NULL,
+  target_url TEXT NULL,
+  state_json LONGTEXT NOT NULL,
+  error_message TEXT NULL,
+  started_at DATETIME(3) NULL,
+  ended_at DATETIME(3) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_intent_e2e_runs_run_id (run_id),
+  KEY idx_intent_e2e_runs_project_updated (project_uid, updated_at),
+  KEY idx_intent_e2e_runs_module_updated (module_uid, updated_at),
+  KEY idx_intent_e2e_runs_status_updated (status, updated_at),
+  CONSTRAINT fk_intent_e2e_runs_project_uid FOREIGN KEY (project_uid) REFERENCES test_projects (project_uid)
+    ON UPDATE CASCADE ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

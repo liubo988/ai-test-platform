@@ -58,6 +58,44 @@ describe('test-executor worker template rendering', () => {
     expect(prepared).toContain("test('ts fallback'");
   });
 
+  it('strips outer markdown code fences before execution', async () => {
+    const code = `
+\`\`\`javascript
+test('markdown fence wrapper', async () => {
+  expect(true).toBe(true);
+});
+\`\`\`
+    `.trim();
+
+    expect(prepareTestCodeForExecution(code)).toBe([
+      "test('markdown fence wrapper', async () => {",
+      '  expect(true).toBe(true);',
+      '});',
+    ].join('\n'));
+
+    const result = await executeTest(code, 'worker-markdown-fence-wrapper');
+    expect(result).toMatchObject({
+      success: true,
+      error: null,
+    });
+  });
+
+  it('keeps generated business-flow javascript intact when it contains object literals and template strings', () => {
+    const code = `
+      test('business capability generated js stays intact', async () => {
+        const stamp = Date.now().toString().slice(-6);
+        const leadContactName = \`自动化商机\${stamp}\`;
+        const option = { label: '抖音', searchText: '抖音', tree: true };
+
+        expect(leadContactName).toContain('自动化商机');
+        expect(option.searchText).toBe('抖音');
+        expect(option.tree).toBe(true);
+      });
+    `.trim();
+
+    expect(prepareTestCodeForExecution(code)).toBe(code);
+  });
+
   it('preserves object literal null fields when applying the TypeScript fallback', async () => {
     const code = `
       function helper(page: any): void {
@@ -1510,6 +1548,66 @@ describe('test-executor worker template rendering', () => {
           expect(progressText).toBe('新入库');
         });`,
         'worker-read-detail-field-trims-trailing-labels'
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+    },
+    20000
+  );
+
+  it(
+    'reads the matched row status cell by table header before falling back to list response or detail page',
+    async () => {
+      const result = await executeTest(
+        `test('read antd table cell by header', async ({ page }) => {
+          await page.goto('about:blank');
+          await page.setContent(\`
+            <div class="ant-table">
+              <div class="ant-table-container">
+                <div class="ant-table-header">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>联系人手机号</th>
+                        <th>商机进展</th>
+                      </tr>
+                    </thead>
+                  </table>
+                </div>
+                <div class="ant-table-body">
+                  <table>
+                    <tbody>
+                      <tr data-row-key="521367">
+                        <td>19900005496</td>
+                        <td>
+                          <span class="ant-badge ant-badge-status ant-badge-not-a-wrapper">
+                            <span class="ant-badge-status-dot ant-badge-status-processing"></span>
+                            <span class="ant-badge-status-text"></span>
+                          </span>
+                          新入库
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          \`);
+
+          const targetRow = await __e2e.findAntdTableRow(page, {
+            hasTexts: ['19900005496'],
+          });
+          const statusText = await __e2e.readAntdTableCellByHeader(page, targetRow, {
+            headerLabels: ['商机进展', '状态'],
+            required: false,
+          });
+
+          expect(statusText).toBe('新入库');
+        });`,
+        'worker-read-ant-table-cell-by-header'
       );
 
       expect(result).toMatchObject({

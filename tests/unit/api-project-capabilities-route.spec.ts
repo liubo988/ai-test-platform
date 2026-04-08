@@ -38,6 +38,7 @@ import {
   createIntentStarterAssetPromotionReceipt,
   normalizeIntentStarterAssetPromotionReceiptRequest,
 } from '@/lib/intent-starter-asset-promotion-receipt';
+import { buildIntentCapabilityFingerprint } from '@/lib/intent-capability-preset';
 import { applyActorCookie, requireProjectRole } from '@/lib/server/project-actor';
 
 describe('project capabilities route', () => {
@@ -243,5 +244,81 @@ describe('project capabilities route', () => {
         },
       },
     });
+  });
+
+  it('recomputes source task fingerprint from the final capability payload before persistence', async () => {
+    const req = new NextRequest('http://localhost/api/projects/proj_1/capabilities', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        slug: 'composite.business.create',
+        name: '创建商机',
+        description: '创建商机并回列表校验新入库。',
+        capabilityType: 'composite',
+        entryUrl: 'https://uat-service.yikaiye.com/#/business/businesslist',
+        triggerPhrases: ['创建商机', '我创建的'],
+        preconditions: ['已登录系统'],
+        steps: ['打开新建商机', '保存商机', '回列表校验状态'],
+        assertions: ['我创建的列表存在新建记录', '商机进展为新入库'],
+        cleanupNotes: '',
+        dependsOn: [],
+        meta: {
+          sourceTaskMode: 'scenario',
+          sourceTaskProjectUid: 'proj_1',
+          sourceTaskLatestPlanUid: 'plan_source_passed',
+          sourceTaskLatestExecutionStatus: 'passed',
+          sourceTaskCapabilityFingerprint: 'stale-fingerprint',
+          flowDefinition: {
+            version: 1,
+            entryUrl: 'https://uat-service.yikaiye.com/#/business/businesslist',
+            sharedVariables: ['businessId'],
+            expectedOutcome: '我创建的列表存在新建记录且商机进展为新入库。',
+            cleanupNotes: '',
+            steps: [
+              {
+                stepUid: 'step-1',
+                stepType: 'ui',
+                title: '打开新建商机',
+                target: '商机列表',
+                instruction: '点击新建商机。',
+                expectedResult: '进入新建商机表单。',
+                extractVariable: '',
+              },
+            ],
+          },
+        },
+      }),
+    });
+
+    await POST(req, { params: Promise.resolve({ projectUid: 'proj_1' }) });
+
+    expect(upsertProjectCapabilities).toHaveBeenCalledWith(
+      'proj_1',
+      [expect.objectContaining({ slug: 'composite.business.create' })],
+      { actorLabel: 'bobo' }
+    );
+
+    const savedInput = vi.mocked(upsertProjectCapabilities).mock.calls[0]?.[1]?.[0];
+    expect(savedInput?.meta).toMatchObject({
+      sourceTaskMode: 'scenario',
+      sourceTaskProjectUid: 'proj_1',
+      sourceTaskLatestPlanUid: 'plan_source_passed',
+      sourceTaskLatestExecutionStatus: 'passed',
+    });
+    expect((savedInput?.meta as Record<string, unknown>)?.sourceTaskCapabilityFingerprint).toBe(
+      buildIntentCapabilityFingerprint({
+        name: '创建商机',
+        description: '创建商机并回列表校验新入库。',
+        capabilityType: 'composite',
+        entryUrl: 'https://uat-service.yikaiye.com/#/business/businesslist',
+        triggerPhrases: ['创建商机', '我创建的'],
+        preconditions: ['已登录系统'],
+        steps: ['打开新建商机', '保存商机', '回列表校验状态'],
+        assertions: ['我创建的列表存在新建记录', '商机进展为新入库'],
+        cleanupNotes: '',
+        dependsOn: [],
+        meta: savedInput?.meta,
+      })
+    );
   });
 });

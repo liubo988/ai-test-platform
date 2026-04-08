@@ -8,7 +8,7 @@ import {
   hasCapabilityVerificationExecutionObservation,
   normalizeCapabilityVerificationExecutionObservation,
 } from '@/lib/capability-verification-observation-cache';
-import { executePlan, generatePlanFromConfig, repairExecution } from '@/lib/services/test-plan-service';
+import { executePlan, generatePlanFromConfig, repairExecution, restoreHistoricalPlanToConfigAsLatest } from '@/lib/services/test-plan-service';
 import { applyActorCookie, requireProjectRole, toErrorResponse } from '@/lib/server/project-actor';
 
 export async function POST(
@@ -77,14 +77,22 @@ export async function POST(
       );
     }
 
-    const { config } = await createCapabilityVerificationConfig({
+    const { config, preferredPlan } = await createCapabilityVerificationConfig({
       projectUid,
       capabilityUid,
       moduleUid,
       actorLabel: actor.displayName,
       verificationIntent,
     });
-    const plan = await generatePlanFromConfig(config.configUid, { actorLabel: actor.displayName });
+    const plan = preferredPlan
+      ? await restoreHistoricalPlanToConfigAsLatest(preferredPlan.planUid, config.configUid, {
+          actorLabel: actor.displayName,
+          actionType:
+            preferredPlan.reuseKind === 'verified_capability'
+              ? 'capability_verification_plan_restored_from_verified_plan'
+              : 'capability_verification_plan_restored_from_source_task',
+        })
+      : await generatePlanFromConfig(config.configUid, { actorLabel: actor.displayName });
     const execution = await executePlan(plan.planUid, { actorLabel: actor.displayName });
     if (hasCapabilityVerificationExecutionObservation(requestedObservation)) {
       await insertExecutionEvent(

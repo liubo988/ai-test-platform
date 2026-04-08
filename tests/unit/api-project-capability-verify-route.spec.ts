@@ -18,6 +18,7 @@ vi.mock('@/lib/services/test-plan-service', () => ({
   executePlan: vi.fn(),
   generatePlanFromConfig: vi.fn(),
   repairExecution: vi.fn(),
+  restoreHistoricalPlanToConfigAsLatest: vi.fn(),
 }));
 
 vi.mock('@/lib/server/project-actor', () => ({
@@ -35,7 +36,7 @@ import { POST } from '../../app/api/projects/[projectUid]/capabilities/[capabili
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { getProjectCapabilityByUid, insertExecutionEvent } from '@/lib/db/repository';
 import { createCapabilityVerificationConfig } from '@/lib/capability-verification-service';
-import { executePlan, generatePlanFromConfig, repairExecution } from '@/lib/services/test-plan-service';
+import { executePlan, generatePlanFromConfig, repairExecution, restoreHistoricalPlanToConfigAsLatest } from '@/lib/services/test-plan-service';
 import { applyActorCookie, requireProjectRole } from '@/lib/server/project-actor';
 
 describe('POST /api/projects/[projectUid]/capabilities/[capabilityUid]/verify', () => {
@@ -131,6 +132,128 @@ describe('POST /api/projects/[projectUid]/capabilities/[capabilityUid]/verify', 
         workspacePath: '/projects/proj_1?module=mod_1',
         workspaceHistoryPath: '/projects/proj_1?module=mod_1&historyConfigUid=cfg_1',
       },
+    });
+  });
+
+  it('prefers restoring the source passed plan for verify requests when capability config exposes a reusable source plan', async () => {
+    vi.mocked(getProjectCapabilityByUid).mockResolvedValue({
+      capabilityUid: 'cap_1',
+      projectUid: 'proj_1',
+      meta: {},
+    } as never);
+    vi.mocked(createCapabilityVerificationConfig).mockResolvedValue({
+      config: { configUid: 'cfg_reuse' },
+      capability: { capabilityUid: 'cap_1' },
+      preferredPlan: {
+        planUid: 'plan_source_passed',
+        reuseKind: 'source_task',
+      },
+    } as never);
+    vi.mocked(restoreHistoricalPlanToConfigAsLatest).mockResolvedValue({
+      planUid: 'plan_reused',
+      planVersion: 8,
+      sourcePlanUid: 'plan_source_passed',
+      sourcePlanVersion: 5,
+      reusedCurrent: false,
+    } as never);
+    vi.mocked(executePlan).mockResolvedValue({
+      executionUid: 'exec_reused',
+      runPath: '/runs/exec_reused',
+      workspacePath: '/projects/proj_1?module=mod_1',
+      workspaceHistoryPath: '/projects/proj_1?module=mod_1&historyConfigUid=cfg_reuse',
+      executionContext: {
+        runPath: '/runs/exec_reused',
+        workspacePath: '/projects/proj_1?module=mod_1',
+        workspaceHistoryPath: '/projects/proj_1?module=mod_1&historyConfigUid=cfg_reuse',
+      },
+    } as never);
+
+    const req = new NextRequest('http://localhost/api/projects/proj_1/capabilities/cap_1/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        moduleUid: 'mod_1',
+        mode: 'verify',
+      }),
+    });
+    const res = await POST(req, { params: Promise.resolve({ projectUid: 'proj_1', capabilityUid: 'cap_1' }) });
+
+    expect(createCapabilityVerificationConfig).toHaveBeenCalledWith({
+      projectUid: 'proj_1',
+      capabilityUid: 'cap_1',
+      moduleUid: 'mod_1',
+      actorLabel: 'bobo',
+      verificationIntent: 'verify',
+    });
+    expect(restoreHistoricalPlanToConfigAsLatest).toHaveBeenCalledWith('plan_source_passed', 'cfg_reuse', {
+      actorLabel: 'bobo',
+      actionType: 'capability_verification_plan_restored_from_source_task',
+    });
+    expect(generatePlanFromConfig).not.toHaveBeenCalled();
+    expect(executePlan).toHaveBeenCalledWith('plan_reused', { actorLabel: 'bobo' });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({
+      configUid: 'cfg_reuse',
+      planUid: 'plan_reused',
+      planVersion: 8,
+      executionUid: 'exec_reused',
+    });
+  });
+
+  it('prefers restoring the latest passed capability verify plan before regenerating', async () => {
+    vi.mocked(getProjectCapabilityByUid).mockResolvedValue({
+      capabilityUid: 'cap_1',
+      projectUid: 'proj_1',
+      meta: {},
+    } as never);
+    vi.mocked(createCapabilityVerificationConfig).mockResolvedValue({
+      config: { configUid: 'cfg_reverify' },
+      capability: { capabilityUid: 'cap_1' },
+      preferredPlan: {
+        planUid: 'plan_verified_passed',
+        reuseKind: 'verified_capability',
+      },
+    } as never);
+    vi.mocked(restoreHistoricalPlanToConfigAsLatest).mockResolvedValue({
+      planUid: 'plan_reused_verify',
+      planVersion: 2,
+      sourcePlanUid: 'plan_verified_passed',
+      sourcePlanVersion: 1,
+      reusedCurrent: false,
+    } as never);
+    vi.mocked(executePlan).mockResolvedValue({
+      executionUid: 'exec_reverify',
+      runPath: '/runs/exec_reverify',
+      workspacePath: '/projects/proj_1?module=mod_1',
+      workspaceHistoryPath: '/projects/proj_1?module=mod_1&historyConfigUid=cfg_reverify',
+      executionContext: {
+        runPath: '/runs/exec_reverify',
+        workspacePath: '/projects/proj_1?module=mod_1',
+        workspaceHistoryPath: '/projects/proj_1?module=mod_1&historyConfigUid=cfg_reverify',
+      },
+    } as never);
+
+    const req = new NextRequest('http://localhost/api/projects/proj_1/capabilities/cap_1/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        moduleUid: 'mod_1',
+        mode: 'verify',
+      }),
+    });
+    const res = await POST(req, { params: Promise.resolve({ projectUid: 'proj_1', capabilityUid: 'cap_1' }) });
+
+    expect(restoreHistoricalPlanToConfigAsLatest).toHaveBeenCalledWith('plan_verified_passed', 'cfg_reverify', {
+      actorLabel: 'bobo',
+      actionType: 'capability_verification_plan_restored_from_verified_plan',
+    });
+    expect(generatePlanFromConfig).not.toHaveBeenCalled();
+    expect(executePlan).toHaveBeenCalledWith('plan_reused_verify', { actorLabel: 'bobo' });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({
+      configUid: 'cfg_reverify',
+      planUid: 'plan_reused_verify',
+      executionUid: 'exec_reverify',
     });
   });
 

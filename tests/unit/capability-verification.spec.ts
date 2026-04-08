@@ -6,6 +6,7 @@ import {
   describeCapabilityVerification,
   getCapabilityLastVerificationAttempt,
   hasPositiveStarterKnowledgeEvidence,
+  resolveCapabilityVerificationLaunchPolicy,
 } from '@/lib/capability-verification';
 
 describe('capability-verification', () => {
@@ -206,6 +207,34 @@ describe('capability-verification', () => {
       executionUid: 'exec_verify_1',
       checkedAt: '2026-03-24T11:05:00.000Z',
       intent: 'verify',
+    });
+  });
+
+  it('keeps the primary launch action on verify after a failed run and exposes repair separately', () => {
+    expect(
+      resolveCapabilityVerificationLaunchPolicy({
+        source: 'validated-plan',
+        verificationStatus: 'execution_verified',
+        lastVerificationStatus: 'failed',
+        lastVerificationExecutionUid: 'exec_verify_failed',
+        lastVerificationAt: '2026-03-24T11:05:00.000Z',
+        lastVerificationIntent: 'verify',
+      })
+    ).toEqual({
+      primaryMode: 'verify',
+      canRepair: true,
+    });
+
+    expect(
+      resolveCapabilityVerificationLaunchPolicy({
+        source: 'knowledge_chunk_auto',
+        verificationStatus: 'knowledge_inferred',
+        lastVerificationStatus: 'failed',
+        lastVerificationExecutionUid: '',
+      })
+    ).toEqual({
+      primaryMode: 'verify',
+      canRepair: false,
     });
   });
 });

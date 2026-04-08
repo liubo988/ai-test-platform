@@ -3691,6 +3691,13 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                                 taskMode: task.taskMode,
                                 flowDefinition: task.flowDefinition,
                                 authSource: task.authSource,
+                                sourceTaskProjectUid: task.projectUid,
+                                sourceTaskModuleUid: task.moduleUid,
+                                sourceTaskConfigUid: task.configUid,
+                                sourceTaskLatestPlanUid: task.latestPlanUid,
+                                sourceTaskLatestPlanVersion: task.latestPlanVersion,
+                                sourceTaskLatestExecutionUid: task.latestExecutionUid,
+                                sourceTaskLatestExecutionStatus: task.latestExecutionStatus,
                               });
                               const token = createIntentCapabilityLaunchToken({
                                 projectUid: task.projectUid,

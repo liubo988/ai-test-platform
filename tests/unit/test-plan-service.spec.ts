@@ -88,6 +88,7 @@ import {
   getExecutionDetail,
   repairExecution,
   restoreHistoricalPlanAsLatest,
+  restoreHistoricalPlanToConfigAsLatest,
 } from '../../lib/services/test-plan-service';
 import {
   createExecution,
@@ -2825,6 +2826,115 @@ describe('test-plan-service', () => {
         entityType: 'plan',
         entityUid: 'plan_restored_7',
         actionType: 'plan_restored_from_history',
+        actorLabel: 'Owner',
+      })
+    );
+  });
+
+  it('restores a historical plan into a capability verification config while keeping the target config scope', async () => {
+    vi.mocked(getPlanByUid).mockResolvedValue({
+      planUid: 'plan_hist_cap_3',
+      configUid: 'cfg_source_task',
+      projectUid: 'proj_hist_1',
+      planTitle: '商机创建脚本',
+      planVersion: 3,
+      planSummary: '历史成功版本',
+      planCode: "test('historical capability source', async () => {});",
+      generationPrompt: '平台测试类型：browser_e2e',
+      generatedFiles: [
+        {
+          name: 'historical-capability.spec.ts',
+          content: "test('historical capability source', async () => {});",
+          language: 'typescript',
+        },
+      ],
+      createdAt: '2026-03-12T00:00:00.000Z',
+    } as never);
+    vi.mocked(getTestConfigByUid).mockResolvedValue({
+      configUid: 'cfg_verify_cap',
+      projectUid: 'proj_hist_1',
+      moduleUid: 'mod_hist_1',
+      name: '验证能力：商机创建',
+      moduleName: '商机',
+      targetUrl: 'https://example.com/business/create',
+      featureDescription: '能力验证UID：cap_1\n能力验证意图：verify',
+      status: 'active',
+    } as never);
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_hist_1',
+      name: '项目',
+      authRequired: false,
+      loginDescription: '',
+      loginPasswordPlain: '',
+    } as never);
+    vi.mocked(getLatestPlanByConfigUid).mockResolvedValue(null as never);
+    vi.mocked(listPlanCases).mockResolvedValue([
+      {
+        caseUid: 'case_hist_cap_1',
+        tier: 'simple',
+        caseName: '能力验证来源用例',
+        caseSteps: ['打开页面', '提交表单'],
+        expectedResult: '创建成功',
+        enabled: true,
+        sortOrder: 10,
+      },
+    ] as never);
+    vi.mocked(createTestPlan).mockResolvedValue({
+      planUid: 'plan_verify_restored_1',
+      configUid: 'cfg_verify_cap',
+      projectUid: 'proj_hist_1',
+      planTitle: '商机创建脚本',
+      planVersion: 1,
+      planSummary: 'restored',
+      planCode: "test('historical capability source', async () => {});",
+      generatedFiles: [
+        {
+          name: 'historical-capability.spec.ts',
+          content: "test('historical capability source', async () => {});",
+          language: 'typescript',
+        },
+      ],
+      createdAt: '2026-03-12T00:02:00.000Z',
+    } as never);
+
+    const result = await restoreHistoricalPlanToConfigAsLatest('plan_hist_cap_3', 'cfg_verify_cap', {
+      actorLabel: 'Owner',
+      actionType: 'capability_verification_plan_restored_from_source_task',
+    });
+
+    expect(result).toEqual({
+      planUid: 'plan_verify_restored_1',
+      planVersion: 1,
+      sourcePlanUid: 'plan_hist_cap_3',
+      sourcePlanVersion: 3,
+      reusedCurrent: false,
+    });
+    expect(createTestPlan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectUid: 'proj_hist_1',
+        configUid: 'cfg_verify_cap',
+        planTitle: '商机创建脚本',
+        planCode: "test('historical capability source', async () => {});",
+        generationModel: 'history-restore',
+      })
+    );
+    const restoredPrompt = vi.mocked(createTestPlan).mock.calls.at(-1)?.[0]?.generationPrompt || '';
+    expect(restoredPrompt).toContain('[history_restore] sourcePlan=plan_hist_cap_3 v3');
+    expect(createPlanCases).toHaveBeenCalledWith([
+      expect.objectContaining({
+        projectUid: 'proj_hist_1',
+        planUid: 'plan_verify_restored_1',
+        tier: 'simple',
+        caseName: '能力验证来源用例',
+        expectedResult: '创建成功',
+      }),
+    ]);
+    expect(insertProjectActivityLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectUid: 'proj_hist_1',
+        entityType: 'plan',
+        entityUid: 'plan_verify_restored_1',
+        actionType: 'capability_verification_plan_restored_from_source_task',
         actorLabel: 'Owner',
       })
     );

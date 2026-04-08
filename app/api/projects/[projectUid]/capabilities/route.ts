@@ -11,6 +11,7 @@ import {
   createIntentStarterAssetPromotionReceipt,
   normalizeIntentStarterAssetPromotionReceiptRequest,
 } from '@/lib/intent-starter-asset-promotion-receipt';
+import { finalizeIntentCapabilityMetaForSave } from '@/lib/intent-capability-preset';
 import { type CapabilityType } from '@/lib/project-knowledge';
 import { applyActorCookie, requireProjectRole, toErrorResponse } from '@/lib/server/project-actor';
 
@@ -38,22 +39,43 @@ function normalizeCapabilityInput(input: unknown): ProjectCapabilityInput {
   }
 
   const value = input as Record<string, unknown>;
+  const capabilityType = normalizeCapabilityType(value.capabilityType) as CapabilityType;
+  const entryUrl = value.entryUrl ? String(value.entryUrl) : '';
+  const triggerPhrases = normalizeStringArray(value.triggerPhrases);
+  const preconditions = normalizeStringArray(value.preconditions);
+  const steps = normalizeStringArray(value.steps);
+  const assertions = normalizeStringArray(value.assertions);
+  const cleanupNotes = value.cleanupNotes ? String(value.cleanupNotes) : '';
+  const dependsOn = normalizeStringArray(value.dependsOn);
+
   return {
     slug: String(value.slug || '').trim(),
     name: String(value.name || '').trim(),
     description: String(value.description || '').trim(),
-    capabilityType: normalizeCapabilityType(value.capabilityType) as CapabilityType,
-    entryUrl: value.entryUrl ? String(value.entryUrl) : '',
-    triggerPhrases: normalizeStringArray(value.triggerPhrases),
-    preconditions: normalizeStringArray(value.preconditions),
-    steps: normalizeStringArray(value.steps),
-    assertions: normalizeStringArray(value.assertions),
-    cleanupNotes: value.cleanupNotes ? String(value.cleanupNotes) : '',
-    dependsOn: normalizeStringArray(value.dependsOn),
+    capabilityType,
+    entryUrl,
+    triggerPhrases,
+    preconditions,
+    steps,
+    assertions,
+    cleanupNotes,
+    dependsOn,
     sortOrder: Number.isFinite(Number(value.sortOrder)) ? Number(value.sortOrder) : 100,
     status: normalizeStatus(value.status as string) === 'archived' ? 'archived' : 'active',
     sourceDocumentUid: value.sourceDocumentUid ? String(value.sourceDocumentUid) : '',
-    meta: value.meta,
+    meta: finalizeIntentCapabilityMetaForSave({
+      name: String(value.name || '').trim(),
+      description: String(value.description || '').trim(),
+      capabilityType,
+      entryUrl,
+      triggerPhrases,
+      preconditions,
+      steps,
+      assertions,
+      cleanupNotes,
+      dependsOn,
+      meta: value.meta,
+    }),
   };
 }
 

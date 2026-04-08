@@ -1066,6 +1066,7 @@ function buildDirectDetailUrlFallbackLines(
 function buildRowStatusFallbackLines(
   baseName: string,
   rowAccessor: string,
+  statusEvidenceRecordLines: string[],
   statusEvidenceRecordAccessor: string,
   matchedRecordAccessor: string,
   relatedSteps: IntentExecutionPlanStep[],
@@ -1080,6 +1081,7 @@ function buildRowStatusFallbackLines(
 ): string[] {
   const statusPaths = buildDetailFieldRecordJsonPaths('状态', relatedSteps, check);
   const rowTextIdentifier = toSafeIdentifier(`${baseName}RowText`, `${baseName}RowText`);
+  const visibleRowStatusIdentifier = toSafeIdentifier(`${baseName}VisibleRowStatus`, `${baseName}VisibleRowStatus`);
   const rowKeyIdentifier = toSafeIdentifier(`${baseName}RowKey`, `${baseName}RowKey`);
   const derivedPrimaryIdentifier = toSafeIdentifier(`${baseName}DerivedPrimaryValue`, `${baseName}DerivedPrimaryValue`);
   const derivedBusinessIdIdentifier = toSafeIdentifier(`${baseName}DerivedBusinessId`, `${baseName}DerivedBusinessId`);
@@ -1097,9 +1099,18 @@ function buildRowStatusFallbackLines(
     `${baseName}ExpectedStatusAssertion`
   );
   const listPayloadIdentifier = toSafeIdentifier(`${baseName}ListPayload`, `${baseName}ListPayload`);
-  const supportsDerivedBusinessIdFallback =
-    Boolean(matchedRecordAccessor) &&
-    shouldEnableDerivedBusinessIdStatusFallback(sharedVariable, check, relatedSteps, detailUrlExpression);
+  const isBusinessListStatusFallback = shouldEnableDerivedBusinessIdStatusFallback(
+    sharedVariable,
+    check,
+    relatedSteps,
+    detailUrlExpression
+  );
+  const supportsDerivedBusinessIdFallback = Boolean(matchedRecordAccessor) && isBusinessListStatusFallback;
+  const rowStatusHeaderLabels = uniqueStrings([
+    ...(isBusinessListStatusFallback ? ['商机进展'] : []),
+    ...detailFieldLabels.filter((label) => /(状态|status|state|进展|progress)/i.test(normalizeText(label))),
+    '状态',
+  ]);
   const effectiveMatchedRecordAccessor = supportsDerivedBusinessIdFallback
     ? resolvedMatchedRecordIdentifier
     : matchedRecordAccessor;
@@ -1122,8 +1133,15 @@ function buildRowStatusFallbackLines(
   return [
     `const ${rowTextIdentifier} = await ${rowAccessor}.innerText().catch(() => '');`,
     `const ${expectedStatusAssertionIdentifier} = ${expectedStatusAssertionExpression};`,
-    `const ${listPayloadIdentifier} = ${statusEvidenceRecordAccessor}.response ? await __e2e.readJsonResponse(${statusEvidenceRecordAccessor}.response, { required: false }) : null;`,
-    `const ${matchedRecordAccessor} = ${listPayloadIdentifier} ? __e2e.pickJsonRecord(${listPayloadIdentifier}, { label: ${JSON.stringify(
+    `const ${visibleRowStatusIdentifier} = await __e2e.readAntdTableCellByHeader(page, ${rowAccessor}, { headerLabels: ${renderJsStringArray(
+      rowStatusHeaderLabels
+    )}, required: false });`,
+    `if (${visibleRowStatusIdentifier}) {`,
+    `  expect(String(${visibleRowStatusIdentifier})).toContain(String(${expectedStatusAssertionIdentifier}));`,
+    `} else {`,
+    ...statusEvidenceRecordLines.map((line) => `  ${line}`),
+    `  const ${listPayloadIdentifier} = ${statusEvidenceRecordAccessor}.response ? await __e2e.readJsonResponse(${statusEvidenceRecordAccessor}.response, { required: false }) : null;`,
+    `  const ${matchedRecordAccessor} = ${listPayloadIdentifier} ? __e2e.pickJsonRecord(${listPayloadIdentifier}, { label: ${JSON.stringify(
       sharedVariable
     )}, value: ${primaryAccessor}, paths: ${renderJsStringArray(candidatePaths)}, collectionPaths: ${renderJsStringArray(
       buildDefaultJsonRecordCollectionPaths()
@@ -1131,36 +1149,36 @@ function buildRowStatusFallbackLines(
     ...(
       supportsDerivedBusinessIdFallback
         ? [
-            `const ${rowKeyIdentifier} = ((await ${rowAccessor}.getAttribute('data-row-key')) || '').trim();`,
-            `const ${derivedBusinessIdIdentifier} = ${toSharedAccessor('businessId')} || ((/^[A-Za-z0-9_-]{6,64}$/.test(${rowKeyIdentifier}) && !/^1\\d{10}$/.test(${rowKeyIdentifier})) ? ${rowKeyIdentifier} : '') || (((${rowTextIdentifier}.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item))) || '');`,
-            `const ${matchedRecordByDerivedBusinessIdIdentifier} = !${matchedRecordAccessor} && ${listPayloadIdentifier} && ${derivedBusinessIdIdentifier} ? __e2e.pickJsonRecord(${listPayloadIdentifier}, { label: 'derivedBusinessId', value: ${derivedBusinessIdIdentifier}, paths: ['businessId', 'id'], required: false }) : null;`,
-            `const ${resolvedMatchedRecordIdentifier} = ${matchedRecordAccessor} || ${matchedRecordByDerivedBusinessIdIdentifier};`,
+            `  const ${rowKeyIdentifier} = ((await ${rowAccessor}.getAttribute('data-row-key')) || '').trim();`,
+            `  const ${derivedBusinessIdIdentifier} = ${toSharedAccessor('businessId')} || ((/^[A-Za-z0-9_-]{6,64}$/.test(${rowKeyIdentifier}) && !/^1\\d{10}$/.test(${rowKeyIdentifier})) ? ${rowKeyIdentifier} : '') || (((${rowTextIdentifier}.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item))) || '');`,
+            `  const ${matchedRecordByDerivedBusinessIdIdentifier} = !${matchedRecordAccessor} && ${listPayloadIdentifier} && ${derivedBusinessIdIdentifier} ? __e2e.pickJsonRecord(${listPayloadIdentifier}, { label: 'derivedBusinessId', value: ${derivedBusinessIdIdentifier}, paths: ['businessId', 'id'], required: false }) : null;`,
+            `  const ${resolvedMatchedRecordIdentifier} = ${matchedRecordAccessor} || ${matchedRecordByDerivedBusinessIdIdentifier};`,
           ]
         : detailUrlRequiresPrimary
         ? [
-            `const ${rowKeyIdentifier} = await ${rowAccessor}.getAttribute('data-row-key').catch(() => '');`,
-            `const ${derivedPrimaryIdentifier} = ${primaryAccessor} || ((() => { const candidate = String(${rowKeyIdentifier} || '').trim(); return /^[A-Za-z0-9_-]{6,64}$/.test(candidate) && !/^1\\d{10}$/.test(candidate) ? candidate : ''; })()) || (((String(${rowTextIdentifier} || '').match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item))) || '');`,
+            `  const ${rowKeyIdentifier} = await ${rowAccessor}.getAttribute('data-row-key').catch(() => '');`,
+            `  const ${derivedPrimaryIdentifier} = ${primaryAccessor} || ((() => { const candidate = String(${rowKeyIdentifier} || '').trim(); return /^[A-Za-z0-9_-]{6,64}$/.test(candidate) && !/^1\\d{10}$/.test(candidate) ? candidate : ''; })()) || (((String(${rowTextIdentifier} || '').match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item))) || '');`,
           ]
         : []
     ),
-    `const ${expectedStatusIdentifier} = ${
+    `  const ${expectedStatusIdentifier} = ${
       effectiveMatchedRecordAccessor && statusPaths.length > 0
         ? `${effectiveMatchedRecordAccessor} ? __e2e.pickJsonValue(${effectiveMatchedRecordAccessor}, { label: "状态", paths: ${renderJsStringArray(
             statusPaths
           )}, required: false }) : ''`
         : "''"
     };`,
-    `if (${expectedStatusIdentifier}) {`,
-    `  expect(String(${expectedStatusIdentifier})).toContain(String(${expectedStatusAssertionIdentifier}));`,
-    `} else {`,
+    `  if (${expectedStatusIdentifier}) {`,
+    `    expect(String(${expectedStatusIdentifier})).toContain(String(${expectedStatusAssertionIdentifier}));`,
+    `  } else {`,
     ...(
       detailFallbackLines.length > 0
-        ? detailFallbackLines.map((line) => `  ${line}`)
+        ? detailFallbackLines.map((line) => `    ${line}`)
         : [
             detailUrlRequiresPrimary
-              ? `  if (!${detailFallbackPrimaryIdentifier}) throw new Error(${JSON.stringify('状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口')});`
+              ? `    if (!${detailFallbackPrimaryIdentifier}) throw new Error(${JSON.stringify('状态证据缺失：列表行已命中，但列表响应未命中记录且未提供详情入口')});`
               : primaryAccessor
-              ? `  if (!${primaryAccessor}) throw new Error(${JSON.stringify('状态证据缺失：列表行已命中，但缺少主键且未提供详情入口')});`
+              ? `    if (!${primaryAccessor}) throw new Error(${JSON.stringify('状态证据缺失：列表行已命中，但缺少主键且未提供详情入口')});`
               : '',
             ...(
               detailUrlExpression
@@ -1172,11 +1190,12 @@ function buildRowStatusFallbackLines(
                     matchedRecordAccessor,
                     detailUrlFallbackExpression,
                     detailReadyLocatorExpression
-                  ).map((line) => `  ${line}`)
-                : [`  throw new Error(${JSON.stringify('状态证据缺失：列表行已命中，但列表响应和详情入口都未提供状态')});`]
+                  ).map((line) => `    ${line}`)
+                : [`    throw new Error(${JSON.stringify('状态证据缺失：列表行已命中，但列表响应和详情入口都未提供状态')});`]
             ),
           ].filter(Boolean)
     ),
+    `  }`,
     `}`,
   ].filter(Boolean);
 }
@@ -1473,6 +1492,7 @@ function buildVerificationSkeletonLines(check: IntentVerificationPlanCheck, rela
             ? buildRowStatusFallbackLines(
                 baseName,
                 `${baseName}Record.row`,
+                statusEvidenceRecord.lines,
                 statusEvidenceRecord.accessor,
                 matchedRecordAccessor,
                 relatedSteps,
@@ -1500,7 +1520,7 @@ function buildVerificationSkeletonLines(check: IntentVerificationPlanCheck, rela
             rowDetailEntryLines.length > 0
               ? [...matchedRecordLines, ...rowDetailEntryLines].map((line) => `  ${line}`)
               : rowStatusFallbackLines.length > 0
-              ? [...statusEvidenceRecord.lines, ...rowStatusFallbackLines].map((line) => `  ${line}`)
+              ? [...rowStatusFallbackLines].map((line) => `  ${line}`)
               : matchedRecordLines.length > 0
               ? [
                   ...matchedRecordLines,

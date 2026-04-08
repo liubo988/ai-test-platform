@@ -1104,6 +1104,15 @@ describe('intent-execution-compiler', () => {
 
     expect(template.code).toContain('const verify_business_statusExpectedStatusAssertion = "新入库";');
     expect(template.code).toContain(
+      'const verify_business_statusVisibleRowStatus = await __e2e.readAntdTableCellByHeader(page, verify_business_statusRecord.row, { headerLabels: ["商机进展", "状态"], required: false });'
+    );
+    expect(template.code).toContain(
+      'if (verify_business_statusVisibleRowStatus) {'
+    );
+    expect(template.code).toContain(
+      'expect(String(verify_business_statusVisibleRowStatus)).toContain(String(verify_business_statusExpectedStatusAssertion));'
+    );
+    expect(template.code).toContain(
       'expect(String(verify_business_statusExpectedStatus)).toContain(String(verify_business_statusExpectedStatusAssertion));'
     );
     expect(template.code).toContain('detailUrl: `#/business/detail/${shared.businessId}`,');
@@ -1434,6 +1443,9 @@ describe('intent-execution-compiler', () => {
     expect(template.code).toContain('primaryValue: shared.contactPhone,');
     expect(template.code).toContain('rowHasTexts: [shared.contactPhone, "新入库"],');
     expect(template.code).toContain('const verify_phone_lookupStatusEvidenceRecordCheck = verify_phone_lookupRecord.response ? verify_phone_lookupRecord : verify_phone_lookupRecord.row ? await __e2e.resolvePrimaryRecord(page, {');
+    expect(template.code).toContain(
+      'const verify_phone_lookupVisibleRowStatus = await __e2e.readAntdTableCellByHeader(page, verify_phone_lookupRecord.row, { headerLabels: ["商机进展", "状态"], required: false });'
+    );
     expect(template.code).toContain('preferCurrentVisibleRow: false,');
     expect(template.code).toContain('const verify_phone_lookupListPayload = verify_phone_lookupStatusEvidenceRecordCheck.response ? await __e2e.readJsonResponse(verify_phone_lookupStatusEvidenceRecordCheck.response, { required: false }) : null;');
     expect(template.code).toContain("const verify_phone_lookupDerivedBusinessId = shared.businessId || ((/^[A-Za-z0-9_-]{6,64}$/.test(verify_phone_lookupRowKey) && !/^1\\d{10}$/.test(verify_phone_lookupRowKey)) ? verify_phone_lookupRowKey : '') || (((verify_phone_lookupRowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item))) || '');");

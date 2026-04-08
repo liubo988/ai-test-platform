@@ -3,9 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@/lib/db/repository', () => ({
   archiveTestConfig: vi.fn(),
   createTestConfig: vi.fn(),
+  getPlanByUid: vi.fn(),
   getProjectByUid: vi.fn(),
   getProjectCapabilityByUid: vi.fn(),
   getTestConfigByUid: vi.fn(),
+  listTestConfigs: vi.fn(),
   listProjectActivityLogs: vi.fn(),
   listModulesByProject: vi.fn(),
   listProjectCapabilities: vi.fn(),
@@ -21,6 +23,11 @@ import {
   finalizeCapabilityVerification,
   listCapabilityVerificationRecommendationQueue,
 } from '@/lib/capability-verification-service';
+import {
+  buildIntentCapabilityFingerprint,
+  buildIntentCapabilityPreset,
+  buildIntentCapabilitySourceReuseFingerprint,
+} from '@/lib/intent-capability-preset';
 import { getIntentE2EInsights } from '@/lib/ai/intent-e2e-insights';
 import {
   buildCapabilityVerificationChainMarker,
@@ -30,20 +37,23 @@ import {
 import {
   archiveTestConfig,
   createTestConfig,
+  getPlanByUid,
   getProjectByUid,
   getProjectCapabilityByUid,
   getTestConfigByUid,
+  listTestConfigs,
   listProjectActivityLogs,
   listModulesByProject,
   listProjectCapabilities,
   upsertProjectCapability,
 } from '@/lib/db/repository';
+import type { FlowDefinition } from '@/lib/task-flow';
 
 function makeCapability(input: {
   capabilityUid: string;
   slug: string;
   name: string;
-  capabilityType?: 'auth' | 'navigation' | 'query' | 'composite';
+  capabilityType?: 'auth' | 'navigation' | 'action' | 'assertion' | 'query' | 'composite';
   dependsOn?: string[];
   entryUrl?: string;
   meta?: unknown;
@@ -71,10 +81,81 @@ function makeCapability(input: {
   };
 }
 
+function makePassedScenarioTask(input: {
+  configUid: string;
+  moduleUid?: string;
+  name: string;
+  targetUrl: string;
+  featureDescription: string;
+  flowDefinition: FlowDefinition;
+  latestPlanUid: string;
+  latestPlanVersion?: number;
+  latestExecutionUid?: string;
+  updatedAt?: string;
+}) {
+  return {
+    configUid: input.configUid,
+    projectUid: 'proj_1',
+    projectName: '项目 1',
+    moduleUid: input.moduleUid || 'mod_1',
+    moduleName: '默认模块',
+    sortOrder: 10,
+    name: input.name,
+    targetUrl: input.targetUrl,
+    featureDescription: input.featureDescription,
+    taskMode: 'scenario' as const,
+    flowDefinition: input.flowDefinition,
+    authRequired: true,
+    authSource: 'project' as const,
+    loginUrl: 'https://uat.example.com/#/',
+    loginUsername: '',
+    loginPasswordMasked: '',
+    loginDescription: '',
+    legacyAuthRequired: false,
+    legacyLoginUrl: '',
+    legacyLoginUsername: '',
+    coverageMode: 'standard',
+    status: 'active' as const,
+    createdAt: '2026-03-11T00:00:00.000Z',
+    updatedAt: input.updatedAt || '2026-03-12T00:00:00.000Z',
+    latestPlanUid: input.latestPlanUid,
+    latestPlanVersion: input.latestPlanVersion || 1,
+    latestExecutionUid: input.latestExecutionUid || 'exec_source_passed',
+    latestExecutionStatus: 'passed',
+  };
+}
+
 describe('capability-verification-service', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(archiveTestConfig).mockResolvedValue(undefined as never);
+    vi.mocked(listTestConfigs).mockResolvedValue({
+      page: 1,
+      pageSize: 100,
+      total: 0,
+      items: [],
+      platformSummary: {
+        scopeCount: 0,
+        importedCount: 0,
+        platformTaggedCount: 0,
+        byTestType: [],
+        byRunnerType: [],
+        byArtifactKind: [],
+      },
+      platformIndex: {
+        scopeCount: 0,
+        importedCount: 0,
+        platformTaggedCount: 0,
+        testTypeOptions: [],
+        runnerTypeOptions: [],
+        artifactKindOptions: [],
+        contractIdOptions: {
+          testCaseIds: [],
+          testSpecIds: [],
+          verificationContractIds: [],
+        },
+      },
+    } as never);
     vi.mocked(listProjectActivityLogs).mockResolvedValue([] as never);
     vi.mocked(upsertProjectCapability).mockResolvedValue({} as never);
     vi.mocked(getIntentE2EInsights).mockResolvedValue({ suppressedStarterHelpers: [] } as never);
@@ -230,6 +311,742 @@ describe('capability-verification-service', () => {
     expect(result.config.featureDescription).toContain('验证策略：保守复核');
     expect(result.config.featureDescription).toContain('复核要求：优先确认既有 helper、selector、断言与业务入口是否仍稳定可复用');
     expect(result.config.featureDescription).toContain('复核标准：若存在 mixed observing 或 suppressed helper 风险');
+  });
+
+  it('returns a preferred source plan when the capability still matches the source passed task fingerprint', async () => {
+    const capability = makeCapability({
+      capabilityUid: 'cap_reuse',
+      slug: 'query.company-search-reuse',
+      name: '搜企业复用',
+    });
+    capability.meta = {
+      sourceTaskProjectUid: 'proj_1',
+      sourceTaskConfigUid: 'cfg_source_task',
+      sourceTaskLatestPlanUid: 'plan_source_passed',
+      sourceTaskLatestPlanVersion: 3,
+      sourceTaskLatestExecutionUid: 'exec_source_passed',
+      sourceTaskLatestExecutionStatus: 'passed',
+      sourceTaskCapabilityFingerprint: buildIntentCapabilityFingerprint({
+        name: capability.name,
+        description: capability.description,
+        capabilityType: capability.capabilityType,
+        entryUrl: capability.entryUrl,
+        triggerPhrases: capability.triggerPhrases,
+        preconditions: capability.preconditions,
+        steps: capability.steps,
+        assertions: capability.assertions,
+        cleanupNotes: capability.cleanupNotes,
+        dependsOn: capability.dependsOn,
+        meta: capability.meta,
+      }),
+    };
+
+    vi.mocked(getProjectCapabilityByUid).mockResolvedValue(capability as never);
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_1',
+      loginUrl: 'https://uat.example.com/#/',
+    } as never);
+    vi.mocked(listModulesByProject).mockResolvedValue([{ moduleUid: 'mod_1', status: 'active' }] as never);
+    vi.mocked(listProjectCapabilities).mockResolvedValue([capability] as never);
+    vi.mocked(createTestConfig).mockImplementation(async (input: any) => ({ configUid: 'cfg_verify', ...input }) as never);
+    vi.mocked(getPlanByUid).mockResolvedValue({
+      planUid: 'plan_source_passed',
+      projectUid: 'proj_1',
+      configUid: 'cfg_source_task',
+      planTitle: 'source',
+      planVersion: 3,
+      planCode: 'test()',
+      planSummary: 'summary',
+      generationPrompt: 'prompt',
+      generatedFiles: [],
+      createdAt: '2026-03-11T00:00:00.000Z',
+    } as never);
+    vi.mocked(getTestConfigByUid).mockResolvedValue({
+      configUid: 'cfg_source_task',
+      projectUid: 'proj_1',
+      targetUrl: capability.entryUrl,
+    } as never);
+
+    const result = await createCapabilityVerificationConfig({
+      projectUid: 'proj_1',
+      capabilityUid: 'cap_reuse',
+      actorLabel: 'tester',
+    });
+
+    expect(result.preferredPlan).toEqual({
+      planUid: 'plan_source_passed',
+      reuseKind: 'source_task',
+    });
+    expect(getPlanByUid).toHaveBeenCalledWith('plan_source_passed');
+    expect(getTestConfigByUid).toHaveBeenCalledWith('cfg_source_task');
+  });
+
+  it('still reuses the source passed plan when only capability display copy drifted after preset launch', async () => {
+    const capability = makeCapability({
+      capabilityUid: 'cap_reuse_copy_drift',
+      slug: 'query.company-search-reuse-copy-drift',
+      name: '创建商机',
+    });
+    capability.description = '创建商机并回列表校验新入库。';
+    capability.triggerPhrases = ['创建商机', '我创建的'];
+    capability.steps = ['打开新建商机', '保存商机', '回列表校验状态'];
+    capability.assertions = ['我创建的列表存在新建记录', '商机进展为新入库'];
+    capability.meta = {
+      sourceTaskProjectUid: 'proj_1',
+      sourceTaskConfigUid: 'cfg_source_task',
+      sourceTaskLatestPlanUid: 'plan_source_passed',
+      sourceTaskLatestPlanVersion: 1,
+      sourceTaskLatestExecutionUid: 'exec_source_passed',
+      sourceTaskLatestExecutionStatus: 'passed',
+      sourceTaskCapabilityFingerprint: buildIntentCapabilityFingerprint({
+        name: '商机',
+        description: '旧版草稿文案',
+        capabilityType: capability.capabilityType,
+        entryUrl: capability.entryUrl,
+        triggerPhrases: ['商机', '旧文案'],
+        preconditions: capability.preconditions,
+        steps: capability.steps,
+        assertions: capability.assertions,
+        cleanupNotes: capability.cleanupNotes,
+        dependsOn: capability.dependsOn,
+        meta: capability.meta,
+      }),
+    };
+
+    vi.mocked(getProjectCapabilityByUid).mockResolvedValue(capability as never);
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_1',
+      loginUrl: 'https://uat.example.com/#/',
+    } as never);
+    vi.mocked(listModulesByProject).mockResolvedValue([{ moduleUid: 'mod_1', status: 'active' }] as never);
+    vi.mocked(listProjectCapabilities).mockResolvedValue([capability] as never);
+    vi.mocked(createTestConfig).mockImplementation(async (input: any) => ({ configUid: 'cfg_verify', ...input }) as never);
+    vi.mocked(getPlanByUid).mockResolvedValue({
+      planUid: 'plan_source_passed',
+      projectUid: 'proj_1',
+      configUid: 'cfg_source_task',
+      planTitle: 'source',
+      planVersion: 1,
+      planCode: 'test()',
+      planSummary: 'summary',
+      generationPrompt: 'prompt',
+      generatedFiles: [],
+      createdAt: '2026-03-11T00:00:00.000Z',
+    } as never);
+    vi.mocked(getTestConfigByUid).mockResolvedValue({
+      configUid: 'cfg_source_task',
+      projectUid: 'proj_1',
+      targetUrl: capability.entryUrl,
+    } as never);
+
+    const result = await createCapabilityVerificationConfig({
+      projectUid: 'proj_1',
+      capabilityUid: 'cap_reuse_copy_drift',
+      actorLabel: 'tester',
+    });
+
+    expect(result.preferredPlan).toEqual({
+      planUid: 'plan_source_passed',
+      reuseKind: 'source_task',
+    });
+  });
+
+  it('backfills the clicked source task anchor from a unique passed formal task and reuses its plan', async () => {
+    const flowDefinition: FlowDefinition = {
+      version: 1,
+      entryUrl: 'https://uat.example.com/#/company/easyindex',
+      sharedVariables: [],
+      expectedOutcome: '搜企业页加载完成且结果列表出现目标企业。',
+      cleanupNotes: '',
+      steps: [
+        {
+          stepUid: 'step_1',
+          stepType: 'ui',
+          title: '进入搜企业页',
+          target: 'https://uat.example.com/#/company/easyindex',
+          instruction: '打开搜企业页。',
+          expectedResult: '页面加载完成。',
+          extractVariable: '',
+        },
+        {
+          stepUid: 'step_2',
+          stepType: 'extract',
+          title: '输入关键词并搜索',
+          target: 'https://uat.example.com/#/company/easyindex',
+          instruction: '输入腾讯并执行搜索。',
+          expectedResult: '结果列表出现企业记录。',
+          extractVariable: '',
+        },
+      ],
+    };
+    const sourceTask = makePassedScenarioTask({
+      configUid: 'cfg_source_task',
+      name: '搜企业',
+      targetUrl: 'https://uat.example.com/#/company/easyindex',
+      featureDescription: '进入搜企业页，搜索企业并校验列表结果。',
+      flowDefinition,
+      latestPlanUid: 'plan_source_passed',
+      latestPlanVersion: 3,
+    });
+    const preset = buildIntentCapabilityPreset({
+      sourceLabel: '任务「搜企业」',
+      name: sourceTask.name,
+      targetUrl: sourceTask.targetUrl,
+      featureDescription: sourceTask.featureDescription,
+      taskMode: sourceTask.taskMode,
+      flowDefinition: sourceTask.flowDefinition,
+      authSource: sourceTask.authSource,
+      sourceTaskProjectUid: sourceTask.projectUid,
+      sourceTaskModuleUid: sourceTask.moduleUid,
+      sourceTaskConfigUid: sourceTask.configUid,
+      sourceTaskLatestPlanUid: sourceTask.latestPlanUid,
+      sourceTaskLatestPlanVersion: sourceTask.latestPlanVersion,
+      sourceTaskLatestExecutionUid: sourceTask.latestExecutionUid,
+      sourceTaskLatestExecutionStatus: sourceTask.latestExecutionStatus,
+    });
+    const capability = {
+      ...makeCapability({
+        capabilityUid: 'cap_backfill_source_task',
+        slug: preset.slug,
+        name: preset.name,
+        capabilityType: preset.capabilityType,
+        entryUrl: preset.entryUrl,
+      }),
+      description: preset.description,
+      triggerPhrases: preset.triggerPhrases,
+      preconditions: preset.preconditions,
+      steps: preset.steps,
+      assertions: preset.assertions,
+      cleanupNotes: preset.cleanupNotes,
+      dependsOn: preset.dependsOn,
+      meta: {
+        flowDefinition: (preset.meta as Record<string, unknown> | null)?.flowDefinition || null,
+        sourceTaskMode: 'scenario',
+      },
+    };
+
+    vi.mocked(getProjectCapabilityByUid).mockResolvedValue(capability as never);
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_1',
+      loginUrl: 'https://uat.example.com/#/',
+    } as never);
+    vi.mocked(listModulesByProject).mockResolvedValue([{ moduleUid: 'mod_1', status: 'active' }] as never);
+    vi.mocked(listProjectCapabilities).mockResolvedValue([capability] as never);
+    vi.mocked(createTestConfig).mockImplementation(async (input: any) => ({ configUid: 'cfg_verify', ...input }) as never);
+    vi.mocked(listTestConfigs).mockResolvedValue({
+      page: 1,
+      pageSize: 100,
+      total: 1,
+      items: [sourceTask],
+      platformSummary: {
+        scopeCount: 1,
+        importedCount: 0,
+        platformTaggedCount: 0,
+        byTestType: [],
+        byRunnerType: [],
+        byArtifactKind: [],
+      },
+      platformIndex: {
+        scopeCount: 1,
+        importedCount: 0,
+        platformTaggedCount: 0,
+        testTypeOptions: [],
+        runnerTypeOptions: [],
+        artifactKindOptions: [],
+        contractIdOptions: {
+          testCaseIds: [],
+          testSpecIds: [],
+          verificationContractIds: [],
+        },
+      },
+    } as never);
+    vi.mocked(getPlanByUid).mockResolvedValue({
+      planUid: 'plan_source_passed',
+      projectUid: 'proj_1',
+      configUid: 'cfg_source_task',
+      planTitle: 'source',
+      planVersion: 3,
+      planCode: "test('source', async () => {});",
+      planSummary: 'summary',
+      generationPrompt: 'prompt',
+      generatedFiles: [],
+      createdAt: '2026-03-11T00:00:00.000Z',
+    } as never);
+    vi.mocked(getTestConfigByUid).mockResolvedValue({
+      configUid: 'cfg_source_task',
+      projectUid: 'proj_1',
+      targetUrl: capability.entryUrl,
+    } as never);
+    vi.mocked(upsertProjectCapability).mockImplementation(async (_projectUid: string, input: any) => ({
+      ...capability,
+      ...input,
+      meta: input.meta,
+    }) as never);
+
+    const result = await createCapabilityVerificationConfig({
+      projectUid: 'proj_1',
+      capabilityUid: capability.capabilityUid,
+      actorLabel: 'tester',
+    });
+
+    expect(result.preferredPlan).toEqual({
+      planUid: 'plan_source_passed',
+      reuseKind: 'source_task',
+    });
+    expect(listTestConfigs).toHaveBeenCalledWith({
+      projectUid: 'proj_1',
+      status: 'active',
+      keyword: '搜企业',
+      page: 1,
+      pageSize: 100,
+    });
+    expect(upsertProjectCapability).toHaveBeenCalledWith(
+      'proj_1',
+      expect.objectContaining({
+        slug: capability.slug,
+        meta: expect.objectContaining({
+          sourceTaskProjectUid: 'proj_1',
+          sourceTaskModuleUid: 'mod_1',
+          sourceTaskConfigUid: 'cfg_source_task',
+          sourceTaskLatestPlanUid: 'plan_source_passed',
+          sourceTaskLatestPlanVersion: 3,
+          sourceTaskLatestExecutionUid: 'exec_source_passed',
+          sourceTaskLatestExecutionStatus: 'passed',
+          sourceTaskCapabilityFingerprint: expect.any(String),
+        }),
+      }),
+      { actorLabel: 'tester' }
+    );
+    expect((result.capability.meta as Record<string, unknown>).sourceTaskConfigUid).toBe('cfg_source_task');
+    expect((result.capability.meta as Record<string, unknown>).sourceTaskLatestPlanUid).toBe('plan_source_passed');
+  });
+
+  it('does not guess a source task when multiple passed formal tasks match equally', async () => {
+    const flowDefinition: FlowDefinition = {
+      version: 1,
+      entryUrl: 'https://uat.example.com/#/company/easyindex',
+      sharedVariables: [],
+      expectedOutcome: '搜企业页加载完成且结果列表出现目标企业。',
+      cleanupNotes: '',
+      steps: [
+        {
+          stepUid: 'step_1',
+          stepType: 'ui',
+          title: '进入搜企业页',
+          target: 'https://uat.example.com/#/company/easyindex',
+          instruction: '打开搜企业页。',
+          expectedResult: '页面加载完成。',
+          extractVariable: '',
+        },
+      ],
+    };
+    const taskA = makePassedScenarioTask({
+      configUid: 'cfg_source_task_a',
+      name: '搜企业',
+      targetUrl: 'https://uat.example.com/#/company/easyindex',
+      featureDescription: '进入搜企业页，搜索企业并校验列表结果。',
+      flowDefinition,
+      latestPlanUid: 'plan_source_passed_a',
+      latestPlanVersion: 2,
+      updatedAt: '2026-03-12T00:00:00.000Z',
+    });
+    const taskB = makePassedScenarioTask({
+      configUid: 'cfg_source_task_b',
+      name: '搜企业',
+      targetUrl: 'https://uat.example.com/#/company/easyindex',
+      featureDescription: '进入搜企业页，搜索企业并校验列表结果。',
+      flowDefinition,
+      latestPlanUid: 'plan_source_passed_b',
+      latestPlanVersion: 2,
+      updatedAt: '2026-03-12T00:00:00.000Z',
+    });
+    const preset = buildIntentCapabilityPreset({
+      sourceLabel: '任务「搜企业」',
+      name: taskA.name,
+      targetUrl: taskA.targetUrl,
+      featureDescription: taskA.featureDescription,
+      taskMode: taskA.taskMode,
+      flowDefinition: taskA.flowDefinition,
+      authSource: taskA.authSource,
+      sourceTaskProjectUid: taskA.projectUid,
+      sourceTaskModuleUid: taskA.moduleUid,
+      sourceTaskConfigUid: taskA.configUid,
+      sourceTaskLatestPlanUid: taskA.latestPlanUid,
+      sourceTaskLatestPlanVersion: taskA.latestPlanVersion,
+      sourceTaskLatestExecutionUid: taskA.latestExecutionUid,
+      sourceTaskLatestExecutionStatus: taskA.latestExecutionStatus,
+    });
+    const capability = {
+      ...makeCapability({
+        capabilityUid: 'cap_ambiguous_source_task',
+        slug: 'composite.company-easyindex.legacy',
+        name: preset.name,
+        capabilityType: preset.capabilityType,
+        entryUrl: preset.entryUrl,
+      }),
+      description: preset.description,
+      triggerPhrases: preset.triggerPhrases,
+      preconditions: preset.preconditions,
+      steps: preset.steps,
+      assertions: preset.assertions,
+      cleanupNotes: preset.cleanupNotes,
+      dependsOn: preset.dependsOn,
+      meta: {
+        flowDefinition: (preset.meta as Record<string, unknown> | null)?.flowDefinition || null,
+        sourceTaskMode: 'scenario',
+      },
+    };
+
+    vi.mocked(getProjectCapabilityByUid).mockResolvedValue(capability as never);
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_1',
+      loginUrl: 'https://uat.example.com/#/',
+    } as never);
+    vi.mocked(listModulesByProject).mockResolvedValue([{ moduleUid: 'mod_1', status: 'active' }] as never);
+    vi.mocked(listProjectCapabilities).mockResolvedValue([capability] as never);
+    vi.mocked(createTestConfig).mockImplementation(async (input: any) => ({ configUid: 'cfg_verify', ...input }) as never);
+    vi.mocked(listTestConfigs).mockResolvedValue({
+      page: 1,
+      pageSize: 100,
+      total: 2,
+      items: [taskA, taskB],
+      platformSummary: {
+        scopeCount: 2,
+        importedCount: 0,
+        platformTaggedCount: 0,
+        byTestType: [],
+        byRunnerType: [],
+        byArtifactKind: [],
+      },
+      platformIndex: {
+        scopeCount: 2,
+        importedCount: 0,
+        platformTaggedCount: 0,
+        testTypeOptions: [],
+        runnerTypeOptions: [],
+        artifactKindOptions: [],
+        contractIdOptions: {
+          testCaseIds: [],
+          testSpecIds: [],
+          verificationContractIds: [],
+        },
+      },
+    } as never);
+
+    const result = await createCapabilityVerificationConfig({
+      projectUid: 'proj_1',
+      capabilityUid: capability.capabilityUid,
+      actorLabel: 'tester',
+    });
+
+    expect(result.preferredPlan).toBeNull();
+    expect(getPlanByUid).not.toHaveBeenCalled();
+    expect(upsertProjectCapability).not.toHaveBeenCalled();
+  });
+
+  it('prefers the latest passed capability verification plan when the capability itself has not changed', async () => {
+    const capability = makeCapability({
+      capabilityUid: 'cap_verified_reuse',
+      slug: 'composite.business-businesslist.verified-reuse',
+      name: '创建商机',
+      capabilityType: 'composite',
+      entryUrl: 'https://uat.example.com/#/business/businesslist',
+    });
+    capability.description = '创建商机并在我创建的列表校验商机进展为新入库。';
+    capability.steps = ['打开新建商机', '保存商机', '切换到我创建的', '回查商机进展'];
+    capability.assertions = ['我创建的列表存在新建记录', '商机进展为新入库'];
+    capability.meta = {
+      source: 'validated-plan',
+      verificationStatus: 'execution_verified',
+      planUid: 'plan_verified_passed',
+      verifiedExecutionUid: 'exec_verified_passed',
+      lastVerificationStatus: 'passed',
+      lastVerificationExecutionUid: 'exec_verified_passed',
+      lastVerificationIntent: 'verify',
+      verifiedPlanTargetCapabilityUid: capability.capabilityUid,
+      verifiedPlanReuseFingerprint: buildIntentCapabilitySourceReuseFingerprint({
+        name: capability.name,
+        description: capability.description,
+        capabilityType: capability.capabilityType,
+        entryUrl: capability.entryUrl,
+        triggerPhrases: capability.triggerPhrases,
+        preconditions: capability.preconditions,
+        steps: capability.steps,
+        assertions: capability.assertions,
+        cleanupNotes: capability.cleanupNotes,
+        dependsOn: capability.dependsOn,
+        meta: capability.meta,
+      }),
+      sourceTaskProjectUid: 'proj_1',
+      sourceTaskConfigUid: 'cfg_source_task',
+      sourceTaskLatestPlanUid: 'plan_source_passed',
+      sourceTaskLatestExecutionStatus: 'passed',
+      sourceTaskCapabilityFingerprint: buildIntentCapabilityFingerprint({
+        name: capability.name,
+        description: capability.description,
+        capabilityType: capability.capabilityType,
+        entryUrl: capability.entryUrl,
+        triggerPhrases: capability.triggerPhrases,
+        preconditions: capability.preconditions,
+        steps: capability.steps,
+        assertions: capability.assertions,
+        cleanupNotes: capability.cleanupNotes,
+        dependsOn: capability.dependsOn,
+        meta: capability.meta,
+      }),
+    };
+
+    vi.mocked(getProjectCapabilityByUid).mockResolvedValue(capability as never);
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_1',
+      loginUrl: 'https://uat.example.com/#/',
+    } as never);
+    vi.mocked(listModulesByProject).mockResolvedValue([{ moduleUid: 'mod_1', status: 'active' }] as never);
+    vi.mocked(listProjectCapabilities).mockResolvedValue([capability] as never);
+    vi.mocked(createTestConfig).mockImplementation(async (input: any) => ({ configUid: 'cfg_verify', ...input }) as never);
+    vi.mocked(getPlanByUid)
+      .mockResolvedValueOnce({
+        planUid: 'plan_verified_passed',
+        projectUid: 'proj_1',
+        configUid: 'cfg_verified_passed',
+        planTitle: 'verified',
+        planVersion: 2,
+        planCode: "test('verified', async () => {});",
+        planSummary: 'verified summary',
+        generationPrompt: 'prompt',
+        generatedFiles: [],
+        createdAt: '2026-03-11T00:00:00.000Z',
+      } as never)
+      .mockResolvedValueOnce({
+        planUid: 'plan_source_passed',
+        projectUid: 'proj_1',
+        configUid: 'cfg_source_task',
+        planTitle: 'source',
+        planVersion: 1,
+        planCode: "test('source', async () => {});",
+        planSummary: 'source summary',
+        generationPrompt: 'prompt',
+        generatedFiles: [],
+        createdAt: '2026-03-11T00:00:00.000Z',
+      } as never);
+    vi.mocked(getTestConfigByUid)
+      .mockResolvedValueOnce({
+        configUid: 'cfg_verified_passed',
+        projectUid: 'proj_1',
+        targetUrl: capability.entryUrl,
+      } as never)
+      .mockResolvedValueOnce({
+        configUid: 'cfg_source_task',
+        projectUid: 'proj_1',
+        targetUrl: capability.entryUrl,
+      } as never);
+
+    const result = await createCapabilityVerificationConfig({
+      projectUid: 'proj_1',
+      capabilityUid: 'cap_verified_reuse',
+      actorLabel: 'tester',
+    });
+
+    expect(result.preferredPlan).toEqual({
+      planUid: 'plan_verified_passed',
+      reuseKind: 'verified_capability',
+    });
+    expect(getPlanByUid).toHaveBeenCalledWith('plan_verified_passed');
+    expect(getTestConfigByUid).toHaveBeenCalledWith('cfg_verified_passed');
+  });
+
+  it('falls back to generation when a reused business-list source plan only checks raw row text', async () => {
+    const capability = makeCapability({
+      capabilityUid: 'cap_business_status',
+      slug: 'composite.business-businesslist.status-check',
+      name: '创建商机',
+      capabilityType: 'composite',
+      entryUrl: 'https://uat.example.com/#/business/businesslist',
+    });
+    capability.description = '创建商机并在我创建的列表校验商机进展为新入库。';
+    capability.steps = ['打开新建商机', '保存商机', '切换到我创建的', '回查商机进展'];
+    capability.assertions = ['我创建的列表存在新建记录', '商机进展为新入库'];
+    capability.meta = {
+      sourceTaskProjectUid: 'proj_1',
+      sourceTaskConfigUid: 'cfg_source_task',
+      sourceTaskLatestPlanUid: 'plan_source_passed',
+      sourceTaskLatestPlanVersion: 1,
+      sourceTaskLatestExecutionUid: 'exec_source_passed',
+      sourceTaskLatestExecutionStatus: 'passed',
+      sourceTaskCapabilityFingerprint: buildIntentCapabilityFingerprint({
+        name: capability.name,
+        description: capability.description,
+        capabilityType: capability.capabilityType,
+        entryUrl: capability.entryUrl,
+        triggerPhrases: capability.triggerPhrases,
+        preconditions: capability.preconditions,
+        steps: capability.steps,
+        assertions: capability.assertions,
+        cleanupNotes: capability.cleanupNotes,
+        dependsOn: capability.dependsOn,
+        meta: capability.meta,
+      }),
+    };
+
+    vi.mocked(getProjectCapabilityByUid).mockResolvedValue(capability as never);
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_1',
+      loginUrl: 'https://uat.example.com/#/',
+    } as never);
+    vi.mocked(listModulesByProject).mockResolvedValue([{ moduleUid: 'mod_1', status: 'active' }] as never);
+    vi.mocked(listProjectCapabilities).mockResolvedValue([capability] as never);
+    vi.mocked(createTestConfig).mockImplementation(async (input: any) => ({ configUid: 'cfg_verify', ...input }) as never);
+    vi.mocked(getPlanByUid).mockResolvedValue({
+      planUid: 'plan_source_passed',
+      projectUid: 'proj_1',
+      configUid: 'cfg_source_task',
+      planTitle: 'source',
+      planVersion: 1,
+      planCode: [
+        "const rowText = await recordCheck.row.innerText();",
+        "expect(String(rowText)).toContain('新入库');",
+      ].join('\n'),
+      planSummary: 'summary',
+      generationPrompt: 'prompt',
+      generatedFiles: [],
+      createdAt: '2026-03-11T00:00:00.000Z',
+    } as never);
+    vi.mocked(getTestConfigByUid).mockResolvedValue({
+      configUid: 'cfg_source_task',
+      projectUid: 'proj_1',
+      targetUrl: capability.entryUrl,
+    } as never);
+
+    const result = await createCapabilityVerificationConfig({
+      projectUid: 'proj_1',
+      capabilityUid: 'cap_business_status',
+      actorLabel: 'tester',
+    });
+
+    expect(result.preferredPlan).toBeNull();
+  });
+
+  it('keeps reusing a business-list source plan when the structured status evidence chain already exists', async () => {
+    const capability = makeCapability({
+      capabilityUid: 'cap_business_status_hardened',
+      slug: 'composite.business-businesslist.status-check-hardened',
+      name: '创建商机',
+      capabilityType: 'composite',
+      entryUrl: 'https://uat.example.com/#/business/businesslist',
+    });
+    capability.description = '创建商机并在我创建的列表校验商机进展为新入库。';
+    capability.steps = ['打开新建商机', '保存商机', '切换到我创建的', '回查商机进展'];
+    capability.assertions = ['我创建的列表存在新建记录', '商机进展为新入库'];
+    capability.meta = {
+      sourceTaskProjectUid: 'proj_1',
+      sourceTaskConfigUid: 'cfg_source_task',
+      sourceTaskLatestPlanUid: 'plan_source_passed',
+      sourceTaskLatestPlanVersion: 2,
+      sourceTaskLatestExecutionUid: 'exec_source_passed',
+      sourceTaskLatestExecutionStatus: 'passed',
+      sourceTaskCapabilityFingerprint: buildIntentCapabilityFingerprint({
+        name: capability.name,
+        description: capability.description,
+        capabilityType: capability.capabilityType,
+        entryUrl: capability.entryUrl,
+        triggerPhrases: capability.triggerPhrases,
+        preconditions: capability.preconditions,
+        steps: capability.steps,
+        assertions: capability.assertions,
+        cleanupNotes: capability.cleanupNotes,
+        dependsOn: capability.dependsOn,
+        meta: capability.meta,
+      }),
+    };
+
+    vi.mocked(getProjectCapabilityByUid).mockResolvedValue(capability as never);
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_1',
+      loginUrl: 'https://uat.example.com/#/',
+    } as never);
+    vi.mocked(listModulesByProject).mockResolvedValue([{ moduleUid: 'mod_1', status: 'active' }] as never);
+    vi.mocked(listProjectCapabilities).mockResolvedValue([capability] as never);
+    vi.mocked(createTestConfig).mockImplementation(async (input: any) => ({ configUid: 'cfg_verify', ...input }) as never);
+    vi.mocked(getPlanByUid).mockResolvedValue({
+      planUid: 'plan_source_passed',
+      projectUid: 'proj_1',
+      configUid: 'cfg_source_task',
+      planTitle: 'source',
+      planVersion: 2,
+      planCode: [
+        "const statusEvidenceRecordCheck = recordCheck.response ? recordCheck : await __e2e.resolvePrimaryRecord(page, { primaryValue, listResponse: { urlIncludes: '/business', method: 'GET' } });",
+        "const matchedRecord = listJson ? __e2e.pickJsonRecord(listJson, { label: 'primaryValue', value: primaryValue, paths: ['businessId', 'id'], required: false }) : null;",
+        "const detailStatus = await __e2e.readDetailField(page, { label: '商机进展', scope: detailScope, titleIncludes: '商机详情', required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailScope, titleIncludes: '商机详情', required: false });",
+        "await expect(String(detailStatus || __e2e.pickJsonValue(matchedRecord, { label: '状态', paths: ['status', 'statusText'], required: false }) || '')).toContain('新入库');",
+      ].join('\n'),
+      planSummary: 'summary',
+      generationPrompt: 'prompt',
+      generatedFiles: [],
+      createdAt: '2026-03-11T00:00:00.000Z',
+    } as never);
+    vi.mocked(getTestConfigByUid).mockResolvedValue({
+      configUid: 'cfg_source_task',
+      projectUid: 'proj_1',
+      targetUrl: capability.entryUrl,
+    } as never);
+
+    const result = await createCapabilityVerificationConfig({
+      projectUid: 'proj_1',
+      capabilityUid: 'cap_business_status_hardened',
+      actorLabel: 'tester',
+    });
+
+    expect(result.preferredPlan).toEqual({
+      planUid: 'plan_source_passed',
+      reuseKind: 'source_task',
+    });
+  });
+
+  it('falls back to generation when the capability semantics no longer match the source task fingerprint', async () => {
+    const capability = makeCapability({
+      capabilityUid: 'cap_drifted',
+      slug: 'query.company-search-drifted',
+      name: '搜企业语义漂移',
+    });
+    const originalFingerprint = buildIntentCapabilityFingerprint({
+      name: capability.name,
+      description: capability.description,
+      capabilityType: capability.capabilityType,
+      entryUrl: capability.entryUrl,
+      triggerPhrases: capability.triggerPhrases,
+      preconditions: capability.preconditions,
+      steps: capability.steps,
+      assertions: capability.assertions,
+      cleanupNotes: capability.cleanupNotes,
+      dependsOn: capability.dependsOn,
+      meta: capability.meta,
+    });
+    capability.steps = [...capability.steps, '新增人工编辑步骤'];
+    capability.meta = {
+      sourceTaskProjectUid: 'proj_1',
+      sourceTaskConfigUid: 'cfg_source_task',
+      sourceTaskLatestPlanUid: 'plan_source_passed',
+      sourceTaskLatestExecutionStatus: 'passed',
+      sourceTaskCapabilityFingerprint: originalFingerprint,
+    };
+
+    vi.mocked(getProjectCapabilityByUid).mockResolvedValue(capability as never);
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_1',
+      loginUrl: 'https://uat.example.com/#/',
+    } as never);
+    vi.mocked(listModulesByProject).mockResolvedValue([{ moduleUid: 'mod_1', status: 'active' }] as never);
+    vi.mocked(listProjectCapabilities).mockResolvedValue([capability] as never);
+    vi.mocked(createTestConfig).mockImplementation(async (input: any) => ({ configUid: 'cfg_verify', ...input }) as never);
+
+    const result = await createCapabilityVerificationConfig({
+      projectUid: 'proj_1',
+      capabilityUid: 'cap_drifted',
+      actorLabel: 'tester',
+    });
+
+    expect(result.preferredPlan).toBeNull();
+    expect(getPlanByUid).not.toHaveBeenCalled();
   });
 
   it('builds a service-side recommendation queue that prioritizes repair, suppressed helper review, and starter promotion', () => {
@@ -540,7 +1357,7 @@ describe('capability-verification-service', () => {
         verificationStatus: 'execution_verified',
         lastVerificationStatus: 'failed',
         lastVerificationExecutionUid: 'exec_repeat_latest',
-        lastVerificationAt: '2026-03-20T09:00:00.000Z',
+        lastVerificationAt: '2026-04-06T09:00:00.000Z',
         lastVerificationIntent: 'verify',
       },
     });
@@ -553,7 +1370,7 @@ describe('capability-verification-service', () => {
         verificationStatus: 'execution_verified',
         lastVerificationStatus: 'failed',
         lastVerificationExecutionUid: 'exec_single_latest',
-        lastVerificationAt: '2026-03-24T09:00:00.000Z',
+        lastVerificationAt: '2026-04-07T09:00:00.000Z',
         lastVerificationIntent: 'verify',
       },
     });
@@ -571,7 +1388,7 @@ describe('capability-verification-service', () => {
           actorLabel: 'system',
           title: '',
           detail: '',
-          createdAt: '2026-03-24T10:00:00.000Z',
+          createdAt: '2026-04-07T10:00:00.000Z',
           meta: {
             capabilityVerification: {
               capabilityUid: 'cap_repeat',
@@ -588,7 +1405,7 @@ describe('capability-verification-service', () => {
           actorLabel: 'system',
           title: '',
           detail: '',
-          createdAt: '2026-03-23T10:00:00.000Z',
+          createdAt: '2026-04-06T10:00:00.000Z',
           meta: {
             capabilityVerification: {
               capabilityUid: 'cap_repeat',
@@ -605,7 +1422,7 @@ describe('capability-verification-service', () => {
           actorLabel: 'system',
           title: '',
           detail: '',
-          createdAt: '2026-03-24T11:00:00.000Z',
+          createdAt: '2026-04-07T11:00:00.000Z',
           meta: {
             capabilityVerification: {
               capabilityUid: 'cap_single',
@@ -712,7 +1529,7 @@ describe('capability-verification-service', () => {
           actorLabel: 'system',
           title: '',
           detail: '',
-          createdAt: '2026-03-24T10:00:00.000Z',
+          createdAt: '2026-04-07T10:00:00.000Z',
           meta: {
             capabilityVerification: {
               capabilityUid: 'cap_suppressed_peer',
@@ -729,7 +1546,7 @@ describe('capability-verification-service', () => {
           actorLabel: 'system',
           title: '',
           detail: '',
-          createdAt: '2026-03-23T10:00:00.000Z',
+          createdAt: '2026-04-06T10:00:00.000Z',
           meta: {
             capabilityVerification: {
               capabilityUid: 'cap_suppressed_peer',
@@ -810,7 +1627,7 @@ describe('capability-verification-service', () => {
           actorLabel: 'system',
           title: '',
           detail: '',
-          createdAt: '2026-03-24T12:00:00.000Z',
+          createdAt: '2026-04-07T12:00:00.000Z',
           meta: {
             capabilityVerification: {
               capabilityUid: 'cap_watch_peer',
@@ -827,7 +1644,7 @@ describe('capability-verification-service', () => {
           actorLabel: 'system',
           title: '',
           detail: '',
-          createdAt: '2026-03-23T12:00:00.000Z',
+          createdAt: '2026-04-06T12:00:00.000Z',
           meta: {
             capabilityVerification: {
               capabilityUid: 'cap_watch_peer',
@@ -907,7 +1724,7 @@ describe('capability-verification-service', () => {
           actorLabel: 'system',
           title: '',
           detail: '',
-          createdAt: '2026-03-24T13:00:00.000Z',
+          createdAt: '2026-04-07T13:00:00.000Z',
           meta: {
             capabilityVerification: {
               capabilityUid: 'cap_positive_pressured_peer',
@@ -997,7 +1814,7 @@ describe('capability-verification-service', () => {
           actorLabel: 'system',
           title: '',
           detail: '',
-          createdAt: '2026-03-24T14:00:00.000Z',
+          createdAt: '2026-04-07T14:00:00.000Z',
           meta: {
             capabilityVerification: {
               capabilityUid: 'cap_positive_downgraded_peer',
@@ -1014,7 +1831,7 @@ describe('capability-verification-service', () => {
           actorLabel: 'system',
           title: '',
           detail: '',
-          createdAt: '2026-03-23T14:00:00.000Z',
+          createdAt: '2026-04-06T14:00:00.000Z',
           meta: {
             capabilityVerification: {
               capabilityUid: 'cap_positive_downgraded_peer',
@@ -1260,10 +2077,12 @@ describe('capability-verification-service', () => {
         planUid: 'plan_1',
         executionUid: 'exec_1',
         verifiedExecutionUid: 'exec_1',
+        verifiedPlanTargetCapabilityUid: 'cap_query',
         lastVerificationStatus: 'passed',
         lastVerificationExecutionUid: 'exec_1',
         lastVerificationIntent: 'verify',
       });
+      expect(typeof (call[1].meta as Record<string, unknown>).verifiedPlanReuseFingerprint).toBe('string');
     }
     expect(archiveTestConfig).toHaveBeenCalledWith('cfg_1', { actorLabel: 'tester' });
   });

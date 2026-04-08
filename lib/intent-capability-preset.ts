@@ -5,6 +5,14 @@ export type IntentCapabilityType = 'auth' | 'navigation' | 'action' | 'assertion
 export type IntentCapabilityMeta = Record<string, unknown> & {
   sourceTaskMode?: TaskMode;
   flowDefinition?: FlowDefinition | null;
+  sourceTaskProjectUid?: string;
+  sourceTaskModuleUid?: string;
+  sourceTaskConfigUid?: string;
+  sourceTaskLatestPlanUid?: string;
+  sourceTaskLatestPlanVersion?: number;
+  sourceTaskLatestExecutionUid?: string;
+  sourceTaskLatestExecutionStatus?: string;
+  sourceTaskCapabilityFingerprint?: string;
 };
 
 export type IntentCapabilityPreset = {
@@ -33,6 +41,40 @@ export type IntentCapabilityPresetInput = {
   taskMode: TaskMode;
   flowDefinition: FlowDefinition | null;
   authSource?: 'project' | 'task' | 'none';
+  sourceTaskProjectUid?: string;
+  sourceTaskModuleUid?: string;
+  sourceTaskConfigUid?: string;
+  sourceTaskLatestPlanUid?: string;
+  sourceTaskLatestPlanVersion?: number;
+  sourceTaskLatestExecutionUid?: string;
+  sourceTaskLatestExecutionStatus?: string;
+};
+
+export type IntentCapabilityFingerprintInput = Pick<
+  IntentCapabilityPreset,
+  | 'name'
+  | 'description'
+  | 'capabilityType'
+  | 'entryUrl'
+  | 'triggerPhrases'
+  | 'preconditions'
+  | 'steps'
+  | 'assertions'
+  | 'cleanupNotes'
+  | 'dependsOn'
+> & {
+  meta?: unknown;
+};
+
+type IntentCapabilitySourceReuseFingerprintPayload = {
+  capabilityType: string;
+  entryUrl: string;
+  preconditions: string[];
+  steps: string[];
+  assertions: string[];
+  cleanupNotes: string;
+  dependsOn: string[];
+  flowDefinition: ReturnType<typeof buildIntentCapabilityFlowFingerprintPayload>;
 };
 
 function uniq(values: string[]): string[] {
@@ -57,6 +99,14 @@ function splitParagraphs(value: string): string[] {
 
 function normalizeLabel(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
+}
+
+function normalizeFingerprintList(values: string[] | undefined): string[] {
+  return (values || []).map((item) => String(item).trim()).filter(Boolean);
+}
+
+function normalizeUnknownFingerprintList(values: unknown): string[] {
+  return Array.isArray(values) ? values.map((item) => String(item).trim()).filter(Boolean) : [];
 }
 
 function toRecord(value: unknown): Record<string, unknown> | null {
@@ -110,6 +160,14 @@ function inferCapabilityType(taskMode: TaskMode, flow: FlowDefinition): IntentCa
   return 'action';
 }
 
+function buildSemanticMeta(input: IntentCapabilityPresetInput, flow: FlowDefinition): IntentCapabilityMeta | null {
+  if (input.taskMode !== 'scenario' || flow.steps.length === 0) return null;
+  return {
+    sourceTaskMode: 'scenario',
+    flowDefinition: flow,
+  };
+}
+
 function buildSlug(input: IntentCapabilityPresetInput, flow: FlowDefinition): string {
   const prefix = inferCapabilityType(input.taskMode, flow);
   const urlHint = extractUrlHint(input.targetUrl || flow.entryUrl);
@@ -161,12 +219,180 @@ function buildTriggerPhrases(input: IntentCapabilityPresetInput, flow: FlowDefin
   ]).slice(0, 6);
 }
 
-function buildMeta(input: IntentCapabilityPresetInput, flow: FlowDefinition): IntentCapabilityMeta | null {
-  if (input.taskMode !== 'scenario' || flow.steps.length === 0) return null;
+function buildIntentCapabilityFlowFingerprintPayload(meta: unknown, entryUrl: string) {
+  const flow = getIntentCapabilityFlowDefinition(meta, entryUrl);
+
+  return flow
+    ? {
+        version: Number.isFinite(Number(flow.version)) ? Number(flow.version) : 1,
+        entryUrl: String(flow.entryUrl || '').trim(),
+        sharedVariables: normalizeFingerprintList(flow.sharedVariables || []),
+        expectedOutcome: String(flow.expectedOutcome || '').trim(),
+        cleanupNotes: String(flow.cleanupNotes || '').trim(),
+        steps: flow.steps.map((step) => ({
+          stepUid: String(step.stepUid || '').trim(),
+          stepType: String(step.stepType || '').trim(),
+          title: String(step.title || '').trim(),
+          target: String(step.target || '').trim(),
+          instruction: String(step.instruction || '').trim(),
+          expectedResult: String(step.expectedResult || '').trim(),
+          extractVariable: String(step.extractVariable || '').trim(),
+        })),
+      }
+    : null;
+}
+
+function buildIntentCapabilityFingerprintPayload(input: IntentCapabilityFingerprintInput) {
   return {
-    sourceTaskMode: 'scenario',
-    flowDefinition: flow,
+    capabilityType: String(input.capabilityType || '').trim(),
+    name: normalizeLabel(input.name || ''),
+    description: normalizeLabel(input.description || ''),
+    entryUrl: String(input.entryUrl || '').trim(),
+    triggerPhrases: normalizeFingerprintList(input.triggerPhrases),
+    preconditions: normalizeFingerprintList(input.preconditions),
+    steps: normalizeFingerprintList(input.steps),
+    assertions: normalizeFingerprintList(input.assertions),
+    cleanupNotes: String(input.cleanupNotes || '').trim(),
+    dependsOn: normalizeFingerprintList(input.dependsOn),
+    flowDefinition: buildIntentCapabilityFlowFingerprintPayload(input.meta, input.entryUrl),
   };
+}
+
+function buildIntentCapabilitySourceReuseFingerprintPayload(
+  input: IntentCapabilityFingerprintInput
+): IntentCapabilitySourceReuseFingerprintPayload {
+  return {
+    capabilityType: String(input.capabilityType || '').trim(),
+    entryUrl: String(input.entryUrl || '').trim(),
+    preconditions: normalizeFingerprintList(input.preconditions),
+    steps: normalizeFingerprintList(input.steps),
+    assertions: normalizeFingerprintList(input.assertions),
+    cleanupNotes: String(input.cleanupNotes || '').trim(),
+    dependsOn: normalizeFingerprintList(input.dependsOn),
+    flowDefinition: buildIntentCapabilityFlowFingerprintPayload(input.meta, input.entryUrl),
+  };
+}
+
+function normalizeIntentCapabilityFlowFingerprintPayload(value: unknown, fallbackEntryUrl = '') {
+  const record = toRecord(value);
+  if (!record) return null;
+
+  const flow = normalizeFlowDefinition(record, fallbackEntryUrl);
+  if (flow.steps.length === 0) return null;
+
+  return {
+    version: Number.isFinite(Number(flow.version)) ? Number(flow.version) : 1,
+    entryUrl: String(flow.entryUrl || '').trim(),
+    sharedVariables: normalizeFingerprintList(flow.sharedVariables || []),
+    expectedOutcome: String(flow.expectedOutcome || '').trim(),
+    cleanupNotes: String(flow.cleanupNotes || '').trim(),
+    steps: flow.steps.map((step) => ({
+      stepUid: String(step.stepUid || '').trim(),
+      stepType: String(step.stepType || '').trim(),
+      title: String(step.title || '').trim(),
+      target: String(step.target || '').trim(),
+      instruction: String(step.instruction || '').trim(),
+      expectedResult: String(step.expectedResult || '').trim(),
+      extractVariable: String(step.extractVariable || '').trim(),
+    })),
+  };
+}
+
+function normalizeStoredIntentCapabilitySourceReuseFingerprint(fingerprint: string): string {
+  const trimmed = fingerprint.trim();
+  if (!trimmed) return '';
+
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown> | null;
+    const entryUrl = typeof parsed?.entryUrl === 'string' ? parsed.entryUrl.trim() : '';
+
+    return JSON.stringify({
+      capabilityType: typeof parsed?.capabilityType === 'string' ? parsed.capabilityType.trim() : '',
+      entryUrl,
+      preconditions: normalizeUnknownFingerprintList(parsed?.preconditions),
+      steps: normalizeUnknownFingerprintList(parsed?.steps),
+      assertions: normalizeUnknownFingerprintList(parsed?.assertions),
+      cleanupNotes: typeof parsed?.cleanupNotes === 'string' ? parsed.cleanupNotes.trim() : '',
+      dependsOn: normalizeUnknownFingerprintList(parsed?.dependsOn),
+      flowDefinition: normalizeIntentCapabilityFlowFingerprintPayload(parsed?.flowDefinition, entryUrl),
+    } satisfies IntentCapabilitySourceReuseFingerprintPayload);
+  } catch {
+    return trimmed;
+  }
+}
+
+export function buildIntentCapabilityFingerprint(input: IntentCapabilityFingerprintInput): string {
+  return JSON.stringify(buildIntentCapabilityFingerprintPayload(input));
+}
+
+export function buildIntentCapabilitySourceReuseFingerprint(input: IntentCapabilityFingerprintInput): string {
+  return JSON.stringify(buildIntentCapabilitySourceReuseFingerprintPayload(input));
+}
+
+export function matchesIntentCapabilitySourceReuseFingerprint(
+  sourceTaskCapabilityFingerprint: string,
+  input: IntentCapabilityFingerprintInput
+): boolean {
+  const normalizedStoredFingerprint = normalizeStoredIntentCapabilitySourceReuseFingerprint(sourceTaskCapabilityFingerprint);
+  if (!normalizedStoredFingerprint) return false;
+  return normalizedStoredFingerprint === buildIntentCapabilitySourceReuseFingerprint(input);
+}
+
+export function finalizeIntentCapabilityMetaForSave(input: IntentCapabilityFingerprintInput): IntentCapabilityMeta | null {
+  const normalizedMeta = normalizeIntentCapabilityMeta(input.meta, input.entryUrl);
+  if (!normalizedMeta) return null;
+
+  const next: IntentCapabilityMeta = { ...normalizedMeta };
+  if (input.capabilityType !== 'composite') {
+    delete next.flowDefinition;
+    delete next.sourceTaskMode;
+  }
+
+  const sourceTaskLatestPlanUid = String(next.sourceTaskLatestPlanUid || '').trim();
+  const sourceTaskLatestExecutionStatus = String(next.sourceTaskLatestExecutionStatus || '').trim();
+
+  if (sourceTaskLatestExecutionStatus === 'passed' && sourceTaskLatestPlanUid) {
+    next.sourceTaskCapabilityFingerprint = buildIntentCapabilityFingerprint({
+      ...input,
+      meta: next,
+    });
+  } else {
+    delete next.sourceTaskCapabilityFingerprint;
+  }
+
+  return Object.keys(next).length > 0 ? next : null;
+}
+
+function buildMeta(input: IntentCapabilityPresetInput, flow: FlowDefinition, preset: Omit<IntentCapabilityPreset, 'meta'>): IntentCapabilityMeta | null {
+  const semanticMeta = buildSemanticMeta(input, flow);
+  const next: IntentCapabilityMeta = semanticMeta ? { ...semanticMeta } : {};
+  const sourceTaskLatestPlanUid = String(input.sourceTaskLatestPlanUid || '').trim();
+  const sourceTaskLatestExecutionStatus = String(input.sourceTaskLatestExecutionStatus || '').trim();
+
+  if (sourceTaskLatestExecutionStatus === 'passed' && sourceTaskLatestPlanUid) {
+    const sourceTaskProjectUid = String(input.sourceTaskProjectUid || '').trim();
+    const sourceTaskModuleUid = String(input.sourceTaskModuleUid || '').trim();
+    const sourceTaskConfigUid = String(input.sourceTaskConfigUid || '').trim();
+    const sourceTaskLatestExecutionUid = String(input.sourceTaskLatestExecutionUid || '').trim();
+    const sourceTaskLatestPlanVersion = Number(input.sourceTaskLatestPlanVersion);
+    const sourceTaskCapabilityFingerprint = buildIntentCapabilityFingerprint({
+      ...preset,
+      meta: semanticMeta,
+    });
+
+    if (sourceTaskProjectUid) next.sourceTaskProjectUid = sourceTaskProjectUid;
+    if (sourceTaskModuleUid) next.sourceTaskModuleUid = sourceTaskModuleUid;
+    if (sourceTaskConfigUid) next.sourceTaskConfigUid = sourceTaskConfigUid;
+    next.sourceTaskLatestPlanUid = sourceTaskLatestPlanUid;
+    if (Number.isFinite(sourceTaskLatestPlanVersion) && sourceTaskLatestPlanVersion > 0) {
+      next.sourceTaskLatestPlanVersion = Math.floor(sourceTaskLatestPlanVersion);
+    }
+    if (sourceTaskLatestExecutionUid) next.sourceTaskLatestExecutionUid = sourceTaskLatestExecutionUid;
+    next.sourceTaskLatestExecutionStatus = 'passed';
+    next.sourceTaskCapabilityFingerprint = sourceTaskCapabilityFingerprint;
+  }
+
+  return Object.keys(next).length > 0 ? next : null;
 }
 
 function normalizeIntentCapabilityMeta(meta: unknown, fallbackEntryUrl = ''): IntentCapabilityMeta | null {
@@ -187,6 +413,44 @@ function normalizeIntentCapabilityMeta(meta: unknown, fallbackEntryUrl = ''): In
     delete next.sourceTaskMode;
   }
 
+  const sourceTaskProjectUid = typeof rawMeta.sourceTaskProjectUid === 'string' ? rawMeta.sourceTaskProjectUid.trim() : '';
+  if (sourceTaskProjectUid) next.sourceTaskProjectUid = sourceTaskProjectUid;
+  else delete next.sourceTaskProjectUid;
+
+  const sourceTaskModuleUid = typeof rawMeta.sourceTaskModuleUid === 'string' ? rawMeta.sourceTaskModuleUid.trim() : '';
+  if (sourceTaskModuleUid) next.sourceTaskModuleUid = sourceTaskModuleUid;
+  else delete next.sourceTaskModuleUid;
+
+  const sourceTaskConfigUid = typeof rawMeta.sourceTaskConfigUid === 'string' ? rawMeta.sourceTaskConfigUid.trim() : '';
+  if (sourceTaskConfigUid) next.sourceTaskConfigUid = sourceTaskConfigUid;
+  else delete next.sourceTaskConfigUid;
+
+  const sourceTaskLatestPlanUid = typeof rawMeta.sourceTaskLatestPlanUid === 'string' ? rawMeta.sourceTaskLatestPlanUid.trim() : '';
+  if (sourceTaskLatestPlanUid) next.sourceTaskLatestPlanUid = sourceTaskLatestPlanUid;
+  else delete next.sourceTaskLatestPlanUid;
+
+  const sourceTaskLatestPlanVersion = Number(rawMeta.sourceTaskLatestPlanVersion);
+  if (Number.isFinite(sourceTaskLatestPlanVersion) && sourceTaskLatestPlanVersion > 0) {
+    next.sourceTaskLatestPlanVersion = Math.floor(sourceTaskLatestPlanVersion);
+  } else {
+    delete next.sourceTaskLatestPlanVersion;
+  }
+
+  const sourceTaskLatestExecutionUid =
+    typeof rawMeta.sourceTaskLatestExecutionUid === 'string' ? rawMeta.sourceTaskLatestExecutionUid.trim() : '';
+  if (sourceTaskLatestExecutionUid) next.sourceTaskLatestExecutionUid = sourceTaskLatestExecutionUid;
+  else delete next.sourceTaskLatestExecutionUid;
+
+  const sourceTaskLatestExecutionStatus =
+    typeof rawMeta.sourceTaskLatestExecutionStatus === 'string' ? rawMeta.sourceTaskLatestExecutionStatus.trim() : '';
+  if (sourceTaskLatestExecutionStatus) next.sourceTaskLatestExecutionStatus = sourceTaskLatestExecutionStatus;
+  else delete next.sourceTaskLatestExecutionStatus;
+
+  const sourceTaskCapabilityFingerprint =
+    typeof rawMeta.sourceTaskCapabilityFingerprint === 'string' ? rawMeta.sourceTaskCapabilityFingerprint.trim() : '';
+  if (sourceTaskCapabilityFingerprint) next.sourceTaskCapabilityFingerprint = sourceTaskCapabilityFingerprint;
+  else delete next.sourceTaskCapabilityFingerprint;
+
   return Object.keys(next).length > 0 ? (next as IntentCapabilityMeta) : null;
 }
 
@@ -199,8 +463,7 @@ export function getIntentCapabilityFlowDefinition(meta: unknown, fallbackEntryUr
 
 export function buildIntentCapabilityPreset(input: IntentCapabilityPresetInput): IntentCapabilityPreset {
   const flow = normalizeFlowDefinition(input.flowDefinition, input.targetUrl);
-
-  return {
+  const preset = {
     sourceLabel: input.sourceLabel?.trim() || `任务「${input.name.trim()}」`,
     slug: buildSlug(input, flow),
     name: input.name.trim(),
@@ -215,7 +478,11 @@ export function buildIntentCapabilityPreset(input: IntentCapabilityPresetInput):
     dependsOn: [],
     sortOrder: 100,
     sourceDocumentUid: '',
-    meta: buildMeta(input, flow),
+  } satisfies Omit<IntentCapabilityPreset, 'meta'>;
+
+  return {
+    ...preset,
+    meta: buildMeta(input, flow, preset),
   };
 }
 

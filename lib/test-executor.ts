@@ -4,6 +4,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { BrowserContextOptions } from 'playwright';
 import { broadcastFrame } from './screencast-manager';
+import { normalizeExecutableTestCode } from './test-code-normalizer';
 
 const ROOT = process.cwd();
 const WORKER_TEMPLATE_PATH = path.join(ROOT, 'lib', 'test-worker.mjs');
@@ -138,7 +139,7 @@ function containsTypeScriptOnlySyntax(code: string): boolean {
 }
 
 export function prepareTestCodeForExecution(code: string): string {
-  const normalizedCode = String(code || '');
+  const normalizedCode = normalizeExecutableTestCode(code);
   return containsTypeScriptOnlySyntax(normalizedCode) ? tsToJs(normalizedCode) : normalizedCode;
 }
 

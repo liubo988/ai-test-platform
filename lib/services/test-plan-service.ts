@@ -49,6 +49,7 @@ import {
   type IntentImportPlatformSummary,
 } from '@/lib/intent-e2e-import';
 import { resolveIntentRunnerAdapter, type IntentRunnerGeneratedArtifact } from '@/lib/intent-runner-adapter';
+import { normalizeExecutableTestCode } from '@/lib/test-code-normalizer';
 import { buildWorkspacePlatformQueryPreset } from '@/lib/workspace-platform-query-preset';
 import { buildCoverageCasesFromTask } from '@/lib/plan-cases';
 import { analyzeRequirementCoverage } from '@/lib/project-knowledge';
@@ -455,7 +456,7 @@ async function collectGeneratedCode(input: {
     }
   }
 
-  const code = completedCode.trim() || generatedCode.trim();
+  const code = normalizeExecutableTestCode(completedCode.trim() || generatedCode.trim());
   if (!code) {
     throw new Error(lastError || '未生成可执行测试代码，请重试');
   }
@@ -658,13 +659,30 @@ export async function restoreHistoricalPlanAsLatest(
   const config = await getTestConfigByUid(sourcePlan.configUid);
   if (!config) throw new Error('计划关联配置不存在');
 
+  return restoreHistoricalPlanIntoTargetConfig(sourcePlan, config, options);
+}
+
+async function restoreHistoricalPlanIntoTargetConfig(
+  sourcePlan: NonNullable<Awaited<ReturnType<typeof getPlanByUid>>>,
+  config: TestConfigWithSecrets,
+  options?: { actorLabel?: string; actionType?: string }
+): Promise<{
+  planUid: string;
+  planVersion: number;
+  sourcePlanUid: string;
+  sourcePlanVersion: number;
+  reusedCurrent: boolean;
+}> {
   const project = await getProjectByUid(config.projectUid);
   if (!project) throw new Error('计划关联项目不存在');
+  if (sourcePlan.projectUid !== config.projectUid) {
+    throw new Error('历史测试计划与目标任务不属于同一项目');
+  }
 
   const latestPlan = await getLatestPlanByConfigUid(config.configUid);
   const capabilityVerificationMeta = buildCapabilityVerificationAuditMeta(config.featureDescription || '');
   const inheritedPlatformPrompt = buildInheritedPlatformPromptSection(sourcePlan.generationPrompt);
-  if (latestPlan?.planUid === sourcePlan.planUid) {
+  if (config.configUid === sourcePlan.configUid && latestPlan?.planUid === sourcePlan.planUid) {
     return {
       planUid: sourcePlan.planUid,
       planVersion: sourcePlan.planVersion,
@@ -719,7 +737,7 @@ export async function restoreHistoricalPlanAsLatest(
     projectUid: config.projectUid,
     entityType: 'plan',
     entityUid: restoredPlan.planUid,
-    actionType: 'plan_restored_from_history',
+    actionType: options?.actionType?.trim() || 'plan_restored_from_history',
     actorLabel: options?.actorLabel,
     title: `为任务「${config.name}」恢复历史脚本 v${sourcePlan.planVersion}`,
     detail: `已基于历史计划 ${sourcePlan.planUid} 创建新的当前脚本 v${restoredPlan.planVersion}。`,
@@ -743,6 +761,26 @@ export async function restoreHistoricalPlanAsLatest(
     sourcePlanVersion: sourcePlan.planVersion,
     reusedCurrent: false,
   };
+}
+
+export async function restoreHistoricalPlanToConfigAsLatest(
+  sourcePlanUid: string,
+  targetConfigUid: string,
+  options?: { actorLabel?: string; actionType?: string }
+): Promise<{
+  planUid: string;
+  planVersion: number;
+  sourcePlanUid: string;
+  sourcePlanVersion: number;
+  reusedCurrent: boolean;
+}> {
+  const sourcePlan = await getPlanByUid(sourcePlanUid);
+  if (!sourcePlan) throw new Error('测试计划不存在');
+
+  const config = await getTestConfigByUid(targetConfigUid);
+  if (!config) throw new Error('目标任务不存在');
+
+  return restoreHistoricalPlanIntoTargetConfig(sourcePlan, config, options);
 }
 
 export async function repairExecution(

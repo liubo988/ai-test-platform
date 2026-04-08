@@ -4850,3 +4850,338 @@
   - 若后续仍出现“草稿资产显示旧代码、导入资产用新代码”的认知落差，只允许另起 brief，单收：
     - `intent draft stored plan code backfill`
     - 或 `imported plan source visibility`
+
+## 2026-04-08 第一百二十六次更新（post-R14 success hardening close-out follow-up：capability verify source plan reuse）
+
+- 本轮目标：
+  - 不重开 `post-R14 success hardening` 主阶段
+  - 只收口“正式任务已通过 -> 点击沉淀能力 -> 首次能力验证仍重新生成脚本导致首跑失败”这一类来源资产未复用问题
+  - 当前观察到的真实问题：
+    - “沉淀能力”入口只把任务描述类信息预填进 capability 草稿
+    - capability verify 的 `verify` 模式始终新建 verification config 后重新 `generatePlanFromConfig`
+    - 导致来源正式任务明明已经 `passed`，首次能力验证却没有优先复用那次成功脚本
+- 已完成：
+  - 已补 brief：
+    - `docs/intent-capability-verify-source-plan-reuse-task-brief-2026-04-08.md`
+  - 已完成代码收口：
+    - `components/ProjectWorkspace.tsx`
+      - 从正式任务点击“沉淀能力”时，新增透传来源成功任务锚点：
+        - `configUid`
+        - `latestPlanUid/latestPlanVersion`
+        - `latestExecutionUid`
+        - 以及 project/module scope
+    - `lib/intent-capability-preset.ts`
+      - capability preset meta 新增来源成功任务锚点字段
+      - 新增 capability 语义指纹构建，作为后续“是否仍可保守复用”判断依据
+      - 仅当来源任务是 `passed` 且存在 `latestPlanUid` 时，才写入 source reuse anchor
+    - `lib/capability-verification-service.ts`
+      - `createCapabilityVerificationConfig` 新增 `preferredSourcePlanUid`
+      - 命中条件保持保守：
+        - source task execution status 必须是 `passed`
+        - source plan 必须仍存在且仍属于当前项目
+        - 当前 capability 语义指纹必须和沉淀时一致
+        - source task config 入口 URL 与当前 verification config 入口一致
+      - `review` 意图不启用这条复用逻辑，避免影响保守复核链路
+    - `lib/services/test-plan-service.ts`
+      - 新增 `restoreHistoricalPlanToConfigAsLatest`
+      - 支持把历史成功 plan 克隆到当前 verification config 下，再作为本次 capability verify 的执行脚本
+      - 保持 capability verification config 自身的 feature markers，不直接执行原正式任务 config，避免验证结果无法正确回写
+    - `app/api/projects/[projectUid]/capabilities/[capabilityUid]/verify/route.ts`
+      - `verify` 模式下优先使用 `preferredSourcePlanUid`
+      - 命中时走 `restoreHistoricalPlanToConfigAsLatest`
+      - 未命中时继续回退到现有 `generatePlanFromConfig`
+  - 已补 / 已更新单测：
+    - `tests/unit/capability-verification-service.spec.ts`
+      - 补“语义一致时返回 preferred source plan”回归
+      - 补“能力已漂移时回退生成”回归
+      - 顺手修正 14 天窗口写死日期导致的时效性回归
+    - `tests/unit/api-project-capability-verify-route.spec.ts`
+      - 补“verify 命中 source plan 时优先 restore 而不是 generate”回归
+    - `tests/unit/test-plan-service.spec.ts`
+      - 补“历史 plan 克隆到 capability verification config”回归
+- 验证：
+  - `npx vitest run tests/unit/capability-verification-service.spec.ts tests/unit/api-project-capability-verify-route.spec.ts tests/unit/test-plan-service.spec.ts`
+  - `npm run build`
+  - `npm run build:web`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（close-out 后 follow-up 的 structured patch fallback、LLM request timeout、browser runtime noise、AI 生成失败后可操作闭环、execution latency、draft auto-launch latency、status evidence short-circuit、optional json miss noise downgrade、partial code fail-fast、status evidence success-criteria tightening、detail field scope tightening、successful run final code reuse、standalone project auth visibility、intent draft import successful run alignment 与本轮 capability verify source plan reuse 已补齐；当前阶段结论不变）
+- 风险 / 未完成：
+  - 本轮只复用“来源正式任务的成功 plan”，不扩到 capability 自身历史 verify run 的 freshness 治理
+  - 当前命中条件仍是保守规则匹配，不扩到 snapshotSignature / family 级泛化复用
+  - 目前没有单独的 integration spec 覆盖 capability verify source restore；本轮通过 route/service/test-plan-service unit + TypeScript/Next build 锁回归
+- 下一步：
+  - 当前这刀已完成，没有必须继续的同类开发
+  - 若后续仍需继续优化体感时延或复用稳定性，只允许另起 brief，单收：
+    - `capability verify source plan freshness governance`
+    - 或 `capability verify restore visibility / audit UX`
+
+## 2026-04-08 第一百二十七次更新（post-R14 success hardening close-out follow-up：capability verify true-hit + visible row status evidence）
+
+- 本轮目标：
+  - 不重开 `post-R14 success hardening` 主阶段
+  - 只收口两类紧邻真实问题：
+    - capability verify 因旧 `sourceTaskCapabilityFingerprint` 漂移而未命中来源 passed plan，导致验证链路变慢
+    - 商机列表 family 在“目标行已命中且状态列可见”的情况下，仍继续依赖宽泛列表响应 / 详情页补状态，最终把成功数据误判成失败
+- 已完成：
+  - 已补 brief：
+    - `docs/capability-verify-reuse-and-row-status-evidence-task-brief-2026-04-08.md`
+  - 已完成代码收口：
+    - `lib/intent-capability-preset.ts`
+      - 新增 `finalizeIntentCapabilityMetaForSave`
+      - capability 保存时统一重算 `sourceTaskCapabilityFingerprint`
+      - 新增 source reuse 兼容比对 helper：对旧 fingerprint 只取执行语义字段比对，不再把 name / description / triggerPhrases 这类 display copy 漂移误判成语义漂移
+    - `app/api/projects/[projectUid]/capabilities/route.ts`
+      - capability 写入改为服务端统一调用 `finalizeIntentCapabilityMetaForSave`
+      - 即使前端仍带旧 fingerprint，也会按最终 payload 重算后再入库
+    - `lib/capability-verification-service.ts`
+      - capability verify 的 source-plan reuse 命中逻辑改为走兼容语义比对
+      - 已存在的旧 capability 不必重新保存，也能重新命中来源 passed plan
+    - `lib/test-worker.mjs`
+      - 新增 `__e2e.readAntdTableCellByHeader(...)`
+      - 支持在已命中的 Ant Design 列表行内，按表头读取对应状态单元格文本
+    - `lib/intent-execution-compiler.ts`
+      - 对状态类 table-row 验收，优先尝试“同一命中行 + 状态列表头”证据
+      - 仅当该列证据缺失时，才继续回退到结构化列表响应 / 详情页链路
+      - 对商机列表 family，列表状态列优先尝试 `商机进展`，再回退通用 `状态`
+  - 已补 / 已更新测试：
+    - `tests/unit/intent-capability-preset.spec.ts`
+      - 补“保存时按最终 payload 重算 fingerprint”回归
+      - 补“display copy 漂移仍可命中 source reuse”回归
+    - `tests/unit/api-project-capabilities-route.spec.ts`
+      - 补“route 写入前服务端重算 fingerprint”回归
+    - `tests/unit/capability-verification-service.spec.ts`
+      - 补“旧草稿 copy 漂移仍复用来源 passed plan”回归
+    - `tests/unit/intent-execution-compiler.spec.ts`
+      - 补“状态验收优先读取命中行状态列”回归
+    - `tests/unit/test-executor.spec.ts`
+      - 补 `readAntdTableCellByHeader` 浏览器级 helper 回归
+    - `tests/integration/project-intent-api.spec.ts`
+      - 补“真实 route + repository 链路会持久化重算后的 fingerprint”回归
+- 验证：
+  - `npx vitest run tests/unit/intent-capability-preset.spec.ts tests/unit/api-project-capabilities-route.spec.ts tests/unit/capability-verification-service.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-executor.spec.ts`
+  - `npx vitest run tests/integration/project-intent-api.spec.ts`
+  - `npm run build`
+  - `npm run build:web`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（close-out 后 follow-up 的 structured patch fallback、LLM request timeout、browser runtime noise、AI 生成失败后可操作闭环、execution latency、draft auto-launch latency、status evidence short-circuit、optional json miss noise downgrade、partial code fail-fast、status evidence success-criteria tightening、detail field scope tightening、successful run final code reuse、standalone project auth visibility、intent draft import successful run alignment、capability verify source plan reuse 与本轮 capability verify true-hit / visible row status evidence 已补齐；当前阶段结论不变）
+- 风险 / 未完成：
+  - 本轮只补“命中行状态列可见”这条证据，不扩到更泛化的 list-response matcher 收窄
+  - 若目标系统后续把状态列隐藏到 tooltip / hover 层，本轮仍会继续走现有列表响应 / 详情页 fallback
+  - capability verify 仍未补单独的运行时 miss-reason 可观测性；当前优先先把 true-hit 做稳
+- 下一步：
+  - 当前这刀已完成，没有必须继续的同类开发
+  - 若后续仍需继续优化 capability verify 体感时延或状态证据链，只允许另起 brief，单收：
+    - `capability verify miss-reason visibility`
+    - `business list response matcher narrowing`
+
+## 2026-04-08 第一百二十八次更新（post-R14 success hardening close-out follow-up：capability verify 主按钮 true-verify）
+
+- 本轮目标：
+  - 不改 capability verify route / repair 执行器契约
+  - 只修需求编排工作台单条能力主按钮被隐式切到 `repair` 的语义偏差
+  - 保证主按钮回到 true verify，让来源 passed plan reuse 真正命中
+- 已完成：
+  - 已补 brief：
+    - `docs/capability-verify-primary-action-fix-task-brief-2026-04-08.md`
+  - 已完成代码收口：
+    - `lib/capability-verification.ts`
+      - 新增 `resolveCapabilityVerificationLaunchPolicy(...)`
+      - 明确单条能力主入口恒为 `verify`
+      - 最近失败且存在 `executionUid` 时，仅通过 `canRepair` 暴露次级 repair 入口
+    - `components/ProjectIntentWorkbench.tsx`
+      - 单条能力主按钮不再根据最近失败记录自动切成 `repair`
+      - 最近失败能力新增显式“修复上次失败”按钮
+      - “验证中...” 与 “修复中...” 的按钮状态拆开，避免动作语义混淆
+  - 已补 / 已更新测试：
+    - `tests/unit/capability-verification.spec.ts`
+      - 补“最近失败后主入口仍然是 verify，repair 只作为显式附加动作开放”回归
+- 验证：
+  - `npx vitest run tests/unit/capability-verification.spec.ts`
+  - `npm run build`
+  - `npm run build:web`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（close-out 后 follow-up 的 structured patch fallback、LLM request timeout、browser runtime noise、AI 生成失败后可操作闭环、execution latency、draft auto-launch latency、status evidence short-circuit、optional json miss noise downgrade、partial code fail-fast、status evidence success-criteria tightening、detail field scope tightening、successful run final code reuse、standalone project auth visibility、intent draft import successful run alignment、capability verify source plan reuse、visible row status evidence与本轮 capability verify 主按钮 true-verify 已补齐；当前阶段结论不变）
+- 风险 / 未完成：
+  - 本轮只修单条能力主按钮语义，不调整推荐队列 / 批量治理仍可推荐 `repair` 的策略
+  - 若来源 passed plan 自身后续失效，主按钮仍会按既有链路回退到 plan 生成，不在本轮处理
+- 下一步：
+  - 当前这刀已完成，没有必须继续的同类开发
+  - 若后续仍需继续优化 capability verify 体感时延或可观测性，只允许另起 brief，单收：
+    - `capability verify runtime latency trace`
+    - `capability verify miss-reason visibility`
+
+## 2026-04-08 第一百二十九次更新（post-R14 success hardening close-out follow-up：capability verify stale source-plan gate）
+
+- 本轮目标：
+  - 不改 restore route / repair 契约
+  - 只解决 capability verify 命中旧 passed plan 后，反而 restore 到过时脚本导致再次失败的问题
+  - 对必须依赖当前 hardening 的 capability，旧 passed plan 缺关键 helper 时不再盲复用
+- 已完成：
+  - 已补 brief：
+    - `docs/capability-verify-stale-source-plan-gate-task-brief-2026-04-08.md`
+  - 已完成代码收口：
+    - `lib/capability-verification-service.ts`
+      - capability verify source-plan reuse 新增 compatibility gate
+      - 对 `business/businesslist` 且断言涉及 `商机进展 / 新入库` 的 capability
+      - 若 source plan 缺少 `__e2e.readAntdTableCellByHeader(...)`，判定为未带当前状态列 hardening，回退当前生成链路
+  - 已补 / 已更新测试：
+    - `tests/unit/capability-verification-service.spec.ts`
+      - 补“旧 source plan 缺 visible-row status hardening 时不复用”回归
+      - 补“source plan 已带 helper 时仍可复用”回归
+- 验证：
+  - `npx vitest run tests/unit/capability-verification-service.spec.ts`
+  - `npm run build`
+  - `npm run build:web`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（close-out 后 follow-up 的 structured patch fallback、LLM request timeout、browser runtime noise、AI 生成失败后可操作闭环、execution latency、draft auto-launch latency、status evidence short-circuit、optional json miss noise downgrade、partial code fail-fast、status evidence success-criteria tightening、detail field scope tightening、successful run final code reuse、standalone project auth visibility、intent draft import successful run alignment、capability verify source plan reuse、visible row status evidence、capability verify 主按钮 true-verify 与本轮 stale source-plan gate 已补齐；当前阶段结论不变）
+- 风险 / 未完成：
+  - 本轮只加 gate，不做历史 source plan 自动升级
+  - 被 gate 的旧 source plan 会回退当前生成链路，首轮时延会慢于真正的复用
+- 下一步：
+  - 当前这刀已完成，没有必须继续的同类开发
+  - 若后续仍需继续优化 capability verify 速度，只允许另起 brief，单收：
+    - `capability verify self-history passed-plan reuse`
+    - `capability verify runtime latency trace`
+
+## 2026-04-08 第一百三十次更新（post-R14 success hardening close-out follow-up：capability verify passed-plan reuse priority）
+
+- 本轮目标：
+  - 不改 repair / UI 主流程
+  - 只解决 capability verify 已经通过后，后续再次验证仍回退生成、体感偏慢的问题
+  - 同时把 source-plan gate 从单 helper 名称判断收窄成“状态证据链是否完整”
+- 已完成：
+  - 已补 brief：
+    - `docs/capability-verify-reuse-priority-task-brief-2026-04-08.md`
+  - 已完成代码收口：
+    - `lib/capability-verification-service.ts`
+      - 新增 capability 最近一次通过 verify 计划的 reuse fingerprint
+      - capability 自身最近一次标准验证通过后，再次 verify 优先 restore 最近一次通过计划
+      - source-task passed plan 的 gate 改为判断 business list 状态证据链是否完整，不再绑定 `__e2e.readAntdTableCellByHeader(...)`
+    - `app/api/projects/[projectUid]/capabilities/[capabilityUid]/verify/route.ts`
+      - 按复用来源区分 restore actionType
+      - 将过长 actionType 收短为 `capability_verification_plan_restored_from_verified_plan`，避免 activity log 被数据库截断
+  - 已补 / 已更新测试：
+    - `tests/unit/capability-verification-service.spec.ts`
+      - 补“最近一次通过的 capability verify plan 优先复用”回归
+      - 补“仅裸 rowText 状态断言的旧 source plan 不复用”回归
+      - 补“已有结构化状态证据链的 source plan 继续复用”回归
+      - 补“能力验证通过后写入 verifiedPlanReuseFingerprint / verifiedPlanTargetCapabilityUid”回归
+    - `tests/unit/api-project-capability-verify-route.spec.ts`
+      - 补“source_task restore”与“verified_plan restore”两条 route 分支回归
+  - 已完成真实链路验证：
+    - `exec_1775623550230_32441d26`
+      - `plan_1775623549872_761fa066`
+      - activity 明确命中 `capability_verification_plan_restored_from_source_task`
+      - 8 步通过，说明“沉淀能力后的第一次 verify”已可直接按来源正式任务脚本跑通
+    - `exec_1775623747490_7d2663ca`
+      - `plan_1775623747185_ba021ef5`
+      - activity 明确命中 `capability_verification_plan_restored_from_verified_plan`
+      - 8 步通过，说明“能力自己最近一次通过计划优先复用”已生效
+- 验证：
+  - `npx vitest run tests/unit/capability-verification-service.spec.ts tests/unit/api-project-capability-verify-route.spec.ts`
+  - `npx vitest run tests/unit/test-plan-service.spec.ts tests/unit/capability-verification-service.spec.ts tests/unit/api-project-capability-verify-route.spec.ts tests/unit/capability-verification.spec.ts`
+  - `npx vitest run tests/unit/test-executor.spec.ts`
+  - `npm run build`
+  - `npm run build:web`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（close-out 后 follow-up 的 structured patch fallback、LLM request timeout、browser runtime noise、AI 生成失败后可操作闭环、execution latency、draft auto-launch latency、status evidence short-circuit、optional json miss noise downgrade、partial code fail-fast、status evidence success-criteria tightening、detail field scope tightening、successful run final code reuse、standalone project auth visibility、intent draft import successful run alignment、capability verify source plan reuse、visible row status evidence、capability verify 主按钮 true-verify、stale source-plan gate 与本轮 passed-plan reuse priority 已补齐；当前阶段结论不变）
+- 风险 / 未完成：
+  - 本轮只解决 capability verify 的“复用谁”和“允许哪些 source plan 继续复用”，不做历史 plan 自动升级
+  - 并行窗口若继续频繁触发同一能力 verify，活动流顶部会被新 run 覆盖；排查时需要按具体 `executionUid` 看，不再只看列表顶部
+- 下一步：
+  - 当前这刀已完成，没有必须继续的同类开发
+  - 若后续仍需继续优化 capability verify 体感，只允许另起 brief，单收：
+    - `capability verify runtime latency trace`
+    - `capability verify restore-source observability`
+
+## 2026-04-08 第一百三十一次更新（post-R14 success hardening close-out follow-up：capability verify clicked source-task anchor backfill）
+
+- 本轮目标：
+  - 不改 capability verify route / UI 主流程
+  - 继续坚持“正式任务点击沉淀能力时，后续 verify 应优先复用该来源正式任务成功脚本”的契约
+  - 对缺少 `sourceTask*` 元数据的历史能力，只补保守兼容，不做拍脑袋同名复用
+- 已完成：
+  - 已补 brief：
+    - `docs/capability-verify-clicked-task-source-anchor-task-brief-2026-04-08.md`
+  - 已完成代码收口：
+    - `lib/capability-verification-service.ts`
+      - source-task reuse 继续优先读取 capability 自身显式保存的 `sourceTaskConfigUid / sourceTaskLatestPlanUid`
+      - 对历史能力若缺少 `sourceTask*` 锚点，会从同项目 active + passed 正式任务中做唯一语义匹配推断
+      - 只有唯一命中且通过现有 compatibility gate 时，才回填来源任务元数据并直接复用该 passed plan
+      - 若存在多个同分候选或语义不再匹配，则继续保守回退生成，不乱猜来源正式任务
+  - 已补 / 已更新测试：
+    - `tests/unit/capability-verification-service.spec.ts`
+      - 补“旧能力唯一命中已通过正式任务后回填并复用”回归
+      - 补“多个同分候选时不推断来源任务”回归
+      - 保持“sourceTask 指纹已漂移时不复用”旧回归仍然通过
+- 验证：
+  - `npx vitest run tests/unit/capability-verification-service.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（close-out 后 follow-up 的 structured patch fallback、LLM request timeout、browser runtime noise、AI 生成失败后可操作闭环、execution latency、draft auto-launch latency、status evidence short-circuit、optional json miss noise downgrade、partial code fail-fast、status evidence success-criteria tightening、detail field scope tightening、successful run final code reuse、standalone project auth visibility、intent draft import successful run alignment、capability verify source plan reuse、visible row status evidence、capability verify 主按钮 true-verify、stale source-plan gate、passed-plan reuse priority 与本轮 clicked source-task anchor backfill 已补齐；当前阶段结论不变）
+- 风险 / 未完成：
+  - 历史能力若同时命中多个同分正式任务，本轮仍会保守回退生成，不自动挑一个来源任务
+  - 本轮没有新增前端提示；若用户在工作台里打开旧能力直接验证，只能依赖服务端兼容推断是否命中唯一来源任务
+- 下一步：
+  - 当前这刀已完成，没有必须继续的同类开发
+  - 若后续仍需继续优化 capability verify 体感，只允许另起 brief，单收：
+    - `capability verify runtime latency trace`
+    - `capability verify restore-source observability`

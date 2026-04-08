@@ -5,6 +5,7 @@ import {
   compareCapabilityVerificationOrder,
   describeCapabilityVerification,
   getCapabilityLastVerificationAttempt,
+  resolveCapabilityVerificationLaunchPolicy,
   type CapabilityVerificationIntent,
   type CapabilityVerificationStatus,
 } from '@/lib/capability-verification';
@@ -1447,6 +1448,7 @@ export default function ProjectIntentWorkbench({
   const [documentActioningUid, setDocumentActioningUid] = useState('');
   const [capabilityActioningUid, setCapabilityActioningUid] = useState('');
   const [verifyingCapabilityUid, setVerifyingCapabilityUid] = useState('');
+  const [verifyingCapabilityMode, setVerifyingCapabilityMode] = useState<CapabilityVerificationMode | ''>('');
   const [derivingKnowledgeTarget, setDerivingKnowledgeTarget] = useState('');
   const [loadingDocumentPreview, setLoadingDocumentPreview] = useState(false);
   const [documents, setDocuments] = useState<KnowledgeDocumentItem[]>([]);
@@ -1514,13 +1516,13 @@ export default function ProjectIntentWorkbench({
     () =>
       Array.from(
         new Set(
-          capabilities
+          activeCapabilities
             .map((item) => readIntentCapabilityStarterHelper(item.meta))
             .map((item) => item.trim())
             .filter(Boolean)
         )
       ).sort((a, b) => a.localeCompare(b)),
-    [capabilities]
+    [activeCapabilities]
   );
   const starterCapabilityCount = useMemo(
     () => activeCapabilities.filter((item) => describeIntentCapabilityOrigin(item.meta).kind === 'starter_asset').length,
@@ -1528,7 +1530,7 @@ export default function ProjectIntentWorkbench({
   );
   const capabilityCatalogItems = useMemo(
     () =>
-      capabilities
+      activeCapabilities
         .filter((item) => {
           const sourceDocumentName = documentNameByUid.get(item.sourceDocumentUid) || '';
           const origin = describeIntentCapabilityOrigin(item.meta);
@@ -1549,7 +1551,7 @@ export default function ProjectIntentWorkbench({
         })
         .sort(compareCapabilityVerificationOrder),
     [
-      capabilities,
+      activeCapabilities,
       capabilityHelperFilter,
       capabilityOriginFilter,
       capabilitySearchQuery,
@@ -3161,11 +3163,6 @@ export default function ProjectIntentWorkbench({
     }
   }
 
-  function resolveCapabilityVerificationMode(item: CapabilityItem): CapabilityVerificationMode {
-    const lastAttempt = getCapabilityLastVerificationAttempt(item.meta);
-    return lastAttempt.status === 'failed' && lastAttempt.executionUid ? 'repair' : 'verify';
-  }
-
   function resolveCapabilityVerificationModuleUid(): string {
     if (!effectiveVerificationModuleUid) {
       showError('当前项目没有可用模块，无法创建验证任务');
@@ -3403,7 +3400,7 @@ export default function ProjectIntentWorkbench({
     }
   }
 
-  async function verifyCapability(item: CapabilityItem) {
+  async function launchCapabilityVerification(item: CapabilityItem, mode: CapabilityVerificationMode) {
     if (!canEditContent) {
       showError('当前操作者没有权限维护项目能力');
       return;
@@ -3413,12 +3410,21 @@ export default function ProjectIntentWorkbench({
       return;
     }
 
+    const launchPolicy = resolveCapabilityVerificationLaunchPolicy(item.meta);
+    if (mode === 'repair' && !launchPolicy.canRepair) {
+      showError('该能力还没有可修复的失败验证记录，请先发起一次验证');
+      return;
+    }
+
     setVerifyingCapabilityUid(item.capabilityUid);
+    setVerifyingCapabilityMode(mode);
     setError('');
     try {
-      const mode = resolveCapabilityVerificationMode(item);
       const moduleUid = mode === 'verify' ? resolveCapabilityVerificationModuleUid() : '';
-      const verificationIntent = mode === 'verify' ? normalizeCapabilityVerificationIntent('verify') : resolveCapabilityLastVerificationIntent(item);
+      const verificationIntent =
+        mode === 'verify'
+          ? normalizeCapabilityVerificationIntent(launchPolicy.primaryMode)
+          : resolveCapabilityLastVerificationIntent(item);
       const observation = resolveCapabilityVerificationBatchObservation(item.capabilityUid, verificationIntent);
       if (mode === 'verify' && !moduleUid) return;
       const payload = await requestCapabilityVerification(item, {
@@ -3473,7 +3479,16 @@ export default function ProjectIntentWorkbench({
       showError(err instanceof Error ? err.message : '启动能力验证失败');
     } finally {
       setVerifyingCapabilityUid('');
+      setVerifyingCapabilityMode('');
     }
+  }
+
+  async function verifyCapability(item: CapabilityItem) {
+    await launchCapabilityVerification(item, 'verify');
+  }
+
+  async function repairCapability(item: CapabilityItem) {
+    await launchCapabilityVerification(item, 'repair');
   }
 
   async function archiveSelectedCapabilities() {
@@ -4985,10 +5000,10 @@ export default function ProjectIntentWorkbench({
             </div>
           </div>
         )}
-        {capabilities.length === 0 && (
+        {activeCapabilities.length === 0 && (
           <p className="rounded-xl bg-slate-50 px-3 py-4 text-sm text-slate-400">当前项目还没有稳定能力。</p>
         )}
-        {capabilities.length > 0 && capabilityCatalogItems.length === 0 && (
+        {activeCapabilities.length > 0 && capabilityCatalogItems.length === 0 && (
           <p className="rounded-xl bg-slate-50 px-3 py-4 text-sm text-slate-400">
             没有匹配的稳定能力，试试名称、slug、来源标签、Starter Helper 或验证状态。
           </p>
@@ -5003,6 +5018,7 @@ export default function ProjectIntentWorkbench({
               const verification = describeCapabilityVerification(item.meta);
               const origin = describeIntentCapabilityOrigin(item.meta);
               const lastAttempt = getCapabilityLastVerificationAttempt(item.meta);
+              const launchPolicy = resolveCapabilityVerificationLaunchPolicy(item.meta);
               const preservedFlow =
                 item.capabilityType === 'composite'
                   ? getIntentCapabilityFlowDefinition(item.meta, item.entryUrl)
@@ -5246,12 +5262,29 @@ export default function ProjectIntentWorkbench({
                             className="h-7 rounded-lg border border-blue-200 bg-blue-50 px-2.5 text-[11px] font-medium text-blue-700 transition hover:bg-blue-100 disabled:opacity-50"
                           >
                             {(() => {
-                              if (verifyingCapabilityUid === item.capabilityUid) return '验证中...';
-                              if (lastAttempt.status === 'failed' && lastAttempt.executionUid) return '验证并修复';
+                              if (
+                                verifyingCapabilityUid === item.capabilityUid &&
+                                verifyingCapabilityMode === 'verify'
+                              ) {
+                                return '验证中...';
+                              }
                               if (verification.status === 'execution_verified') return '重新验证';
+                              if (launchPolicy.canRepair) return '重新验证';
                               return '验证并升级';
                             })()}
                           </button>
+                          {launchPolicy.canRepair && (
+                            <button
+                              aria-label={`修复能力 ${item.name}`}
+                              onClick={() => void repairCapability(item)}
+                              disabled={Boolean(bulkCapabilityAction) || verifyingCapabilityUid === item.capabilityUid}
+                              className="h-7 rounded-lg border border-violet-200 bg-violet-50 px-2.5 text-[11px] font-medium text-violet-700 transition hover:bg-violet-100 disabled:opacity-50"
+                            >
+                              {verifyingCapabilityUid === item.capabilityUid && verifyingCapabilityMode === 'repair'
+                                ? '修复中...'
+                                : '修复上次失败'}
+                            </button>
+                          )}
                           <button
                             aria-label={`编辑能力 ${item.name}`}
                             onClick={() => editCapability(item)}
