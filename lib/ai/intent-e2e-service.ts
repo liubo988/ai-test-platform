@@ -91,6 +91,7 @@ import { type IntentProjectKnowledgeRule } from '@/lib/intent-project-knowledge'
 import type { IntentE2ECiCdReport } from '@/lib/intent-e2e-cicd-report';
 import type { IntentE2ECiCdProfile, IntentE2ESystemOnboardingManifestSummary } from '@/lib/intent-e2e-system-onboarding';
 import { resolveIntentRunnerAdapter, type IntentRunnerGeneratedArtifact } from '@/lib/intent-runner-adapter';
+import { listIntentE2ERunSnapshots } from '@/lib/db/repository';
 
 export interface IntentE2EKnowledgeSummary {
   profilePath: string;
@@ -496,11 +497,22 @@ function buildPrefilledScenarioCardOutput(
   };
 }
 
-async function* streamPrefilledCodeReuse(code: string, signal?: AbortSignal): AsyncGenerator<GenerateEvent> {
+async function* streamPrefilledCodeReuse(
+  code: string,
+  options?: {
+    source?: IntentE2EPrefilledPlanReuseSource;
+    reusedRunId?: string;
+  },
+  signal?: AbortSignal
+): AsyncGenerator<GenerateEvent> {
   throwIfAborted(signal);
+  const reuseRunId = options?.reusedRunId?.trim() || '';
   yield {
     type: 'thinking',
-    content: '已复用意图草稿首版脚本，跳过重新生成。',
+    content:
+      options?.source === 'recent_successful_run'
+        ? `已复用最近一次成功运行脚本${reuseRunId ? `（${reuseRunId}）` : ''}，跳过重新生成。`
+        : '已复用意图草稿首版脚本，跳过重新生成。',
   };
   throwIfAborted(signal);
   yield {
@@ -509,14 +521,149 @@ async function* streamPrefilledCodeReuse(code: string, signal?: AbortSignal): As
   };
 }
 
+type IntentE2EPrefilledPlanReuseSource = 'recent_successful_run' | 'draft_first_pass';
+
 interface IntentE2EPrefilledPlanReuseDecision {
   code?: string;
+  source?: IntentE2EPrefilledPlanReuseSource;
+  reusedRunId?: string;
   skipReason?: string;
+}
+
+interface IntentE2ESuccessfulRunCodeReuseCandidate {
+  runId: string;
+  code: string;
+}
+
+function normalizeIntentE2EReuseText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeIntentE2EReuseCount(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.max(0, Math.floor(value));
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return Math.max(0, Math.floor(parsed));
+    }
+  }
+  return 0;
+}
+
+function resolveIntentE2ELastAttemptCode(value: unknown): string {
+  if (!Array.isArray(value)) return '';
+  for (let index = value.length - 1; index >= 0; index -= 1) {
+    const code = normalizeIntentE2EReuseText((value[index] as { code?: unknown } | null)?.code);
+    if (code) return code;
+  }
+  return '';
+}
+
+function resolveIntentE2ESuccessfulRunCodeReuseCandidateFromSnapshot(
+  snapshot: Awaited<ReturnType<typeof listIntentE2ERunSnapshots>>[number],
+  input: {
+    intentDraftUid: string;
+    requestInput: string;
+    targetUrl: string;
+    attachmentCount: number;
+  }
+): IntentE2ESuccessfulRunCodeReuseCandidate | null {
+  const state =
+    snapshot?.state && typeof snapshot.state === 'object' && !Array.isArray(snapshot.state)
+      ? (snapshot.state as {
+          request?: {
+            input?: unknown;
+            targetUrl?: unknown;
+            attachmentCount?: unknown;
+            intentDraftUid?: unknown;
+          };
+          result?: {
+            attempts?: unknown;
+          };
+        })
+      : null;
+  if (!state) return null;
+
+  const request = state.request;
+  const draftUid = normalizeIntentE2EReuseText(request?.intentDraftUid);
+  if (!draftUid || draftUid !== input.intentDraftUid) return null;
+
+  const requestInput = normalizeIntentE2EReuseText(request?.input) || normalizeIntentE2EReuseText(snapshot.requestInput);
+  if (!requestInput || requestInput !== input.requestInput) return null;
+
+  const targetUrl = normalizeIntentE2EReuseText(request?.targetUrl) || normalizeIntentE2EReuseText(snapshot.targetUrl);
+  if (!targetUrl || targetUrl !== input.targetUrl) return null;
+
+  const attachmentCount = normalizeIntentE2EReuseCount(request?.attachmentCount);
+  if (attachmentCount !== input.attachmentCount) return null;
+
+  const code = resolveIntentE2ELastAttemptCode(state.result?.attempts);
+  if (!code) return null;
+
+  return {
+    runId: snapshot.runId,
+    code,
+  };
+}
+
+async function resolveIntentE2ESuccessfulRunCodeReuseCandidate(input: {
+  projectUid?: string;
+  moduleUid?: string;
+  intentDraftUid?: string;
+  requestInput: string;
+  targetUrl: string;
+  attachmentCount: number;
+}): Promise<IntentE2ESuccessfulRunCodeReuseCandidate | null> {
+  const projectUid = normalizeIntentE2EReuseText(input.projectUid);
+  const moduleUid = normalizeIntentE2EReuseText(input.moduleUid);
+  const intentDraftUid = normalizeIntentE2EReuseText(input.intentDraftUid);
+  const requestInput = normalizeIntentE2EReuseText(input.requestInput);
+  const targetUrl = normalizeIntentE2EReuseText(input.targetUrl);
+
+  if (!intentDraftUid || !requestInput || !targetUrl || (!projectUid && !moduleUid)) {
+    return null;
+  }
+
+  try {
+    const snapshots = await listIntentE2ERunSnapshots({
+      ...(projectUid ? { projectUid } : {}),
+      ...(moduleUid ? { moduleUid } : {}),
+      status: 'passed',
+      limit: 12,
+    });
+
+    for (const snapshot of snapshots) {
+      const candidate = resolveIntentE2ESuccessfulRunCodeReuseCandidateFromSnapshot(snapshot, {
+        intentDraftUid,
+        requestInput,
+        targetUrl,
+        attachmentCount: input.attachmentCount,
+      });
+      if (candidate) {
+        return candidate;
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
 }
 
 function resolveIntentE2EPrefilledPlanReuseDecision(input: {
   prefilledPlanCode?: string;
+  successfulRunCodeCandidate?: IntentE2ESuccessfulRunCodeReuseCandidate | null;
 }): IntentE2EPrefilledPlanReuseDecision {
+  if (input.successfulRunCodeCandidate?.code) {
+    return {
+      code: input.successfulRunCodeCandidate.code,
+      source: 'recent_successful_run',
+      reusedRunId: input.successfulRunCodeCandidate.runId,
+    };
+  }
+
   const code = input.prefilledPlanCode?.trim() || '';
   if (!code) {
     return {};
@@ -537,6 +684,7 @@ function resolveIntentE2EPrefilledPlanReuseDecision(input: {
 
   return {
     code,
+    source: 'draft_first_pass',
   };
 }
 
@@ -2377,6 +2525,14 @@ export async function runIntentDrivenE2EStream(
   if (!targetUrl) {
     throw new Error('AI 已生成 ScenarioCard，但未能确定目标 URL；请在请求中补充 targetUrl');
   }
+  const successfulRunCodeReuseCandidatePromise = resolveIntentE2ESuccessfulRunCodeReuseCandidate({
+    projectUid,
+    moduleUid: input.moduleUid?.trim() || '',
+    intentDraftUid: input.intentDraftUid,
+    requestInput: trimmedInput,
+    targetUrl,
+    attachmentCount: input.attachments?.length || 0,
+  });
 
   await emit(listener, {
     type: 'description',
@@ -2520,8 +2676,10 @@ export async function runIntentDrivenE2EStream(
   }> = [];
   const observedRepairClusterIds = new Set<string>();
   const runnerAdapter = resolveIntentRunnerAdapter(platformAssets.testType, platformAssets.runnerType);
+  const successfulRunCodeReuseCandidate = await successfulRunCodeReuseCandidatePromise;
   const prefilledPlanReuseDecision = resolveIntentE2EPrefilledPlanReuseDecision({
     prefilledPlanCode: input.prefilledPlanCode,
+    successfulRunCodeCandidate: successfulRunCodeReuseCandidate,
   });
 
   let currentCode = '';
@@ -2548,7 +2706,9 @@ export async function runIntentDrivenE2EStream(
       message:
         kind === 'generate'
           ? prefilledPlanReuseDecision.code
-            ? '已复用草稿首版脚本，跳过重新生成并直接进入执行…'
+            ? prefilledPlanReuseDecision.source === 'recent_successful_run'
+              ? '已复用最近一次成功运行脚本，跳过重新生成并直接进入执行…'
+              : '已复用草稿首版脚本，跳过重新生成并直接进入执行…'
             : prefilledPlanReuseDecision.skipReason
             ? '草稿首版脚本命中已知旧骨架，已回退到当前生成链路…'
             : '正在生成更稳定的 Playwright 测试脚本…'
@@ -2649,12 +2809,30 @@ export async function runIntentDrivenE2EStream(
         },
       });
     }
+    if (kind === 'generate' && prefilledPlanReuseDecision.source === 'recent_successful_run') {
+      await emit(listener, {
+        type: 'attempt_log',
+        attempt,
+        kind,
+        log: {
+          level: 'info',
+          message: `已命中最近一次成功运行${prefilledPlanReuseDecision.reusedRunId ? `（${prefilledPlanReuseDecision.reusedRunId}）` : ''}的最终脚本，优先复用稳定版本。`,
+        },
+      });
+    }
 
     const generation =
       kind === 'generate'
         ? prefilledPlanReuseDecision.code
           ? await collectGeneratedCode(
-              streamPrefilledCodeReuse(prefilledPlanReuseDecision.code, signal),
+              streamPrefilledCodeReuse(
+                prefilledPlanReuseDecision.code,
+                {
+                  source: prefilledPlanReuseDecision.source,
+                  reusedRunId: prefilledPlanReuseDecision.reusedRunId,
+                },
+                signal
+              ),
               (event) => emit(listener, { type: 'attempt_event', attempt, kind, event }),
               signal
             )

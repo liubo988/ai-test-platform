@@ -5,6 +5,7 @@ import {
   createProjectIntentDraft,
   createTestConfig,
   createTestPlan,
+  getTestConfigByUid,
   getModuleByUid,
   getProjectByUid,
   getProjectIntentDraftByUid,
@@ -12,6 +13,7 @@ import {
   listIntentE2ERunSnapshots,
   listProjectIntentDrafts,
   markProjectIntentDraftImported,
+  updateTestConfig,
   updateProjectIntentDraft,
 } from '@/lib/db/repository';
 import type {
@@ -109,6 +111,7 @@ export interface ImportProjectIntentDraftResult {
   moduleUid: string;
   configUid: string;
   configName: string;
+  reimported: boolean;
   planCreated: boolean;
   planUid: string;
   planVersion: number;
@@ -120,6 +123,18 @@ const ACTIVE_RUN_HEARTBEAT_STALE_MS = 5 * 60 * 1000;
 type ActiveIntentE2ERunSnapshot = IntentE2ERunSnapshotRecord & {
   status: Extract<IntentE2ERunStatus, 'created' | 'running'>;
 };
+type IntentDraftImportedPlanSource = 'recent_successful_run' | 'draft_first_pass';
+
+interface IntentDraftSuccessfulRunCodeCandidate {
+  runId: string;
+  code: string;
+}
+
+interface IntentDraftImportedPlanDecision {
+  code: string;
+  source: IntentDraftImportedPlanSource;
+  reusedRunId?: string;
+}
 
 function canUpdateIntentDraftStatus(status: ProjectIntentDraftRecord['status']): boolean {
   return status !== 'archived';
@@ -174,6 +189,149 @@ function isFreshActiveRunSnapshot(snapshot: IntentE2ERunSnapshotRecord, now = Da
   const heartbeatTs = parseTimestampMs(heartbeatAt);
   if (!heartbeatTs) return false;
   return now - heartbeatTs <= ACTIVE_RUN_HEARTBEAT_STALE_MS;
+}
+
+function normalizeIntentDraftRunReuseText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeIntentDraftRunReuseCount(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.max(0, Math.floor(value));
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return Math.max(0, Math.floor(parsed));
+    }
+  }
+  return 0;
+}
+
+function resolveIntentDraftLastAttemptCode(value: unknown): string {
+  if (!Array.isArray(value)) return '';
+  for (let index = value.length - 1; index >= 0; index -= 1) {
+    const code = normalizeIntentDraftRunReuseText((value[index] as { code?: unknown } | null)?.code);
+    if (code) return code;
+  }
+  return '';
+}
+
+function resolveIntentDraftSuccessfulRunCodeCandidateFromSnapshot(
+  snapshot: IntentE2ERunSnapshotRecord,
+  input: {
+    intentDraftUid: string;
+    requestInput: string;
+    targetUrl: string;
+    attachmentCount: number;
+  }
+): IntentDraftSuccessfulRunCodeCandidate | null {
+  const state =
+    snapshot?.state && typeof snapshot.state === 'object' && !Array.isArray(snapshot.state)
+      ? (snapshot.state as {
+          request?: {
+            input?: unknown;
+            targetUrl?: unknown;
+            attachmentCount?: unknown;
+            intentDraftUid?: unknown;
+          };
+          result?: {
+            attempts?: unknown;
+          };
+        })
+      : null;
+  if (!state) return null;
+
+  const request = state.request;
+  const draftUid = normalizeIntentDraftRunReuseText(request?.intentDraftUid);
+  if (!draftUid || draftUid !== input.intentDraftUid) return null;
+
+  const requestInput = normalizeIntentDraftRunReuseText(request?.input) || normalizeIntentDraftRunReuseText(snapshot.requestInput);
+  if (!requestInput || requestInput !== input.requestInput) return null;
+
+  const targetUrl = normalizeIntentDraftRunReuseText(request?.targetUrl) || normalizeIntentDraftRunReuseText(snapshot.targetUrl);
+  if (!targetUrl || targetUrl !== input.targetUrl) return null;
+
+  const attachmentCount = normalizeIntentDraftRunReuseCount(request?.attachmentCount);
+  if (attachmentCount !== input.attachmentCount) return null;
+
+  const code = resolveIntentDraftLastAttemptCode(state.result?.attempts);
+  if (!code) return null;
+
+  return {
+    runId: snapshot.runId,
+    code,
+  };
+}
+
+async function resolveIntentDraftSuccessfulRunCodeCandidate(input: {
+  projectUid: string;
+  moduleUid?: string;
+  intentDraftUid: string;
+  requestInput: string;
+  targetUrl: string;
+  attachmentCount: number;
+}): Promise<IntentDraftSuccessfulRunCodeCandidate | null> {
+  const projectUid = input.projectUid.trim();
+  const moduleUid = input.moduleUid?.trim() || '';
+  const intentDraftUid = input.intentDraftUid.trim();
+  const requestInput = input.requestInput.trim();
+  const targetUrl = input.targetUrl.trim();
+
+  if (!projectUid || !intentDraftUid || !requestInput || !targetUrl) {
+    return null;
+  }
+
+  try {
+    const snapshots = await listIntentE2ERunSnapshots({
+      projectUid,
+      ...(moduleUid ? { moduleUid } : {}),
+      status: 'passed',
+      limit: 12,
+    });
+    for (const snapshot of snapshots) {
+      const candidate = resolveIntentDraftSuccessfulRunCodeCandidateFromSnapshot(snapshot, {
+        intentDraftUid,
+        requestInput,
+        targetUrl,
+        attachmentCount: input.attachmentCount,
+      });
+      if (candidate) return candidate;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+async function resolveIntentDraftImportedPlanDecision(input: {
+  draft: ProjectIntentDraftRecord;
+  targetUrl: string;
+}): Promise<IntentDraftImportedPlanDecision | null> {
+  const successfulRunCodeCandidate = await resolveIntentDraftSuccessfulRunCodeCandidate({
+    projectUid: input.draft.projectUid,
+    moduleUid: input.draft.moduleUid,
+    intentDraftUid: input.draft.intentDraftUid,
+    requestInput: input.draft.input,
+    targetUrl: input.targetUrl,
+    attachmentCount: input.draft.attachmentCount,
+  });
+  if (successfulRunCodeCandidate?.code) {
+    return {
+      code: successfulRunCodeCandidate.code,
+      source: 'recent_successful_run',
+      reusedRunId: successfulRunCodeCandidate.runId,
+    };
+  }
+
+  const draftCode = input.draft.planCode.trim();
+  if (!draftCode) return null;
+
+  return {
+    code: draftCode,
+    source: 'draft_first_pass',
+  };
 }
 
 function toProjectIntentDraftSummaryResult(
@@ -458,9 +616,6 @@ export async function importProjectIntentDraftAsTask(
   if (draft.status === 'archived') {
     throw new Error('意图草稿已归档，无法导入');
   }
-  if (draft.status === 'imported' && draft.importedConfigUid) {
-    throw new Error('该意图草稿已经导入过正式任务');
-  }
   if (!draft.scenarioCard) {
     throw new Error('意图草稿缺少场景卡，无法导入');
   }
@@ -476,6 +631,7 @@ export async function importProjectIntentDraftAsTask(
   const targetUrl = draft.targetUrl.trim() || draft.scenarioCard.targetUrl.trim() || draft.scenarioCard.flowDefinition.entryUrl.trim();
   const featureDescription = draft.scenarioCard.featureDescription.trim() || draft.input.trim();
   const flowDefinition = draft.scenarioCard.taskMode === 'scenario' ? draft.scenarioCard.flowDefinition : null;
+  const importedConfigUid = draft.importedConfigUid.trim();
 
   const validationError = validateTaskConfigInput({
     taskMode: draft.scenarioCard.taskMode,
@@ -487,40 +643,74 @@ export async function importProjectIntentDraftAsTask(
     throw new Error(validationError);
   }
 
-  const config = await createTestConfig(
-    {
-      projectUid,
-      moduleUid: draft.moduleUid,
-      sortOrder: 100,
-      name: draft.title.trim(),
-      targetUrl,
-      featureDescription,
-      taskMode: draft.scenarioCard.taskMode,
-      flowDefinition,
-    },
-    { actorLabel: input.actorLabel }
-  );
+  const configInput = {
+    projectUid,
+    moduleUid: draft.moduleUid,
+    sortOrder: 100,
+    name: draft.title.trim(),
+    targetUrl,
+    featureDescription,
+    taskMode: draft.scenarioCard.taskMode,
+    flowDefinition,
+  };
+  let config: Awaited<ReturnType<typeof createTestConfig>>;
+  const existingConfig = importedConfigUid ? await getTestConfigByUid(importedConfigUid) : null;
+  const reimported = Boolean(existingConfig && existingConfig.projectUid === projectUid && existingConfig.status === 'active');
+  if (reimported && existingConfig) {
+    config = await updateTestConfig(
+      importedConfigUid,
+      {
+        ...configInput,
+        sortOrder: existingConfig.sortOrder,
+      },
+      { actorLabel: input.actorLabel }
+    );
+  } else {
+    config = await createTestConfig(configInput, { actorLabel: input.actorLabel });
+  }
 
   let planUid = '';
   let planVersion = 0;
   let planError = '';
+  const importedPlanDecision = await resolveIntentDraftImportedPlanDecision({
+    draft,
+    targetUrl,
+  });
 
-  if (draft.planCode.trim()) {
+  if (importedPlanDecision?.code) {
+    const usesSuccessfulRunCode = importedPlanDecision.source === 'recent_successful_run';
     const plan = await createTestPlan({
       projectUid,
       configUid: config.configUid,
       planTitle: draft.planTitle.trim() || `${config.name} - 自动测试计划`,
-      planCode: draft.planCode,
-      planSummary: draft.planSummary.trim() || `从意图草稿 ${draft.intentDraftUid} 导入首版测试脚本`,
-      generationModel: draft.generationModel.trim() || 'intent-draft',
-      generationPrompt: [`[intent_draft_import] draft=${draft.intentDraftUid}`, draft.generationPrompt].filter(Boolean).join('\n'),
-      generatedFiles:
-        draft.generatedFiles.length > 0
+      planCode: importedPlanDecision.code,
+      planSummary: usesSuccessfulRunCode
+        ? `从意图草稿 ${draft.intentDraftUid} ${reimported ? '同步最近成功运行脚本' : '导入最近成功运行脚本'}`
+        : draft.planSummary.trim() || `从意图草稿 ${draft.intentDraftUid} ${reimported ? '同步最新' : '导入首版'}测试脚本`,
+      generationModel: draft.generationModel.trim() || (usesSuccessfulRunCode ? 'intent-draft-successful-run-reuse' : 'intent-draft'),
+      generationPrompt: [
+        `[intent_draft_${reimported ? 'sync' : 'import'}] draft=${draft.intentDraftUid}`,
+        usesSuccessfulRunCode && importedPlanDecision.reusedRunId
+          ? `[intent_draft_reuse] run=${importedPlanDecision.reusedRunId}`
+          : '',
+        draft.generationPrompt,
+      ]
+        .filter(Boolean)
+        .join('\n'),
+      generatedFiles: usesSuccessfulRunCode
+        ? [
+            {
+              name: `reused-${importedPlanDecision.reusedRunId || Date.now()}.spec.ts`,
+              content: importedPlanDecision.code,
+              language: 'typescript',
+            },
+          ]
+        : draft.generatedFiles.length > 0
           ? draft.generatedFiles
           : [
               {
                 name: `imported-${Date.now()}.spec.ts`,
-                content: draft.planCode,
+                content: importedPlanDecision.code,
                 language: 'typescript',
               },
             ],
@@ -552,13 +742,16 @@ export async function importProjectIntentDraftAsTask(
       entityUid: plan.planUid,
       actionType: 'plan_created_from_intent_draft',
       actorLabel: input.actorLabel,
-      title: `从意图草稿为任务「${config.name}」导入脚本 v${plan.planVersion}`,
-      detail: `来源草稿 ${draft.intentDraftUid}，共 ${draft.flowStepCount} 步。`,
+      title: `从意图草稿为任务「${config.name}」${reimported ? '同步' : '导入'}脚本 v${plan.planVersion}`,
+      detail: `来源草稿 ${draft.intentDraftUid}，共 ${draft.flowStepCount} 步。${reimported ? '已同步到原正式任务。' : ''}`,
       meta: {
         configUid: config.configUid,
         configName: config.name,
         intentDraftUid: draft.intentDraftUid,
         planVersion: plan.planVersion,
+        reimported,
+        planSource: importedPlanDecision.source,
+        reusedRunId: importedPlanDecision.reusedRunId || '',
       },
     });
   } else {
@@ -567,7 +760,7 @@ export async function importProjectIntentDraftAsTask(
 
   await markProjectIntentDraftImported(draft.intentDraftUid, {
     importedConfigUid: config.configUid,
-    importedPlanUid: planUid || undefined,
+    importedPlanUid: planUid || (reimported ? draft.importedPlanUid || undefined : undefined),
   });
 
   await insertProjectActivityLog({
@@ -576,16 +769,17 @@ export async function importProjectIntentDraftAsTask(
     entityUid: draft.intentDraftUid,
     actionType: 'intent_draft_imported',
     actorLabel: input.actorLabel,
-    title: `意图草稿「${draft.title}」已导入正式任务`,
+    title: `意图草稿「${draft.title}」已${reimported ? '同步到' : '导入'}正式任务`,
     detail: planUid
-      ? `已创建任务「${config.name}」并写入脚本 v${planVersion}。`
-      : `已创建任务「${config.name}」，但草稿里没有可导入的脚本。`,
+      ? `${reimported ? '已同步任务' : '已创建任务'}「${config.name}」并写入脚本 v${planVersion}。`
+      : `${reimported ? '已同步任务' : '已创建任务'}「${config.name}」，但草稿里没有可导入的脚本。`,
     meta: {
       configUid: config.configUid,
       configName: config.name,
       planUid,
       planVersion,
       intentDraftUid: draft.intentDraftUid,
+      reimported,
     },
   });
 
@@ -595,10 +789,11 @@ export async function importProjectIntentDraftAsTask(
     moduleUid: config.moduleUid,
     configUid: config.configUid,
     configName: config.name,
+    reimported,
     planCreated: Boolean(planUid),
     planUid,
     planVersion,
     planError,
-    workspacePath: `/projects/${projectUid}?module=${config.moduleUid}`,
+    workspacePath: buildWorkspacePath(projectUid, config.moduleUid),
   };
 }

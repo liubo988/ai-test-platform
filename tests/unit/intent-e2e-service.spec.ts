@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { runIntentDrivenE2EStream, type IntentE2EStreamEvent } from '@/lib/ai/intent-e2e-service';
 import { getIntentE2ERecipePerformanceMap, getIntentE2ERulePerformanceMap, getIntentE2EStarterHelpers } from '@/lib/ai/intent-e2e-insights';
+import { listIntentE2ERunSnapshots } from '@/lib/db/repository';
 import { getIntentProjectOnboardingPath, readIntentProjectOnboardingStatus } from '@/lib/intent-project-onboarding';
 import { getIntentProjectKnowledgePath } from '@/lib/intent-project-knowledge';
 import { analyzePage, precheckPageAccess } from '@/lib/page-analyzer';
@@ -74,6 +75,10 @@ vi.mock('@/lib/ai/intent-repair-memory', () => ({
   listRelevantIntentRepairHints: vi.fn(),
   recordIntentRepairFailure: vi.fn(),
   recordIntentRepairResolution: vi.fn(),
+}));
+
+vi.mock('@/lib/db/repository', () => ({
+  listIntentE2ERunSnapshots: vi.fn(),
 }));
 
 function toAsyncGenerator(events: GenerateEvent[]): AsyncGenerator<GenerateEvent> {
@@ -240,6 +245,116 @@ function createPlanningContext(input?: {
   } as any;
 }
 
+function createPassedRunSnapshot(input?: {
+  runId?: string;
+  projectUid?: string;
+  moduleUid?: string;
+  intentDraftUid?: string;
+  requestInput?: string;
+  targetUrl?: string;
+  attachmentCount?: number;
+  code?: string;
+}) {
+  const runId = input?.runId || 'intent-run-passed-1';
+  const projectUid = input?.projectUid || 'proj_default';
+  const moduleUid = input?.moduleUid || 'mod_checkout';
+  const intentDraftUid = input?.intentDraftUid || 'idraft_checkout';
+  const requestInput = input?.requestInput || '访问结算页并提交，最终看到成功页';
+  const targetUrl = input?.targetUrl || 'https://example.com/checkout';
+  const attachmentCount = input?.attachmentCount ?? 0;
+  const code =
+    input?.code ||
+    "test('reused-successful-run', async ({ page }) => { await page.goto('https://example.com/checkout'); });";
+
+  return {
+    runId,
+    projectUid,
+    moduleUid,
+    status: 'passed',
+    stage: 'completed',
+    requestInput,
+    targetUrl,
+    state: {
+      runId,
+      status: 'passed',
+      stage: 'completed',
+      createdAt: '2026-04-07T09:00:00.000Z',
+      updatedAt: '2026-04-07T09:05:00.000Z',
+      startedAt: '2026-04-07T09:00:05.000Z',
+      endedAt: '2026-04-07T09:05:00.000Z',
+      request: {
+        input: requestInput,
+        targetUrl,
+        attachmentCount,
+        hasAuth: false,
+        intentDraftUid,
+        cicdProfile: 'manual',
+        llm: {
+          provider: 'openai',
+          model: 'gpt-5.3-codex',
+          apiStyle: 'responses',
+          visionEnabled: false,
+          selfHealRetries: 0,
+          maxPlanSteps: 8,
+        },
+      },
+      taskPlatform: {
+        requestFingerprint: `fp-${runId}`,
+        priority: 'normal',
+        timeoutMs: 720000,
+        retryLimit: 0,
+        retryCount: 0,
+        retryReasons: [],
+        replayOfRunId: '',
+        replayRootRunId: runId,
+        replaySequence: 0,
+        flaky: false,
+        flakyReason: '',
+        flakyPeerRunIds: [],
+      },
+      events: [],
+      result: {
+        scenarioCard,
+        llmMeta: {
+          provider: 'openai',
+          model: 'gpt-5.3-codex',
+          visionEnabled: false,
+          attachmentCount,
+        },
+        targetUrl,
+        description: requestInput,
+        attempts: [
+          {
+            attempt: 1,
+            kind: 'generate',
+            code,
+            events: [],
+            logs: [],
+            result: {
+              success: true,
+              duration: 420,
+              steps: [],
+              error: null,
+            },
+          },
+        ],
+        finalResult: {
+          success: true,
+          duration: 420,
+          steps: [],
+          error: null,
+        },
+      },
+      error: null,
+    },
+    error: '',
+    createdAt: '2026-04-07T09:00:00.000Z',
+    updatedAt: '2026-04-07T09:05:00.000Z',
+    startedAt: '2026-04-07T09:00:05.000Z',
+    endedAt: '2026-04-07T09:05:00.000Z',
+  } as any;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.restoreAllMocks();
@@ -362,6 +477,7 @@ beforeEach(() => {
   vi.mocked(getIntentRepairMemoryPath).mockImplementation((projectUid?: string) =>
     projectUid ? `reports/intent-e2e/projects/${projectUid}/intent-e2e-repair-memory.json` : 'reports/intent-e2e-repair-memory.json'
   );
+  vi.mocked(listIntentE2ERunSnapshots).mockResolvedValue([] as never);
   vi.mocked(executeTest).mockResolvedValue({
     success: true,
     duration: 420,
@@ -2129,6 +2245,83 @@ describe('intent-e2e-service stream', () => {
     );
   });
 
+  it('prefers the latest passed run final code over the stale draft first-pass code', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+    const stalePrefilledCode = `
+      test('draft-prefill', async ({ page }) => {
+        const attachmentAnchor = page.getByText(/附件信息|上传录音文件|上传图片/).first();
+        await expect(attachmentAnchor).toBeVisible({ timeout: 20000 });
+        const candidateContainers = [
+          attachmentAnchor.locator('xpath=ancestor::*[contains(@class,"ant-card") or contains(@class,"ant-tabs-tabpane") or self::form][1]'),
+          page.locator('.ant-tabs-tabpane-active:visible').first(),
+          page.locator('form:visible').first(),
+          page.locator('.ant-modal-content:visible, .ant-drawer-content:visible').last(),
+        ];
+        let submitButton = null;
+        for (const container of candidateContainers) {
+          const btn = container.getByRole('button', { name: /保\\s*存|提\\s*交|确\\s*定/i }).filter({ hasNotText: /保存并继续|上一步/ }).last();
+          if (await btn.count()) {
+            submitButton = btn;
+            break;
+          }
+        }
+        if (!submitButton) throw new Error('未找到最终提交按钮（已排除“保存并继续/上一步”）');
+      });
+    `.trim();
+    const successfulRunCode =
+      "test('reused-successful-run', async ({ page }) => { await page.goto('https://example.com/checkout'); await expect(page).toHaveURL('https://example.com/checkout'); });";
+    vi.mocked(listIntentE2ERunSnapshots).mockResolvedValue([
+      createPassedRunSnapshot({
+        runId: 'intent-run-passed-reuse',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        requestInput: '访问结算页并提交，最终看到成功页',
+        targetUrl: 'https://example.com/checkout',
+        code: successfulRunCode,
+      }),
+    ] as never);
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        prefilledScenarioCard: scenarioCard,
+        prefilledPlanCode: stalePrefilledCode,
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(listIntentE2ERunSnapshots)).toHaveBeenCalledWith({
+      projectUid: 'proj_default',
+      moduleUid: 'mod_checkout',
+      status: 'passed',
+      limit: 12,
+    });
+    expect(vi.mocked(generateTest)).not.toHaveBeenCalled();
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toBe(successfulRunCode);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'generating',
+          message: expect.stringContaining('最近一次成功运行脚本'),
+        }),
+        expect.objectContaining({
+          type: 'attempt_log',
+          log: expect.objectContaining({
+            message: expect.stringContaining('intent-run-passed-reuse'),
+          }),
+        }),
+      ])
+    );
+  });
+
   it('skips stale draft first-pass code reuse when it matches the legacy final-submit family', async () => {
     const events: IntentE2EStreamEvent[] = [];
     const stalePrefilledCode = `
@@ -2194,6 +2387,42 @@ describe('intent-e2e-service stream', () => {
         }),
       ])
     );
+  });
+
+  it('does not reuse a passed run final code when the current draft input no longer matches', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+    vi.mocked(listIntentE2ERunSnapshots).mockResolvedValue([
+      createPassedRunSnapshot({
+        runId: 'intent-run-old-success',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        requestInput: '旧的描述',
+        targetUrl: 'https://example.com/checkout',
+      }),
+    ] as never);
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        prefilledScenarioCard: scenarioCard,
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(generateTest)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toContain("test('checkout-default'");
+    expect(
+      events.some(
+        (event) => event.type === 'stage' && event.stage === 'generating' && /最近一次成功运行脚本/.test(event.message)
+      )
+    ).toBe(false);
   });
 
   it('continues with repair flow after a failed execution', async () => {

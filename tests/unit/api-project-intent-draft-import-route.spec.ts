@@ -41,6 +41,7 @@ describe('POST /api/projects/[projectUid]/intent-drafts/[draftUid]/import', () =
       moduleUid: 'mod_1',
       configUid: 'cfg_1',
       configName: '创建商机并校验状态',
+      reimported: false,
       planCreated: true,
       planUid: 'plan_1',
       planVersion: 1,
@@ -67,5 +68,32 @@ describe('POST /api/projects/[projectUid]/intent-drafts/[draftUid]/import', () =
     });
     expect(applyActorCookie).toHaveBeenCalledTimes(1);
     expect(res.status).toBe(201);
+  });
+
+  it('returns 200 when syncing an already imported draft', async () => {
+    vi.mocked(requireProjectRole).mockResolvedValue({
+      actor: { userUid: 'usr_1', displayName: 'Owner' },
+      membership: { role: 'owner' },
+    } as never);
+    vi.mocked(importProjectIntentDraftAsTask).mockResolvedValue({
+      intentDraftUid: 'idraft_1',
+      projectUid: 'proj_1',
+      moduleUid: 'mod_1',
+      configUid: 'cfg_1',
+      configName: '创建商机并校验状态',
+      reimported: true,
+      planCreated: true,
+      planUid: 'plan_2',
+      planVersion: 2,
+      planError: '',
+      workspacePath: '/projects/proj_1?module=mod_1',
+    } as never);
+
+    const req = new NextRequest('http://localhost/api/projects/proj_1/intent-drafts/idraft_1/import', {
+      method: 'POST',
+    });
+    const res = await POST(req, { params: Promise.resolve({ projectUid: 'proj_1', draftUid: 'idraft_1' }) });
+
+    expect(res.status).toBe(200);
   });
 });

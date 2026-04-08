@@ -446,8 +446,19 @@ function buildPlanArtifacts(task: Task) {
   return { plan, planCases };
 }
 
-async function installApiMocks(page: Page) {
+async function installApiMocks(
+  page: Page,
+  options?: {
+    projectAuth?: Partial<Pick<Project, 'authRequired' | 'loginUrl' | 'loginUsername' | 'loginDescription'>>;
+  }
+) {
   const state = makeState();
+  if (options?.projectAuth) {
+    state.project = {
+      ...state.project,
+      ...options.projectAuth,
+    };
+  }
 
   await page.route('**/api/**', async (route) => {
     const request = route.request();
@@ -1069,6 +1080,36 @@ test('smoke: scenario task flow renders structured plan preview @smoke', async (
 
   await expect(page.locator('pre')).toContainText("test('跨页面下单流程'");
   await expect(page.locator('pre')).toContainText('// 创建商品: 商品创建成功并返回 productId。');
+});
+
+test('smoke: standalone intent workbench shows project auth summary from project context @smoke', async ({ page }) => {
+  test.setTimeout(120_000);
+  await installApiMocks(page, {
+    projectAuth: {
+      authRequired: true,
+      loginUrl: 'https://uat.example.com/login',
+      loginUsername: 'smoke.owner',
+      loginDescription: '密码登录',
+    },
+  });
+
+  await page.goto(`${appOrigin}/intent-e2e?projectUid=${projectUid}&moduleUid=${moduleUid}`, {
+    waitUntil: 'domcontentloaded',
+  });
+
+  await page.getByRole('button', { name: /^执行上下文$/ }).click();
+
+  const projectAuthSection = page.locator('section').filter({ hasText: '项目统一认证' }).first();
+  await expect(projectAuthSection.getByText('项目统一认证', { exact: true })).toBeVisible();
+  await expect(projectAuthSection).toContainText('默认复用项目认证');
+  await expect(projectAuthSection).toContainText('https://uat.example.com/login');
+  await expect(projectAuthSection).toContainText('smoke.owner');
+  await expect(projectAuthSection).toContainText('密码登录');
+  await expect(projectAuthSection).toContainText('密码已由项目统一认证托管，当前页不回显');
+
+  const authOverrideSection = page.locator('section').filter({ hasText: '登录信息覆盖（可选）' }).first();
+  await expect(authOverrideSection.getByText('登录信息覆盖（可选）', { exact: true })).toBeVisible();
+  await expect(authOverrideSection).toContainText('留空则继续复用上方项目统一认证');
 });
 
 test('smoke: intent workbench imports context and creates a scenario task draft @smoke', async ({ page }) => {

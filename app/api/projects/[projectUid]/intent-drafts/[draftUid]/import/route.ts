@@ -17,7 +17,7 @@ export async function POST(
       actorLabel: actor.displayName,
     });
 
-    return applyActorCookie(NextResponse.json({ item }, { status: 201 }), actor.userUid);
+    return applyActorCookie(NextResponse.json({ item }, { status: item.reimported ? 200 : 201 }), actor.userUid);
   } catch (error: unknown) {
     return toErrorResponse(error, '导入意图草稿失败');
   }

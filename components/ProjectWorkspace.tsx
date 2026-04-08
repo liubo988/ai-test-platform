@@ -1156,6 +1156,18 @@ function canEditIntentDraftStatus(status: IntentDraftItem['status']): boolean {
   return status !== 'archived';
 }
 
+function canImportIntentDraftStatus(status: IntentDraftItem['status']): boolean {
+  return status !== 'archived';
+}
+
+function intentDraftImportActionLabel(status: IntentDraftItem['status']): string {
+  return status === 'imported' ? '同步正式任务' : '导入正式任务';
+}
+
+function intentDraftImportPendingLabel(status: IntentDraftItem['status']): string {
+  return status === 'imported' ? '同步中...' : '导入中...';
+}
+
 function hasActiveIntentDraftRun(draft: Pick<IntentDraftItem, 'activeRunId' | 'activeRunStatus'>): boolean {
   return Boolean(draft.activeRunId && (draft.activeRunStatus === 'created' || draft.activeRunStatus === 'running'));
 }
@@ -2428,8 +2440,8 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
 
   async function importIntentDraft(draft: IntentDraftItem) {
     if (!canEditContent) { setError(readOnlyHint || '当前操作者没有编辑权限'); return; }
-    if (draft.status === 'imported') {
-      setError('该意图草稿已经导入过正式任务');
+    if (!canImportIntentDraftStatus(draft.status)) {
+      setError('已归档的意图草稿无法同步正式任务');
       return;
     }
     setIntentDraftActioningUid(draft.intentDraftUid);
@@ -2443,6 +2455,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
         moduleUid: string;
         configUid: string;
         configName: string;
+        reimported?: boolean;
         planCreated: boolean;
         planUid: string;
         planVersion: number;
@@ -2466,13 +2479,17 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
       if (item.planCreated && item.planUid) {
         await openPlanPreviewByUid(item.planUid);
         setActionNotice(
-          `已将意图草稿「${item.configName}」导入正式任务，并写入脚本 v${item.planVersion}。后续可继续从草稿点击“测试流程”验证，也可以通过任务卡片上的“执行”按钮运行正式任务。`
+          item.reimported
+            ? `已将意图草稿「${item.configName}」同步到正式任务，并写入脚本 v${item.planVersion}。任务配置已按最新草稿更新。后续可继续从草稿点击“测试流程”验证，也可以通过任务卡片上的“执行”按钮运行正式任务。`
+            : `已将意图草稿「${item.configName}」导入正式任务，并写入脚本 v${item.planVersion}。后续可继续从草稿点击“测试流程”验证，也可以通过任务卡片上的“执行”按钮运行正式任务。`
         );
         return;
       }
 
       setActionNotice(
-        `已将意图草稿「${item.configName}」导入正式任务，但没有可导入脚本：${item.planError || '未知原因'}。你仍可继续从草稿点击“测试流程”验证，或后续在任务卡片里点击“生成”补脚本。`
+        item.reimported
+          ? `已将意图草稿「${item.configName}」同步到正式任务，但没有可导入脚本：${item.planError || '未知原因'}。任务配置已按最新草稿更新，你仍可继续从草稿点击“测试流程”验证，或后续在任务卡片里点击“生成”补脚本。`
+          : `已将意图草稿「${item.configName}」导入正式任务，但没有可导入脚本：${item.planError || '未知原因'}。你仍可继续从草稿点击“测试流程”验证，或后续在任务卡片里点击“生成”补脚本。`
       );
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '导入意图草稿失败');
@@ -4323,7 +4340,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                             onClick={() => void importIntentDraft(draft)}
                             disabled={
                               !canEditContent ||
-                              draft.status !== 'active' ||
+                              !canImportIntentDraftStatus(draft.status) ||
                               intentDraftEditingUid === draft.intentDraftUid ||
                               intentDraftActioningUid === draft.intentDraftUid ||
                               intentDraftTestingUid === draft.intentDraftUid ||
@@ -4331,7 +4348,9 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                             }
                             className="h-8 rounded-lg bg-slate-900 px-3 text-xs font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
                           >
-                            {intentDraftActioningUid === draft.intentDraftUid ? '导入中...' : '导入正式任务'}
+                            {intentDraftActioningUid === draft.intentDraftUid
+                              ? intentDraftImportPendingLabel(draft.status)
+                              : intentDraftImportActionLabel(draft.status)}
                           </button>
                           <button
                             onClick={() => void deleteIntentDraft(draft)}
@@ -4561,7 +4580,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                         onClick={() => void importIntentDraft(intentDraftDetail)}
                         disabled={
                           !canEditContent ||
-                          intentDraftDetail.status !== 'active' ||
+                          !canImportIntentDraftStatus(intentDraftDetail.status) ||
                           intentDraftEditingUid === intentDraftDetail.intentDraftUid ||
                           intentDraftActioningUid === intentDraftDetail.intentDraftUid ||
                           intentDraftTestingUid === intentDraftDetail.intentDraftUid ||
@@ -4569,7 +4588,9 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                         }
                         className="h-10 rounded-xl bg-slate-900 px-5 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
                       >
-                        {intentDraftActioningUid === intentDraftDetail.intentDraftUid ? '导入中...' : '导入正式任务'}
+                        {intentDraftActioningUid === intentDraftDetail.intentDraftUid
+                          ? intentDraftImportPendingLabel(intentDraftDetail.status)
+                          : intentDraftImportActionLabel(intentDraftDetail.status)}
                       </button>
                       <button
                         type="button"

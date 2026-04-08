@@ -4691,3 +4691,162 @@
   - 若继续在严格口径下提升通过率，只允许另起 brief，单收：
     - `same-row status-cell evidence helper`
     - 或 `detailEntry coverage gap closure`
+
+## 2026-04-07 第一百二十三次更新（post-R14 success hardening close-out follow-up：successful run final code reuse）
+
+- 本轮目标：
+  - 不重开 `post-R14 success hardening` 主阶段
+  - 只收口一类重复生成浪费：
+    - 同一条意图草稿之前已经真实 `passed`
+    - 但重跑时仍优先看草稿首版代码，甚至因为首版代码命中旧骨架而重新走 `ExecutionPlan -> slot patch`
+  - 用户当前要求很明确：
+    - 既然之前已经跑通，应优先复用最近一次成功 run 的最终代码
+    - 至少先跳过这段慢的 slot patch 生成
+- 已完成：
+  - 已补 brief：
+    - `docs/intent-e2e-successful-run-code-reuse-task-brief-2026-04-07.md`
+  - 已完成代码收口：
+    - `lib/ai/intent-e2e-service.ts`
+      - 新增“最近成功 run 最终代码”复用候选解析
+      - 命中条件收窄为：
+        - 同 `projectUid/moduleUid/intentDraftUid`
+        - 同输入描述
+        - 同目标 URL
+        - 同附件数
+        - 最近已有 `passed` run 且 result attempts 中存在最终代码
+      - 复用优先级改成：
+        - 最近成功 run 最终代码
+        - 草稿首版代码
+        - 当前生成链路
+      - 命中最近成功 run 时，generate 阶段直接复用最终代码并跳过 `generateTest / slot patch`
+      - 若未命中，再保留现有草稿首版复用与 legacy fallback 语义
+  - 已补 / 已更新单测：
+    - `tests/unit/intent-e2e-service.spec.ts`
+      - 补“最近成功 run 最终代码覆盖掉 stale draft first-pass code”回归
+      - 补“当前草稿输入变化时不复用历史成功代码”回归
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（close-out 后 follow-up 的 structured patch fallback、LLM request timeout、browser runtime noise、AI 生成失败后可操作闭环、execution latency、draft auto-launch latency、status evidence short-circuit、optional json miss noise downgrade、partial code fail-fast、status evidence success-criteria tightening、detail field scope tightening 与本轮 successful run final code reuse 已补齐；当前阶段结论不变）
+- 风险 / 未完成：
+  - 本轮只复用“最近成功 run 的最终代码”，不跳过 analyze / planning
+  - 当前命中条件仍是保守规则匹配，不扩到 snapshotSignature / family 级泛化复用
+  - 若成功代码已因页面变化失效，后续仍会进入现有 execute + repair 兜底；本轮不扩成“成功代码健康度衰减”治理
+- 下一步：
+  - 当前这刀已完成，没有必须继续的同类开发
+  - 若继续提升真实体感时延，只允许另起 brief，单收：
+    - `prefilled run lazy planning / analyze bypass`
+    - 或 `successful run code freshness governance`
+
+## 2026-04-08 第一百二十四次更新（post-R14 success hardening close-out follow-up：standalone project auth visibility）
+
+- 本轮目标：
+  - 不重开 `post-R14 success hardening` 主阶段
+  - 只收口一类 workbench 展示偏差：
+    - 从项目内“意图草稿”进入独立 `/intent-e2e` 控制台时
+    - 服务端实际已经复用项目统一登录认证
+    - 但独立页只读取本地 `auth` 表单状态，导致“登录上下文 / 执行上下文”误显示为空
+  - 用户当前要求很明确：
+    - 不改真实执行链路
+    - 只让页面把项目统一认证正确显示出来
+- 已完成：
+  - 已补 brief：
+    - `docs/intent-e2e-project-auth-display-task-brief-2026-04-08.md`
+  - 已完成代码收口：
+    - `components/IntentE2EWorkbench.tsx`
+      - 新增独立页项目认证摘要抓取，读取 `/api/projects/[projectUid]` 的安全登录摘要
+      - hero `登录上下文` 卡片与左侧 `执行上下文` 标签改为优先展示项目统一认证状态，不再只看本地 `auth` 表单
+      - `执行上下文` 面板新增只读的“项目统一认证”卡片，展示登录 URL / 用户名 / 登录说明，并明确密码不回显
+      - 原有登录表单保留为“临时覆盖（可选）”；留空时继续复用项目统一认证
+      - 若项目认证摘要读取失败，页面会显式提示“只影响展示，不影响服务端实际认证合并”
+  - 已补 / 已更新 E2E：
+    - `tests/e2e/scenario-task-smoke.spec.ts`
+      - 新增“项目上下文打开独立 intent workbench 时显示项目统一认证摘要” smoke 断言
+- 验证：
+  - `npm run build`
+  - `npm run build:web`
+  - `npm run test:e2e`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（close-out 后 follow-up 的 structured patch fallback、LLM request timeout、browser runtime noise、AI 生成失败后可操作闭环、execution latency、draft auto-launch latency、status evidence short-circuit、optional json miss noise downgrade、partial code fail-fast、status evidence success-criteria tightening、detail field scope tightening、successful run final code reuse 与本轮 standalone project auth visibility 已补齐；当前阶段结论不变）
+- 风险 / 未完成：
+  - 本轮只补独立页的项目认证可视化，不把项目密码或 merged auth 回填到可编辑表单
+  - 若后续需要在“历史 run 恢复但 URL 不带 `projectUid`”场景展示同样摘要，还需要额外给 run record 暴露稳定 project scope
+  - 本轮未新增 component / unit test；当前通过 Playwright smoke 锁住了“项目上下文 -> 独立控制台 -> 统一认证摘要展示”回归
+- 下一步：
+  - 当前这刀已完成，没有必须继续的同类开发
+  - 若继续补这条链路的可观测性，只允许另起 brief，单收：
+    - `run record project scope exposure for standalone restore`
+    - 或 `intent workbench auth display component coverage`
+
+## 2026-04-08 第一百二十五次更新（post-R14 success hardening close-out follow-up：intent draft import successful run alignment）
+
+- 本轮目标：
+  - 不重开 `post-R14 success hardening` 主阶段
+  - 只收口“草稿直跑已稳定，但导入正式任务首跑仍可能失败”这一类资产不一致
+  - 当前观察到的真实问题：
+    - 草稿测试流程已经优先复用最近成功 intent run 的最终代码
+    - 但导入/同步正式任务时仍直接写入 `draft.planCode`
+    - 导致正式任务首跑可能吃到旧骨架，第一次失败，第二次靠 `AI纠错计划` 才成功
+- 已完成：
+  - 已补 brief：
+    - `docs/intent-draft-import-successful-run-alignment-task-brief-2026-04-08.md`
+  - 已完成代码收口：
+    - `lib/services/project-intent-draft-service.ts`
+      - 导入/同步正式任务前，新增“同草稿最近成功 intent run 最终代码”查询
+      - 命中条件保持保守：
+        - 同 `projectUid/moduleUid/intentDraftUid`
+        - 同草稿输入
+        - 同目标 URL
+        - 同附件数
+      - 命中时，正式任务 plan 优先写入最近成功 run 的最终代码
+      - 未命中时，继续回退到当前 `draft.planCode`
+      - 同步补齐正式任务 plan 的 `planSummary / generationPrompt / generatedFiles` 来源标记，避免资产内容与来源描述错位
+  - 已补 / 已更新单测：
+    - `tests/unit/project-intent-task-service.spec.ts`
+      - 补“导入正式任务时优先复用最近成功 intent run 最终代码”回归
+      - 补“当前草稿输入变化时回退到 draft.planCode”回归
+- 验证：
+  - `npx vitest run tests/unit/project-intent-task-service.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs docs/intent-e2e-production-roadmap-2026-03-29.md`
+- 当前阶段状态：
+  - `R7.5`：已完成（多项目冷启动与资产隔离已收口）
+  - `R8`：已完成（第六十刀已完成：R8 close-out）
+  - `R9`：已完成（第九刀已完成：R9 close-out）
+  - `R10`：已完成（第一刀已完成：R10 close-out）
+  - `R11`：已完成（第二刀已完成：R11 close-out）
+  - `R12`：已完成（第四刀已完成：ownership derivation + close-out）
+  - `R13`：已完成（第一刀已完成：R13 close-out）
+  - `R14`：已完成（第一刀已完成：R14 close-out）
+  - post-R14 success hardening：已完成（close-out 后 follow-up 的 structured patch fallback、LLM request timeout、browser runtime noise、AI 生成失败后可操作闭环、execution latency、draft auto-launch latency、status evidence short-circuit、optional json miss noise downgrade、partial code fail-fast、status evidence success-criteria tightening、detail field scope tightening、successful run final code reuse、standalone project auth visibility 与本轮 intent draft import successful run alignment 已补齐；当前阶段结论不变）
+- 风险 / 未完成：
+  - 本轮只对齐“导入/同步正式任务”的脚本来源，不回写草稿表里的 `planCode`
+  - 当前命中条件仍是保守规则匹配，不扩到 family / snapshotSignature 级复用
+  - 若最近成功 run 已因页面变化失效，正式任务后续仍走现有 execute + repair 兜底；本轮不扩展成功代码 freshness 治理
+- 下一步：
+  - 当前这刀已完成，没有必须继续的同类开发
+  - 若后续仍出现“草稿资产显示旧代码、导入资产用新代码”的认知落差，只允许另起 brief，单收：
+    - `intent draft stored plan code backfill`
+    - 或 `imported plan source visibility`

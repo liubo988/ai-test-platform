@@ -1749,6 +1749,27 @@ type PersistIntentRunToWorkspaceResponse = {
   error?: string;
 };
 
+type ProjectAuthSummary = {
+  projectUid: string;
+  projectName: string;
+  authRequired: boolean;
+  loginUrl: string;
+  loginUsername: string;
+  loginDescription: string;
+};
+
+type ProjectAuthSummaryResponse = {
+  item?: {
+    projectUid?: string;
+    name?: string;
+    authRequired?: boolean;
+    loginUrl?: string;
+    loginUsername?: string;
+    loginDescription?: string;
+  };
+  error?: string;
+};
+
 type IntentE2EWorkbenchProps = {
   embedded?: boolean;
   initialWorkspaceProjectUid?: string;
@@ -4279,6 +4300,24 @@ async function fetchWorkspaceTasks(projectUid: string, moduleUid: string): Promi
   return json.items;
 }
 
+async function fetchProjectAuthSummary(projectUid: string): Promise<ProjectAuthSummary> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(projectUid)}`, { cache: 'no-store' });
+  const json = (await res.json().catch(() => null)) as ProjectAuthSummaryResponse | null;
+
+  if (!res.ok || !json?.item) {
+    throw new Error(json?.error || '加载项目认证摘要失败');
+  }
+
+  return {
+    projectUid: typeof json.item.projectUid === 'string' ? json.item.projectUid : projectUid,
+    projectName: typeof json.item.name === 'string' ? json.item.name : '',
+    authRequired: Boolean(json.item.authRequired),
+    loginUrl: typeof json.item.loginUrl === 'string' ? json.item.loginUrl : '',
+    loginUsername: typeof json.item.loginUsername === 'string' ? json.item.loginUsername : '',
+    loginDescription: typeof json.item.loginDescription === 'string' ? json.item.loginDescription : '',
+  };
+}
+
 async function persistIntentRunToWorkspaceRequest(
   runId: string,
   payload: {
@@ -4333,6 +4372,9 @@ export default function IntentE2EWorkbench({
   const [input, setInput] = useState('访问结算页，输入一个合法手机号并提交，最终看到成功页面。');
   const [targetUrl, setTargetUrl] = useState('');
   const [auth, setAuth] = useState<AuthDraft>(defaultAuth);
+  const [projectAuthSummary, setProjectAuthSummary] = useState<ProjectAuthSummary | null>(null);
+  const [projectAuthSummaryLoading, setProjectAuthSummaryLoading] = useState(false);
+  const [projectAuthSummaryError, setProjectAuthSummaryError] = useState('');
   const [attachments, setAttachments] = useState<AttachmentDraft[]>([]);
   const [configLoading, setConfigLoading] = useState(true);
   const [configError, setConfigError] = useState('');
@@ -4517,6 +4559,71 @@ export default function IntentE2EWorkbench({
     workspaceProjectUid,
     workspaceSaveNavigation,
   ]);
+  const standaloneProjectAuthProjectUid = !embedded
+    ? defaultWorkspaceProjectUid.trim() ||
+      displayAssetReadiness?.projectUid ||
+      workspaceProjectUid.trim() ||
+      searchWorkspaceProjectUid.trim()
+    : '';
+  const activeProjectAuthSummary =
+    projectAuthSummary && projectAuthSummary.projectUid === standaloneProjectAuthProjectUid ? projectAuthSummary : null;
+  const standaloneHasProjectContext = Boolean(!embedded && standaloneProjectAuthProjectUid);
+  const standaloneProjectAuthLoadingState = standaloneHasProjectContext && projectAuthSummaryLoading;
+  const standaloneUsesProjectAuth = !embedded && Boolean(activeProjectAuthSummary?.authRequired);
+  const standaloneProjectAuthProjectLabel =
+    activeProjectAuthSummary?.projectName.trim() || standaloneProjectAuthProjectUid || '当前项目';
+  const standaloneAuthSummaryText = embedded
+    ? embeddedProjectAuth?.authRequired
+      ? '复用项目统一认证'
+      : '未配置项目认证'
+    : standaloneProjectAuthLoadingState
+      ? '正在同步项目认证'
+      : standaloneHasProjectContext && projectAuthSummaryError
+        ? '认证摘要读取失败'
+      : standaloneUsesProjectAuth
+        ? '复用项目统一认证'
+        : hasAuthContent(auth)
+          ? '已补登录信息'
+          : standaloneHasProjectContext && activeProjectAuthSummary
+            ? '未配置项目认证'
+            : '暂未补登录';
+  const standaloneAuthDetailText = embedded
+    ? '统一项目认证'
+    : standaloneProjectAuthLoadingState
+      ? '正在读取项目登录摘要'
+      : standaloneHasProjectContext && projectAuthSummaryError
+        ? '查看执行上下文面板'
+      : standaloneUsesProjectAuth
+        ? activeProjectAuthSummary?.loginDescription?.trim()
+          ? '项目登录说明已同步'
+          : activeProjectAuthSummary?.loginUrl?.trim()
+            ? '项目登录地址已同步'
+            : '执行时默认带入项目认证'
+        : auth.loginUrl.trim()
+          ? '登录 URL 已填'
+          : standaloneHasProjectContext && activeProjectAuthSummary
+            ? '需要时可手动补充'
+            : '需要时再补';
+  const standaloneContextDescription = embedded
+    ? '查看项目统一认证，并根据需要补充模型执行参数。'
+    : standaloneUsesProjectAuth
+      ? '当前运行默认复用项目统一认证；如需临时覆盖，可在下方补充本次运行的登录信息。'
+      : '控制登录、模型与执行边界，避免“能跑但不稳”。';
+  const standaloneContextAuthLabel = embedded
+    ? embeddedProjectAuth?.authRequired
+      ? '项目认证'
+      : '未配认证'
+    : standaloneProjectAuthLoadingState
+      ? '认证加载中'
+      : standaloneHasProjectContext && projectAuthSummaryError
+        ? '摘要失败'
+      : standaloneUsesProjectAuth
+        ? '项目认证'
+        : hasAuthContent(auth)
+          ? '登录已填'
+          : standaloneHasProjectContext && activeProjectAuthSummary
+            ? '未配认证'
+            : '登录留空';
   const displayTargetUrl = result?.targetUrl ?? streamState.targetUrl;
   const displayResolvedUrls = result?.resolvedUrls ?? streamState.resolvedUrls;
   const browserAttempt = [...displayAttempts].reverse().find((attempt) => Boolean(attempt.sessionId)) || null;
@@ -4691,14 +4798,8 @@ export default function IntentE2EWorkbench({
       {
         key: 'auth',
         label: '登录上下文',
-        summary: embedded
-          ? embeddedProjectAuth?.authRequired
-            ? '复用项目统一认证'
-            : '未配置项目认证'
-          : hasAuthContent(auth)
-            ? '已补登录信息'
-            : '暂未补登录',
-        detail: embedded ? '统一项目认证' : auth.loginUrl.trim() ? '登录 URL 已填' : '需要时再补',
+        summary: standaloneAuthSummaryText,
+        detail: standaloneAuthDetailText,
       },
       {
         key: 'learning',
@@ -4719,14 +4820,13 @@ export default function IntentE2EWorkbench({
     ],
     [
       attachments.length,
-      auth,
-      embedded,
-      embeddedProjectAuth?.authRequired,
       insights,
       insightsError,
       insightsLoading,
       knowledgeDraftPreview,
       llmConfig.visionEnabled,
+      standaloneAuthDetailText,
+      standaloneAuthSummaryText,
       targetUrl,
     ]
   );
@@ -5138,18 +5238,8 @@ export default function IntentE2EWorkbench({
       {
         key: 'context',
         label: '执行上下文',
-        description: embedded
-          ? '查看项目统一认证，并根据需要补充模型执行参数。'
-          : '控制登录、模型与执行边界，避免“能跑但不稳”。',
-        countLabel: `${
-          embedded
-            ? embeddedProjectAuth?.authRequired
-              ? '项目认证'
-              : '未配认证'
-            : hasAuthContent(auth)
-              ? '登录已填'
-              : '登录留空'
-        } · ${llmConfig.provider}`,
+        description: standaloneContextDescription,
+        countLabel: `${standaloneContextAuthLabel} · ${llmConfig.provider}`,
       },
     ];
 
@@ -5195,19 +5285,19 @@ export default function IntentE2EWorkbench({
     return tabs;
   }, [
     activeRunId,
-    auth,
     browserSessionId,
     displayAttempts.length,
     displayCompiledTemplate,
     displayExecutionPlan,
     displayFinalResult,
     embedded,
-    embeddedProjectAuth?.authRequired,
     input,
     insights,
     knowledgeDraftPreview,
     llmConfig.provider,
     running,
+    standaloneContextAuthLabel,
+    standaloneContextDescription,
     streamState.feed.length,
     attachments.length,
     workspaceSaveResult,
@@ -6617,6 +6707,47 @@ export default function IntentE2EWorkbench({
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (embedded) {
+      setProjectAuthSummary(null);
+      setProjectAuthSummaryLoading(false);
+      setProjectAuthSummaryError('');
+      return;
+    }
+
+    const projectUid = standaloneProjectAuthProjectUid.trim();
+    if (!projectUid) {
+      setProjectAuthSummary(null);
+      setProjectAuthSummaryLoading(false);
+      setProjectAuthSummaryError('');
+      return;
+    }
+
+    let active = true;
+
+    async function loadProjectAuthSummary() {
+      setProjectAuthSummary((current) => (current?.projectUid === projectUid ? current : null));
+      setProjectAuthSummaryLoading(true);
+      setProjectAuthSummaryError('');
+      try {
+        const item = await fetchProjectAuthSummary(projectUid);
+        if (!active) return;
+        setProjectAuthSummary(item);
+      } catch (error: unknown) {
+        if (!active) return;
+        setProjectAuthSummary(null);
+        setProjectAuthSummaryError(error instanceof Error ? error.message : '加载项目认证摘要失败');
+      } finally {
+        if (active) setProjectAuthSummaryLoading(false);
+      }
+    }
+
+    void loadProjectAuthSummary();
+    return () => {
+      active = false;
+    };
+  }, [embedded, standaloneProjectAuthProjectUid]);
 
   useEffect(() => {
     void refreshProjectKnowledgeBackups({ silent: true });
@@ -8370,55 +8501,125 @@ export default function IntentE2EWorkbench({
                     )}
                   </section>
                 ) : (
-                  <section className="intent-e2e-panel rounded-[24px] border border-slate-200 bg-[linear-gradient(180deg,rgba(248,251,255,0.95),rgba(242,247,253,0.96))] p-4 shadow-[0_12px_28px_rgba(15,23,42,0.05)]">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-medium text-slate-900">登录信息（可选）</p>
-                        <p className="mt-1 text-xs text-slate-500">如果页面访问前必须登录，可以补充账号、密码与登录说明。</p>
-                      </div>
-                      <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-500">可留空</span>
-                    </div>
+                  <>
+                    {standaloneHasProjectContext && (
+                      <section className="rounded-[24px] border border-sky-200 bg-sky-50/85 p-4 shadow-[0_12px_28px_rgba(56,189,248,0.09)]">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-medium text-slate-900">项目统一认证</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-600">
+                              {standaloneProjectAuthLoadingState
+                                ? `正在同步项目「${standaloneProjectAuthProjectLabel}」的统一登录配置。`
+                                : standaloneUsesProjectAuth
+                                  ? `当前页已同步项目「${standaloneProjectAuthProjectLabel}」的统一登录认证；执行时会默认复用。`
+                                  : `项目「${standaloneProjectAuthProjectLabel}」当前未开启统一登录认证；如需登录，请在下方补充本次运行的登录信息。`}
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-sky-200 bg-white px-3 py-1 text-xs text-sky-700">
+                            {standaloneProjectAuthLoadingState
+                              ? '同步中'
+                              : standaloneUsesProjectAuth
+                                ? '默认复用项目认证'
+                                : '未配置项目认证'}
+                          </span>
+                        </div>
 
-                    <div className="mt-4 grid gap-4 md:grid-cols-2">
-                      <label className="block">
-                        <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">登录 URL</span>
-                        <input
-                          value={auth.loginUrl}
-                          onChange={(targetEvent) => setAuth((current) => ({ ...current, loginUrl: targetEvent.target.value }))}
-                          placeholder="https://example.com/login"
-                          className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">用户名</span>
-                        <input
-                          value={auth.username}
-                          onChange={(targetEvent) => setAuth((current) => ({ ...current, username: targetEvent.target.value }))}
-                          placeholder="13800138000"
-                          className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">密码</span>
-                        <input
-                          type="password"
-                          value={auth.password}
-                          onChange={(targetEvent) => setAuth((current) => ({ ...current, password: targetEvent.target.value }))}
-                          placeholder="••••••••"
-                          className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">登录说明</span>
-                        <input
-                          value={auth.loginDescription}
-                          onChange={(targetEvent) => setAuth((current) => ({ ...current, loginDescription: targetEvent.target.value }))}
-                          placeholder="例如：短信登录 / 密码登录 / SSO"
-                          className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
-                        />
-                      </label>
-                    </div>
-                  </section>
+                        {projectAuthSummaryError && (
+                          <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3 text-xs leading-5 text-amber-700">
+                            读取项目认证摘要失败：{projectAuthSummaryError}。这不会影响服务端在执行时复用项目统一认证，只影响当前页展示。
+                          </div>
+                        )}
+
+                        {!standaloneProjectAuthLoadingState && standaloneUsesProjectAuth && activeProjectAuthSummary && (
+                          <>
+                            <div className="mt-4 grid gap-3 md:grid-cols-2">
+                              <div className="rounded-2xl border border-sky-100 bg-white/85 px-3 py-3">
+                                <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-sky-700">登录 URL</p>
+                                <p className="mt-2 break-all text-sm leading-6 text-slate-700">
+                                  {activeProjectAuthSummary.loginUrl.trim() || '未配置'}
+                                </p>
+                              </div>
+                              <div className="rounded-2xl border border-sky-100 bg-white/85 px-3 py-3">
+                                <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-sky-700">用户名</p>
+                                <p className="mt-2 break-all text-sm leading-6 text-slate-700">
+                                  {activeProjectAuthSummary.loginUsername.trim() || '未配置'}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="mt-3 rounded-2xl border border-sky-100 bg-white/85 px-3 py-3">
+                              <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-sky-700">登录说明</p>
+                              <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-700">
+                                {activeProjectAuthSummary.loginDescription.trim() || '未配置'}
+                              </p>
+                            </div>
+                            <p className="mt-3 text-[11px] leading-5 text-slate-500">
+                              密码已由项目统一认证托管，当前页不回显；如需临时覆盖本次运行，请在下方填写新的登录信息。
+                            </p>
+                          </>
+                        )}
+                      </section>
+                    )}
+
+                    <section className="intent-e2e-panel rounded-[24px] border border-slate-200 bg-[linear-gradient(180deg,rgba(248,251,255,0.95),rgba(242,247,253,0.96))] p-4 shadow-[0_12px_28px_rgba(15,23,42,0.05)]">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-medium text-slate-900">
+                            {standaloneUsesProjectAuth ? '登录信息覆盖（可选）' : '登录信息（可选）'}
+                          </p>
+                          <p className="mt-1 text-xs text-slate-500">
+                            {standaloneUsesProjectAuth
+                              ? '留空则继续复用上方项目统一认证；如需临时覆盖本次运行，可补充账号、密码与登录说明。'
+                              : standaloneHasProjectContext && activeProjectAuthSummary
+                                ? '当前项目未配置统一认证；如果页面访问前必须登录，可在这里补充本次运行的登录信息。'
+                                : '如果页面访问前必须登录，可以补充账号、密码与登录说明。'}
+                          </p>
+                        </div>
+                        <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-500">
+                          {standaloneUsesProjectAuth ? '留空则复用项目认证' : '可留空'}
+                        </span>
+                      </div>
+
+                      <div className="mt-4 grid gap-4 md:grid-cols-2">
+                        <label className="block">
+                          <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">登录 URL</span>
+                          <input
+                            value={auth.loginUrl}
+                            onChange={(targetEvent) => setAuth((current) => ({ ...current, loginUrl: targetEvent.target.value }))}
+                            placeholder="https://example.com/login"
+                            className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">用户名</span>
+                          <input
+                            value={auth.username}
+                            onChange={(targetEvent) => setAuth((current) => ({ ...current, username: targetEvent.target.value }))}
+                            placeholder="13800138000"
+                            className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">密码</span>
+                          <input
+                            type="password"
+                            value={auth.password}
+                            onChange={(targetEvent) => setAuth((current) => ({ ...current, password: targetEvent.target.value }))}
+                            placeholder="••••••••"
+                            className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">登录说明</span>
+                          <input
+                            value={auth.loginDescription}
+                            onChange={(targetEvent) => setAuth((current) => ({ ...current, loginDescription: targetEvent.target.value }))}
+                            placeholder="例如：短信登录 / 密码登录 / SSO"
+                            className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
+                          />
+                        </label>
+                      </div>
+                    </section>
+                  </>
                 )}
 
                 {!embedded && (
