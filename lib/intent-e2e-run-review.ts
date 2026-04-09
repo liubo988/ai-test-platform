@@ -170,7 +170,11 @@ function buildPlaybookCandidates(input: BuildIntentE2ERunReviewInput, reviewedAt
       .filter((attempt) => attempt.kind === 'repair' || attempt.result?.success === false)
       .flatMap((attempt) => (attempt.triage?.failureClass ? [attempt.triage.failureClass] : []))
   );
-  const matchedRecipeSlugs = uniqueStrings((input.recipes || []).map((item) => item.recipe.slug));
+  const matchedRecipeSlugs = uniqueStrings([
+    ...(input.recipes || []).map((item) => item.recipe.slug),
+    ...(input.executionPlan.matchedRecipeSlugs || []),
+    ...(input.verificationPlan.matchedRecipeSlugs || []),
+  ]);
   const baseSlug = slugify(matchedRecipeSlugs[0] || input.scenarioFamily || normalizeTargetPath(input.targetUrl) || input.scenarioTitle || 'flow');
   const title = summarizeInline(input.executionPlan.summary || input.scenarioTitle || input.description, 80);
   const material = [input.runId || '', input.targetUrl, title, baseSlug].join('|');

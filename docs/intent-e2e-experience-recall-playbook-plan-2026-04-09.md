@@ -218,7 +218,7 @@
 
 - `E1`：已完成（MVP）
 - `E2`：已完成首刀（candidate-only，不自动写入 registry）
-- `E3`：已完成首刀（run tail 同步复盘版，异步化待后续）
+- `E3`：已完成（run 终态后异步补写 review）
 - `E4`：未开始（可选）
 
 ## E1：Experience Recall MVP
@@ -608,12 +608,12 @@ Hermes 的 `skill_manage` 更适合通用 agent 的自由技能沉淀；当前�
 - 当前阶段状态：
   - `E1`：已完成（MVP）
   - `E2`：已完成首刀（candidate-only，不自动写入 registry）
-  - `E3`：已完成首刀（run tail 同步复盘版，异步化待后续）
+  - `E3`：已完成（run 终态后异步补写 review）
   - `E4`：未开始（可选）
 - 风险 / 未完成：
-  - `E3` 仍是同步 tail review，尚未独立异步化。
   - `E2` 目前只生成 candidate，尚未进入 recipe / knowledge 的 promotion 治理闭环。
+  - `E3` 当前仍依赖 terminal 后短轮询补拿 review，没有新增专用 stream 事件。
   - 当前没有新增 benchmark 数据，本轮只完成结构和最小回归验证。
 - 下一步：
-  - 优先把 `E3` 异步化，避免 review 持续挂在主 run 尾部。
-  - 再把 `E2 candidate -> registry / knowledge draft` 的 promotion 与回滚治理打通。
+  - 优先把 `E2 candidate -> registry / knowledge draft` 的 promotion 与回滚治理打通。
+  - 再补 benchmark / holdout 回放，验证 recall + async review 的真实收益。

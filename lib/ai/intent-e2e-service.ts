@@ -233,6 +233,7 @@ export interface IntentE2ERunResult {
 export interface IntentE2ERunOptions {
   signal?: AbortSignal;
   runId?: string;
+  runReviewMode?: 'inline' | 'deferred';
 }
 
 interface IntentRepairLearningObservationArtifact {
@@ -3227,23 +3228,26 @@ export async function runIntentDrivenE2EStream(
         repairBudget,
         attemptCount: attempts.length,
       });
-  const review = buildIntentE2ERunReview({
-    runId: options?.runId,
-    targetUrl,
-    description,
-    scenarioTitle: scenarioCardOutput.card.title,
-    scenarioFamily: planning.priorityScenarioFamily || '',
-    executionPlan: planning.executionPlan,
-    verificationPlan: planning.verificationPlan,
-    recipes: planning.recipes,
-    experience,
-    finalResult: {
-      success: finalResult.success,
-    },
-    finalFailureTriage,
-    failureCta,
-    attempts,
-  });
+  const review =
+    options?.runReviewMode === 'deferred'
+      ? null
+      : buildIntentE2ERunReview({
+          runId: options?.runId,
+          targetUrl,
+          description,
+          scenarioTitle: scenarioCardOutput.card.title,
+          scenarioFamily: planning.priorityScenarioFamily || '',
+          executionPlan: planning.executionPlan,
+          verificationPlan: planning.verificationPlan,
+          recipes: planning.recipes,
+          experience,
+          finalResult: {
+            success: finalResult.success,
+          },
+          finalFailureTriage,
+          failureCta,
+          attempts,
+        });
   let artifactIndex: IntentE2ERunArtifactIndex | null = null;
   if (options?.runId) {
     try {

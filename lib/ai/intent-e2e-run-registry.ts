@@ -22,6 +22,7 @@ import {
   cloneIntentE2ECiCdReport,
   normalizeIntentE2ECiCdReport,
 } from '@/lib/intent-e2e-cicd-report';
+import { buildIntentE2ERunReview } from '@/lib/intent-e2e-run-review';
 import { cloneIntentE2ERunArtifactIndex } from '@/lib/intent-e2e-run-artifacts';
 import {
   clonePlatformArtifactContractAsset,
@@ -194,6 +195,47 @@ function cloneRunReview(
         }
       : null,
   };
+}
+
+async function writeDeferredRunReview(runId: string): Promise<void> {
+  const record = RUNS.get(runId);
+  const currentResult = record?.state.result;
+  if (!record || !currentResult || !isTerminalStatus(record.state.status) || currentResult.review) {
+    return;
+  }
+
+  try {
+    const review = buildIntentE2ERunReview({
+      runId,
+      targetUrl: currentResult.targetUrl,
+      description: currentResult.description,
+      scenarioTitle: currentResult.scenarioCard.title,
+      executionPlan: currentResult.executionPlan,
+      verificationPlan: currentResult.verificationPlan,
+      experience: currentResult.experience,
+      finalResult: {
+        success: currentResult.finalResult.success,
+      },
+      finalFailureTriage: currentResult.finalFailureTriage,
+      failureCta: currentResult.failureCta,
+      attempts: currentResult.attempts,
+    });
+
+    record.state.result = {
+      ...currentResult,
+      review,
+    };
+    record.state.updatedAt = nowIso();
+    await queueRunPersistence(record);
+  } catch (error) {
+    console.error('[intent-e2e-run-registry] write deferred review failed', runId, error);
+  }
+}
+
+function scheduleDeferredRunReview(runId: string): void {
+  setTimeout(() => {
+    void writeDeferredRunReview(runId);
+  }, 0);
 }
 
 interface IntentE2ERunInternalRecord {
@@ -1225,6 +1267,7 @@ async function launchRunExecution(record: IntentE2ERunInternalRecord): Promise<v
             {
               signal: record.abortController.signal,
               runId: record.state.runId,
+              runReviewMode: 'deferred',
             }
           );
           terminalResult = result;
@@ -1301,6 +1344,8 @@ async function launchRunExecution(record: IntentE2ERunInternalRecord): Promise<v
         return;
       }
     } finally {
+      const shouldScheduleDeferredReview =
+        Boolean(record.state.result) && isTerminalStatus(record.state.status) && !record.state.result?.review;
       clearRunExecutionTimeout(record);
       record.state.updatedAt = nowIso();
       if (!record.state.endedAt && isTerminalStatus(record.state.status)) {
@@ -1310,6 +1355,9 @@ async function launchRunExecution(record: IntentE2ERunInternalRecord): Promise<v
       await queueRunPersistence(record);
       record.executionPromise = null;
       markCompletionResolved(record);
+      if (shouldScheduleDeferredReview) {
+        scheduleDeferredRunReview(record.state.runId);
+      }
       pruneExpiredRuns();
       void scheduleQueuedRuns();
     }

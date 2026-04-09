@@ -190,4 +190,76 @@ describe('intent-e2e-run-review', () => {
       recommended: true,
     });
   });
+
+  it('falls back to execution and verification plan recipe slugs when runtime recipes are absent', () => {
+    const review = buildIntentE2ERunReview({
+      runId: 'intent-run-current',
+      targetUrl: 'https://example.com/checkout',
+      description: '访问结算页并完成提交',
+      scenarioTitle: '结算成功流程',
+      executionPlan: {
+        version: 1,
+        compiler: 'deterministic_dsl_v1',
+        mode: 'scenario',
+        entryUrl: 'https://example.com/checkout',
+        summary: '打开结算页并提交',
+        expectedOutcome: '看到成功页面',
+        sharedVariables: [],
+        globalRules: [],
+        preferredPrimitives: [],
+        outputContract: [],
+        matchedRecipeSlugs: ['auth.unified-login'],
+        steps: [
+          {
+            planStepUid: 'plan_step_1',
+            scenarioStepUid: 'step_1',
+            stepType: 'ui',
+            title: '打开结算页',
+            target: 'https://example.com/checkout',
+            goal: '进入页面并等待接口返回',
+            allowedActions: ['navigate'],
+            preferredHelpers: [],
+            requiredAssertions: [],
+            extractVariable: '',
+            sharedVariables: [],
+            dependsOnPlanStepUids: [],
+          },
+        ],
+      },
+      verificationPlan: {
+        version: 1,
+        strategy: 'deterministic_verification_v1',
+        expectedOutcome: '看到成功页面',
+        cleanupNotes: '',
+        matchedRecipeSlugs: ['assert.success-banner'],
+        checks: [
+          {
+            checkUid: 'check_1',
+            kind: 'response',
+            source: 'success_criteria',
+            title: '成功标准 1',
+            instruction: '成功页出现“提交成功”',
+            required: true,
+          },
+        ],
+      } as any,
+      experience: null,
+      finalResult: {
+        success: true,
+      },
+      attempts: [
+        {
+          kind: 'generate',
+          result: {
+            success: true,
+          },
+        },
+      ],
+    });
+
+    expect(review.playbookCandidates[0]).toMatchObject({
+      slug: 'intent.auth-unified-login',
+      matchedRecipeSlugs: ['auth.unified-login', 'assert.success-banner'],
+    });
+  });
 });

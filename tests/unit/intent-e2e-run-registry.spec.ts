@@ -31,6 +31,7 @@ import {
   startIntentE2ERun,
   subscribeIntentE2ERun,
   waitForIntentE2ERunCompletion,
+  waitForIntentE2ERunPersistence,
 } from '@/lib/ai/intent-e2e-run-registry';
 
 function createScenarioCard() {
@@ -774,6 +775,66 @@ describe('intent-e2e-run-registry', () => {
     expect(snapshots.map((item) => item.runId)).toContain('persisted_failed_1');
     expect(snapshots.map((item) => item.runId)).toContain(created.runId);
     expect(snapshots[0]?.runId).toBe(created.runId);
+  });
+
+  it('completes terminal result first and backfills deferred review afterward', async () => {
+    vi.useFakeTimers();
+    try {
+      const finalResult = createFinalResult(true);
+      finalResult.review = null;
+
+      vi.mocked(runIntentDrivenE2EStream).mockImplementation(async (_request, listener, options) => {
+        expect(options?.runReviewMode).toBe('deferred');
+        await listener?.({
+          type: 'final_result',
+          result: finalResult,
+        });
+        return finalResult as never;
+      });
+
+      const created = createIntentE2ERun({
+        input: '访问结算页并提交，最终看到成功页面',
+        projectUid: 'proj_1',
+        moduleUid: 'mod_1',
+      });
+      startIntentE2ERun(created.runId, {
+        input: '访问结算页并提交，最终看到成功页面',
+        projectUid: 'proj_1',
+        moduleUid: 'mod_1',
+      });
+
+      await waitForIntentE2ERunCompletion(created.runId);
+
+      const terminalRun = getIntentE2ERun(created.runId);
+      expect(terminalRun?.status).toBe('passed');
+      expect(terminalRun?.result?.review).toBeNull();
+      expect(terminalRun?.events.filter((event) => event.type === 'final_result')).toHaveLength(1);
+
+      await vi.runAllTimersAsync();
+      await waitForIntentE2ERunPersistence(created.runId);
+
+      const reviewedRun = getIntentE2ERun(created.runId);
+      expect(reviewedRun?.result?.review).toMatchObject({
+        summary: expect.stringContaining('playbook candidate'),
+      });
+      expect(reviewedRun?.result?.review?.playbookCandidates[0]).toMatchObject({
+        targetPath: '/checkout',
+        preferredHelpers: ['__e2e.waitForApiResponse'],
+        sourceRunIds: [created.runId],
+      });
+      expect(vi.mocked(upsertIntentE2ERunSnapshot).mock.calls.at(-1)?.[0]).toMatchObject({
+        runId: created.runId,
+        state: expect.objectContaining({
+          result: expect.objectContaining({
+            review: expect.objectContaining({
+              reviewedAt: expect.any(String),
+            }),
+          }),
+        }),
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('stores failed final_result from precheck-style failures without promoting them to runtime errors', async () => {

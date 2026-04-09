@@ -963,6 +963,33 @@ describe('intent-e2e-service stream', () => {
     ).toBe(true);
   });
 
+  it('skips inline review generation when runReviewMode is deferred', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+      },
+      (event) => {
+        events.push(event);
+      },
+      {
+        runId: 'intent-run-deferred-review',
+        runReviewMode: 'deferred',
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(result.review).toBeNull();
+    expect(vi.mocked(buildIntentE2ERunReview)).not.toHaveBeenCalled();
+    expect(events.at(-1)).toMatchObject({
+      type: 'final_result',
+      result: expect.objectContaining({
+        review: null,
+      }),
+    });
+  });
+
   it('reuses shared session storage state across consecutive runs', async () => {
     const firstStorageState = {
       cookies: [

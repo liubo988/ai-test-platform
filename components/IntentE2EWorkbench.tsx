@@ -4169,6 +4169,33 @@ async function fetchIntentRunRecord(runId: string): Promise<IntentRunRecord> {
   return json.run;
 }
 
+const INTENT_RUN_REVIEW_POLL_INTERVAL_MS = 250;
+const INTENT_RUN_REVIEW_POLL_MAX_ATTEMPTS = 5;
+
+function waitForIntentRunReviewPoll(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function fetchTerminalIntentRunReview(runId: string, seedRun: IntentRunRecord): Promise<IntentRunRecord> {
+  let latestRun = seedRun;
+
+  for (let attempt = 0; attempt < INTENT_RUN_REVIEW_POLL_MAX_ATTEMPTS; attempt += 1) {
+    if (!isTerminalRunStatus(latestRun.status) || !latestRun.result || latestRun.result.review) {
+      return latestRun;
+    }
+
+    await waitForIntentRunReviewPoll(INTENT_RUN_REVIEW_POLL_INTERVAL_MS);
+    const nextRun = await fetchIntentRunRecord(runId).catch(() => null);
+    if (nextRun) {
+      latestRun = nextRun;
+    }
+  }
+
+  return latestRun;
+}
+
 async function cancelIntentRunRequest(runId: string): Promise<IntentRunRecord | null> {
   const res = await fetch(`/api/intent-e2e/runs/${encodeURIComponent(runId)}/cancel`, {
     method: 'POST',
@@ -7165,6 +7192,13 @@ export default function IntentE2EWorkbench({
       }
 
       applyRunRecord(latestRun);
+
+      if (isTerminalRunStatus(latestRun.status) && latestRun.result && !latestRun.result.review) {
+        const reviewedRun = await fetchTerminalIntentRunReview(runId, latestRun);
+        if (!streamAbortRef.current && reviewedRun.result?.review && !latestRun.result.review) {
+          applyRunRecord(reviewedRun);
+        }
+      }
 
       if (!isTerminalRunStatus(latestRun.status) && reconnectAttempt < 2) {
         setStreamState((current) => ({

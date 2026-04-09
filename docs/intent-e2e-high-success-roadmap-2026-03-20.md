@@ -15507,3 +15507,66 @@
 - 下一步：
   - 先把 `E3` review 异步化，避免持续挂在主 run 尾部。
   - 再把 `E2 candidate -> registry / knowledge draft` 的 promotion 和回滚治理打通。
+
+## 2026-04-09 第二百三十六次更新（后续专项第二刀：E3 async review 已落地）
+
+- 本轮目标：
+  - 严格按 [docs/intent-e2e-experience-recall-playbook-plan-2026-04-09.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-experience-recall-playbook-plan-2026-04-09.md) 只完成 `E3 async review` 的最小切口：
+    - `final_result` 不再等待 review
+    - review 改为 run 终态后的后台补写
+    - workbench 用现有 `GET /api/intent-e2e/runs/[runId]` 短轮询补拿 review
+  - 不新增 DB schema，不新增 route，不改 SSE 协议。
+- 已完成：
+  - 在 [lib/ai/intent-e2e-service.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-service.ts) 为 `IntentE2ERunOptions` 增加 `runReviewMode`，并在 `deferred` 模式下跳过 inline review 构建，保证 `final_result` 先返回。
+  - 在 [lib/ai/intent-e2e-run-registry.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-run-registry.ts)：
+    - 统一以 `runReviewMode: 'deferred'` 调用 `runIntentDrivenE2EStream(...)`
+    - 在 run 进入终态并完成首轮持久化后，用后台异步补写 `result.review`
+    - review 补写完成后再次持久化 snapshot，但不追加第二个 `final_result` 事件
+  - 在 [components/IntentE2EWorkbench.tsx](/Users/xiaolongbao/Workspace/ai-test/components/IntentE2EWorkbench.tsx) 增加 terminal 后短轮询：
+    - 若 run 已终态但 `result.review` 仍为空，则自动补拉最新 run record
+    - review 到位后只刷新 result 面板，不重放整条流
+  - 在 [lib/intent-e2e-run-review.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-run-review.ts) 收口 `matchedRecipeSlugs`：
+    - 不再只依赖 runtime `recipes`
+    - 同时回退读取 `executionPlan / verificationPlan.matchedRecipeSlugs`
+  - 补齐回归：
+    - [tests/unit/intent-e2e-run-review.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-run-review.spec.ts)
+    - [tests/unit/intent-e2e-service.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-service.spec.ts)
+    - [tests/unit/intent-e2e-run-registry.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-run-registry.spec.ts)
+- 验证：
+  - 执行：
+    - `npx vitest run tests/unit/intent-e2e-run-review.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts`
+    - `npm run build`
+    - `npm run build:web`
+    - `node scripts/check-doc-links.mjs`
+    - `node scripts/check-roadmap-progress.mjs`
+  - 结果：
+    - `3` 个测试文件通过，`51/51 passed`
+    - `build` 通过
+    - `build:web` 通过
+    - 文档链接校验通过
+    - roadmap 进度校验通过
+- 当前结果：
+  - run registry 现在会先把 `final_result` 写入终态，review 不再阻塞主运行完成点。
+  - workbench 在不改现有 stream 协议的前提下，能够自动补拿后台异步写回的 review。
+  - `playbookCandidates` 的 recipe slug 来源不再只依赖 runtime `recipes`，避免 registry 侧异步 review 因缺少 planning 对象而丢失 recipe 线索。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成（MVP）
+    - `E2`：已完成首刀（candidate-only）
+    - `E3`：已完成（run 终态后异步补写 review）
+    - `E4`：未开始
+- 风险 / 未完成：
+  - `E2` 目前仍只生成 candidate，尚未进入 recipe / knowledge 的 promotion 治理闭环。
+  - `E3` 当前依赖 terminal 后短轮询补拿 review，尚未新增专用 stream 事件。
+  - 当前还没有 benchmark / holdout 回放数据，无法量化本轮 async review 的真实收益。
+- 下一步：
+  - 优先把 `E2 candidate -> registry / knowledge draft` 的 promotion 和回滚治理打通。
+  - 再补 benchmark / holdout 回放，验证 recall + async review 的真实收益。
