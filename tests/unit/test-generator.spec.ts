@@ -419,6 +419,91 @@ Error: element(s) not found`,
     expect(prompt).toContain('最近验证: 2026-03-25T12:34:56.000Z');
   });
 
+  it('injects structured experience recall into generation prompts', () => {
+    const snapshot = {
+      url: 'https://example.com/checkout',
+      title: '结算页',
+      forms: [],
+      buttons: [],
+      tooltipElements: [],
+      links: [],
+      headings: [{ level: 'H1', text: '结算页' }],
+      screenshot: '',
+    };
+    const description = '访问结算页并提交，最终看到成功页';
+    const context = {
+      taskMode: 'scenario' as const,
+      scenarioEntryUrl: 'https://example.com/checkout',
+      expectedOutcome: '看到成功页面',
+      scenarioSummary: '打开结算页并提交，看到成功页面',
+      scenarioSteps: [
+        {
+          stepUid: 'step_checkout',
+          stepType: 'ui' as const,
+          title: '提交结算',
+          target: 'https://example.com/checkout',
+          instruction: '提交表单并等待成功结果',
+          expectedResult: '看到成功页面',
+          extractVariable: 'orderId',
+        },
+      ],
+    };
+    const planning = resolveIntentPromptPlanningContext(snapshot, description, context, {
+      experienceHints: [
+        {
+          hintId: 'exp-success-1',
+          kind: 'successful_run',
+          outcome: 'first_pass',
+          runId: 'intent-run-success-1',
+          projectUid: 'proj_default',
+          moduleUid: 'mod_checkout',
+          scenarioFamily: 'simple_scenario',
+          scenarioTitle: '结算成功流程',
+          requestSummary: '访问结算页并完成提交',
+          targetPath: '/checkout',
+          matchScore: 11.5,
+          matchedSignals: ['同页面', '同 family'],
+          matchedRecipeSlugs: ['auth.unified-login'],
+          chosenHelpers: ['__e2e.waitForApiResponse'],
+          verifierStrategySummary: 'expected=看到成功页面；stable=orderId',
+          stableEntityHints: ['orderId'],
+          pitfalls: [],
+          playbookSlugs: ['intent.checkout-success'],
+        },
+        {
+          hintId: 'exp-failure-1',
+          kind: 'failed_run',
+          outcome: 'failed',
+          runId: 'intent-run-failure-1',
+          projectUid: 'proj_default',
+          moduleUid: 'mod_checkout',
+          scenarioFamily: 'simple_scenario',
+          scenarioTitle: '结算列表未刷新',
+          requestSummary: '提交后列表没有刷新',
+          targetPath: '/checkout',
+          matchScore: 7.3,
+          matchedSignals: ['同页面'],
+          matchedRecipeSlugs: [],
+          chosenHelpers: ['__e2e.waitForApiResponse'],
+          verifierStrategySummary: '',
+          stableEntityHints: ['orderId'],
+          pitfalls: ['曾命中过 assertion_too_strict'],
+          playbookSlugs: [],
+        },
+      ],
+    });
+
+    const prompt = buildPrompt(snapshot, description, undefined, [], '', context, planning);
+
+    expect(prompt).toContain('## 最近相似运行经验（结构化摘要）');
+    expect(prompt).toContain('[success | score=11.5] 访问结算页并完成提交');
+    expect(prompt).toContain('playbook=intent.checkout-success');
+    expect(prompt).toContain('verifier=expected=看到成功页面；stable=orderId');
+    expect(prompt).toContain('相似失败提示：');
+    expect(prompt).toContain('[failure | score=7.3] 提交后列表没有刷新');
+    expect(prompt).toContain('failure hint 只负责避坑');
+  });
+
   it('adds explicit conservative-review boundaries into repair prompts', () => {
     const description = [
       '能力验证UID：cap_review',

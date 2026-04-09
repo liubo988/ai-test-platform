@@ -262,6 +262,79 @@ type IntentKnowledgeSummary = {
   starterAssets?: IntentResolvedStarterAsset[];
 };
 
+type IntentExperienceHint = {
+  hintId: string;
+  kind: 'successful_run' | 'failed_run';
+  outcome: 'first_pass' | 'repaired_pass' | 'failed';
+  runId: string;
+  projectUid: string;
+  moduleUid: string;
+  scenarioFamily: string;
+  scenarioTitle: string;
+  requestSummary: string;
+  targetPath: string;
+  matchScore: number;
+  matchedSignals: string[];
+  matchedRecipeSlugs: string[];
+  chosenHelpers: string[];
+  verifierStrategySummary: string;
+  stableEntityHints: string[];
+  pitfalls: string[];
+  playbookSlugs: string[];
+};
+
+type IntentExperienceSummary = {
+  source: 'project_terminal_runs';
+  scannedRunCount: number;
+  matchedRunCount: number;
+  hints: IntentExperienceHint[];
+};
+
+type IntentPlaybookCandidate = {
+  candidateId: string;
+  slug: string;
+  title: string;
+  scenarioFamily: string;
+  targetPath: string;
+  matchedRecipeSlugs: string[];
+  stepTypes: string[];
+  preconditions: string[];
+  executorPlan: string[];
+  verifierPlan: string[];
+  preferredHelpers: string[];
+  knownPitfalls: string[];
+  sourceRunIds: string[];
+  successRate: number;
+  lastVerifiedAt: string;
+  promotionStatus: 'candidate';
+};
+
+type IntentRunReviewAction = {
+  action:
+    | 'reuse_similar_flow'
+    | 'prepare_prerequisites'
+    | 'preview_knowledge_draft'
+    | 'edit_description'
+    | 'handoff_manual'
+    | 'promote_playbook';
+  label: string;
+  description: string;
+  recommended: boolean;
+};
+
+type IntentRunReviewAdvice = {
+  headline: string;
+  summary: string;
+  actions: IntentRunReviewAction[];
+};
+
+type IntentRunReview = {
+  reviewedAt: string;
+  summary: string;
+  playbookCandidates: IntentPlaybookCandidate[];
+  nextStepAdvice: IntentRunReviewAdvice | null;
+};
+
 type IntentAssetReadinessStatus = 'ready' | 'asset_missing' | 'no_hit';
 
 type IntentAssetReadiness = {
@@ -431,10 +504,12 @@ type IntentRunResult = {
   resolvedUrls?: IntentResolvedUrls;
   description: string;
   knowledge?: IntentKnowledgeSummary | null;
+  experience?: IntentExperienceSummary | null;
   assetReadiness?: IntentAssetReadiness | null;
   repairBudget?: IntentRepairBudget | null;
   failureCta?: IntentFailureCta | null;
   qualitySplit?: IntentQualitySplit | null;
+  review?: IntentRunReview | null;
   attempts: IntentAttempt[];
   finalResult: TestResult;
   finalFailureTriage?: IntentFailureTriage | null;
@@ -3459,6 +3534,50 @@ function normalizeIntentFailureTriage(triage?: IntentFailureTriage | null): Inte
   };
 }
 
+function normalizeIntentExperienceSummary(summary?: IntentExperienceSummary | null): IntentExperienceSummary | null {
+  if (!summary) return null;
+
+  return {
+    ...summary,
+    hints: (summary.hints || []).map((hint) => ({
+      ...hint,
+      matchedSignals: hint.matchedSignals || [],
+      matchedRecipeSlugs: hint.matchedRecipeSlugs || [],
+      chosenHelpers: hint.chosenHelpers || [],
+      stableEntityHints: hint.stableEntityHints || [],
+      pitfalls: hint.pitfalls || [],
+      playbookSlugs: hint.playbookSlugs || [],
+    })),
+  };
+}
+
+function normalizeIntentRunReview(review?: IntentRunReview | null): IntentRunReview | null {
+  if (!review) return null;
+
+  return {
+    ...review,
+    playbookCandidates: (review.playbookCandidates || []).map((candidate) => ({
+      ...candidate,
+      matchedRecipeSlugs: candidate.matchedRecipeSlugs || [],
+      stepTypes: candidate.stepTypes || [],
+      preconditions: candidate.preconditions || [],
+      executorPlan: candidate.executorPlan || [],
+      verifierPlan: candidate.verifierPlan || [],
+      preferredHelpers: candidate.preferredHelpers || [],
+      knownPitfalls: candidate.knownPitfalls || [],
+      sourceRunIds: candidate.sourceRunIds || [],
+    })),
+    nextStepAdvice: review.nextStepAdvice
+      ? {
+          ...review.nextStepAdvice,
+          actions: (review.nextStepAdvice.actions || []).map((action) => ({
+            ...action,
+          })),
+        }
+      : null,
+  };
+}
+
 function normalizeIntentAttempt(attempt: IntentAttempt, status: IntentAttempt['status'] = 'completed'): IntentAttempt {
   return {
     ...attempt,
@@ -3500,6 +3619,7 @@ function normalizeRunResult(result: IntentRunResult): IntentRunResult {
           starterAssets: result.knowledge.starterAssets || [],
         }
       : result.knowledge,
+    experience: normalizeIntentExperienceSummary(result.experience),
     assetReadiness: result.assetReadiness
       ? {
           ...result.assetReadiness,
@@ -3522,6 +3642,7 @@ function normalizeRunResult(result: IntentRunResult): IntentRunResult {
           ...result.qualitySplit,
         }
       : result.qualitySplit,
+    review: normalizeIntentRunReview(result.review),
     attempts: result.attempts.map((attempt) => normalizeIntentAttempt(attempt, 'completed')),
     finalResult: {
       ...result.finalResult,
@@ -4497,9 +4618,11 @@ export default function IntentE2EWorkbench({
   const displayFailureDiagnosis = displayFinalFailureTriage?.diagnosis || null;
   const displayLlmMeta = result?.llmMeta ?? streamState.llmMeta;
   const displayKnowledge = result?.knowledge ?? null;
+  const displayExperience = result?.experience ?? null;
   const displayAssetReadiness = result?.assetReadiness ?? null;
   const displayRepairBudget = !displayFinalResult?.success ? result?.repairBudget ?? null : null;
   const displayFailureCta = !displayFinalResult?.success ? result?.failureCta ?? null : null;
+  const displayReview = result?.review ?? null;
   const displayBlockedReasonLabels = useMemo(
     () =>
       uniqueStrings(
@@ -12551,6 +12674,158 @@ export default function IntentE2EWorkbench({
                         <p>最终尝试 helper：{summarizeTextList(finalAttempt.helperUsage.usedHelpers, 4)}</p>
                       )}
                   </div>
+                </div>
+              )}
+
+              {displayExperience && (displayExperience.scannedRunCount > 0 || displayExperience.hints.length > 0) && (
+                <div className="mt-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-medium text-slate-900">相似运行经验</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">只回放结构化经验摘要，不直接把历史脚本全文塞回这次生成链路。</p>
+                    </div>
+                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-medium text-emerald-700">
+                      命中 {displayExperience.hints.length} 条
+                    </span>
+                  </div>
+
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-400">检索范围</p>
+                      <p className="mt-2 text-sm font-medium text-slate-900">
+                        扫描 {displayExperience.scannedRunCount} 条 · 命中 {displayExperience.matchedRunCount} 条
+                      </p>
+                      <p className="mt-2 text-[11px] leading-5 text-slate-500">source：{displayExperience.source}</p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <p className="text-xs uppercase tracking-[0.14em] text-slate-400">经验覆盖</p>
+                      <p className="mt-2 text-sm font-medium text-slate-900">
+                        success {displayExperience.hints.filter((hint) => hint.kind === 'successful_run').length} · failure{' '}
+                        {displayExperience.hints.filter((hint) => hint.kind === 'failed_run').length}
+                      </p>
+                      <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                        命中 family：{summarizeTextList(displayExperience.hints.map((hint) => hint.scenarioFamily), 3)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 space-y-3">
+                    {displayExperience.hints.slice(0, 3).map((hint) => (
+                      <div key={hint.hintId} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="text-sm font-medium text-slate-900">{hint.requestSummary || hint.scenarioTitle || hint.runId}</p>
+                          <span
+                            className={`rounded-full border px-2.5 py-1 text-[10px] font-medium ${
+                              hint.kind === 'successful_run'
+                                ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                : 'border-amber-200 bg-amber-50 text-amber-700'
+                            }`}
+                          >
+                            {hint.kind === 'successful_run'
+                              ? hint.outcome === 'first_pass'
+                                ? '首轮通过'
+                                : '修复后通过'
+                              : '失败避坑'}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                          score {hint.matchScore} · 命中 {summarizeTextList(hint.matchedSignals, 4)} · 路径 {hint.targetPath || '—'}
+                        </p>
+                        <div className="mt-2 space-y-1 text-[11px] leading-5 text-slate-500">
+                          <p>recipes：{summarizeTextList(hint.matchedRecipeSlugs, 3)}</p>
+                          <p>helpers：{summarizeTextList(hint.chosenHelpers, 4)}</p>
+                          <p>stable：{summarizeTextList(hint.stableEntityHints, 3)}</p>
+                          {hint.verifierStrategySummary ? <p>verifier：{hint.verifierStrategySummary}</p> : null}
+                          {hint.pitfalls.length > 0 ? <p>pitfalls：{summarizeTextList(hint.pitfalls, 2)}</p> : null}
+                          {hint.playbookSlugs.length > 0 ? <p>playbook：{summarizeTextList(hint.playbookSlugs, 2)}</p> : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {displayReview && (displayReview.summary || displayReview.playbookCandidates.length > 0 || displayReview.nextStepAdvice) && (
+                <div className="mt-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-medium text-slate-900">运行复盘</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">把这次 run 的经验、下一步建议和可沉淀 playbook 候选收口到同一处。</p>
+                    </div>
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-600">
+                      {displayReview.reviewedAt ? '已复盘' : '待复盘'}
+                    </span>
+                  </div>
+
+                  <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <p className="text-xs uppercase tracking-[0.14em] text-slate-400">summary</p>
+                    <p className="mt-2 text-sm leading-6 text-slate-700">{displayReview.summary || '—'}</p>
+                    {displayReview.reviewedAt ? (
+                      <p className="mt-2 text-[11px] leading-5 text-slate-500">reviewedAt：{displayReview.reviewedAt}</p>
+                    ) : null}
+                  </div>
+
+                  {displayReview.nextStepAdvice && (
+                    <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-medium text-slate-900">{displayReview.nextStepAdvice.headline}</p>
+                          <p className="mt-1 text-xs leading-6 text-slate-500">{displayReview.nextStepAdvice.summary}</p>
+                        </div>
+                        <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-[11px] font-medium text-sky-700">
+                          下一步 {displayReview.nextStepAdvice.actions.length} 项
+                        </span>
+                      </div>
+                      {displayReview.nextStepAdvice.actions.length > 0 && (
+                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                          {displayReview.nextStepAdvice.actions.map((action) => (
+                            <div key={`${action.action}-${action.label}`} className="rounded-2xl border border-white/80 bg-white px-4 py-3">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-sm font-medium text-slate-900">{action.label}</p>
+                                {action.recommended && (
+                                  <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[10px] font-medium text-amber-700">
+                                    建议优先
+                                  </span>
+                                )}
+                              </div>
+                              <p className="mt-2 text-xs leading-6 text-slate-500">{action.description}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {displayReview.playbookCandidates.length > 0 && (
+                    <div className="mt-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-medium text-slate-900">Playbook Candidates</p>
+                        <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-medium text-emerald-700">
+                          {displayReview.playbookCandidates.length} 条
+                        </span>
+                      </div>
+                      <div className="mt-3 space-y-3">
+                        {displayReview.playbookCandidates.slice(0, 3).map((candidate) => (
+                          <div key={candidate.candidateId} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="text-sm font-medium text-slate-900">{candidate.title || candidate.slug}</p>
+                              <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[10px] font-medium text-emerald-700">
+                                {candidate.successRate}% · {candidate.promotionStatus}
+                              </span>
+                            </div>
+                            <div className="mt-2 space-y-1 text-[11px] leading-5 text-slate-500">
+                              <p>slug：{candidate.slug}</p>
+                              <p>target：{candidate.targetPath || '—'} · family：{candidate.scenarioFamily || 'generic'}</p>
+                              <p>recipes：{summarizeTextList(candidate.matchedRecipeSlugs, 3)}</p>
+                              <p>helpers：{summarizeTextList(candidate.preferredHelpers, 4)}</p>
+                              <p>stepTypes：{summarizeTextList(candidate.stepTypes, 4)}</p>
+                              <p>pitfalls：{summarizeTextList(candidate.knownPitfalls, 2)}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 

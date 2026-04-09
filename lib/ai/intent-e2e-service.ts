@@ -92,6 +92,8 @@ import type { IntentE2ECiCdReport } from '@/lib/intent-e2e-cicd-report';
 import type { IntentE2ECiCdProfile, IntentE2ESystemOnboardingManifestSummary } from '@/lib/intent-e2e-system-onboarding';
 import { resolveIntentRunnerAdapter, type IntentRunnerGeneratedArtifact } from '@/lib/intent-runner-adapter';
 import { listIntentE2ERunSnapshots } from '@/lib/db/repository';
+import { searchIntentE2EExperienceHints, type IntentE2EExperienceSummary } from '@/lib/intent-e2e-experience-search';
+import { buildIntentE2ERunReview, type IntentE2ERunReview } from '@/lib/intent-e2e-run-review';
 
 export interface IntentE2EKnowledgeSummary {
   profilePath: string;
@@ -214,6 +216,7 @@ export interface IntentE2ERunResult {
   resolvedUrls?: IntentE2EResolvedUrls;
   description: string;
   knowledge?: IntentE2EKnowledgeSummary | null;
+  experience?: IntentE2EExperienceSummary | null;
   assetReadiness?: IntentE2EAssetReadiness | null;
   repairBudget?: IntentE2ERepairBudget | null;
   failureCta?: IntentE2EFailureCta | null;
@@ -221,6 +224,7 @@ export interface IntentE2ERunResult {
   artifactIndex?: IntentE2ERunArtifactIndex | null;
   ciReport?: IntentE2ECiCdReport | null;
   knowledgeCandidates?: IntentE2ESuccessKnowledgeCandidate[];
+  review?: IntentE2ERunReview | null;
   attempts: IntentE2EAttempt[];
   finalResult: TestResult;
   finalFailureTriage?: IntentE2EFailureTriage | null;
@@ -2627,17 +2631,30 @@ export async function runIntentDrivenE2EStream(
         }
       );
   throwIfAborted(signal);
-  const [rulePerformanceById, starterHelpers, recipePerformanceBySlug] = await Promise.all([
+  const [rulePerformanceById, starterHelpers, recipePerformanceBySlug, experienceSummary] = await Promise.all([
     loadIntentE2ERulePerformanceFeedback(projectUid),
     loadIntentE2EStarterHelperFeedback(projectUid),
     loadIntentE2ERecipePerformanceFeedback(projectUid),
+    searchIntentE2EExperienceHints({
+      projectUid,
+      moduleUid: input.moduleUid?.trim() || '',
+      requestInput: trimmedInput,
+      targetUrl,
+      scenarioTitle: scenarioCardOutput.card.title,
+      taskMode: scenarioCardOutput.card.taskMode,
+      visualAnchors: scenarioCardOutput.card.visualAnchors,
+      stepTypes: scenarioCardOutput.card.flowDefinition.steps.map((step) => step.stepType),
+      includeFailures: true,
+    }),
   ]);
+  const experience = experienceSummary;
   const planning = resolveIntentPromptPlanningContext(snapshot, description, promptContext, {
     auth: input.auth,
     projectUid,
     rulePerformanceById,
     starterHelpers,
     recipePerformanceBySlug,
+    experienceHints: experience?.hints,
   });
   const compiledTemplate = planning.executionPlan
     ? compileIntentExecutionTemplate({
@@ -3202,6 +3219,31 @@ export async function runIntentDrivenE2EStream(
         assetReadiness,
         triage: finalFailureTriage,
       });
+  const failureCta = finalResult.success
+    ? null
+    : buildIntentE2EFailureCta({
+        assetReadiness,
+        triage: finalFailureTriage,
+        repairBudget,
+        attemptCount: attempts.length,
+      });
+  const review = buildIntentE2ERunReview({
+    runId: options?.runId,
+    targetUrl,
+    description,
+    scenarioTitle: scenarioCardOutput.card.title,
+    scenarioFamily: planning.priorityScenarioFamily || '',
+    executionPlan: planning.executionPlan,
+    verificationPlan: planning.verificationPlan,
+    recipes: planning.recipes,
+    experience,
+    finalResult: {
+      success: finalResult.success,
+    },
+    finalFailureTriage,
+    failureCta,
+    attempts,
+  });
   let artifactIndex: IntentE2ERunArtifactIndex | null = null;
   if (options?.runId) {
     try {
@@ -3229,19 +3271,14 @@ export async function runIntentDrivenE2EStream(
     resolvedUrls,
     description,
     knowledge,
+    experience,
     assetReadiness,
     repairBudget,
-    failureCta: finalResult.success
-      ? null
-      : buildIntentE2EFailureCta({
-          assetReadiness,
-          triage: finalFailureTriage,
-          repairBudget,
-          attemptCount: attempts.length,
-        }),
+    failureCta,
     qualitySplit,
     artifactIndex,
     knowledgeCandidates,
+    review,
     attempts,
     finalResult,
     finalFailureTriage: finalResult.success ? null : finalFailureTriage,

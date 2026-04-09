@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { runIntentDrivenE2EStream, type IntentE2EStreamEvent } from '@/lib/ai/intent-e2e-service';
 import { getIntentE2ERecipePerformanceMap, getIntentE2ERulePerformanceMap, getIntentE2EStarterHelpers } from '@/lib/ai/intent-e2e-insights';
 import { listIntentE2ERunSnapshots } from '@/lib/db/repository';
+import { searchIntentE2EExperienceHints } from '@/lib/intent-e2e-experience-search';
+import { buildIntentE2ERunReview } from '@/lib/intent-e2e-run-review';
 import { getIntentProjectOnboardingPath, readIntentProjectOnboardingStatus } from '@/lib/intent-project-onboarding';
 import { getIntentProjectKnowledgePath } from '@/lib/intent-project-knowledge';
 import { analyzePage, precheckPageAccess } from '@/lib/page-analyzer';
@@ -81,6 +83,14 @@ vi.mock('@/lib/db/repository', () => ({
   listIntentE2ERunSnapshots: vi.fn(),
 }));
 
+vi.mock('@/lib/intent-e2e-experience-search', () => ({
+  searchIntentE2EExperienceHints: vi.fn(),
+}));
+
+vi.mock('@/lib/intent-e2e-run-review', () => ({
+  buildIntentE2ERunReview: vi.fn(),
+}));
+
 function toAsyncGenerator(events: GenerateEvent[]): AsyncGenerator<GenerateEvent> {
   return (async function* () {
     for (const event of events) {
@@ -134,9 +144,95 @@ const recordedFailureHint = {
   lastSeenAt: '2026-03-16T09:10:00.000Z',
 };
 
+const experienceSummary = {
+  source: 'project_terminal_runs' as const,
+  scannedRunCount: 6,
+  matchedRunCount: 2,
+  hints: [
+    {
+      hintId: 'exp-success-1',
+      kind: 'successful_run' as const,
+      outcome: 'first_pass' as const,
+      runId: 'intent-run-success-1',
+      projectUid: 'proj_default',
+      moduleUid: 'mod_checkout',
+      scenarioFamily: 'simple_scenario',
+      scenarioTitle: '结算成功页',
+      requestSummary: '访问结算页并提交，最终看到成功页',
+      targetPath: '/checkout',
+      matchScore: 11.5,
+      matchedSignals: ['同模块', '同页面', '关键词=结算页/成功页'],
+      matchedRecipeSlugs: ['auth.unified-login'],
+      chosenHelpers: ['__e2e.waitForApiResponse'],
+      verifierStrategySummary: 'expected=看到成功页面；signals=提交成功',
+      stableEntityHints: ['orderId'],
+      pitfalls: [],
+      playbookSlugs: ['intent.checkout-success'],
+    },
+    {
+      hintId: 'exp-failure-1',
+      kind: 'failed_run' as const,
+      outcome: 'failed' as const,
+      runId: 'intent-run-failure-1',
+      projectUid: 'proj_default',
+      moduleUid: 'mod_checkout',
+      scenarioFamily: 'simple_scenario',
+      scenarioTitle: '结算失败样例',
+      requestSummary: '结算页提交后列表未刷新',
+      targetPath: '/checkout',
+      matchScore: 7.5,
+      matchedSignals: ['同页面'],
+      matchedRecipeSlugs: [],
+      chosenHelpers: ['__e2e.waitForApiResponse'],
+      verifierStrategySummary: '',
+      stableEntityHints: ['orderId'],
+      pitfalls: ['曾命中过 selector_drift'],
+      playbookSlugs: [],
+    },
+  ],
+};
+
+const runReview = {
+  reviewedAt: '2026-04-09T02:00:00.000Z',
+  summary: '已生成 1 条可复用 playbook candidate。',
+  playbookCandidates: [
+    {
+      candidateId: 'candidate-checkout',
+      slug: 'intent.checkout-success',
+      title: '打开结算页并提交',
+      scenarioFamily: 'simple_scenario',
+      targetPath: '/checkout',
+      matchedRecipeSlugs: ['auth.unified-login'],
+      stepTypes: ['ui'],
+      preconditions: ['保持登录态稳定'],
+      executorPlan: ['打开结算页：进入页面并等待接口返回'],
+      verifierPlan: ['成功标准 1：成功页出现“提交成功”'],
+      preferredHelpers: ['__e2e.waitForApiResponse'],
+      knownPitfalls: [],
+      sourceRunIds: ['intent-run-current'],
+      successRate: 100,
+      lastVerifiedAt: '2026-04-09T02:00:00.000Z',
+      promotionStatus: 'candidate' as const,
+    },
+  ],
+  nextStepAdvice: {
+    headline: '当前链路已通过，建议尽快把稳定做法沉淀成可复用资产。',
+    summary: '这次运行已经形成可复用的执行骨架和验收策略。',
+    actions: [
+      {
+        action: 'promote_playbook' as const,
+        label: '沉淀为 playbook 候选',
+        description: '后续可继续并入 recipe / knowledge 治理。',
+        recommended: true,
+      },
+    ],
+  },
+};
+
 function createPlanningContext(input?: {
   knowledgeMatches?: Array<Record<string, unknown>>;
   capabilitySlugs?: string[];
+  experienceHints?: Array<Record<string, unknown>>;
 }) {
   const knowledgeMatches =
     input?.knowledgeMatches ??
@@ -242,6 +338,7 @@ function createPlanningContext(input?: {
       matches: knowledgeMatches,
       capabilitySlugs,
     },
+    experienceHints: input?.experienceHints || [],
   } as any;
 }
 
@@ -478,6 +575,8 @@ beforeEach(() => {
     projectUid ? `reports/intent-e2e/projects/${projectUid}/intent-e2e-repair-memory.json` : 'reports/intent-e2e-repair-memory.json'
   );
   vi.mocked(listIntentE2ERunSnapshots).mockResolvedValue([] as never);
+  vi.mocked(searchIntentE2EExperienceHints).mockResolvedValue(experienceSummary);
+  vi.mocked(buildIntentE2ERunReview).mockReturnValue(runReview as never);
   vi.mocked(executeTest).mockResolvedValue({
     success: true,
     duration: 420,
@@ -501,7 +600,11 @@ beforeEach(() => {
   }));
   vi.spyOn(fs, 'existsSync').mockReturnValue(true);
   vi.mocked(repairTest).mockReturnValue(toAsyncGenerator([]));
-  vi.mocked(resolveIntentPromptPlanningContext).mockReturnValue(createPlanningContext());
+  vi.mocked(resolveIntentPromptPlanningContext).mockReturnValue(
+    createPlanningContext({
+      experienceHints: experienceSummary.hints as unknown as Array<Record<string, unknown>>,
+    })
+  );
 });
 
 describe('intent-e2e-service stream', () => {
@@ -629,6 +732,7 @@ describe('intent-e2e-service stream', () => {
         },
       ],
     });
+    expect(result.experience).toEqual(experienceSummary);
     expect(result.assetReadiness).toEqual({
       status: 'ready',
       projectUid: '',
@@ -643,6 +747,7 @@ describe('intent-e2e-service stream', () => {
     });
     expect(result.testType).toBe('browser_e2e');
     expect(result.runnerType).toBe('playwright_runner');
+    expect(result.review).toEqual(runReview);
     expect(result.testCase).toMatchObject({
       schemaVersion: 1,
       source: 'intent_e2e',
@@ -763,7 +868,20 @@ describe('intent-e2e-service stream', () => {
           recommendation: '适合作为首轮生成时优先复用的 starter helper。',
         },
       ],
+      experienceHints: experienceSummary.hints,
     });
+    expect(vi.mocked(searchIntentE2EExperienceHints)).toHaveBeenCalledWith({
+      projectUid: '',
+      moduleUid: '',
+      requestInput: '访问结算页并提交，最终看到成功页',
+      targetUrl: 'https://example.com/checkout',
+      scenarioTitle: '结算成功页',
+      taskMode: 'scenario',
+      visualAnchors: ['成功页头部'],
+      stepTypes: [],
+      includeFailures: true,
+    });
+    expect(vi.mocked(buildIntentE2ERunReview)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(generateTest).mock.calls[0]?.[6]).toMatchObject({
       executionPlan: expect.objectContaining({
         compiler: 'deterministic_dsl_v1',
@@ -784,6 +902,7 @@ describe('intent-e2e-service stream', () => {
           }),
         ],
       }),
+      experienceHints: experienceSummary.hints,
     });
 
     expect(events.some((event) => event.type === 'scenario_card')).toBe(true);

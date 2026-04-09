@@ -15436,3 +15436,74 @@
   - 若后续继续扩展，只能在新 roadmap 里另行定义目标和边界
 - 下一步：
   - 当前 roadmap scope 已完成，本轮不再追加新开发项
+
+## 2026-04-09 第二百三十五次更新（后续专项第一刀：experience recall / playbook candidate / run review 首刀已落地）
+
+- 本轮目标：
+  - 严格按 [docs/intent-e2e-experience-recall-playbook-plan-2026-04-09.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-experience-recall-playbook-plan-2026-04-09.md) 只做后续专项的最小首刀：
+    - `E1`：experience recall MVP
+    - `E2`：playbook candidate only
+    - `E3`：run review 首刀
+  - 不扩 `E4 OCR`，不新造 DB schema，不新增 route，不把 playbook 自动写入 registry。
+- 已完成：
+  - 新增 [lib/intent-e2e-experience-search.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-experience-search.ts)，基于项目 terminal run snapshot 产出结构化 `IntentExperienceHint[]`。
+  - 在 [lib/ai/intent-e2e-service.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-service.ts)：
+    - 在 planning 前并行召回相似经验
+    - 把 `experienceHints` 注入 `resolveIntentPromptPlanningContext(...)`
+    - 在最终 `IntentE2ERunResult` 写回 `experience / review`
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 把相似经验摘要接入 generation / repair prompt 和 thinking message。
+  - 新增 [lib/intent-e2e-run-review.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-run-review.ts)，把：
+    - 成功 run 收口为 `playbookCandidates`
+    - 失败 run 收口为 `nextStepAdvice`
+  - 在 [lib/ai/intent-e2e-run-registry.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-run-registry.ts) 补齐 `experience / review` 的 clone / persisted restore。
+  - 在 [components/IntentE2EWorkbench.tsx](/Users/xiaolongbao/Workspace/ai-test/components/IntentE2EWorkbench.tsx) 增加最小展示：
+    - `相似运行经验`
+    - `运行复盘`
+    - `下一步建议`
+    - `Playbook Candidates`
+  - 补齐回归：
+    - [tests/unit/intent-e2e-experience-search.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-experience-search.spec.ts)
+    - [tests/unit/intent-e2e-run-review.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-run-review.spec.ts)
+    - [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts)
+    - [tests/unit/intent-e2e-service.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-service.spec.ts)
+    - [tests/unit/intent-e2e-run-registry.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-run-registry.spec.ts)
+- 验证：
+  - 执行：
+    - `npx vitest run tests/unit/intent-e2e-experience-search.spec.ts tests/unit/intent-e2e-run-review.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-run-registry.spec.ts`
+    - `npm run build`
+    - `npm run build:web`
+    - `node scripts/check-doc-links.mjs`
+  - 结果：
+    - `5` 个测试文件通过，`135/135 passed`
+    - `build` 通过
+    - `build:web` 通过
+    - 文档链接校验通过
+- 当前结果：
+  - 同项目、同页面、同 family 的相似成功经验，现在可以以结构化摘要形式进入 planning / prompt，而不是只依赖 exact-match 脚本复用。
+  - workbench 现在能直接看到：
+    - 相似成功 / 失败经验摘要
+    - 运行复盘摘要
+    - 下一步建议
+    - playbook candidate
+  - 这轮没有引入新的自由 memory 系统，也没有把历史脚本全文直接灌回模型。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成（MVP）
+    - `E2`：已完成首刀（candidate-only）
+    - `E3`：已完成首刀（run tail 同步复盘版）
+    - `E4`：未开始
+- 风险 / 未完成：
+  - `E3` 仍是同步 tail review，尚未独立异步化。
+  - `E2` 目前只生成 candidate，尚未进入 recipe / knowledge 的 promotion 治理闭环。
+  - 当前还没有新增 benchmark / holdout 数据，本轮只完成结构化接线和最小回归。
+- 下一步：
+  - 先把 `E3` review 异步化，避免持续挂在主 run 尾部。
+  - 再把 `E2 candidate -> registry / knowledge draft` 的 promotion 和回滚治理打通。

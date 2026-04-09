@@ -59,6 +59,7 @@ import {
   resolveIntentStarterAssets,
   type IntentResolvedStarterAsset,
 } from './intent-starter-assets';
+import type { IntentExperienceHint } from './intent-e2e-experience-search';
 import type { IntentE2EInsightStarterHelper } from './ai/intent-e2e-insights';
 import { buildIntentSharedVariableJsonPaths } from './intent-shared-variable-utils';
 import type { LLMRuntimeOverrides } from './llm/provider-config';
@@ -417,6 +418,7 @@ export interface ResolvedPromptPlanningContext {
   priorityScenarioFamilyRoute?: IntentE2EPriorityScenarioFamilyRoute;
   dsl: IntentActionDSL;
   knowledge: IntentProjectKnowledgeResolution;
+  experienceHints?: IntentExperienceHint[];
   starterHelpers?: IntentResolvedStarterAsset[];
   recipes?: IntentMatchedRecipe[];
   executionPlan?: IntentExecutionPlan;
@@ -429,6 +431,7 @@ export interface ResolveIntentPromptPlanningOptions {
   auth?: AuthConfig;
   recipePerformanceBySlug?: Record<string, IntentRecipePerformanceFeedback>;
   projectUid?: string;
+  experienceHints?: IntentExperienceHint[];
 }
 
 type ResolvedStarterHelper = NonNullable<ResolvedPromptPlanningContext['starterHelpers']>[number];
@@ -536,6 +539,7 @@ export function resolveIntentPromptPlanningContext(
     priorityScenarioFamilyRoute,
     dsl: finalDsl,
     knowledge,
+    experienceHints: options.experienceHints,
     starterHelpers,
     recipes,
     executionPlan,
@@ -554,6 +558,37 @@ function buildProjectKnowledgeSection(planning: ResolvedPromptPlanningContext): 
     : '';
   return rendered ? `
 ${rendered}` : '';
+}
+
+function buildExperienceHintLine(item: IntentExperienceHint): string {
+  const matchedSignals = item.matchedSignals.length > 0 ? `；命中=${item.matchedSignals.join(' / ')}` : '';
+  const recipes = item.matchedRecipeSlugs.length > 0 ? `；recipes=${item.matchedRecipeSlugs.slice(0, 2).join(' / ')}` : '';
+  const helpers = item.chosenHelpers.length > 0 ? `；helpers=${item.chosenHelpers.slice(0, 3).join(' / ')}` : '';
+  const stable = item.stableEntityHints.length > 0 ? `；stable=${item.stableEntityHints.slice(0, 3).join(' / ')}` : '';
+  const playbook = item.playbookSlugs.length > 0 ? `；playbook=${item.playbookSlugs.slice(0, 2).join(' / ')}` : '';
+  const pitfalls = item.pitfalls.length > 0 ? `；pitfalls=${item.pitfalls.slice(0, 2).join(' / ')}` : '';
+
+  return `- [${item.kind === 'successful_run' ? 'success' : 'failure'} | score=${item.matchScore}] ${item.requestSummary || item.scenarioTitle}${matchedSignals}${recipes}${helpers}${stable}${playbook}${pitfalls}${
+    item.verifierStrategySummary ? `\n  verifier=${item.verifierStrategySummary}` : ''
+  }`;
+}
+
+function buildExperienceSection(planning: ResolvedPromptPlanningContext): string {
+  if (!planning.experienceHints?.length) return '';
+
+  const successHints = planning.experienceHints.filter((item) => item.kind === 'successful_run');
+  const failureHints = planning.experienceHints.filter((item) => item.kind === 'failed_run');
+
+  return `
+## 最近相似运行经验（结构化摘要）
+${successHints.length > 0 ? `成功经验：\n${successHints.slice(0, 3).map(buildExperienceHintLine).join('\n')}` : '成功经验：- 无'}
+${failureHints.length > 0 ? `\n相似失败提示：\n${failureHints.slice(0, 2).map(buildExperienceHintLine).join('\n')}` : ''}
+
+使用边界：
+1. 这些内容只用于提示稳定路径与已知坑点，不要把它们当成可直接整段复制的历史脚本。
+2. 如果命中了 success hint，优先复用其中已经验证过的 recipe / helper / verifier 思路，而不是另起一套自由实现。
+3. failure hint 只负责避坑，不能覆盖已命中的成功路径。
+4. 若当前 DeterministicExecutionTemplate、ExecutionPlan 或项目知识已经给出更具体的结构化约束，以这些结构化约束为准。`;
 }
 
 function buildStarterHelperPreferredPromotionFragment(
@@ -1167,6 +1202,18 @@ function formatPlanningStarterHelperMessage(planning: ResolvedPromptPlanningCont
     .join(' / ')}。${releasedCount > 0 ? `其中 ${releasedCount} 个来自 suppressed 治理恢复，只能按恢复观察层保守使用。` : ''}${
     pendingPromotionCount > 0 ? `另有 ${pendingPromotionCount} 个尚未满足 preferred 自动提级条件。` : ''
   }${weakRecoveryCount > 0 ? `其中 ${weakRecoveryCount} 个仍含自动 repair 弱恢复信号，不等于长期正向证据。` : ''}`;
+}
+
+function formatPlanningExperienceMessage(planning: ResolvedPromptPlanningContext): string {
+  if (!planning.experienceHints?.length) return '';
+
+  const successCount = planning.experienceHints.filter((item) => item.kind === 'successful_run').length;
+  const failureCount = planning.experienceHints.filter((item) => item.kind === 'failed_run').length;
+  const topSummary = planning.experienceHints[0]?.requestSummary || planning.experienceHints[0]?.scenarioTitle || '';
+
+  return `最近相似经验：命中 ${planning.experienceHints.length} 条（success ${successCount}${failureCount > 0 ? ` / failure ${failureCount}` : ''}）${
+    topSummary ? `；优先参考「${topSummary}」` : ''
+  }。`;
 }
 
 function buildActionLibrarySection(
@@ -2184,6 +2231,7 @@ ${context.scenarioSummary || '未提供'}
     parts.push(`7. 除非 cleanupNotes 明确要求回滚，否则不要在脚本尾部自动把刚修改成功的业务数据改回原值；意图任务默认以完成目标业务动作为主。`);
   }
 
+  parts.push(buildExperienceSection(resolvedPlanning));
   parts.push(buildProjectKnowledgeSection(resolvedPlanning));
   parts.push(buildStarterHelperSection(resolvedPlanning));
   parts.push(buildRecipeRegistrySection(resolvedPlanning));
@@ -3022,6 +3070,13 @@ export async function* generateTest(
     type: 'thinking',
     content: formatPlanningKnowledgeHitMessage('', resolvedPlanning).trim(),
   };
+  const experienceMessage = formatPlanningExperienceMessage(resolvedPlanning);
+  if (experienceMessage) {
+    yield {
+      type: 'thinking',
+      content: experienceMessage,
+    };
+  }
   const starterHelperMessage = formatPlanningStarterHelperMessage(resolvedPlanning);
   if (starterHelperMessage) {
     yield {
@@ -3104,6 +3159,13 @@ export async function* repairTest(
     type: 'thinking',
     content: formatPlanningKnowledgeHitMessage('repair ', resolvedPlanning),
   };
+  const experienceMessage = formatPlanningExperienceMessage(resolvedPlanning);
+  if (experienceMessage) {
+    yield {
+      type: 'thinking',
+      content: `repair ${experienceMessage}`,
+    };
+  }
   const starterHelperMessage = formatPlanningStarterHelperMessage(resolvedPlanning);
   if (starterHelperMessage) {
     yield {

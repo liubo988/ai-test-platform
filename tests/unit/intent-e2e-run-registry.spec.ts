@@ -224,6 +224,53 @@ function createFinalResult(success = true): IntentE2ERunResult {
       qualityEligible: true,
       blockerKind: '',
     },
+    experience: {
+      source: 'project_terminal_runs',
+      scannedRunCount: 8,
+      matchedRunCount: 2,
+      hints: [
+        {
+          hintId: 'exp-checkout-success',
+          kind: 'successful_run',
+          outcome: 'first_pass',
+          runId: 'intent-run-prev-success',
+          projectUid: 'proj_checkout',
+          moduleUid: 'mod_checkout',
+          scenarioFamily: 'simple_scenario',
+          scenarioTitle: '结算成功流程',
+          requestSummary: '访问结算页并完成提交',
+          targetPath: '/checkout',
+          matchScore: 12,
+          matchedSignals: ['同页面', '同 family'],
+          matchedRecipeSlugs: ['auth.unified-login'],
+          chosenHelpers: ['__e2e.waitForApiResponse'],
+          verifierStrategySummary: 'expected=看到成功页面；stable=orderId',
+          stableEntityHints: ['orderId'],
+          pitfalls: [],
+          playbookSlugs: ['intent.checkout-success'],
+        },
+        {
+          hintId: 'exp-checkout-failure',
+          kind: 'failed_run',
+          outcome: 'failed',
+          runId: 'intent-run-prev-failure',
+          projectUid: 'proj_checkout',
+          moduleUid: 'mod_checkout',
+          scenarioFamily: 'simple_scenario',
+          scenarioTitle: '结算列表未刷新',
+          requestSummary: '提交后列表未出现新记录',
+          targetPath: '/checkout',
+          matchScore: 7.2,
+          matchedSignals: ['同页面'],
+          matchedRecipeSlugs: [],
+          chosenHelpers: ['__e2e.waitForApiResponse'],
+          verifierStrategySummary: '',
+          stableEntityHints: ['orderId'],
+          pitfalls: ['曾命中过 assertion_too_strict'],
+          playbookSlugs: [],
+        },
+      ],
+    },
     knowledgeCandidates: [
       {
         candidateId: 'success-candidate-order-lookup',
@@ -300,6 +347,57 @@ function createFinalResult(success = true): IntentE2ERunResult {
         },
       },
     ],
+    review: {
+      reviewedAt: '2026-03-16T10:05:00.000Z',
+      summary: success ? '已生成 1 条可复用 playbook candidate。' : '本次运行仍未通过，建议先参考最近相似成功路径。',
+      playbookCandidates: success
+        ? [
+            {
+              candidateId: 'candidate-checkout',
+              slug: 'intent.checkout-success',
+              title: '打开结算页并提交',
+              scenarioFamily: 'simple_scenario',
+              targetPath: '/checkout',
+              matchedRecipeSlugs: ['auth.unified-login'],
+              stepTypes: ['ui'],
+              preconditions: ['保持登录态稳定'],
+              executorPlan: ['打开结算页：进入页面并等待页面就绪'],
+              verifierPlan: ['成功标准 1：成功页出现“提交成功”且 orderId 可回查'],
+              preferredHelpers: ['__e2e.waitForApiResponse'],
+              knownPitfalls: [],
+              sourceRunIds: ['intent-run-current'],
+              successRate: 100,
+              lastVerifiedAt: '2026-03-16T10:05:00.000Z',
+              promotionStatus: 'candidate',
+            },
+          ]
+        : [],
+      nextStepAdvice: success
+        ? {
+            headline: '当前链路已通过，建议尽快把稳定做法沉淀成可复用资产。',
+            summary: '这次运行已经形成可复用的执行骨架和验收策略。',
+            actions: [
+              {
+                action: 'promote_playbook',
+                label: '沉淀为 playbook 候选',
+                description: '后续可继续并入 recipe / knowledge 治理。',
+                recommended: true,
+              },
+            ],
+          }
+        : {
+            headline: '这次失败更适合先收敛输入或补资产，再继续自动跑。',
+            summary: '优先参考最近相似成功路径，再结合 CTA 收敛下一步。',
+            actions: [
+              {
+                action: 'reuse_similar_flow',
+                label: '参考最近相似成功路径',
+                description: '先沿同页面 / 同 family 的成功 run 收敛描述和入口。',
+                recommended: true,
+              },
+            ],
+          },
+    },
     attempts: [
       {
         attempt: 1,
@@ -542,6 +640,25 @@ describe('intent-e2e-run-registry', () => {
       blocked: false,
       qualityEligible: true,
       blockerKind: '',
+    });
+    expect(finished?.result?.experience).toMatchObject({
+      source: 'project_terminal_runs',
+      scannedRunCount: 8,
+      matchedRunCount: 2,
+    });
+    expect(finished?.result?.experience?.hints[0]).toMatchObject({
+      hintId: 'exp-checkout-success',
+      matchedSignals: ['同页面', '同 family'],
+      matchedRecipeSlugs: ['auth.unified-login'],
+      playbookSlugs: ['intent.checkout-success'],
+    });
+    expect(finished?.result?.review).toMatchObject({
+      summary: '已生成 1 条可复用 playbook candidate。',
+    });
+    expect(finished?.result?.review?.playbookCandidates[0]).toMatchObject({
+      slug: 'intent.checkout-success',
+      preferredHelpers: ['__e2e.waitForApiResponse'],
+      sourceRunIds: ['intent-run-current'],
     });
     expect(finished?.result?.knowledgeCandidates?.[0]?.rule.recordLookupHints?.[0]?.detailEntry).toEqual({
       trigger: 'row_action',
@@ -1084,6 +1201,25 @@ describe('intent-e2e-run-registry', () => {
       blocked: false,
       qualityEligible: true,
       blockerKind: '',
+    });
+    expect(loaded?.result?.experience).toMatchObject({
+      source: 'project_terminal_runs',
+      scannedRunCount: 8,
+      matchedRunCount: 2,
+    });
+    expect(loaded?.result?.experience?.hints[0]).toMatchObject({
+      hintId: 'exp-checkout-success',
+      matchedSignals: ['同页面', '同 family'],
+      matchedRecipeSlugs: ['auth.unified-login'],
+      playbookSlugs: ['intent.checkout-success'],
+    });
+    expect(loaded?.result?.review).toMatchObject({
+      summary: '已生成 1 条可复用 playbook candidate。',
+    });
+    expect(loaded?.result?.review?.playbookCandidates[0]).toMatchObject({
+      slug: 'intent.checkout-success',
+      preferredHelpers: ['__e2e.waitForApiResponse'],
+      sourceRunIds: ['intent-run-current'],
     });
     expect(loaded?.result?.knowledgeCandidates?.[0]?.rule.recordLookupHints?.[0]?.detailEntry).toEqual({
       trigger: 'row_action',

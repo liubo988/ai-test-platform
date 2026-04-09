@@ -148,6 +148,54 @@ function cloneFailureCta(
   };
 }
 
+function cloneExperienceSummary(
+  summary?: IntentE2ERunResult['experience'] | null
+): IntentE2ERunResult['experience'] {
+  if (!summary) return summary ?? null;
+
+  return {
+    ...summary,
+    hints: (summary.hints || []).map((hint) => ({
+      ...hint,
+      matchedSignals: [...(hint.matchedSignals || [])],
+      matchedRecipeSlugs: [...(hint.matchedRecipeSlugs || [])],
+      chosenHelpers: [...(hint.chosenHelpers || [])],
+      stableEntityHints: [...(hint.stableEntityHints || [])],
+      pitfalls: [...(hint.pitfalls || [])],
+      playbookSlugs: [...(hint.playbookSlugs || [])],
+    })),
+  };
+}
+
+function cloneRunReview(
+  review?: IntentE2ERunResult['review'] | null
+): IntentE2ERunResult['review'] {
+  if (!review) return review ?? null;
+
+  return {
+    ...review,
+    playbookCandidates: (review.playbookCandidates || []).map((candidate) => ({
+      ...candidate,
+      matchedRecipeSlugs: [...(candidate.matchedRecipeSlugs || [])],
+      stepTypes: [...(candidate.stepTypes || [])],
+      preconditions: [...(candidate.preconditions || [])],
+      executorPlan: [...(candidate.executorPlan || [])],
+      verifierPlan: [...(candidate.verifierPlan || [])],
+      preferredHelpers: [...(candidate.preferredHelpers || [])],
+      knownPitfalls: [...(candidate.knownPitfalls || [])],
+      sourceRunIds: [...(candidate.sourceRunIds || [])],
+    })),
+    nextStepAdvice: review.nextStepAdvice
+      ? {
+          ...review.nextStepAdvice,
+          actions: (review.nextStepAdvice.actions || []).map((action) => ({
+            ...action,
+          })),
+        }
+      : null,
+  };
+}
+
 interface IntentE2ERunInternalRecord {
   state: IntentE2ERunRecord;
   projectUid: string;
@@ -413,6 +461,7 @@ function cloneRunState(state: IntentE2ERunRecord): IntentE2ERunRecord {
                 suggestedHelpers: [...state.result.knowledge.suggestedHelpers],
               }
             : state.result.knowledge ?? null,
+          experience: cloneExperienceSummary(state.result.experience),
           assetReadiness: state.result.assetReadiness
             ? {
                 ...state.result.assetReadiness,
@@ -531,6 +580,7 @@ function cloneRunState(state: IntentE2ERunRecord): IntentE2ERunRecord {
               })),
             },
           })),
+          review: cloneRunReview(state.result.review),
           attempts: state.result.attempts.map((attempt) => ({
             ...attempt,
             events: attempt.events.map((event) => ({ ...event })),
