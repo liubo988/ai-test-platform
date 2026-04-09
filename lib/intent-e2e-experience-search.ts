@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { normalizeIntentE2ETerminalRunSnapshot, type IntentE2EInsightRunRecord } from '@/lib/ai/intent-e2e-insights';
 import { listIntentE2ERunSnapshots, type IntentE2ERunSnapshotRecord } from '@/lib/db/repository';
+import type { IntentE2EPriorityScenarioFamily } from '@/lib/intent-e2e-priority-scenario-family';
 
 export type IntentExperienceHintKind = 'successful_run' | 'failed_run';
 export type IntentExperienceHintOutcome = 'first_pass' | 'repaired_pass' | 'failed';
@@ -33,6 +34,7 @@ export interface SearchIntentE2EExperienceHintsInput {
   targetUrl: string;
   scenarioTitle?: string;
   scenarioFamily?: string;
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily;
   taskMode?: 'page' | 'scenario' | 'unknown';
   visualAnchors?: string[];
   stepTypes?: string[];
@@ -99,7 +101,10 @@ function normalizeTargetPath(value: string): string {
   try {
     const url = raw.startsWith('http://') || raw.startsWith('https://') ? new URL(raw) : new URL(raw, 'https://intent.local');
     if (url.protocol === 'about:') return raw;
-    return url.pathname || '/';
+    const hash = (url.hash || '').replace(/^#/, '').trim();
+    const hashPart = hash && hash !== '/' ? (hash.startsWith('/') ? hash : `/${hash}`) : '';
+    const pathPart = url.pathname && url.pathname !== '/' ? url.pathname : '';
+    return hashPart || pathPart || '/';
   } catch {
     return raw.replace(/[?#].*$/, '');
   }
@@ -294,6 +299,15 @@ function scoreCandidate(
   if (input.scenarioFamily?.trim() && run.scenarioFamily === input.scenarioFamily.trim()) {
     score += 5;
     matchedSignals.push('同 family');
+  }
+
+  if (
+    input.priorityScenarioFamily &&
+    input.priorityScenarioFamily !== 'untracked' &&
+    run.priorityScenarioFamily === input.priorityScenarioFamily
+  ) {
+    score += 4;
+    matchedSignals.push('同 priority family');
   }
 
   if (input.taskMode?.trim() && run.taskMode === input.taskMode.trim()) {

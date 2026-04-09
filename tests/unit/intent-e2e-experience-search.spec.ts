@@ -46,6 +46,7 @@ function createInsightRun(
     requestInput?: string;
     scenarioTitle?: string;
     scenarioFamily?: string;
+    priorityScenarioFamily?: string;
     taskMode?: 'page' | 'scenario' | 'unknown';
     stepTypes?: string[];
     targetPath?: string;
@@ -72,7 +73,7 @@ function createInsightRun(
     targetPath: overrides?.targetPath || '/checkout',
     scenarioTitle: overrides?.scenarioTitle || '结算成功页',
     scenarioFamily: overrides?.scenarioFamily || 'simple_scenario',
-    priorityScenarioFamily: 'list_record_assertion',
+    priorityScenarioFamily: overrides?.priorityScenarioFamily || 'untracked',
     verificationIntent: 'unknown',
     taskMode: overrides?.taskMode || 'scenario',
     stepCount: 1,
@@ -230,5 +231,43 @@ describe('intent-e2e-experience-search', () => {
       hints: [],
     });
     expect(vi.mocked(listIntentE2ERunSnapshots)).not.toHaveBeenCalled();
+  });
+
+  it('matches hash-route pages and tracked priority family signals', async () => {
+    const hashSnapshot = createSnapshot('intent-run-business-hash', {
+      stableIdentifiers: ['businessId'],
+    });
+
+    vi.mocked(listIntentE2ERunSnapshots).mockResolvedValue([hashSnapshot] as never);
+    vi.mocked(normalizeIntentE2ETerminalRunSnapshot).mockReturnValue(
+      createInsightRun('intent-run-business-hash', {
+        requestInput: '创建商机后在我创建的列表校验状态为新入库',
+        scenarioTitle: '创建商机后回列表验收',
+        scenarioFamily: 'complex_enterprise_flow',
+        priorityScenarioFamily: 'business_create_list_verify',
+        targetPath: '/business/createbusiness',
+        stepTypes: ['ui', 'assert'],
+        matchedRecipeSlugs: ['business.create-to-order'],
+        keySignals: ['新建商机', '新入库', 'businessId'],
+      }) as never
+    );
+
+    const result = await searchIntentE2EExperienceHints({
+      projectUid: 'proj_default',
+      moduleUid: 'mod_checkout',
+      requestInput: '创建商机后在我创建的列表校验状态为新入库',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      scenarioTitle: '创建商机后回列表验收',
+      priorityScenarioFamily: 'business_create_list_verify',
+      taskMode: 'scenario',
+      stepTypes: ['ui', 'assert'],
+      includeFailures: true,
+    });
+
+    expect(result.hints).toHaveLength(1);
+    expect(result.hints[0]?.targetPath).toBe('/business/createbusiness');
+    expect(result.hints[0]?.matchedSignals).toEqual(
+      expect.arrayContaining(['同页面', '同 priority family'])
+    );
   });
 });

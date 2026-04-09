@@ -877,6 +877,7 @@ describe('intent-e2e-service stream', () => {
       targetUrl: 'https://example.com/checkout',
       scenarioTitle: '结算成功页',
       taskMode: 'scenario',
+      priorityScenarioFamily: 'untracked',
       visualAnchors: ['成功页头部'],
       stepTypes: [],
       includeFailures: true,

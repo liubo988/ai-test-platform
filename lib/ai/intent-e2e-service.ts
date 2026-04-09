@@ -94,6 +94,7 @@ import { resolveIntentRunnerAdapter, type IntentRunnerGeneratedArtifact } from '
 import { listIntentE2ERunSnapshots } from '@/lib/db/repository';
 import { searchIntentE2EExperienceHints, type IntentE2EExperienceSummary } from '@/lib/intent-e2e-experience-search';
 import { buildIntentE2ERunReview, type IntentE2ERunReview } from '@/lib/intent-e2e-run-review';
+import { resolveIntentE2EPriorityScenarioFamilyRoute } from '@/lib/intent-e2e-priority-scenario-family';
 
 export interface IntentE2EKnowledgeSummary {
   profilePath: string;
@@ -2632,6 +2633,17 @@ export async function runIntentDrivenE2EStream(
         }
       );
   throwIfAborted(signal);
+  const priorityScenarioFamilyRoute = resolveIntentE2EPriorityScenarioFamilyRoute({
+    requestInput: trimmedInput,
+    targetUrl,
+    scenarioCard: scenarioCardOutput.card,
+    description: uniqueStrings([
+      promptContext.scenarioSummary,
+      promptContext.expectedOutcome,
+      promptContext.cleanupNotes,
+    ]).join('\n'),
+    visualAnchors: scenarioCardOutput.card.visualAnchors,
+  });
   const [rulePerformanceById, starterHelpers, recipePerformanceBySlug, experienceSummary] = await Promise.all([
     loadIntentE2ERulePerformanceFeedback(projectUid),
     loadIntentE2EStarterHelperFeedback(projectUid),
@@ -2643,6 +2655,7 @@ export async function runIntentDrivenE2EStream(
       targetUrl,
       scenarioTitle: scenarioCardOutput.card.title,
       taskMode: scenarioCardOutput.card.taskMode,
+      priorityScenarioFamily: priorityScenarioFamilyRoute.family,
       visualAnchors: scenarioCardOutput.card.visualAnchors,
       stepTypes: scenarioCardOutput.card.flowDefinition.steps.map((step) => step.stepType),
       includeFailures: true,

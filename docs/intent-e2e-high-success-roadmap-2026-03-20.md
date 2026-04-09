@@ -15834,3 +15834,60 @@
   - `playbook_hit_rate` 当前仍为 `0.0%`，说明真实样本里还没有形成可观测的 playbook 命中收益。
 - 下一步：
   - 基于这份 benchmark baseline 继续推进 `E1/E2/E3` 策略优化，再重新跑 compare，才能看到真实收益变化。
+
+## 2026-04-09 第二百四十一次更新（后续专项第七刀：E1 recall sharpen 已补 hash-route 与 priority family 信号）
+
+- 本轮目标：
+  - 基于当前 benchmark baseline，对 `E1 experience recall` 只做最小 signal sharpen。
+  - 只修两个直接影响命中的缺口：
+    - hash-route 页面在 recall 中退化成 `/`
+    - 主链路调用 recall 时没有透传 priority family
+- 已完成：
+  - 新增 [docs/intent-e2e-experience-recall-sharpening-task-brief-2026-04-09.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-experience-recall-sharpening-task-brief-2026-04-09.md)，固定本刀目标、范围和验证命令。
+  - 在 [lib/intent-e2e-experience-search.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-experience-search.ts)：
+    - 把 `normalizeTargetPath(...)` 改成与 run review / insights 同口径的 hash-route 归一化
+    - 新增 `priorityScenarioFamily` 输入信号
+    - 命中 tracked priority family 时补记 `同 priority family`
+  - 在 [lib/ai/intent-e2e-service.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-service.ts)：
+    - 在 recall 调用前先解析当前 `priorityScenarioFamily`
+    - 调用 `searchIntentE2EExperienceHints(...)` 时透传该信号
+  - 补齐回归：
+    - [tests/unit/intent-e2e-experience-search.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-experience-search.spec.ts)
+    - [tests/unit/intent-e2e-service.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-service.spec.ts)
+- 验证：
+  - 执行：
+    - `npm run build`
+    - `npx vitest run tests/unit/intent-e2e-experience-search.spec.ts tests/unit/intent-e2e-service.spec.ts`
+    - `node scripts/check-doc-links.mjs`
+    - `node scripts/check-roadmap-progress.mjs`
+  - 结果：
+    - `build` 通过
+    - `2` 个测试文件通过，`33/33 passed`
+    - 文档链接校验通过
+    - roadmap 进度校验通过
+- 当前结果：
+  - experience recall 现在对 `#/business/createbusiness` 这类 hash-route 不会再误退化成 `/`，同页面信号更稳定。
+  - recall 现在会显式吃到当前 priority family，而不是只依赖模块、页面、关键词等弱信号。
+  - 这刀不改 benchmark 口径，也没有直接提高 `playbook_hit_rate`；当前 `proj_default` 仍未合并 `intent.*` project recipe。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成（MVP，并补完 hash-route / priority family signal sharpen）
+    - `E2`：已完成（project-scoped recipe promotion / merge）
+    - `E3`：已完成（run 终态后异步补写 review）
+    - `E4`：未开始
+  - benchmark 入口：已补齐，并已拿到真实 scope baseline
+- 风险 / 未完成：
+  - 本轮还没有新的真实 run / holdout compare，因此暂时没有新增量化收益。
+  - recall 目前仍是单阶段检索，没有做 recipe-aware 二次 rerank。
+  - `playbook_hit_rate` 当前仍为 `0.0%`，根因是 `proj_default` 还没有已合并的 `intent.*` project recipe，而不是 benchmark 口径错误。
+- 下一步：
+  - 先观察这刀在新的真实 `AI生成` runs 上是否能抬高 `experience_hit_rate` / `first_pass_rate`。
+  - 若收益仍不明显，再决定是继续增强 recall scoring，还是转入 `E4` 的图片文字锚点增强。
