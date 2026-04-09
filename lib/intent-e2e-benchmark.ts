@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import {
+  buildIntentE2EFailureClassStatsFromRuns,
   buildIntentE2EEvaluationBaselineFromRuns,
   normalizeIntentE2ETerminalRunSnapshot,
   type IntentE2EEvaluationBaseline,
@@ -25,6 +26,7 @@ import {
   type PlatformRunnerType,
   type PlatformTestType,
 } from '@/lib/test-platform-asset-model';
+import { isIntentPlaybookRecipeSlug } from '@/lib/intent-e2e-playbook';
 
 const DEFAULT_BENCHMARK_PATH = path.join(process.cwd(), 'reports', 'intent-e2e.benchmark.json');
 const DEFAULT_BENCHMARK_ARCHIVE_DIR = path.join(process.cwd(), 'reports', 'intent-e2e.benchmarks');
@@ -44,9 +46,29 @@ export interface IntentE2EBenchmarkCaseMetrics extends IntentE2EInsightPassMetri
   failedRuns: number;
   canceledRuns: number;
   repairAttemptedRuns: number;
+  blockedRuns: number;
+  blockedRate: number;
   knowledgeHitRuns: number;
   knowledgeHitRate: number;
+  experienceHitRuns: number;
+  experienceHitRate: number;
+  experienceHelpedFirstPassRuns: number;
+  experienceHelpedFirstPassRate: number;
+  experienceHelpedTerminalPassRuns: number;
+  experienceHelpedTerminalPassRate: number;
+  recipeHitRuns: number;
+  recipeHitRate: number;
+  playbookHitRuns: number;
+  playbookHitRate: number;
+  untrackedRuns: number;
+  untrackedRate: number;
+  reviewWrittenRuns: number;
+  reviewWriteRate: number;
   latestFinishedAt: string;
+}
+
+export interface IntentE2EBenchmarkSummaryBase extends IntentE2EBenchmarkCaseMetrics {
+  topFailureReasons: IntentE2EInsightFailureClassStat[];
 }
 
 export interface IntentE2EBenchmarkSuiteCase {
@@ -75,7 +97,7 @@ export interface IntentE2EBenchmarkSuiteCase {
   frozenMetrics: IntentE2EBenchmarkCaseMetrics;
 }
 
-export interface IntentE2EBenchmarkSuiteSummary extends IntentE2EBenchmarkCaseMetrics {
+export interface IntentE2EBenchmarkSuiteSummary extends IntentE2EBenchmarkSummaryBase {
   caseCount: number;
 }
 
@@ -131,7 +153,7 @@ export interface IntentE2EBenchmarkReplayCase {
   status: 'matched' | 'missing';
 }
 
-export interface IntentE2EBenchmarkReplaySummary extends IntentE2EBenchmarkCaseMetrics {
+export interface IntentE2EBenchmarkReplaySummary extends IntentE2EBenchmarkSummaryBase {
   caseCount: number;
   matchedCases: number;
   missingCases: number;
@@ -157,7 +179,15 @@ export interface IntentE2EBenchmarkCompareCase extends IntentE2EBenchmarkReplayC
     terminalPassRate: number;
     firstPassPassRate: number;
     repairedPassRate: number;
+    blockedRate: number;
     knowledgeHitRate: number;
+    experienceHitRate: number;
+    experienceHelpedFirstPassRate: number;
+    experienceHelpedTerminalPassRate: number;
+    recipeHitRate: number;
+    playbookHitRate: number;
+    untrackedRate: number;
+    reviewWriteRate: number;
   };
   comparisonNote: string;
 }
@@ -187,8 +217,26 @@ export interface IntentE2EBenchmarkCompareReport {
     currentFirstPassPassRate: number;
     frozenRepairedPassRate: number;
     currentRepairedPassRate: number;
+    frozenBlockedRate: number;
+    currentBlockedRate: number;
     frozenKnowledgeHitRate: number;
     currentKnowledgeHitRate: number;
+    frozenExperienceHitRate: number;
+    currentExperienceHitRate: number;
+    frozenExperienceHelpedFirstPassRate: number;
+    currentExperienceHelpedFirstPassRate: number;
+    frozenExperienceHelpedTerminalPassRate: number;
+    currentExperienceHelpedTerminalPassRate: number;
+    frozenRecipeHitRate: number;
+    currentRecipeHitRate: number;
+    frozenPlaybookHitRate: number;
+    currentPlaybookHitRate: number;
+    frozenUntrackedRate: number;
+    currentUntrackedRate: number;
+    frozenReviewWriteRate: number;
+    currentReviewWriteRate: number;
+    frozenTopFailureReasons: IntentE2EInsightFailureClassStat[];
+    currentTopFailureReasons: IntentE2EInsightFailureClassStat[];
   };
   cases: IntentE2EBenchmarkCompareCase[];
 }
@@ -278,6 +326,82 @@ function toPercent(numerator: number, denominator: number): number {
   return Math.round((numerator / denominator) * 1000) / 10;
 }
 
+function normalizeFailureClassStats(raw: unknown): IntentE2EInsightFailureClassStat[] {
+  if (!Array.isArray(raw)) return [];
+
+  return raw
+    .map((item) => {
+      const source = item && typeof item === 'object' && !Array.isArray(item) ? (item as Record<string, unknown>) : null;
+      const failureClass = normalizeString(source?.failureClass);
+      if (!failureClass) return null;
+      return {
+        failureClass,
+        count: normalizeNumber(source?.count),
+        latestRepairObservationAt: normalizeString(source?.latestRepairObservationAt),
+        latestRepairObservationSummary: normalizeString(source?.latestRepairObservationSummary),
+        latestRepairObservationVerifierCheckUids: uniqueStrings(
+          Array.isArray(source?.latestRepairObservationVerifierCheckUids)
+            ? (source?.latestRepairObservationVerifierCheckUids as string[])
+            : []
+        ),
+      } satisfies IntentE2EInsightFailureClassStat;
+    })
+    .filter((item): item is IntentE2EInsightFailureClassStat => Boolean(item))
+    .sort((left, right) => right.count - left.count || left.failureClass.localeCompare(right.failureClass))
+    .slice(0, 5);
+}
+
+function aggregateFailureClassStats(
+  items: IntentE2EInsightFailureClassStat[] = []
+): IntentE2EInsightFailureClassStat[] {
+  const aggregated = new Map<
+    string,
+    {
+      count: number;
+      latestRepairObservationAt: string;
+      latestRepairObservationAtMs: number;
+      latestRepairObservationSummary: string;
+      latestRepairObservationVerifierCheckUids: string[];
+    }
+  >();
+
+  for (const item of items) {
+    const current = aggregated.get(item.failureClass) || {
+      count: 0,
+      latestRepairObservationAt: '',
+      latestRepairObservationAtMs: 0,
+      latestRepairObservationSummary: '',
+      latestRepairObservationVerifierCheckUids: [],
+    };
+    current.count += normalizeNumber(item.count);
+    const observedAtMs = Date.parse(item.latestRepairObservationAt || '');
+    if (Number.isFinite(observedAtMs) && observedAtMs >= current.latestRepairObservationAtMs) {
+      current.latestRepairObservationAt = item.latestRepairObservationAt;
+      current.latestRepairObservationAtMs = observedAtMs;
+      current.latestRepairObservationSummary = item.latestRepairObservationSummary;
+      current.latestRepairObservationVerifierCheckUids = [...item.latestRepairObservationVerifierCheckUids];
+    }
+    aggregated.set(item.failureClass, current);
+  }
+
+  return [...aggregated.entries()]
+    .map(([failureClass, current]) => ({
+      failureClass,
+      count: current.count,
+      latestRepairObservationAt: current.latestRepairObservationAt,
+      latestRepairObservationSummary: current.latestRepairObservationSummary,
+      latestRepairObservationVerifierCheckUids: [...current.latestRepairObservationVerifierCheckUids],
+    }))
+    .sort((left, right) => right.count - left.count || left.failureClass.localeCompare(right.failureClass))
+    .slice(0, 5);
+}
+
+function aggregateFailureClassStatsFromBenchmarkCases(
+  cases: Array<Pick<IntentE2EBenchmarkSuiteCase, 'failureClasses'>>
+): IntentE2EInsightFailureClassStat[] {
+  return aggregateFailureClassStats(cases.flatMap((item) => item.failureClasses || []));
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -353,7 +477,15 @@ function summarizeCaseMetrics(runs: IntentE2EInsightRunRecord[]): IntentE2EBench
   const failedRuns = runs.filter((run) => run.status === 'failed').length;
   const canceledRuns = runs.filter((run) => run.status === 'canceled').length;
   const repairAttemptedRuns = runs.filter((run) => run.attempts.some((attempt) => attempt.kind === 'repair')).length;
+  const blockedRuns = runs.filter((run) => run.qualitySplit.blocked).length;
   const knowledgeHitRuns = runs.filter((run) => run.matchedRuleIds.length > 0).length;
+  const experienceHitRuns = runs.filter((run) => run.experienceHit).length;
+  const experienceHelpedFirstPassRuns = runs.filter((run) => run.experienceHit && run.firstPassSucceeded).length;
+  const experienceHelpedTerminalPassRuns = runs.filter((run) => run.experienceHit && run.status === 'passed').length;
+  const recipeHitRuns = runs.filter((run) => run.matchedRecipeSlugs.length > 0).length;
+  const playbookHitRuns = runs.filter((run) => run.matchedRecipeSlugs.some((slug) => isIntentPlaybookRecipeSlug(slug))).length;
+  const untrackedRuns = runs.filter((run) => run.priorityScenarioFamily === 'untracked').length;
+  const reviewWrittenRuns = runs.filter((run) => run.reviewWritten).length;
   const firstPassPassedRuns = runs.filter((run) => run.firstPassSucceeded).length;
   const repairedPassRuns = runs.filter((run) => run.repairedSucceeded).length;
 
@@ -363,8 +495,24 @@ function summarizeCaseMetrics(runs: IntentE2EInsightRunRecord[]): IntentE2EBench
     failedRuns,
     canceledRuns,
     repairAttemptedRuns,
+    blockedRuns,
+    blockedRate: toPercent(blockedRuns, runCount),
     knowledgeHitRuns,
     knowledgeHitRate: toPercent(knowledgeHitRuns, runCount),
+    experienceHitRuns,
+    experienceHitRate: toPercent(experienceHitRuns, runCount),
+    experienceHelpedFirstPassRuns,
+    experienceHelpedFirstPassRate: toPercent(experienceHelpedFirstPassRuns, experienceHitRuns),
+    experienceHelpedTerminalPassRuns,
+    experienceHelpedTerminalPassRate: toPercent(experienceHelpedTerminalPassRuns, experienceHitRuns),
+    recipeHitRuns,
+    recipeHitRate: toPercent(recipeHitRuns, runCount),
+    playbookHitRuns,
+    playbookHitRate: toPercent(playbookHitRuns, runCount),
+    untrackedRuns,
+    untrackedRate: toPercent(untrackedRuns, runCount),
+    reviewWrittenRuns,
+    reviewWriteRate: toPercent(reviewWrittenRuns, runCount),
     latestFinishedAt: orderedRuns[0]?.finishedAt || '',
     firstPassPassedRuns,
     firstPassPassRate: toPercent(firstPassPassedRuns, runCount),
@@ -380,7 +528,15 @@ function summarizeSuiteMetrics(items: Array<IntentE2EBenchmarkCaseMetrics>): Int
   const failedRuns = items.reduce((sum, item) => sum + item.failedRuns, 0);
   const canceledRuns = items.reduce((sum, item) => sum + item.canceledRuns, 0);
   const repairAttemptedRuns = items.reduce((sum, item) => sum + item.repairAttemptedRuns, 0);
+  const blockedRuns = items.reduce((sum, item) => sum + item.blockedRuns, 0);
   const knowledgeHitRuns = items.reduce((sum, item) => sum + item.knowledgeHitRuns, 0);
+  const experienceHitRuns = items.reduce((sum, item) => sum + item.experienceHitRuns, 0);
+  const experienceHelpedFirstPassRuns = items.reduce((sum, item) => sum + item.experienceHelpedFirstPassRuns, 0);
+  const experienceHelpedTerminalPassRuns = items.reduce((sum, item) => sum + item.experienceHelpedTerminalPassRuns, 0);
+  const recipeHitRuns = items.reduce((sum, item) => sum + item.recipeHitRuns, 0);
+  const playbookHitRuns = items.reduce((sum, item) => sum + item.playbookHitRuns, 0);
+  const untrackedRuns = items.reduce((sum, item) => sum + item.untrackedRuns, 0);
+  const reviewWrittenRuns = items.reduce((sum, item) => sum + item.reviewWrittenRuns, 0);
   const firstPassPassedRuns = items.reduce((sum, item) => sum + item.firstPassPassedRuns, 0);
   const repairedPassRuns = items.reduce((sum, item) => sum + item.repairedPassRuns, 0);
   const latestFinishedAt = [...items]
@@ -395,14 +551,31 @@ function summarizeSuiteMetrics(items: Array<IntentE2EBenchmarkCaseMetrics>): Int
     failedRuns,
     canceledRuns,
     repairAttemptedRuns,
+    blockedRuns,
+    blockedRate: toPercent(blockedRuns, runCount),
     knowledgeHitRuns,
     knowledgeHitRate: toPercent(knowledgeHitRuns, runCount),
+    experienceHitRuns,
+    experienceHitRate: toPercent(experienceHitRuns, runCount),
+    experienceHelpedFirstPassRuns,
+    experienceHelpedFirstPassRate: toPercent(experienceHelpedFirstPassRuns, experienceHitRuns),
+    experienceHelpedTerminalPassRuns,
+    experienceHelpedTerminalPassRate: toPercent(experienceHelpedTerminalPassRuns, experienceHitRuns),
+    recipeHitRuns,
+    recipeHitRate: toPercent(recipeHitRuns, runCount),
+    playbookHitRuns,
+    playbookHitRate: toPercent(playbookHitRuns, runCount),
+    untrackedRuns,
+    untrackedRate: toPercent(untrackedRuns, runCount),
+    reviewWrittenRuns,
+    reviewWriteRate: toPercent(reviewWrittenRuns, runCount),
     latestFinishedAt,
     firstPassPassedRuns,
     firstPassPassRate: toPercent(firstPassPassedRuns, runCount),
     repairedPassRuns,
     repairedPassRate: toPercent(repairedPassRuns, runCount),
     terminalPassRate: toPercent(passedRuns, runCount),
+    topFailureReasons: [],
   };
 }
 
@@ -465,6 +638,7 @@ function buildSuiteCase(
   candidate: IntentE2EEvaluationBaselineCandidate,
   clusterRuns: IntentE2EInsightRunRecord[]
 ): IntentE2EBenchmarkSuiteCase {
+  const frozenMetrics = summarizeCaseMetrics(clusterRuns);
   return {
     evalCaseId: candidate.evalCaseId,
     snapshotSignature: candidate.snapshotSignature,
@@ -488,21 +662,7 @@ function buildSuiteCase(
     failureClasses: candidate.failureClasses.map((item) => ({ ...item })),
     priority: candidate.priority,
     selectionReason: candidate.selectionReason,
-    frozenMetrics: {
-      runCount: candidate.runCount,
-      passedRuns: candidate.passedRuns,
-      failedRuns: candidate.failedRuns,
-      canceledRuns: candidate.canceledRuns,
-      repairAttemptedRuns: candidate.repairAttemptedRuns,
-      knowledgeHitRuns: candidate.knowledgeHitRuns,
-      knowledgeHitRate: candidate.knowledgeHitRate,
-      latestFinishedAt: candidate.latestFinishedAt,
-      firstPassPassedRuns: candidate.firstPassPassedRuns,
-      firstPassPassRate: candidate.firstPassPassRate,
-      repairedPassRuns: candidate.repairedPassRuns,
-      repairedPassRate: candidate.repairedPassRate,
-      terminalPassRate: candidate.terminalPassRate,
-    },
+    frozenMetrics,
   };
 }
 
@@ -527,8 +687,24 @@ function normalizeBenchmarkCaseMetrics(raw: unknown): IntentE2EBenchmarkCaseMetr
     failedRuns: normalizeNumber(source.failedRuns),
     canceledRuns: normalizeNumber(source.canceledRuns),
     repairAttemptedRuns: normalizeNumber(source.repairAttemptedRuns),
+    blockedRuns: normalizeNumber(source.blockedRuns),
+    blockedRate: normalizeNumber(source.blockedRate),
     knowledgeHitRuns: normalizeNumber(source.knowledgeHitRuns),
     knowledgeHitRate: normalizeNumber(source.knowledgeHitRate),
+    experienceHitRuns: normalizeNumber(source.experienceHitRuns),
+    experienceHitRate: normalizeNumber(source.experienceHitRate),
+    experienceHelpedFirstPassRuns: normalizeNumber(source.experienceHelpedFirstPassRuns),
+    experienceHelpedFirstPassRate: normalizeNumber(source.experienceHelpedFirstPassRate),
+    experienceHelpedTerminalPassRuns: normalizeNumber(source.experienceHelpedTerminalPassRuns),
+    experienceHelpedTerminalPassRate: normalizeNumber(source.experienceHelpedTerminalPassRate),
+    recipeHitRuns: normalizeNumber(source.recipeHitRuns),
+    recipeHitRate: normalizeNumber(source.recipeHitRate),
+    playbookHitRuns: normalizeNumber(source.playbookHitRuns),
+    playbookHitRate: normalizeNumber(source.playbookHitRate),
+    untrackedRuns: normalizeNumber(source.untrackedRuns),
+    untrackedRate: normalizeNumber(source.untrackedRate),
+    reviewWrittenRuns: normalizeNumber(source.reviewWrittenRuns),
+    reviewWriteRate: normalizeNumber(source.reviewWriteRate),
     latestFinishedAt: normalizeString(source.latestFinishedAt),
     firstPassPassedRuns: normalizeNumber(source.firstPassPassedRuns),
     firstPassPassRate: normalizeNumber(source.firstPassPassRate),
@@ -604,7 +780,17 @@ function normalizeBenchmarkSuite(raw: unknown): IntentE2EBenchmarkSuite | null {
   const cases = Array.isArray(source.cases)
     ? (source.cases as unknown[]).map(normalizeBenchmarkCase).filter((item): item is IntentE2EBenchmarkSuiteCase => Boolean(item))
     : [];
-  const summary = summarizeSuiteMetrics(cases.map((item) => item.frozenMetrics));
+  const summarySource =
+    source.summary && typeof source.summary === 'object' && !Array.isArray(source.summary)
+      ? (source.summary as Record<string, unknown>)
+      : {};
+  const summary = {
+    ...summarizeSuiteMetrics(cases.map((item) => item.frozenMetrics)),
+    topFailureReasons:
+      normalizeFailureClassStats(summarySource.topFailureReasons).length > 0
+        ? normalizeFailureClassStats(summarySource.topFailureReasons)
+        : aggregateFailureClassStatsFromBenchmarkCases(cases),
+  };
   const sourceMeta = source.source && typeof source.source === 'object' && !Array.isArray(source.source)
     ? (source.source as Record<string, unknown>)
     : {};
@@ -681,6 +867,7 @@ export function buildIntentE2EBenchmarkSuiteFromData(
 
   const clusterMap = buildClusterMap(normalizedRuns);
   const cases = selectedCandidates.map((candidate) => buildSuiteCase(candidate, clusterMap.get(candidate.snapshotSignature) || []));
+  const selectedRuns = selectedCandidates.flatMap((candidate) => clusterMap.get(candidate.snapshotSignature) || []);
   const frozenAt = normalizeFrozenAt(options.frozenAt);
   const benchmarkScope = buildBenchmarkScopeFromOptions(options);
   const benchmarkUid = buildBenchmarkUid(
@@ -705,7 +892,10 @@ export function buildIntentE2EBenchmarkSuiteFromData(
       selectionNote: baseline.selectionNote,
       selectedEvalCaseIds: cases.map((item) => item.evalCaseId),
     },
-    summary: summarizeSuiteMetrics(cases.map((item) => item.frozenMetrics)),
+    summary: {
+      ...summarizeSuiteMetrics(cases.map((item) => item.frozenMetrics)),
+      topFailureReasons: buildIntentE2EFailureClassStatsFromRuns(selectedRuns),
+    },
     cases,
   };
 }
@@ -789,6 +979,7 @@ export function buildIntentE2EBenchmarkReplayFromData(
   const matchedMetrics = cases
     .map((item) => item.currentMetrics)
     .filter((item): item is IntentE2EBenchmarkCaseMetrics => Boolean(item));
+  const matchedRuns = benchmark.cases.flatMap((item) => clusterMap.get(item.snapshotSignature) || []);
   const summaryMetrics = summarizeSuiteMetrics(matchedMetrics);
 
   return {
@@ -803,6 +994,7 @@ export function buildIntentE2EBenchmarkReplayFromData(
       caseCount: cases.length,
       matchedCases: cases.filter((item) => item.status === 'matched').length,
       missingCases: cases.filter((item) => item.status === 'missing').length,
+      topFailureReasons: buildIntentE2EFailureClassStatsFromRuns(matchedRuns),
     },
     cases,
   };
@@ -815,22 +1007,28 @@ function buildComparisonStatus(
   if (!currentMetrics) return 'missing';
 
   const terminalDelta = currentMetrics.terminalPassRate - frozenMetrics.terminalPassRate;
+  const firstPassDelta = currentMetrics.firstPassPassRate - frozenMetrics.firstPassPassRate;
+  const repairedDelta = currentMetrics.repairedPassRate - frozenMetrics.repairedPassRate;
+  const blockedDelta = currentMetrics.blockedRate - frozenMetrics.blockedRate;
+  const knowledgeDelta = currentMetrics.knowledgeHitRate - frozenMetrics.knowledgeHitRate;
+
   if (terminalDelta < 0) return 'regressed';
   if (terminalDelta > 0) return 'improved';
-
-  const firstPassDelta = currentMetrics.firstPassPassRate - frozenMetrics.firstPassPassRate;
   if (firstPassDelta < 0) return 'regressed';
   if (firstPassDelta > 0) return 'improved';
-
-  const repairedDelta = currentMetrics.repairedPassRate - frozenMetrics.repairedPassRate;
+  if (blockedDelta > 0) return 'regressed';
+  if (blockedDelta < 0) return 'improved';
   if (repairedDelta < 0) return 'regressed';
   if (repairedDelta > 0) return 'improved';
-
-  const knowledgeDelta = currentMetrics.knowledgeHitRate - frozenMetrics.knowledgeHitRate;
   if (knowledgeDelta < 0) return 'regressed';
   if (knowledgeDelta > 0) return 'improved';
 
   return 'unchanged';
+}
+
+function describeDelta(label: string, delta: number): string {
+  if (!delta) return '';
+  return `${label} ${delta > 0 ? '+' : ''}${delta}pt`;
 }
 
 function buildComparisonNote(
@@ -845,20 +1043,54 @@ function buildComparisonNote(
   const terminalDelta = currentMetrics.terminalPassRate - frozenMetrics.terminalPassRate;
   const firstPassDelta = currentMetrics.firstPassPassRate - frozenMetrics.firstPassPassRate;
   const repairedDelta = currentMetrics.repairedPassRate - frozenMetrics.repairedPassRate;
+  const blockedDelta = currentMetrics.blockedRate - frozenMetrics.blockedRate;
   const knowledgeDelta = currentMetrics.knowledgeHitRate - frozenMetrics.knowledgeHitRate;
+  const experienceHitDelta = currentMetrics.experienceHitRate - frozenMetrics.experienceHitRate;
+  const experienceFirstPassDelta =
+    currentMetrics.experienceHelpedFirstPassRate - frozenMetrics.experienceHelpedFirstPassRate;
+  const experienceTerminalPassDelta =
+    currentMetrics.experienceHelpedTerminalPassRate - frozenMetrics.experienceHelpedTerminalPassRate;
+  const recipeHitDelta = currentMetrics.recipeHitRate - frozenMetrics.recipeHitRate;
+  const playbookHitDelta = currentMetrics.playbookHitRate - frozenMetrics.playbookHitRate;
+  const untrackedDelta = currentMetrics.untrackedRate - frozenMetrics.untrackedRate;
+  const reviewWriteDelta = currentMetrics.reviewWriteRate - frozenMetrics.reviewWriteRate;
 
   if (status === 'unchanged') {
-    return '当前 terminal / first-pass / repaired / knowledge-hit 指标与冻结基准持平。';
+    const auxiliaryParts = uniqueStrings([
+      describeDelta('experience-hit', experienceHitDelta),
+      describeDelta('experience-first-pass', experienceFirstPassDelta),
+      describeDelta('experience-terminal', experienceTerminalPassDelta),
+      describeDelta('recipe-hit', recipeHitDelta),
+      describeDelta('playbook-hit', playbookHitDelta),
+      describeDelta('untracked', untrackedDelta),
+      describeDelta('review-write', reviewWriteDelta),
+    ]);
+    if (auxiliaryParts.length === 0) {
+      return '当前 terminal / first-pass / repaired / blocked / knowledge-hit 指标与冻结基准持平。';
+    }
+    return `当前核心通过率指标与冻结基准持平；辅助指标变化：${auxiliaryParts.join('，')}。`;
   }
 
-  const parts = uniqueStrings([
-    terminalDelta ? `terminal ${terminalDelta > 0 ? '+' : ''}${terminalDelta}pt` : '',
-    firstPassDelta ? `first-pass ${firstPassDelta > 0 ? '+' : ''}${firstPassDelta}pt` : '',
-    repairedDelta ? `repair ${repairedDelta > 0 ? '+' : ''}${repairedDelta}pt` : '',
-    knowledgeDelta ? `knowledge-hit ${knowledgeDelta > 0 ? '+' : ''}${knowledgeDelta}pt` : '',
+  const coreParts = uniqueStrings([
+    describeDelta('terminal', terminalDelta),
+    describeDelta('first-pass', firstPassDelta),
+    describeDelta('repair', repairedDelta),
+    describeDelta('blocked', blockedDelta),
+    describeDelta('knowledge-hit', knowledgeDelta),
+  ]);
+  const auxiliaryParts = uniqueStrings([
+    describeDelta('experience-hit', experienceHitDelta),
+    describeDelta('experience-first-pass', experienceFirstPassDelta),
+    describeDelta('experience-terminal', experienceTerminalPassDelta),
+    describeDelta('recipe-hit', recipeHitDelta),
+    describeDelta('playbook-hit', playbookHitDelta),
+    describeDelta('untracked', untrackedDelta),
+    describeDelta('review-write', reviewWriteDelta),
   ]);
 
-  return `${status === 'improved' ? '当前指标优于冻结基准' : '当前指标低于冻结基准'}：${parts.join('，')}。`;
+  return `${status === 'improved' ? '当前核心指标优于冻结基准' : '当前核心指标低于冻结基准'}：${coreParts.join('，')}${
+    auxiliaryParts.length > 0 ? `；辅助指标：${auxiliaryParts.join('，')}` : ''
+  }。`;
 }
 
 export function buildIntentE2EBenchmarkCompareReport(
@@ -885,7 +1117,17 @@ export function buildIntentE2EBenchmarkCompareReport(
         terminalPassRate: (currentMetrics?.terminalPassRate || 0) - item.frozenMetrics.terminalPassRate,
         firstPassPassRate: (currentMetrics?.firstPassPassRate || 0) - item.frozenMetrics.firstPassPassRate,
         repairedPassRate: (currentMetrics?.repairedPassRate || 0) - item.frozenMetrics.repairedPassRate,
+        blockedRate: (currentMetrics?.blockedRate || 0) - item.frozenMetrics.blockedRate,
         knowledgeHitRate: (currentMetrics?.knowledgeHitRate || 0) - item.frozenMetrics.knowledgeHitRate,
+        experienceHitRate: (currentMetrics?.experienceHitRate || 0) - item.frozenMetrics.experienceHitRate,
+        experienceHelpedFirstPassRate:
+          (currentMetrics?.experienceHelpedFirstPassRate || 0) - item.frozenMetrics.experienceHelpedFirstPassRate,
+        experienceHelpedTerminalPassRate:
+          (currentMetrics?.experienceHelpedTerminalPassRate || 0) - item.frozenMetrics.experienceHelpedTerminalPassRate,
+        recipeHitRate: (currentMetrics?.recipeHitRate || 0) - item.frozenMetrics.recipeHitRate,
+        playbookHitRate: (currentMetrics?.playbookHitRate || 0) - item.frozenMetrics.playbookHitRate,
+        untrackedRate: (currentMetrics?.untrackedRate || 0) - item.frozenMetrics.untrackedRate,
+        reviewWriteRate: (currentMetrics?.reviewWriteRate || 0) - item.frozenMetrics.reviewWriteRate,
       },
       comparisonNote: buildComparisonNote(comparisonStatus, item.frozenMetrics, currentMetrics),
     } satisfies IntentE2EBenchmarkCompareCase;
@@ -916,8 +1158,26 @@ export function buildIntentE2EBenchmarkCompareReport(
       currentFirstPassPassRate: replay.summary.firstPassPassRate,
       frozenRepairedPassRate: benchmark.summary.repairedPassRate,
       currentRepairedPassRate: replay.summary.repairedPassRate,
+      frozenBlockedRate: benchmark.summary.blockedRate,
+      currentBlockedRate: replay.summary.blockedRate,
       frozenKnowledgeHitRate: benchmark.summary.knowledgeHitRate,
       currentKnowledgeHitRate: replay.summary.knowledgeHitRate,
+      frozenExperienceHitRate: benchmark.summary.experienceHitRate,
+      currentExperienceHitRate: replay.summary.experienceHitRate,
+      frozenExperienceHelpedFirstPassRate: benchmark.summary.experienceHelpedFirstPassRate,
+      currentExperienceHelpedFirstPassRate: replay.summary.experienceHelpedFirstPassRate,
+      frozenExperienceHelpedTerminalPassRate: benchmark.summary.experienceHelpedTerminalPassRate,
+      currentExperienceHelpedTerminalPassRate: replay.summary.experienceHelpedTerminalPassRate,
+      frozenRecipeHitRate: benchmark.summary.recipeHitRate,
+      currentRecipeHitRate: replay.summary.recipeHitRate,
+      frozenPlaybookHitRate: benchmark.summary.playbookHitRate,
+      currentPlaybookHitRate: replay.summary.playbookHitRate,
+      frozenUntrackedRate: benchmark.summary.untrackedRate,
+      currentUntrackedRate: replay.summary.untrackedRate,
+      frozenReviewWriteRate: benchmark.summary.reviewWriteRate,
+      currentReviewWriteRate: replay.summary.reviewWriteRate,
+      frozenTopFailureReasons: benchmark.summary.topFailureReasons.map((item) => ({ ...item })),
+      currentTopFailureReasons: replay.summary.topFailureReasons.map((item) => ({ ...item })),
     },
     cases,
   };

@@ -665,3 +665,58 @@ Hermes 的 `skill_manage` 更适合通用 agent 的自由技能沉淀；当前�
 - 下一步：
   - 优先补 benchmark / holdout 回放，验证 `E1 recall + E2 recipe promotion + E3 async review` 的真实收益。
   - 若后续证据显示 verifier / detail hints 仍有明显空缺，再按 typed 结构把少量 playbook 经验补进 `knowledge draft`，而不是直接做双写。
+
+## 2026-04-09 第三刀回写（benchmark 固定指标口径已补齐）
+
+- 本轮目标：
+  - 严格按本文只补 `benchmark / compare report` 的固定指标口径：
+    - `blocked_rate`
+    - `E1`：`experience_hit_rate / experience_helped_first_pass_rate / experience_helped_terminal_pass_rate`
+    - `E2`：`playbook_hit_rate / recipe_hit_rate / untracked_rate`
+    - `E3`：`review_write_rate`
+  - 不改主运行链路，不新增 route / script / DB schema。
+- 已完成：
+  - 在 `lib/ai/intent-e2e-insights.ts` 的 terminal run normalize 过程中补出 benchmark 所需的结构化信号：
+    - `experienceHintCount / experienceMatchedRunCount / experienceHit`
+    - `reviewWritten / reviewPlaybookCandidateCount`
+  - 新增导出 `buildIntentE2EFailureClassStatsFromRuns(...)`，供 benchmark 复用现有 failure class 聚合口径，而不是复制第三套实现。
+  - 在 `lib/intent-e2e-playbook.ts` 新增 `isIntentPlaybookRecipeSlug(...)`，统一 `E2 playbook hit` 的受控 slug 识别。
+  - 在 `lib/intent-e2e-benchmark.ts` 补齐 suite / replay / compare report 指标：
+    - `blockedRate`
+    - `experienceHitRate`
+    - `experienceHelpedFirstPassRate`
+    - `experienceHelpedTerminalPassRate`
+    - `recipeHitRate`
+    - `playbookHitRate`
+    - `untrackedRate`
+    - `reviewWriteRate`
+    - `frozenTopFailureReasons / currentTopFailureReasons`
+  - compare report 现在会把这些辅助指标一起写进 `summary / delta / comparisonNote`；同时保持旧 benchmark 文件可读。
+  - 补齐：
+    - `tests/unit/intent-e2e-benchmark.spec.ts`
+    - `tests/unit/intent-e2e-insights.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-benchmark.spec.ts tests/unit/intent-e2e-insights.spec.ts`
+  - `npm run build`
+  - `npm run build:web`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+  - 结果：
+    - `2` 个测试文件通过，`48/48 passed`
+    - `build` 通过
+    - `build:web` 通过
+    - 文档链接校验通过
+    - roadmap 进度校验通过
+- 当前阶段状态：
+  - `E1`：已完成（MVP）
+  - `E2`：已完成（project-scoped recipe promotion / merge）
+  - `E3`：已完成（run 终态后异步补写 review）
+  - `E4`：未开始（可选）
+  - benchmark 口径：已补齐 `blocked_rate` 和当前可直接从 terminal run 推导出的 `E1/E2/E3` 固定指标
+- 风险 / 未完成：
+  - 本轮只补了 benchmark 口径，还没有真正冻结一套新的 `AI生成 holdout` 并跑 compare report，所以仍不能声称已有量化收益。
+  - `E3` 的 `cta_accept_rate / repeated_failure_reopen_rate` 还没有稳定交互回执输入，本轮未纳入 benchmark。
+  - `playbook_hit_rate` 当前按受控 `intent.*` slug 约定统计，没有额外引入 recipe provenance schema。
+- 下一步：
+  - 先冻结一套真实 `AI生成 holdout`，跑一次 benchmark compare，拿到 `E1/E2/E3` 的第一版量化结果。
+  - 再决定是否需要补单独的 benchmark 触发脚本或 workbench 入口；这不在本轮范围内。

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildIntentE2EEvaluationBaselineFromData,
+  normalizeIntentE2ETerminalRunSnapshot,
   buildIntentE2EInsightsFromData,
   buildIntentE2ERecipePerformanceMapFromData,
   buildIntentE2ERolloutStrategy,
@@ -251,6 +252,80 @@ function makeProbationRule(input: {
 }
 
 describe('intent-e2e insights', () => {
+  it('normalizes experience and review signals from terminal run snapshots', () => {
+    const run = normalizeIntentE2ETerminalRunSnapshot(
+      makeRunSnapshot({
+        runId: 'run_experience_review',
+        status: 'passed',
+        requestInput: '登录后新建商机并校验列表',
+        targetUrl: 'https://example.com/business/createbusiness',
+        state: {
+          result: {
+            description: '创建商机并验证列表结果',
+            scenarioCard: {
+              title: '新建商机并回列表校验',
+              taskMode: 'scenario',
+              flowDefinition: {
+                steps: [
+                  {
+                    stepType: 'ui',
+                    title: '创建商机',
+                    target: 'create',
+                    instruction: '创建商机',
+                    expectedResult: '创建成功',
+                  },
+                  {
+                    stepType: 'assert',
+                    title: '回列表校验',
+                    target: 'list',
+                    instruction: '回列表校验',
+                    expectedResult: '校验成功',
+                  },
+                ],
+              },
+            },
+            executionPlan: {
+              matchedRecipeSlugs: ['intent.business-create-list-verify'],
+            },
+            verificationPlan: {
+              matchedRecipeSlugs: ['intent.business-create-list-verify'],
+              checks: [],
+            },
+            experience: {
+              source: 'project_terminal_runs',
+              matchedRunCount: 2,
+              hints: [{ hintId: 'hint_1' }],
+            },
+            review: {
+              reviewedAt: '2026-03-31T10:00:00.000Z',
+              playbookCandidates: [{ slug: 'intent.business-create-list-verify' }],
+            },
+            attempts: [
+              {
+                attempt: 1,
+                kind: 'generate',
+                result: { success: true },
+                helperUsage: {
+                  usedHelpers: ['__e2e.waitForApiResponse'],
+                  usedSuggestedHelpers: [],
+                },
+              },
+            ],
+          },
+        },
+      })
+    );
+
+    expect(run).toMatchObject({
+      experienceMatchedRunCount: 2,
+      experienceHintCount: 1,
+      experienceHit: true,
+      reviewWritten: true,
+      reviewPlaybookCandidateCount: 1,
+      matchedRecipeSlugs: ['intent.business-create-list-verify'],
+    });
+  });
+
   it('aggregates pass rate, knowledge hits, helper reuse, top rules, helpers, and failure classes', () => {
     const runSnapshots = [
       makeRunSnapshot({

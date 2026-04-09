@@ -2,6 +2,10 @@ import type { IntentTrackedE2EPriorityScenarioFamily } from '@/lib/intent-e2e-pr
 import type { IntentProjectRecipeMergeInput } from '@/lib/intent-project-recipe-registry';
 import type { IntentE2EPlaybookCandidate } from '@/lib/intent-e2e-run-review';
 
+export function isIntentPlaybookRecipeSlug(value: string): boolean {
+  return value.trim().toLowerCase().startsWith('intent.');
+}
+
 function uniqueStrings(values: Array<string | null | undefined>, max = 12): string[] {
   const seen = new Set<string>();
   const items: string[] = [];

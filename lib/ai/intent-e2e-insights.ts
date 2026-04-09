@@ -903,6 +903,11 @@ export interface IntentE2EInsightRunRecord {
   compiledSlotCount: number;
   compiledSlotUids: string[];
   matchedRecipeSlugs: string[];
+  experienceHintCount: number;
+  experienceMatchedRunCount: number;
+  experienceHit: boolean;
+  reviewWritten: boolean;
+  reviewPlaybookCandidateCount: number;
   assetReadiness: IntentE2EAssetReadiness;
   qualitySplit: IntentE2EQualitySplit;
   matchedRuleIds: string[];
@@ -2188,6 +2193,8 @@ function normalizeTerminalRun(snapshot: IntentE2ERunSnapshotRecord): InsightRunR
         result?: {
           scenarioCard?: unknown;
           description?: unknown;
+          experience?: unknown;
+          review?: unknown;
           assetReadiness?: unknown;
           qualitySplit?: unknown;
           executionPlan?: {
@@ -2276,6 +2283,21 @@ function normalizeTerminalRun(snapshot: IntentE2ERunSnapshotRecord): InsightRunR
         })
       : null;
   const knowledge = result?.knowledge && typeof result.knowledge === 'object' ? result.knowledge : null;
+  const experience =
+    result?.experience && typeof result.experience === 'object' && !Array.isArray(result.experience)
+      ? (result.experience as {
+          matchedRunCount?: unknown;
+          hints?: unknown;
+        })
+      : null;
+  const review =
+    result?.review && typeof result.review === 'object' && !Array.isArray(result.review)
+      ? (result.review as {
+          reviewedAt?: unknown;
+          playbookCandidates?: unknown;
+          nextStepAdvice?: unknown;
+        })
+      : null;
   const attempts = Array.isArray(result?.attempts) ? result?.attempts || [] : [];
   const taskMode = normalizeScenarioTaskMode(scenarioCard?.taskMode);
   const steps = Array.isArray(scenarioCard?.flowDefinition?.steps) ? scenarioCard?.flowDefinition?.steps || [] : [];
@@ -2319,6 +2341,18 @@ function normalizeTerminalRun(snapshot: IntentE2ERunSnapshotRecord): InsightRunR
       ? (result.verificationPlan.matchedRecipeSlugs as string[])
       : []),
   ]);
+  const experienceHintCount = Array.isArray(experience?.hints) ? experience.hints.length : 0;
+  const experienceMatchedRunCount =
+    typeof experience?.matchedRunCount === 'number' && Number.isFinite(experience.matchedRunCount)
+      ? Math.max(0, Math.floor(experience.matchedRunCount))
+      : experienceHintCount;
+  const reviewPlaybookCandidateCount = Array.isArray(review?.playbookCandidates) ? review.playbookCandidates.length : 0;
+  const reviewWritten = Boolean(
+    review &&
+      (typeof review.reviewedAt === 'string' ||
+        reviewPlaybookCandidateCount > 0 ||
+        (review.nextStepAdvice && typeof review.nextStepAdvice === 'object'))
+  );
   const matchedRuleIds = Array.isArray(knowledge?.matchedRuleIds) ? uniqueStrings(knowledge?.matchedRuleIds as string[]) : [];
   const matchedRuleTitles = Array.isArray(knowledge?.matchedRuleTitles) ? uniqueStrings(knowledge?.matchedRuleTitles as string[]) : [];
   const assetReadiness = normalizeIntentE2EAssetReadiness(
@@ -2483,6 +2517,11 @@ function normalizeTerminalRun(snapshot: IntentE2ERunSnapshotRecord): InsightRunR
     compiledSlotCount: compiledSlotUids.length,
     compiledSlotUids,
     matchedRecipeSlugs,
+    experienceHintCount,
+    experienceMatchedRunCount,
+    experienceHit: experienceMatchedRunCount > 0 || experienceHintCount > 0,
+    reviewWritten,
+    reviewPlaybookCandidateCount,
     assetReadiness,
     qualitySplit,
     matchedRuleIds,
@@ -3307,7 +3346,7 @@ function buildVerificationIntentStats(runs: InsightRunRecord[]): IntentE2EInsigh
     );
 }
 
-function buildFailureClassStats(runs: InsightRunRecord[]): IntentE2EInsightFailureClassStat[] {
+export function buildIntentE2EFailureClassStatsFromRuns(runs: IntentE2EInsightRunRecord[]): IntentE2EInsightFailureClassStat[] {
   const counts = new Map<
     string,
     {
@@ -6404,7 +6443,7 @@ export function buildIntentE2EInsightsFromData(
       capabilityVerificationActivities,
       verificationIntents
     ),
-    failureClasses: buildFailureClassStats(terminalRuns),
+    failureClasses: buildIntentE2EFailureClassStatsFromRuns(terminalRuns),
     mergeProvenanceStats,
     riskLifecycleRules,
     probationRules,

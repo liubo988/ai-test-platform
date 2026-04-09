@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { buildIntentE2EEvaluationBaselineFromData } from '@/lib/ai/intent-e2e-insights';
 
 vi.mock('@/lib/db/repository', () => ({
   listIntentE2ERunSnapshots: vi.fn(),
@@ -40,9 +41,14 @@ function makeResultState(input: {
   stepTypes?: Array<'ui' | 'api' | 'assert' | 'extract' | 'cleanup'>;
   matchedRuleIds?: string[];
   matchedRuleTitles?: string[];
+  matchedRecipeSlugs?: string[];
   testType?: 'browser_e2e' | 'api_flow' | 'repo_test' | 'contract_check';
   runnerType?: 'playwright_runner' | 'http_runner' | 'repo_test_runner' | 'contract_runner';
   attempts?: Array<Record<string, unknown>>;
+  qualitySplit?: Record<string, unknown>;
+  experience?: Record<string, unknown> | null;
+  review?: Record<string, unknown> | null;
+  description?: string;
 }) {
   const stepTypes = input.stepTypes || ['ui', 'assert'];
 
@@ -50,6 +56,7 @@ function makeResultState(input: {
     result: {
       testType: input.testType || 'browser_e2e',
       runnerType: input.runnerType || 'playwright_runner',
+      description: input.description || input.title,
       scenarioCard: {
         title: input.title,
         taskMode: input.taskMode || 'scenario',
@@ -63,11 +70,21 @@ function makeResultState(input: {
           })),
         },
       },
+      executionPlan: {
+        matchedRecipeSlugs: input.matchedRecipeSlugs || [],
+      },
+      verificationPlan: {
+        matchedRecipeSlugs: input.matchedRecipeSlugs || [],
+        checks: [],
+      },
       knowledge: {
         matchedRuleIds: input.matchedRuleIds || [],
         matchedRuleTitles: input.matchedRuleTitles || [],
         suggestedHelpers: [],
       },
+      qualitySplit: input.qualitySplit || undefined,
+      experience: input.experience || undefined,
+      review: input.review || undefined,
       attempts: input.attempts || [
         {
           attempt: 1,
@@ -81,6 +98,10 @@ function makeResultState(input: {
       ],
     },
   };
+}
+
+function resolveAllEvalCaseIds(runSnapshots: IntentE2ERunSnapshotRecord[]): string[] {
+  return buildIntentE2EEvaluationBaselineFromData(runSnapshots).candidates.map((item) => item.evalCaseId);
 }
 
 function makeImprovedFrozenSnapshots(): IntentE2ERunSnapshotRecord[] {
@@ -306,6 +327,106 @@ describe('intent-e2e-benchmark', () => {
     expect(benchmark.source.generatedFromRuns).toBe(4);
   });
 
+  it('records blocked and E1/E2/E3 benchmark metrics from terminal runs', () => {
+    const runSnapshots = [
+      makeRunSnapshot({
+        runId: 'metric_playbook_pass',
+        status: 'passed',
+        requestInput: '登录后新建商机并校验列表',
+        targetUrl: 'https://example.com/business/createbusiness',
+        endedAt: '2026-03-31T10:00:00.000Z',
+        state: makeResultState({
+          title: '新建商机并回列表校验',
+          taskMode: 'scenario',
+          stepTypes: ['ui', 'extract', 'assert'],
+          matchedRuleIds: ['business.submit'],
+          matchedRuleTitles: ['商机提交流程'],
+          matchedRecipeSlugs: ['intent.business-create-list-verify'],
+          experience: {
+            source: 'project_terminal_runs',
+            scannedRunCount: 12,
+            matchedRunCount: 2,
+            hints: [{ hintId: 'hint_1', runId: 'run_old_1' }],
+          },
+          review: {
+            reviewedAt: '2026-03-31T10:00:30.000Z',
+            playbookCandidates: [{ slug: 'intent.business-create-list-verify' }],
+          },
+        }),
+      }),
+      makeRunSnapshot({
+        runId: 'metric_blocked_failed',
+        status: 'failed',
+        requestInput: '登录后准备环境再执行',
+        targetUrl: 'https://example.com/setup/environment',
+        endedAt: '2026-03-31T10:01:00.000Z',
+        state: makeResultState({
+          title: '环境准备',
+          taskMode: 'scenario',
+          stepTypes: ['ui', 'assert'],
+          qualitySplit: {
+            bucket: 'env_blocked',
+            blocked: true,
+            qualityEligible: false,
+            blockerKind: 'environment',
+          },
+          attempts: [
+            {
+              attempt: 1,
+              kind: 'generate',
+              result: { success: false },
+              helperUsage: {
+                usedHelpers: ['__e2e.assertTextVisible'],
+                usedSuggestedHelpers: [],
+              },
+              triage: {
+                failureClass: 'env_transient',
+              },
+            },
+          ],
+        }),
+      }),
+      makeRunSnapshot({
+        runId: 'metric_untracked_pass',
+        status: 'passed',
+        requestInput: '浏览 zzz 自定义页面',
+        targetUrl: 'https://example.com/zzz/sandbox',
+        endedAt: '2026-03-31T10:02:00.000Z',
+        state: makeResultState({
+          title: '自定义页面浏览',
+          taskMode: 'page',
+          stepTypes: ['assert'],
+          description: '打开一个自定义页面并确认页面可见',
+        }),
+      }),
+    ];
+
+    const evalCaseIds = resolveAllEvalCaseIds(runSnapshots);
+    const benchmark = buildIntentE2EBenchmarkSuiteFromData(runSnapshots, {
+      projectUid: 'proj_checkout',
+      moduleUid: 'mod_sales',
+      testTypes: ['browser_e2e'],
+      evalCaseIds,
+      maxCases: evalCaseIds.length,
+      frozenAt: '2026-03-31T10:30:00.000Z',
+    });
+
+    expect(benchmark.summary).toMatchObject({
+      blockedRate: 33.3,
+      experienceHitRate: 33.3,
+      experienceHelpedFirstPassRate: 100,
+      experienceHelpedTerminalPassRate: 100,
+      recipeHitRate: 33.3,
+      playbookHitRate: 33.3,
+      reviewWriteRate: 33.3,
+    });
+    expect(benchmark.summary.untrackedRate).toBeGreaterThan(0);
+    expect(benchmark.summary.topFailureReasons[0]).toMatchObject({
+      failureClass: 'env_transient',
+      count: 1,
+    });
+  });
+
   it('freezes a project benchmark and writes compare reports with improved, missing and regressed cases', async () => {
     vi.mocked(listIntentE2ERunSnapshots).mockResolvedValueOnce(makeImprovedFrozenSnapshots() as never);
 
@@ -362,6 +483,14 @@ describe('intent-e2e-benchmark', () => {
       improvedCases: 1,
       regressedCases: 1,
       unchangedCases: 0,
+      frozenBlockedRate: expect.any(Number),
+      currentBlockedRate: expect.any(Number),
+      frozenExperienceHitRate: expect.any(Number),
+      currentExperienceHitRate: expect.any(Number),
+      frozenRecipeHitRate: expect.any(Number),
+      currentRecipeHitRate: expect.any(Number),
+      frozenTopFailureReasons: expect.any(Array),
+      currentTopFailureReasons: expect.any(Array),
     });
 
     const evalCaseByTargetPath = new Map(frozen.benchmark.cases.map((item) => [item.targetPath, item.evalCaseId]));
@@ -372,5 +501,11 @@ describe('intent-e2e-benchmark', () => {
     );
     expect(compareCaseByEvalCaseId.get(evalCaseByTargetPath.get('/dashboard/overview') || '')?.comparisonStatus).toBe('missing');
     expect(compareCaseByEvalCaseId.get(evalCaseByTargetPath.get('/orders/list') || '')?.comparisonStatus).toBe('regressed');
+    expect(compareCaseByEvalCaseId.get(evalCaseByTargetPath.get('/orders/list') || '')?.delta).toMatchObject({
+      blockedRate: expect.any(Number),
+      experienceHitRate: expect.any(Number),
+      recipeHitRate: expect.any(Number),
+      reviewWriteRate: expect.any(Number),
+    });
   });
 });
