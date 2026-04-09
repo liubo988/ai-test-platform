@@ -17,6 +17,7 @@ import {
   type IntentE2EInsightRunRecord,
 } from '@/lib/ai/intent-e2e-insights';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
+import { closeDbPool } from '@/lib/db/client';
 import { listIntentE2ERunSnapshots } from '@/lib/db/repository';
 import {
   normalizePlatformRunnerType,
@@ -396,16 +397,20 @@ async function main() {
   }
 }
 
-main().catch(async (error: unknown) => {
-  const projectUid = readOptionalString(parsed.values['project-uid']);
-  const benchmarkPath = projectUid ? await readIntentE2EBenchmark(projectUid) : null;
-  if (error instanceof Error) {
-    console.error(`[intent-e2e-benchmark] ${error.message}`);
-  } else {
-    console.error('[intent-e2e-benchmark] 未知错误');
-  }
-  if (benchmarkPath?.path) {
-    console.error(`[intent-e2e-benchmark] 当前 benchmark: ${benchmarkPath.path}`);
-  }
-  process.exit(1);
-});
+main()
+  .catch(async (error: unknown) => {
+    const projectUid = readOptionalString(parsed.values['project-uid']);
+    const benchmarkPath = projectUid ? await readIntentE2EBenchmark(projectUid) : null;
+    if (error instanceof Error) {
+      console.error(`[intent-e2e-benchmark] ${error.message}`);
+    } else {
+      console.error('[intent-e2e-benchmark] 未知错误');
+    }
+    if (benchmarkPath?.path) {
+      console.error(`[intent-e2e-benchmark] 当前 benchmark: ${benchmarkPath.path}`);
+    }
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await closeDbPool();
+  });

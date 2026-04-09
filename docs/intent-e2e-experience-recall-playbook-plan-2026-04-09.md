@@ -770,3 +770,41 @@ Hermes 的 `skill_manage` 更适合通用 agent 的自由技能沉淀；当前�
 - 下一步：
   - 用真实项目 scope 跑一版 `candidates -> freeze -> compare`，拿到 `E1/E2/E3` 的首份真实量化结果。
   - 再决定是否需要补 workbench 入口；这不在当前最小切口范围内。
+
+## 2026-04-09 第五刀回写（benchmark CLI 退出收口并完成真实 scope smoke）
+
+- 本轮目标：
+  - 在真实 scope 上跑通 `candidates -> freeze -> compare`。
+  - 若命令链路存在工程化缺口，只做最小收口，不扩新入口。
+- 已完成：
+  - 在 [lib/db/client.ts](/Users/xiaolongbao/Workspace/ai-test/lib/db/client.ts) 新增 `closeDbPool()`，提供 CLI 级别的连接池收口。
+  - 在 [scripts/intent-e2e-benchmark.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-benchmark.ts) 改为在命令成功 / 失败后统一 `finally -> closeDbPool()`，修复真实命令已输出结果但进程不退出的问题。
+  - 在真实 scope `projectUid=proj_default / moduleUid=mod_1773303139537_c84d8476 / testType=browser_e2e` 上完成：
+    - `candidates`
+    - `freeze`
+    - `compare`
+- 验证：
+  - `npm run build`
+  - `npm run intent:benchmark:candidates -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --test-type browser_e2e`
+  - `npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --test-type browser_e2e --max-cases 5 --release-candidate ai-holdout-cli-2026-04-09`
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --run-limit 200 --compared-label ai-holdout-cli-2026-04-09-current`
+  - 结果：
+    - 三条真实命令都已正常退出，不再残留 benchmark CLI 进程
+    - `candidates` 产出 `5` 个 cluster
+    - `freeze` 成功写出当前 benchmark 与归档
+    - `compare` 成功写出 report
+- 当前结果：
+  - benchmark CLI 现在不只是“能跑帮助”，而是能在真实项目 scope 上稳定完成完整命令链路并正常退出。
+  - 当前冻结基线的摘要为：
+    - `cases=5`
+    - `terminal_pass_rate=30.0%`
+    - `first_pass_pass_rate=24.0%`
+    - `blocked_rate=11.5%`
+    - `recipe_hit_rate=69.0%`
+    - `experience_hit_rate=3.0%`
+  - 由于本轮 `compare` 对比的是刚冻结的同一批当前 runs，所以结果为 `unchanged=5 / regressed=0 / missing=0`，这次的价值主要是拿到可重复 baseline，而不是证明优化收益。
+- 风险 / 未完成：
+  - 这次 compare 仍是“同窗对比”，还不是策略变更前后的真实增益对比。
+  - `playbook_hit_rate=0.0%`，说明当前真实样本里还没有形成可观测的 playbook 命中收益。
+- 下一步：
+  - 基于这份 benchmark baseline 继续推进 `E1/E2/E3` 策略优化，再重新跑 compare，才能看到真实收益变化。

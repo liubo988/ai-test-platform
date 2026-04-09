@@ -41,3 +41,10 @@ export async function ensureDbReady(): Promise<void> {
     conn.release();
   }
 }
+
+export async function closeDbPool(): Promise<void> {
+  if (!pool) return;
+  const current = pool;
+  pool = null;
+  await current.end();
+}
