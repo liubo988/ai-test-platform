@@ -20,7 +20,11 @@
     "qa": "node scripts/qa.mjs",
     "test:api:product": "node scripts/api-product-regression.mjs",
     "db:init": "node --env-file-if-exists=.env scripts/init-e2e-db.mjs",
-    "knowledge:import:gbs": "node --env-file-if-exists=.env scripts/import-gbs-manual-knowledge.mjs"
+    "knowledge:import:gbs": "node --env-file-if-exists=.env scripts/import-gbs-manual-knowledge.mjs",
+    "intent:benchmark:candidates": "node --env-file-if-exists=.env --experimental-strip-types --import ./scripts/register-ts-alias-loader.mjs ./scripts/intent-e2e-benchmark.ts candidates",
+    "intent:benchmark:freeze": "node --env-file-if-exists=.env --experimental-strip-types --import ./scripts/register-ts-alias-loader.mjs ./scripts/intent-e2e-benchmark.ts freeze",
+    "intent:benchmark:replay": "node --env-file-if-exists=.env --experimental-strip-types --import ./scripts/register-ts-alias-loader.mjs ./scripts/intent-e2e-benchmark.ts replay",
+    "intent:benchmark:compare": "node --env-file-if-exists=.env --experimental-strip-types --import ./scripts/register-ts-alias-loader.mjs ./scripts/intent-e2e-benchmark.ts compare"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

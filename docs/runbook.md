@@ -21,12 +21,22 @@
 - E2E：`npm run test:e2e`
 - 全量回归：`npm run test:all`
 - 生成边缘用例测试：`npm run edge:generate`
+- 列出 benchmark holdout candidates：`npm run intent:benchmark:candidates -- --project-uid <projectUid>`
+- 冻结 benchmark：`npm run intent:benchmark:freeze -- --project-uid <projectUid>`
+- 对比当前 benchmark：`npm run intent:benchmark:compare -- --project-uid <projectUid>`
 
 ## 推荐工作流
 ### 改 AI / 业务逻辑
 1. `npm run build`
 2. `npm run test:unit`
 3. 如果涉及 DB 或 route，再跑 `npm run db:init && npm run test:integration`
+
+### 冻结 AI 生成 holdout
+1. `npm run intent:benchmark:candidates -- --project-uid <projectUid> --module-uid <moduleUid> --test-type browser_e2e`
+2. 视需要用 `--eval-case-id` 明确挑选 case，或直接按推荐候选冻结：
+   `npm run intent:benchmark:freeze -- --project-uid <projectUid> --module-uid <moduleUid> --test-type browser_e2e --max-cases 12 --release-candidate <label>`
+3. 改完策略后跑：
+   `npm run intent:benchmark:compare -- --project-uid <projectUid> --compared-label <label>`
 
 ### 改前端工作台
 1. `npm run build`

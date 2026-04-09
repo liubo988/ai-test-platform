@@ -24,6 +24,9 @@ npm run test:all
 - `npm run test:all`
 - `npm run edge:generate`
 - `npm run edge:report`
+- `npm run intent:benchmark:candidates -- --project-uid <projectUid>`
+- `npm run intent:benchmark:freeze -- --project-uid <projectUid>`
+- `npm run intent:benchmark:compare -- --project-uid <projectUid>`
 
 ## LLM 生成（可选）
 默认推荐模型：`api-proxy-codex/gpt-5.3-codex`
@@ -192,6 +195,15 @@ npm run edge:generate
   - 单项目 `INTENT_E2E_PROJECT_MAX_CONCURRENT_RUNS=1`
 - 工件归档默认路径：`reports/intent-e2e/runs/<runId>/`
 - 可通过环境变量 `INTENT_E2E_RUN_ARTIFACT_ROOT` 覆盖归档根目录
+
+### Benchmark / Holdout
+- 当前 repo 已提供零依赖 CLI，用于冻结 `AI生成` holdout、回放和 compare：
+  - `npm run intent:benchmark:candidates -- --project-uid proj_default --module-uid <moduleUid> --test-type browser_e2e`
+  - `npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid <moduleUid> --test-type browser_e2e --max-cases 12 --release-candidate ai-holdout-2026-04-09`
+  - `npm run intent:benchmark:replay -- --project-uid proj_default`
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --compared-label post-e1e2e3`
+- 命令默认读取最近 `200` 条 terminal runs，可用 `--run-limit` 覆盖。
+- 如果需要手工挑选 holdout，可先跑 `candidates`，再把 `evalCaseId` 用 `--eval-case-id` 传给 `freeze`。
 
 ### System Onboarding & CI/CD
 - repo-owned onboarding manifest registry：`intent-e2e.system-onboarding-manifests.json`

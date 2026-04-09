@@ -15706,3 +15706,67 @@
 - 下一步：
   - 先冻结一套真实 `AI生成 holdout`，跑一次 benchmark compare，拿到 `E1/E2/E3` 的第一版量化结果。
   - 再决定是否需要补 benchmark 触发脚本或 workbench 入口；这不在本轮范围内。
+
+## 2026-04-09 第二百三十九次更新（后续专项第五刀：benchmark holdout CLI 已补齐）
+
+- 本轮目标：
+  - 严格按 [docs/intent-e2e-experience-recall-playbook-plan-2026-04-09.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-experience-recall-playbook-plan-2026-04-09.md) 的下一步，只补一层 repo-owned benchmark CLI，给真实 `AI生成 holdout` 的 `candidates / freeze / replay / compare` 提供稳定入口。
+  - 不新增 route / workbench UI，不改主运行链路，不扩 DB schema。
+- 已完成：
+  - 新增 [docs/intent-e2e-benchmark-cli-task-brief-2026-04-09.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-benchmark-cli-task-brief-2026-04-09.md)，固定这刀的目标、范围、验收和验证命令。
+  - 新增 [scripts/intent-e2e-benchmark.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-benchmark.ts)，复用现有 benchmark 能力提供：
+    - `candidates`
+    - `freeze`
+    - `replay`
+    - `compare`
+  - 新增 [scripts/ts-alias-loader.mjs](/Users/xiaolongbao/Workspace/ai-test/scripts/ts-alias-loader.mjs) 与 [scripts/register-ts-alias-loader.mjs](/Users/xiaolongbao/Workspace/ai-test/scripts/register-ts-alias-loader.mjs)，让 Node `--experimental-strip-types` 下的 CLI 能稳定解析：
+    - `@/` alias
+    - 仓库内无扩展名的相对 TS import
+  - 在 [package.json](/Users/xiaolongbao/Workspace/ai-test/package.json) 补齐：
+    - `intent:benchmark:candidates`
+    - `intent:benchmark:freeze`
+    - `intent:benchmark:replay`
+    - `intent:benchmark:compare`
+  - 在 [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md) 与 [docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md) 补充 benchmark holdout 命令入口与最小使用说明。
+- 验证：
+  - 执行：
+    - `npm run intent:benchmark:candidates -- --help`
+    - `npm run intent:benchmark:freeze -- --help`
+    - `npm run intent:benchmark:replay -- --help`
+    - `npm run intent:benchmark:compare -- --help`
+    - `npm run build`
+    - `npm run build:web`
+    - `node scripts/check-doc-links.mjs`
+    - `node scripts/check-roadmap-progress.mjs`
+  - 结果：
+    - `4` 个 CLI 子命令帮助输出通过
+    - `build` 通过
+    - `build:web` 通过
+    - 文档链接校验通过
+    - roadmap 进度校验通过
+- 当前结果：
+  - benchmark / holdout 现在已经有 repo 内可重复执行的稳定命令入口，不再需要手写调用 `lib/intent-e2e-benchmark.ts`。
+  - 这刀只补“执行入口”，没有改 benchmark 统计口径，也没有改主运行链路。
+  - 下一步可以直接在真实项目 scope 上冻结 `AI生成 holdout` 并跑 compare report。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成（MVP）
+    - `E2`：已完成（project-scoped recipe promotion / merge）
+    - `E3`：已完成（run 终态后异步补写 review）
+    - `E4`：未开始
+  - benchmark 入口：已补齐最小 CLI，可重复执行 `holdout freeze / replay / compare`
+- 风险 / 未完成：
+  - 本轮还没有在真实 scope 上冻结新的 `AI生成 holdout` 并产出 compare report，所以仍没有新的量化收益。
+  - 当前 benchmark 管理入口仍是 repo 内命令，不提供 route / workbench UI。
+  - `playbook_hit_rate` 仍按受控 `intent.*` slug 约定统计，没有额外扩 provenance schema。
+- 下一步：
+  - 用真实项目 scope 跑一版 `candidates -> freeze -> compare`，拿到 `E1/E2/E3` 的首份真实量化结果。
+  - 再决定是否需要补 workbench benchmark 入口；这不在当前最小切口范围内。
