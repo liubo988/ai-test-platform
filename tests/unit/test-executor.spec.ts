@@ -1682,6 +1682,84 @@ test('markdown fence wrapper', async () => {
   );
 
   it(
+    'clicks the visible row checkbox through the shared helper and tolerates fixed-column clones',
+    async () => {
+      const logs: Array<{ level: string; message: string; meta?: any }> = [];
+      const result = await executeTest(
+        `test('click antd row checkbox via helper', async ({ page }) => {
+          await page.goto('about:blank');
+          await page.setContent(\`
+            <table class="ant-table">
+              <tbody class="ant-table-tbody">
+                <tr data-row-key="row-1">
+                  <td class="ant-table-selection-column">
+                    <label class="ant-checkbox-wrapper" id="hidden-wrapper" style="display:none">
+                      <span class="ant-checkbox">
+                        <input class="ant-checkbox-input" type="checkbox" />
+                        <span class="ant-checkbox-inner"></span>
+                      </span>
+                    </label>
+                  </td>
+                  <td>ORD-001</td>
+                </tr>
+                <tr data-row-key="row-1">
+                  <td class="ant-table-selection-column">
+                    <label class="ant-checkbox-wrapper" id="visible-wrapper">
+                      <span class="ant-checkbox">
+                        <input class="ant-checkbox-input" id="visible-checkbox" type="checkbox" />
+                        <span class="ant-checkbox-inner"></span>
+                      </span>
+                    </label>
+                  </td>
+                  <td>ORD-001</td>
+                </tr>
+              </tbody>
+            </table>
+          \`);
+
+          await page.evaluate(() => {
+            const visibleWrapper = document.getElementById('visible-wrapper');
+            const visibleCheckbox = document.getElementById('visible-checkbox');
+            if (!(visibleWrapper instanceof HTMLLabelElement) || !(visibleCheckbox instanceof HTMLInputElement)) return;
+
+            visibleWrapper.addEventListener('click', () => {
+              visibleCheckbox.checked = true;
+              const checkboxRoot = visibleWrapper.querySelector('.ant-checkbox');
+              if (checkboxRoot instanceof HTMLElement) checkboxRoot.classList.add('ant-checkbox-checked');
+              visibleWrapper.classList.add('ant-checkbox-wrapper-checked');
+            });
+          });
+
+          const targetRow = page.locator('tr[data-row-key="row-1"]').first();
+          await __e2e.clickAntdRowCheckbox(page, targetRow);
+
+          await expect(page.locator('#visible-wrapper')).toHaveClass(/ant-checkbox-wrapper-checked/);
+          await expect(page.locator('#visible-checkbox')).toBeChecked();
+        });`,
+        'worker-click-row-checkbox',
+        undefined,
+        {
+          onLog(payload) {
+            logs.push(payload);
+          },
+        }
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          level: 'info',
+          message: 'row checkbox clicked',
+        })
+      );
+    },
+    20000
+  );
+
+  it(
     'merges visible fixed-column clone text when reading a matched Ant Design row',
     async () => {
       const result = await executeTest(

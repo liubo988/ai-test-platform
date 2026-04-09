@@ -937,6 +937,43 @@ Error: element(s) not found`,
     expect(prompt).toContain('额外列表 GET 只能当辅助证据');
   });
 
+  it('adds targeted repair hints when row checkbox clicking falls back to brittle first-row logic', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/order/list',
+        title: '订单列表',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '订单列表' }],
+        screenshot: '',
+      },
+      '批量申请入账并校验列表结果',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: [
+          "const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [shared.selectedOrderNo, shared.selectedServiceItem], timeoutMs: 20000 });",
+          "await targetRow.locator('.ant-checkbox').first().click({ force: true, timeout: 10000 });",
+          "await expect(targetRow.locator('.ant-checkbox-checked')).toHaveCount(1, { timeout: 10000 });",
+        ].join('\n'),
+        executionError: '未找到可点击的行复选框',
+        recentEvents: [],
+      },
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://uat.example.com/#/order/list',
+        expectedOutcome: '勾选目标订单并成功批量申请入账',
+      }
+    );
+
+    expect(prompt).toContain('不要继续保留 `page.locator(\'tr[data-row-key]:visible\').first().locator(\'.ant-checkbox\').first().click()`');
+    expect(prompt).toContain('再直接写 `await __e2e.clickAntdRowCheckbox(page, targetRow)`');
+    expect(prompt).toContain('如果当前候选 row 没有可点复选框，就把它视为不可选行并继续寻找下一条候选');
+  });
+
   it('adds targeted detail-status hints when 状态 误读成意向标签', () => {
     const prompt = buildRepairPrompt(
       {

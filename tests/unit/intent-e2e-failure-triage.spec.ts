@@ -93,6 +93,28 @@ describe('intent-e2e-failure-triage', () => {
     });
   });
 
+  it('classifies row checkbox click failures as repairable selector issues', () => {
+    const triage = classifyIntentE2EFailure({
+      success: false,
+      duration: 800,
+      steps: [
+        {
+          title: '勾选目标订单',
+          status: 'failed',
+          duration: 800,
+          error: '未找到可点击的行复选框',
+        },
+      ],
+      error: '未找到可点击的行复选框',
+    });
+
+    expect(triage).toMatchObject({
+      failureClass: 'selector_drift',
+      repairable: true,
+    });
+    expect(triage?.matchedSignals).toContain('行复选框不可点击');
+  });
+
   it('classifies explicit business-list ownership helper failures as non-repairable anchor issues', () => {
     const triage = classifyIntentE2EFailure({
       success: false,

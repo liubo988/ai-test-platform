@@ -2004,7 +2004,8 @@ export function buildPrompt(
 3. 从列表行提取关键主键时，优先使用明确的链接文本、编号列或字段标签，不要用宽泛正则从整行文本中猜测，以免误取手机号、企业 ID 或金额。
 4. 如果目标行没有可见的“查看 / 编辑 / 生成订单”按钮，而是只有末列三点菜单或 \`.ant-dropdown-trigger\` 图标，必须先打开该行操作菜单，再在当前可见 menu 内点击目标动作。
 5. 对 Ant Design 表格，禁止先写 \`expect(page.locator('.ant-table-tbody')).toBeVisible()\` 这类表体可见性断言；固定列、粘性列和克隆节点会让 \`.ant-table-tbody\` 同时命中多个元素。应直接等待目标行、表格请求完成，或等待 \`.ant-table-placeholder\` / 行数变化。
-6. 对 Ant Design 表格目标行，优先使用 \`__e2e.findAntdTableRow(page, { hasTexts: [...] })\`；至少组合手机号、联系人、状态、businessId、企业名中的两个以上稳定字段，让 helper 按 \`data-row-key\` 去重固定列克隆。不要继续对 \`page.locator('tbody tr').filter({ hasText: ... }).first()\` 写 \`toHaveCount(1)\` 或硬编码 \`.first()\`。`);
+6. 对 Ant Design 表格目标行，优先使用 \`__e2e.findAntdTableRow(page, { hasTexts: [...] })\`；至少组合手机号、联系人、状态、businessId、企业名中的两个以上稳定字段，让 helper 按 \`data-row-key\` 去重固定列克隆。不要继续对 \`page.locator('tbody tr').filter({ hasText: ... }).first()\` 写 \`toHaveCount(1)\` 或硬编码 \`.first()\`。
+7. 如果后续需要勾选该行做批量操作，必须先拿到 \`targetRow\`，再直接写 \`await __e2e.clickAntdRowCheckbox(page, targetRow)\`。不要继续写 \`page.locator('tr[data-row-key]:visible').first().locator('.ant-checkbox').first().click()\`、不要先点第一条可见行、也不要直接点隐藏的 \`input[type="checkbox"]\`。如果当前行没有可点复选框，就把它视为不可选行并继续寻找下一条候选。`);
 
   parts.push(`\n## 下拉与重复文案规则
 1. 遇到 Ant Design Select / Cascader / TreeSelect / 弹层枚举项时，必须先定位到当前可见的弹层容器，再在容器内选择选项，例如：
@@ -2036,10 +2037,13 @@ export function buildPrompt(
 7. 对 Ant Design 表格目标行，优先直接写：
    - const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [targetPhone, targetName, '新入库'] });
    - helper 会优先选主表体可见行，并按 \`data-row-key\` 去重固定列 / 粘性列克隆；不要继续写 \`page.locator('tbody tr').filter({ hasText: ... }).first()\`，也不要再对它做 \`toHaveCount(1)\`。
-8. 对列表行末尾只有三点菜单 / \`.ant-dropdown-trigger\` 的场景，优先直接写：
+8. 对 Ant Design 表格目标行的勾选场景，优先直接写：
+   - await __e2e.clickAntdRowCheckbox(page, targetRow);
+   - helper 会优先点击当前行可见的 checkbox wrapper / label，并在存在固定列克隆时自动回退同一 \`data-row-key\` 的可见克隆行；不要继续手写 \`.ant-checkbox\` / \`.ant-checkbox-input\` 细节。
+9. 对列表行末尾只有三点菜单 / \`.ant-dropdown-trigger\` 的场景，优先直接写：
    - await __e2e.clickAntdRowAction(page, targetRow, '生成订单');
    - await __e2e.clickAntdRowAction(page, targetRow, '查看');
-9. 只要场景是 Ant Design 下拉、Ant Design 表格目标行定位或 Ant Design 行操作菜单，默认先考虑 \`__e2e.openAntdDropdown\` / \`__e2e.selectAntdOption\` / \`__e2e.findAntdTableRow\` / \`__e2e.clickAntdRowAction\`，除非页面控件明显不是该类组件。`);
+10. 只要场景是 Ant Design 下拉、Ant Design 表格目标行定位、Ant Design 行勾选或 Ant Design 行操作菜单，默认先考虑 \`__e2e.openAntdDropdown\` / \`__e2e.selectAntdOption\` / \`__e2e.findAntdTableRow\` / \`__e2e.clickAntdRowCheckbox\` / \`__e2e.clickAntdRowAction\`，除非页面控件明显不是该类组件。`);
   parts.push(`9. 对商机列表“我创建的 / 我跟进的 / 归属 / 范围”视角切换，优先直接写：
    - await __e2e.switchBusinessListOwnershipView(page, { label: '我创建的', listUrl: LIST_URL });
    - helper 会先尝试 tab / radio / segmented，再尝试顶部归属 dropdown，最后回退到筛选区 dropdown；不要继续手写 \`getByText('我创建的')\` 或 form-item 正则猜控件形态。
@@ -2291,7 +2295,8 @@ await __e2e.ensureLoggedIn(page, { targetUrl: TARGET_URL });
 4. 先根据“登录方式说明”判断应该切换到哪个登录 tab（如扫码登录 / 密码登录 / 短信登录）。
 5. 如果说明明确为扫码等无法自动化方式，或者缺少自动化凭证，请使用 \`test.skip\` 明确说明原因，禁止假通过。
 6. 登录成功判定不要过拟合固定路由；像 "#/" 这类根主页也算登录成功，成功后可继续跳转到目标业务页。
-7. 遇到 Ant Design 表格的选择框时，优先点击可见的 checkbox wrapper / label，不要优先操作隐藏的 input。`);
+7. 遇到 Ant Design 表格的选择框时，优先点击可见的 checkbox wrapper / label，不要优先操作隐藏的 input。
+8. 如果脚本已经先定位到目标行，优先直接写 \`await __e2e.clickAntdRowCheckbox(page, targetRow)\`；不要继续手写 \`targetRow.locator('.ant-checkbox').first().click()\` 或点第一条可见行。`);
   }
 
   if (edgeCases.length > 0) {
@@ -2582,6 +2587,13 @@ export function buildRepairPrompt(
     /searchButton\.click\(\)|getByRole\('button', \{ name: \/搜\\\\s\*索\/i \}\)\.first\(\)\.click\(\)/.test(repair.previousCode)
   ) {
     diagnosisHints.push('这次不是列表数据真的为空，而是你在同一条回查链里先手写了 `keywordInput.fill(...) + searchButton.click()`，随后又把同一组 `keywordInput/searchButton` 传给 `__e2e.resolvePrimaryRecord(...)`，导致 helper 再触发一次搜索/刷新，把页面自己的列表逻辑打进了 `null.forEach`。修复时二选一：要么完全交给 `__e2e.resolvePrimaryRecord(...)` 负责搜索，要么保留手动搜索但不要再把同一组控件传给 helper。对当前商机列表场景，优先删除预搜索，只保留 `currentVisibleRow` 短探测 + `__e2e.resolvePrimaryRecord(...)` 这一条链。');
+  }
+  if (
+    /未找到可点击的行复选框/.test(repair.executionError) &&
+    /ant-checkbox|checkbox/.test(repair.previousCode) &&
+    /(findAntdTableRow|targetRow|selectedRows|order\/list|批量)/.test(`${snapshot.url}\n${description}\n${repair.previousCode}`)
+  ) {
+    diagnosisHints.push("这次不是列表里完全没有数据，而是脚本已经进入了目标列表，却仍在手写 `.ant-checkbox` 细节或默认去点第一条/随机一条行的复选框。修复时不要继续保留 `page.locator('tr[data-row-key]:visible').first().locator('.ant-checkbox').first().click()`、`targetRow.locator('.ant-checkbox').first().click()` 或任何“第一条可见行”假设；先用 `__e2e.findAntdTableRow(page, { hasTexts: [...] })` 命中真正目标行，再直接写 `await __e2e.clickAntdRowCheckbox(page, targetRow)`。如果当前候选 row 没有可点复选框，就把它视为不可选行并继续寻找下一条候选，不要立刻把整个任务判死。");
   }
   if (
     looksLikeBusinessCreateTask(snapshot, description, context) &&

@@ -415,6 +415,7 @@ const TRIAGE_RULES: TriageRule[] = [
       { signal: 'strict mode violation', pattern: /strict mode violation/i },
       { signal: '元素不可见', pattern: /element is not attached|element is outside of the viewport|element\(s\) not found|received:\s*hidden/i },
       { signal: '行操作缺失', pattern: /未找到行操作|row action not found|未找到按钮|未找到[“"'`].+?[”"'`]筛选标签/i },
+      { signal: '行复选框不可点击', pattern: /未找到可点击的行复选框/i },
     ],
   },
   {

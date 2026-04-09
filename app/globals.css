@@ -108,12 +108,55 @@ body {
 }
 
 .intent-e2e-browser-stage,
-.intent-e2e-feed-panel,
-.intent-e2e-detail-launcher {
+.intent-e2e-detail-launcher,
+.intent-e2e-feed-panel {
   background: rgba(252, 248, 241, 0.9);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.76),
     0 14px 34px rgba(44, 37, 28, 0.06);
+}
+
+/* Live log feed entry animation */
+@keyframes intent-feed-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.intent-feed-item {
+  animation: intent-feed-slide-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Stagger delay for feed items */
+.intent-feed-item:nth-child(1) { animation-delay: 0ms; }
+.intent-feed-item:nth-child(2) { animation-delay: 40ms; }
+.intent-feed-item:nth-child(3) { animation-delay: 80ms; }
+.intent-feed-item:nth-child(4) { animation-delay: 120ms; }
+.intent-feed-item:nth-child(5) { animation-delay: 160ms; }
+
+/* Running status breathing glow */
+@keyframes intent-status-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0); }
+  50% { box-shadow: 0 0 12px 2px rgba(56, 189, 248, 0.15); }
+}
+
+.intent-status-running {
+  animation: intent-status-breathe 2.4s ease-in-out infinite;
+}
+
+/* Latest badge pulse */
+@keyframes intent-latest-glow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.intent-latest-badge {
+  animation: intent-latest-glow 2s ease-in-out infinite;
 }
 
 .intent-e2e-modal-surface {

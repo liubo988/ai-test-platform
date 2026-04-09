@@ -2107,39 +2107,39 @@ function feedToneClass(tone: FeedItem['tone']): string {
 function feedToneConsoleDotClass(tone: FeedItem['tone']): string {
   switch (tone) {
     case 'success':
-      return 'bg-emerald-400';
+      return 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.45)]';
     case 'warning':
-      return 'bg-amber-400';
+      return 'bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.45)]';
     case 'error':
-      return 'bg-rose-400';
+      return 'bg-rose-500 shadow-[0_0_6px_rgba(244,63,94,0.45)]';
     default:
-      return 'bg-sky-400';
+      return 'bg-sky-500 shadow-[0_0_6px_rgba(14,165,233,0.4)]';
   }
 }
 
 function feedToneConsoleSurfaceClass(tone: FeedItem['tone']): string {
   switch (tone) {
     case 'success':
-      return 'border-emerald-200/90 bg-emerald-50/78';
+      return 'border-emerald-200/80 bg-gradient-to-br from-emerald-50/90 to-white/80';
     case 'warning':
-      return 'border-amber-200/90 bg-amber-50/82';
+      return 'border-amber-200/80 bg-gradient-to-br from-amber-50/90 to-white/80';
     case 'error':
-      return 'border-rose-200/90 bg-rose-50/84';
+      return 'border-rose-200/80 bg-gradient-to-br from-rose-50/90 to-white/80';
     default:
-      return 'border-slate-200/90 bg-white/92';
+      return 'border-stone-200/70 bg-gradient-to-br from-white/95 to-stone-50/80';
   }
 }
 
 function feedToneConsoleLabelClass(tone: FeedItem['tone']): string {
   switch (tone) {
     case 'success':
-      return 'border-emerald-200 bg-emerald-100 text-emerald-700';
+      return 'border-emerald-300/60 bg-emerald-100/80 text-emerald-700';
     case 'warning':
-      return 'border-amber-200 bg-amber-100 text-amber-700';
+      return 'border-amber-300/60 bg-amber-100/80 text-amber-700';
     case 'error':
-      return 'border-rose-200 bg-rose-100 text-rose-700';
+      return 'border-rose-300/60 bg-rose-100/80 text-rose-700';
     default:
-      return 'border-slate-200 bg-slate-100 text-slate-600';
+      return 'border-stone-300/50 bg-stone-100/80 text-stone-600';
   }
 }
 
@@ -5417,7 +5417,7 @@ export default function IntentE2EWorkbench({
 
     return {
       label: '待命',
-      className: 'border-slate-200 bg-slate-100 text-slate-600',
+      className: 'border-stone-200 bg-stone-100 text-stone-600',
     };
   }, [canceling, displayFinalResult, displayLaunchDecision, running, showCanceledState]);
   const railTabs = useMemo(() => {
@@ -5573,7 +5573,7 @@ export default function IntentE2EWorkbench({
   const liveLogStatus = useMemo(() => {
     if (running) {
       return {
-        toneClassName: canceling ? 'border-amber-200 bg-amber-50/92 text-amber-800' : 'border-sky-200 bg-sky-50/92 text-sky-800',
+        toneClassName: canceling ? 'border-amber-200 bg-amber-50/92 text-amber-800' : 'intent-status-running border-sky-200 bg-sky-50/92 text-sky-800',
         title: canceling ? '正在停止当前自动测试' : 'AI 正在自动推进整条链路',
         detail: currentStageText,
         indicatorClassName: canceling
@@ -5614,10 +5614,10 @@ export default function IntentE2EWorkbench({
     }
 
     return {
-      toneClassName: 'border-slate-200 bg-slate-100/90 text-slate-700',
+      toneClassName: 'border-stone-200 bg-stone-100/90 text-stone-600',
       title: '等待启动',
       detail: '开始自动测试后，这里会持续显示最新阶段、修复动作和关键诊断。',
-      indicatorClassName: 'h-2 w-2 rounded-full bg-slate-300 animate-pulse',
+      indicatorClassName: 'h-2 w-2 rounded-full bg-stone-400 animate-pulse',
       badgeLabel: '待命',
     };
   }, [canceling, currentStageText, displayAttempts.length, displayFinalResult, displayLaunchDecision, running, showCanceledState]);
@@ -8589,19 +8589,19 @@ export default function IntentE2EWorkbench({
                 </div>
               </section>
             ) : (
-              <section className="intent-e2e-feed-panel relative overflow-hidden rounded-[28px] border border-slate-200/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.95),rgba(245,249,255,0.97))] px-5 py-5 text-slate-950 shadow-[0_18px_42px_rgba(15,23,42,0.06)] backdrop-blur md:px-6 md:py-6 xl:flex xl:h-full xl:min-h-0 xl:flex-col">
+              <section className="intent-e2e-feed-panel relative overflow-hidden rounded-[28px] border border-stone-200/80 bg-[linear-gradient(180deg,rgba(255,252,247,0.97),rgba(250,247,240,0.98))] px-5 py-5 text-stone-900 shadow-[0_18px_42px_rgba(44,37,28,0.06)] backdrop-blur md:px-6 md:py-6 xl:flex xl:h-full xl:min-h-0 xl:flex-col">
                 <div
                   aria-hidden="true"
-                  className="pointer-events-none absolute -right-10 top-6 h-32 w-32 rounded-full bg-[radial-gradient(circle,rgba(96,165,250,0.12),rgba(96,165,250,0)_74%)] blur-2xl"
+                  className="pointer-events-none absolute -right-10 top-6 h-32 w-32 rounded-full bg-[radial-gradient(circle,rgba(217,199,163,0.18),transparent_74%)] blur-2xl"
                 />
                 <div
                   aria-hidden="true"
-                  className="pointer-events-none absolute left-8 top-0 h-24 w-24 rounded-full bg-[radial-gradient(circle,rgba(148,163,184,0.12),rgba(148,163,184,0)_72%)] blur-2xl"
+                  className="pointer-events-none absolute left-8 top-0 h-24 w-24 rounded-full bg-[radial-gradient(circle,rgba(194,183,164,0.14),transparent_72%)] blur-2xl"
                 />
                 <div className="relative flex min-h-0 flex-1 flex-col">
                   <div className="shrink-0">
                     <div className="flex items-center justify-between gap-4">
-                      <h2 className="text-[21px] font-semibold leading-[1.16] tracking-[-0.05em] text-slate-950 md:text-[27px]">实时日志</h2>
+                      <h2 className="text-[21px] font-semibold leading-[1.16] tracking-[-0.05em] text-stone-900 md:text-[27px]">实时日志</h2>
                       <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${railStatusBadge.className}`}>
                         {railStatusBadge.label}
                       </span>
@@ -8610,14 +8610,14 @@ export default function IntentE2EWorkbench({
                     <div className="mt-4 grid grid-cols-4 gap-2">
                       <Link
                         href={projectReturnHref}
-                        className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-[14px] border border-slate-200 bg-slate-50 px-3 text-[12px] font-medium text-slate-700 transition hover:border-slate-300 hover:bg-white hover:text-slate-950"
+                        className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-[14px] border border-stone-200 bg-white/70 px-3 text-[12px] font-medium text-stone-600 transition hover:border-stone-300 hover:bg-white hover:text-stone-900"
                       >
                         返回项目
                       </Link>
                       <button
                         type="button"
                         onClick={() => setRailView('workbench')}
-                        className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-[14px] border border-slate-200 bg-slate-50 px-3 text-[12px] font-medium text-slate-700 transition hover:border-slate-300 hover:bg-white hover:text-slate-950"
+                        className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-[14px] border border-stone-200 bg-white/70 px-3 text-[12px] font-medium text-stone-600 transition hover:border-stone-300 hover:bg-white hover:text-stone-900"
                       >
                         编辑任务
                       </button>
@@ -8631,7 +8631,7 @@ export default function IntentE2EWorkbench({
                       <button
                         type="button"
                         onClick={() => setWorkbenchCollapsed(true)}
-                        className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-[14px] border border-slate-200 bg-slate-50 px-3 text-[12px] font-medium text-slate-600 transition hover:border-slate-300 hover:bg-white hover:text-slate-900"
+                        className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-[14px] border border-stone-200 bg-white/70 px-3 text-[12px] font-medium text-stone-500 transition hover:border-stone-300 hover:bg-white hover:text-stone-800"
                         title="收起左栏"
                       >
                         收起
@@ -8639,8 +8639,9 @@ export default function IntentE2EWorkbench({
                     </div>
                   </div>
 
-                  <div className="mt-4 flex min-h-[540px] flex-1 flex-col overflow-hidden rounded-[24px] border border-slate-200 bg-[linear-gradient(180deg,#f7f9fc_0%,#f1f5f9_100%)] shadow-[0_14px_32px_rgba(15,23,42,0.05)] xl:min-h-0">
-                    <div className={`shrink-0 border-b border-slate-200/80 px-4 py-3 ${liveLogStatus.toneClassName}`}>
+                  <div className="mt-4 flex min-h-[540px] flex-1 flex-col overflow-hidden rounded-[24px] border border-stone-200/80 bg-gradient-to-b from-white/80 to-stone-50/60 shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_14px_32px_rgba(44,37,28,0.05)] xl:min-h-0">
+                    {/* Status header */}
+                    <div className={`shrink-0 border-b border-stone-200/60 px-4 py-3 ${liveLogStatus.toneClassName}`}>
                       <div className="flex items-start justify-between gap-2.5">
                         <div className="min-w-0">
                           <div className="flex min-w-0 items-center gap-2">
@@ -8649,66 +8650,70 @@ export default function IntentE2EWorkbench({
                           </div>
                           <p className="mt-1 text-[11px] leading-[1.45] opacity-75">{liveLogStatus.detail}</p>
                         </div>
-                        <span className="whitespace-nowrap rounded-full border border-black/5 bg-white/82 px-2 py-0.5 text-[10px] font-medium text-current">
+                        <span className="whitespace-nowrap rounded-full border border-current/10 bg-white/70 px-2 py-0.5 text-[10px] font-medium text-current">
                           {liveLogStatus.badgeLabel}
                         </span>
                       </div>
-                      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-500">
-                        <span className="inline-flex items-center rounded-full border border-black/5 bg-white px-2 py-1 font-medium text-slate-700 shadow-[0_6px_16px_rgba(15,23,42,0.045)]">
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] text-stone-500">
+                        <span className="inline-flex items-center rounded-full border border-stone-200 bg-white px-2 py-1 font-medium text-stone-700 shadow-[0_2px_8px_rgba(44,37,28,0.04)]">
                           {liveAttemptValue}
                         </span>
-                        <span className="inline-flex items-center rounded-full border border-black/5 bg-white/74 px-2 py-1">
+                        <span className="inline-flex items-center rounded-full border border-stone-200/60 bg-white/60 px-2 py-1">
                           累计 {displayAttempts.length} 次
                         </span>
-                        <span className="inline-flex items-center rounded-full border border-black/5 bg-white/74 px-2 py-1">
+                        <span className="inline-flex items-center rounded-full border border-stone-200/60 bg-white/60 px-2 py-1">
                           最近 {streamState.feed.length} 条
                         </span>
                       </div>
                     </div>
 
+                    {/* Feed items with timeline */}
                     {liveFeedItems.length > 0 ? (
                       <div
                         aria-live="polite"
-                        className="intent-e2e-scroll min-h-0 flex-1 overflow-y-auto px-3 py-3 xl:overscroll-contain"
+                        className="intent-e2e-scroll relative min-h-0 flex-1 overflow-y-auto px-3 py-3 xl:overscroll-contain"
                       >
+                        {/* Vertical timeline connector */}
+                        <div aria-hidden="true" className="pointer-events-none absolute left-[22px] top-3 bottom-3 w-px bg-gradient-to-b from-stone-200 via-stone-200/60 to-transparent" />
+
                         {liveFeedItems.map((item, index) => (
                           <div
                             key={item.id}
-                            className={`mb-2.5 grid grid-cols-[auto_1fr] gap-x-3 rounded-[18px] border px-3 py-3 shadow-[0_8px_18px_rgba(15,23,42,0.05)] last:mb-0 ${
+                            className={`intent-feed-item relative mb-2.5 grid grid-cols-[auto_1fr] gap-x-3 rounded-[16px] border px-3 py-3 shadow-[0_2px_8px_rgba(44,37,28,0.04)] backdrop-blur-sm transition-all duration-300 last:mb-0 ${
                               feedToneConsoleSurfaceClass(item.tone)
-                            } ${index === 0 ? 'ring-1 ring-sky-200/90' : ''}`}
+                            } ${index === 0 ? 'ring-1 ring-sky-300/40 shadow-[0_4px_16px_rgba(14,165,233,0.08)]' : ''}`}
                           >
-                            <div className="flex flex-col items-center pt-1.5">
-                              <span className={`h-2.5 w-2.5 rounded-full ${feedToneConsoleDotClass(item.tone)}`} />
+                            <div className="relative z-10 flex flex-col items-center pt-1.5">
+                              <span className={`h-2.5 w-2.5 rounded-full ring-2 ring-white/80 ${feedToneConsoleDotClass(item.tone)}`} />
                             </div>
                             <div className="min-w-0">
                               <div className="flex flex-wrap items-center gap-2">
                                 <span
-                                  className={`rounded-full border px-2 py-0.5 font-mono text-[11px] tracking-[0.16em] ${feedToneConsoleLabelClass(
+                                  className={`rounded-full border px-2 py-0.5 font-mono text-[10px] font-semibold tracking-[0.14em] ${feedToneConsoleLabelClass(
                                     item.tone
                                   )}`}
                                 >
                                   {feedToneConsoleLabel(item.tone)}
                                 </span>
                                 {index === 0 && (
-                                  <span className="rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-700">
-                                    最新
+                                  <span className="intent-latest-badge rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-semibold text-sky-600">
+                                    LATEST
                                   </span>
                                 )}
                               </div>
-                              <p className="mt-1.5 text-[13px] leading-5 text-slate-700">{item.text}</p>
+                              <p className="mt-1.5 text-[13px] leading-[1.55] text-stone-700">{item.text}</p>
                             </div>
                           </div>
                         ))}
                       </div>
                     ) : (
                       <div className="intent-e2e-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4 xl:overscroll-contain">
-                        <div className="rounded-[22px] border border-dashed border-slate-300 bg-white/84 px-4 py-5 shadow-[0_12px_28px_rgba(15,23,42,0.05)]">
-                          <div className="flex h-12 w-12 items-center justify-center rounded-[18px] border border-slate-200 bg-white shadow-[0_12px_28px_rgba(15,23,42,0.06)]">
-                            <span className="h-2.5 w-2.5 rounded-full bg-sky-400 animate-pulse" />
+                        <div className="rounded-[22px] border border-dashed border-stone-300/80 bg-white/70 px-4 py-5 shadow-[0_4px_16px_rgba(44,37,28,0.03)]">
+                          <div className="flex h-12 w-12 items-center justify-center rounded-[18px] border border-stone-200 bg-white shadow-[0_4px_14px_rgba(44,37,28,0.05)]">
+                            <span className="h-2.5 w-2.5 rounded-full bg-sky-400 animate-pulse shadow-[0_0_8px_rgba(14,165,233,0.35)]" />
                           </div>
-                          <p className="mt-4 text-left text-[15px] font-medium text-slate-700">日志流准备中</p>
-                          <p className="mt-2 text-left text-[14px] leading-6 text-slate-500">
+                          <p className="mt-4 text-left text-[15px] font-medium text-stone-700">日志流准备中</p>
+                          <p className="mt-2 text-left text-[14px] leading-6 text-stone-500">
                             执行开始后，这里会持续显示最新阶段、修复动作和诊断信息。
                           </p>
                         </div>
