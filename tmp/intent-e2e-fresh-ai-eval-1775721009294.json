@@ -1,0 +1,285 @@
+{
+  "evaluatedAt": "2026-04-09T07:50:09.293Z",
+  "mode": "fresh_current_pipeline_no_draft_reuse",
+  "projectUid": "proj_default",
+  "sampleDrafts": [
+    {
+      "sampleId": "page_operate_keyword",
+      "draftUid": "idraft_1775639742370_cb3e0893",
+      "title": "操作分配页面关键字搜索显示校验",
+      "moduleName": "商机管理",
+      "attachmentCount": 0,
+      "targetUrl": "https://uat-service.yikaiye.com/#/followservice/operate",
+      "note": "稳定页面任务 / 无图"
+    },
+    {
+      "sampleId": "business_create_my_created",
+      "draftUid": "idraft_1774785335476_d1c85309",
+      "title": "商机222",
+      "moduleName": "登陆",
+      "attachmentCount": 1,
+      "targetUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+      "note": "商机创建回列表 / 1图"
+    },
+    {
+      "sampleId": "business_sea_search",
+      "draftUid": "idraft_1774000988455_6b1c5fbb",
+      "title": "商机公海按商机ID搜索并返回结果",
+      "moduleName": "商机管理",
+      "attachmentCount": 1,
+      "targetUrl": "https://uat-service.yikaiye.com/#/businesspool/businessseas",
+      "note": "商机公海搜索 / 1图"
+    },
+    {
+      "sampleId": "commission_config_edit",
+      "draftUid": "idraft_1773817178597_291cf422",
+      "title": "奋勇333",
+      "moduleName": "分佣",
+      "attachmentCount": 2,
+      "targetUrl": "https://uat-service.yikaiye.com/#/commission/subCommissionConfig",
+      "note": "分佣配置修改 / 2图"
+    },
+    {
+      "sampleId": "order_batch_apply",
+      "draftUid": "idraft_1775712279251_899fd4fd",
+      "title": "订单批量入账到入账管理核对",
+      "moduleName": "订单",
+      "attachmentCount": 2,
+      "targetUrl": "https://uat-service.yikaiye.com/#/order/list",
+      "note": "订单批量入账 / 2图 / 已知困难样本"
+    }
+  ],
+  "aggregate": {
+    "sampleCount": 5,
+    "firstPassPassed": 1,
+    "firstPassRate": 20,
+    "terminalPassed": 2,
+    "terminalPassRate": 40,
+    "repairedPass": 1,
+    "repairedPassRate": 20,
+    "recipeHit": 2,
+    "recipeHitRate": 40,
+    "playbookHit": 2,
+    "playbookHitRate": 40,
+    "withImage": {
+      "sampleCount": 4,
+      "firstPassPassed": 1,
+      "terminalPassed": 1,
+      "firstPassRate": 25,
+      "terminalPassRate": 25
+    },
+    "withoutImage": {
+      "sampleCount": 1,
+      "firstPassPassed": 0,
+      "terminalPassed": 1,
+      "firstPassRate": 0,
+      "terminalPassRate": 100
+    },
+    "failureBreakdown": [
+      {
+        "key": "passed",
+        "count": 2
+      },
+      {
+        "key": "unknown",
+        "count": 2
+      },
+      {
+        "key": "repair_stagnated",
+        "count": 1
+      }
+    ]
+  },
+  "results": [
+    {
+      "sampleId": "page_operate_keyword",
+      "note": "稳定页面任务 / 无图",
+      "draftUid": "idraft_1775639742370_cb3e0893",
+      "title": "操作分配页面关键字搜索显示校验",
+      "moduleUid": "mod_1773135901041_3d6eee14",
+      "moduleName": "商机管理",
+      "targetUrl": "https://uat-service.yikaiye.com/#/followservice/operate",
+      "attachmentCount": 0,
+      "runId": "intent-run-950287fa-8629-43f4-881d-f01d0dcbba12",
+      "status": "passed",
+      "stage": "completed",
+      "durationMs": 19402,
+      "attemptCount": 2,
+      "firstPass": false,
+      "terminalPass": true,
+      "repairPass": true,
+      "failureClass": "selector_drift",
+      "errorMessage": "",
+      "knowledgeMatchCount": 0,
+      "knowledgeRuleIds": [],
+      "starterHelpers": [
+        "__e2e.clickAntdRowAction",
+        "__e2e.ensureLoggedIn"
+      ],
+      "experienceMatchedRunCount": 21,
+      "experienceTopOutcome": "first_pass",
+      "experienceTopMatchScore": 20,
+      "recipeHit": true,
+      "matchedRecipeSlugs": [
+        "intent.ui-antd-modal-drawer-save",
+        "auth.unified-login"
+      ],
+      "playbookHit": true,
+      "playbookSlugs": [
+        "intent.intent-ui-antd-modal-drawer-save"
+      ],
+      "llmProvider": "openai",
+      "llmModel": "gpt-5.4",
+      "visionEnabled": true
+    },
+    {
+      "sampleId": "business_create_my_created",
+      "note": "商机创建回列表 / 1图",
+      "draftUid": "idraft_1774785335476_d1c85309",
+      "title": "商机222",
+      "moduleUid": "mod_1773303139537_c84d8476",
+      "moduleName": "登陆",
+      "targetUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+      "attachmentCount": 1,
+      "runId": "intent-run-e5b57f7c-95f0-4216-a9be-db15396dedbe",
+      "status": "failed",
+      "stage": "completed",
+      "durationMs": 0,
+      "attemptCount": 3,
+      "firstPass": false,
+      "terminalPass": false,
+      "repairPass": false,
+      "failureClass": "repair_stagnated",
+      "errorMessage": "判定为修复停滞：连续 3 次都落在同一类失败模式，继续自动修复收益很低，本次停止自动修复。\n最后一次失败: expect(locator).toBeVisible() failed",
+      "knowledgeMatchCount": 2,
+      "knowledgeRuleIds": [
+        "business.create-list-status-detail-entry",
+        "business.create-order-flow"
+      ],
+      "starterHelpers": [
+        "__e2e.clickAntdRowAction",
+        "__e2e.ensureLoggedIn",
+        "__e2e.waitForVisibleAntdModal"
+      ],
+      "experienceMatchedRunCount": 36,
+      "experienceTopOutcome": "first_pass",
+      "experienceTopMatchScore": 26,
+      "recipeHit": true,
+      "matchedRecipeSlugs": [
+        "intent.ui-antd-modal-drawer-save",
+        "ui.antd-modal-drawer-save",
+        "business.list-ownership-switch",
+        "business.create-to-order"
+      ],
+      "playbookHit": true,
+      "playbookSlugs": [
+        "intent.intent-ui-antd-modal-drawer-save"
+      ],
+      "llmProvider": "openai",
+      "llmModel": "gpt-5.4",
+      "visionEnabled": true
+    },
+    {
+      "sampleId": "business_sea_search",
+      "note": "商机公海搜索 / 1图",
+      "draftUid": "idraft_1774000988455_6b1c5fbb",
+      "title": "商机公海按商机ID搜索并返回结果",
+      "moduleUid": "mod_1773135901041_3d6eee14",
+      "moduleName": "商机管理",
+      "targetUrl": "https://uat-service.yikaiye.com/#/businesspool/businessseas",
+      "attachmentCount": 1,
+      "runId": "intent-run-16bb1db5-dc60-4881-92ec-4ce7ad1fabf5",
+      "status": "failed",
+      "stage": "error",
+      "durationMs": null,
+      "attemptCount": 0,
+      "firstPass": false,
+      "terminalPass": false,
+      "repairPass": false,
+      "failureClass": "unknown",
+      "errorMessage": "LLM 请求超时 (60000ms)",
+      "knowledgeMatchCount": 0,
+      "knowledgeRuleIds": [],
+      "starterHelpers": [],
+      "experienceMatchedRunCount": 0,
+      "experienceTopOutcome": "",
+      "experienceTopMatchScore": null,
+      "recipeHit": false,
+      "matchedRecipeSlugs": [],
+      "playbookHit": false,
+      "playbookSlugs": [],
+      "llmProvider": "",
+      "llmModel": "",
+      "visionEnabled": false
+    },
+    {
+      "sampleId": "commission_config_edit",
+      "note": "分佣配置修改 / 2图",
+      "draftUid": "idraft_1773817178597_291cf422",
+      "title": "奋勇333",
+      "moduleUid": "mod_1773388880716_36c8bb73",
+      "moduleName": "分佣",
+      "targetUrl": "https://uat-service.yikaiye.com/#/commission/subCommissionConfig",
+      "attachmentCount": 2,
+      "runId": "intent-run-a9efec0c-0823-4927-9c43-318afe49a3de",
+      "status": "passed",
+      "stage": "completed",
+      "durationMs": 5849,
+      "attemptCount": 1,
+      "firstPass": true,
+      "terminalPass": true,
+      "repairPass": false,
+      "failureClass": "",
+      "errorMessage": "",
+      "knowledgeMatchCount": 0,
+      "knowledgeRuleIds": [],
+      "starterHelpers": [
+        "__e2e.ensureLoggedIn",
+        "__e2e.waitForVisibleAntdModal"
+      ],
+      "experienceMatchedRunCount": 0,
+      "experienceTopOutcome": "",
+      "experienceTopMatchScore": null,
+      "recipeHit": false,
+      "matchedRecipeSlugs": [],
+      "playbookHit": false,
+      "playbookSlugs": [],
+      "llmProvider": "openai",
+      "llmModel": "gpt-5.4",
+      "visionEnabled": true
+    },
+    {
+      "sampleId": "order_batch_apply",
+      "note": "订单批量入账 / 2图 / 已知困难样本",
+      "draftUid": "idraft_1775712279251_899fd4fd",
+      "title": "订单批量入账到入账管理核对",
+      "moduleUid": "mod_1772873197821_013a6511",
+      "moduleName": "订单",
+      "targetUrl": "https://uat-service.yikaiye.com/#/order/list",
+      "attachmentCount": 2,
+      "runId": "intent-run-fc595fa4-6ed1-4be6-bb45-12d2f2728dcd",
+      "status": "failed",
+      "stage": "error",
+      "durationMs": null,
+      "attemptCount": 0,
+      "firstPass": false,
+      "terminalPass": false,
+      "repairPass": false,
+      "failureClass": "unknown",
+      "errorMessage": "LLM 调用失败: LLM 请求超时 (60000ms)",
+      "knowledgeMatchCount": 0,
+      "knowledgeRuleIds": [],
+      "starterHelpers": [],
+      "experienceMatchedRunCount": 0,
+      "experienceTopOutcome": "",
+      "experienceTopMatchScore": null,
+      "recipeHit": false,
+      "matchedRecipeSlugs": [],
+      "playbookHit": false,
+      "playbookSlugs": [],
+      "llmProvider": "",
+      "llmModel": "",
+      "visionEnabled": false
+    }
+  ]
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { executeTest, prepareTestCodeForExecution, renderWorkerCodeForExecution } from '@/lib/test-executor';
+import { executeTest, getTestCodeSyntaxError, prepareTestCodeForExecution, renderWorkerCodeForExecution } from '@/lib/test-executor';
 
 describe('test-executor worker template rendering', () => {
   it('keeps pure JavaScript unchanged before execution', () => {
@@ -94,6 +94,17 @@ test('markdown fence wrapper', async () => {
     `.trim();
 
     expect(prepareTestCodeForExecution(code)).toBe(code);
+  });
+
+  it('reports syntax errors from invalid prefilled code before worker execution', () => {
+    const code = `
+      test('broken-prefill', async ({ page }) => {
+        const broken = \`page.getByRole('button', { name: /^提\\\\s*交$/ }).first();
+        await page.goto('https://example.com/checkout');
+      });
+    `.trim();
+
+    expect(getTestCodeSyntaxError(code, 'draft_first_pass')).toContain('Unexpected');
   });
 
   it('preserves object literal null fields when applying the TypeScript fallback', async () => {

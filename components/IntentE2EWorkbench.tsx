@@ -4282,7 +4282,7 @@ async function fetchIntentDraftLaunchDetail(projectUid: string, draftUid: string
 
 function buildIntentDraftLaunchPayload(
   draftDetail: IntentDraftLaunchDetail,
-  options: { fallbackProjectUid?: string; fallbackModuleUid?: string } = {}
+  options: { fallbackProjectUid?: string; fallbackModuleUid?: string; llmConfig?: LLMConfigDraft | null } = {}
 ): Record<string, unknown> | null {
   const inputText = draftDetail.input.trim() || draftDetail.featureDescription.trim() || draftDetail.title.trim();
   if (!inputText) {
@@ -4305,7 +4305,17 @@ function buildIntentDraftLaunchPayload(
       dataUrl: item.dataUrl,
       purpose: item.purpose,
     })),
-    llmConfig: Object.keys(draftDetail.llmConfig || {}).length > 0 ? draftDetail.llmConfig : undefined,
+    llmConfig: options.llmConfig
+      ? {
+          provider: options.llmConfig.provider,
+          model: options.llmConfig.model.trim(),
+          baseUrl: options.llmConfig.baseUrl.trim(),
+          apiStyle: options.llmConfig.apiStyle,
+          visionEnabled: options.llmConfig.visionEnabled,
+          selfHealRetries: options.llmConfig.selfHealRetries,
+          maxPlanSteps: options.llmConfig.maxPlanSteps,
+        }
+      : undefined,
   };
 }
 
@@ -6789,10 +6799,9 @@ export default function IntentE2EWorkbench({
 
       const draftDetail = await fetchIntentDraftLaunchDetail(searchWorkspaceProjectUid.trim(), searchIntentDraftUid.trim());
       const draftKey = `${searchWorkspaceProjectUid.trim()}:${searchIntentDraftUid.trim()}`;
-      const llmOverride = normalizeIntentLaunchLlmOverride(draftDetail.llmConfig) || null;
 
       draftLaunchDetailRef.current = draftDetail;
-      launchLlmOverrideRef.current = llmOverride;
+      launchLlmOverrideRef.current = null;
       launchFormHydratedRunIdRef.current = '';
       launchFormHydratedDraftKeyRef.current = draftKey;
       setDraftLaunchHydratedKey(draftKey);
@@ -6807,11 +6816,13 @@ export default function IntentE2EWorkbench({
         }))
       );
       setAuth(defaultAuth);
-      setLlmConfig((current) => mergeIntentLaunchLlmOverride(current, llmOverride));
+      if (configResponse?.llm) {
+        setLlmConfig(toLlmDraft(configResponse.llm));
+      }
       if (notice) setRestoreNotice(notice);
       return true;
     },
-    [searchIntentDraftUid, searchWorkspaceProjectUid]
+    [configResponse, searchIntentDraftUid, searchWorkspaceProjectUid]
   );
 
   useEffect(() => {
@@ -7156,13 +7167,7 @@ export default function IntentE2EWorkbench({
       if (searchWorkspaceProjectUid.trim() && searchIntentDraftUid.trim()) {
         draftDetail = await fetchIntentDraftLaunchDetail(searchWorkspaceProjectUid.trim(), searchIntentDraftUid.trim()).catch(() => null);
       }
-
-      const llmOverride =
-        normalizeIntentLaunchLlmOverride(draftDetail?.llmConfig) ||
-        buildIntentLaunchLlmOverrideFromRun(run) ||
-        null;
-
-      launchLlmOverrideRef.current = llmOverride;
+      launchLlmOverrideRef.current = null;
 
       setInput(draftDetail?.input?.trim() || run.request.input || '');
       setTargetUrl(draftDetail?.targetUrl?.trim() || draftDetail?.targetUrlHint?.trim() || run.request.targetUrl || run.result?.targetUrl || '');
@@ -7177,9 +7182,11 @@ export default function IntentE2EWorkbench({
       if (draftDetail || searchWorkspaceProjectUid.trim()) {
         setAuth(defaultAuth);
       }
-      setLlmConfig((current) => mergeIntentLaunchLlmOverride(current, llmOverride));
+      if (configResponse?.llm) {
+        setLlmConfig(toLlmDraft(configResponse.llm));
+      }
     },
-    [searchIntentDraftUid, searchWorkspaceProjectUid]
+    [configResponse, searchIntentDraftUid, searchWorkspaceProjectUid]
   );
 
   const consumeRunStreamFromServer = useCallback(
@@ -7477,6 +7484,7 @@ export default function IntentE2EWorkbench({
       ? buildIntentDraftLaunchPayload(draftDetail, {
           fallbackProjectUid: projectUid,
           fallbackModuleUid: searchWorkspaceModuleUid.trim() || workspaceModuleUid,
+          llmConfig,
         })
       : null;
     const autoLaunchGate = resolveIntentDraftAutoLaunchGate({
@@ -7588,6 +7596,7 @@ export default function IntentE2EWorkbench({
     searchWorkspaceModuleUid,
     searchWorkspaceProjectUid,
     startRunStream,
+    llmConfig,
     workspaceModuleUid,
   ]);
 

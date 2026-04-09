@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import ProjectIntentTaskCreateDialog, {
@@ -1526,6 +1526,18 @@ function permissionHint(role: ProjectActorRole): string {
 
 const ALL_MODULES_UID = '__all__';
 
+function buildWorkspaceTaskQuerySyncKey(input: {
+  moduleUid?: string;
+  filters?: WorkspacePlatformQueryFilters;
+}): string {
+  const params = new URLSearchParams();
+  writeWorkspaceTaskPlatformQueryState(params, {
+    moduleUid: input.moduleUid === ALL_MODULES_UID ? '' : input.moduleUid,
+    filters: input.filters,
+  });
+  return params.toString();
+}
+
 export default function ProjectWorkspace({ projectUid }: { projectUid: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -1649,6 +1661,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   const [memberActioningUid, setMemberActioningUid] = useState('');
   const [switchingActor, setSwitchingActor] = useState(false);
   const [stashedIntentPreset, setStashedIntentPreset] = useState<IntentCapabilityPreset | null>(null);
+  const pendingTaskQuerySyncKeyRef = useRef('');
   const PAGE_SIZE = 10;
   const intentLaunchPreset = useMemo(() => {
     const capabilityPreset = parseIntentCapabilityPreset(intentPresetRaw) || stashedIntentPreset;
@@ -1822,6 +1835,15 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
     historyConfigUid?: string;
     historyFilters?: WorkspacePlatformQueryFilters;
   }) {
+    const nextTaskQuerySyncKey = buildWorkspaceTaskQuerySyncKey({
+      moduleUid: input?.moduleUid ?? activeModuleUid,
+      filters: input?.taskFilters ?? currentTaskPlatformFilters(),
+    });
+    const currentTaskQueryState = readWorkspaceTaskPlatformQueryState(searchParams);
+    const currentTaskQuerySyncKey = buildWorkspaceTaskQuerySyncKey({
+      moduleUid: currentTaskQueryState.moduleUid || ALL_MODULES_UID,
+      filters: currentTaskQueryState.filters,
+    });
     const nextParams = new URLSearchParams(searchParams.toString());
     writeWorkspaceTaskPlatformQueryState(nextParams, {
       moduleUid: (input?.moduleUid ?? activeModuleUid) === ALL_MODULES_UID ? '' : (input?.moduleUid ?? activeModuleUid),
@@ -1840,6 +1862,9 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
     const nextQuery = nextParams.toString();
     const currentQuery = searchParams.toString();
     if (nextQuery === currentQuery) return;
+    if (nextTaskQuerySyncKey !== currentTaskQuerySyncKey) {
+      pendingTaskQuerySyncKeyRef.current = nextTaskQuerySyncKey;
+    }
     const nextUrl = nextQuery ? `/projects/${projectUid}?${nextQuery}` : `/projects/${projectUid}`;
     router.replace(nextUrl, { scroll: false });
   }
@@ -2061,6 +2086,26 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   useEffect(() => {
     const nextTaskQueryState = readWorkspaceTaskPlatformQueryState(searchParams);
     const nextModuleUid = nextTaskQueryState.moduleUid || ALL_MODULES_UID;
+    const nextTaskQuerySyncKey = buildWorkspaceTaskQuerySyncKey({
+      moduleUid: nextModuleUid,
+      filters: nextTaskQueryState.filters,
+    });
+    const currentTaskQuerySyncKey = buildWorkspaceTaskQuerySyncKey({
+      moduleUid: activeModuleUid,
+      filters: currentTaskPlatformFilters(),
+    });
+    const pendingTaskQuerySyncKey = pendingTaskQuerySyncKeyRef.current;
+
+    if (pendingTaskQuerySyncKey) {
+      if (nextTaskQuerySyncKey === pendingTaskQuerySyncKey) {
+        pendingTaskQuerySyncKeyRef.current = '';
+      } else if (currentTaskQuerySyncKey === pendingTaskQuerySyncKey) {
+        return;
+      } else {
+        pendingTaskQuerySyncKeyRef.current = '';
+      }
+    }
+
     const nextTaskPlatformTestTypeFilter = nextTaskQueryState.filters.platformTestType || '';
     const nextTaskPlatformRunnerTypeFilter = nextTaskQueryState.filters.platformRunnerType || '';
     const nextTaskPlatformArtifactKindFilter = nextTaskQueryState.filters.platformArtifactKind || '';
@@ -2096,12 +2141,6 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
     });
   }, [
     searchParams,
-    activeModuleUid,
-    taskPlatformTestTypeFilter,
-    taskPlatformRunnerTypeFilter,
-    taskPlatformArtifactKindFilter,
-    taskPlatformIdFilterType,
-    taskPlatformIdFilterValue,
   ]);
   useEffect(() => {
     const nextHistoryQueryState = readWorkspaceExecutionHistoryQueryState(searchParams);

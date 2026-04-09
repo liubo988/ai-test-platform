@@ -152,6 +152,8 @@ describe('intent-execution-compiler', () => {
     );
     expect(template.code).toContain('matchedRecord || matchedRecordByDerivedBusinessId');
     expect(template.code).toContain('不要在外层再手写一次 fill + click 预搜索');
+    expect(template.code).toContain('额外列表 GET 必须命中');
+    expect(template.code).toContain('当前列表可能已经收敛，额外搜索也未必会再次发请求');
     expect(template.code).toContain('固定骨架 [verify_success_1]：');
     expect(template.code).toContain('const verify_success_1Resp = await artifacts["plan_step_1"];');
     expect(template.code).toContain('若 artifacts["plan_step_2"] 已写入 recordCheck / status / source 等定位证据，最终验收先直接复用这些 artifacts');

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { normalizeIntentE2ETerminalRunSnapshot, type IntentE2EInsightRunRecord } from '@/lib/ai/intent-e2e-insights';
 import { listIntentE2ERunSnapshots, type IntentE2ERunSnapshotRecord } from '@/lib/db/repository';
+import { isIntentPlaybookRecipeSlug } from '@/lib/intent-e2e-playbook';
 import type { IntentE2EPriorityScenarioFamily } from '@/lib/intent-e2e-priority-scenario-family';
 
 export type IntentExperienceHintKind = 'successful_run' | 'failed_run';
@@ -54,8 +55,11 @@ export interface IntentE2EExperienceSummary {
 type RankedExperienceCandidate = {
   run: IntentE2EInsightRunRecord;
   snapshot: IntentE2ERunSnapshotRecord;
+  baseScore: number;
   score: number;
   matchedSignals: string[];
+  playbookSlugs: string[];
+  stableEntityHints: string[];
 };
 
 const GENERIC_KEYWORDS = new Set([
@@ -126,6 +130,11 @@ function intersectStrings(left: string[], right: string[]): string[] {
   return uniqueStrings(left.filter((item) => rightSet.has(item)));
 }
 
+function intersectCaseInsensitiveStrings(left: string[], right: string[]): string[] {
+  const rightSet = new Set(right.map((item) => item.trim().toLowerCase()).filter(Boolean));
+  return uniqueStrings(left.filter((item) => rightSet.has(item.trim().toLowerCase())));
+}
+
 function summarizeInline(value: string, max = 140): string {
   const normalized = String(value || '').replace(/\s+/g, ' ').trim();
   if (!normalized) return '';
@@ -187,8 +196,7 @@ function extractPlaybookSlugs(snapshot: IntentE2ERunSnapshotRecord): string[] {
   return uniqueStrings(playbookCandidates.map((item) => (typeof item.slug === 'string' ? item.slug : ''))).slice(0, 4);
 }
 
-function buildVerifierStrategySummary(run: IntentE2EInsightRunRecord, snapshot: IntentE2ERunSnapshotRecord): string {
-  const stableIdentifiers = extractStableEntityHints(snapshot);
+function buildVerifierStrategySummary(run: IntentE2EInsightRunRecord, stableIdentifiers: string[]): string {
   const parts = uniqueStrings([
     run.verifierResult.expectedOutcome ? `expected=${summarizeInline(run.verifierResult.expectedOutcome, 80)}` : '',
     stableIdentifiers.length > 0 ? `stable=${stableIdentifiers.join(' / ')}` : '',
@@ -231,8 +239,6 @@ function resolveOutcome(run: IntentE2EInsightRunRecord): IntentExperienceHintOut
 }
 
 function buildHintFromCandidate(candidate: RankedExperienceCandidate): IntentExperienceHint {
-  const stableEntityHints = extractStableEntityHints(candidate.snapshot);
-  const playbookSlugs = extractPlaybookSlugs(candidate.snapshot);
   const hintMaterial = [
     candidate.run.runId,
     candidate.run.snapshotSignature,
@@ -255,10 +261,10 @@ function buildHintFromCandidate(candidate: RankedExperienceCandidate): IntentExp
     matchedSignals: candidate.matchedSignals,
     matchedRecipeSlugs: [...candidate.run.matchedRecipeSlugs],
     chosenHelpers: [...candidate.run.usedHelpers],
-    verifierStrategySummary: buildVerifierStrategySummary(candidate.run, candidate.snapshot),
-    stableEntityHints,
+    verifierStrategySummary: buildVerifierStrategySummary(candidate.run, candidate.stableEntityHints),
+    stableEntityHints: [...candidate.stableEntityHints],
     pitfalls: buildPitfalls(candidate.run),
-    playbookSlugs,
+    playbookSlugs: [...candidate.playbookSlugs],
   };
 }
 
@@ -347,6 +353,57 @@ function scoreCandidate(
   };
 }
 
+function buildRecipeAwareRerank(
+  input: SearchIntentE2EExperienceHintsInput,
+  candidate: Pick<RankedExperienceCandidate, 'run' | 'playbookSlugs' | 'stableEntityHints'>
+): {
+  scoreBonus: number;
+  matchedSignals: string[];
+} {
+  let scoreBonus = 0;
+  const matchedSignals: string[] = [];
+  const queryIntentRecipeSlugs = uniqueStrings((input.matchedRecipeSlugs || []).filter((slug) => isIntentPlaybookRecipeSlug(slug)));
+  const candidateIntentRecipeSlugs = uniqueStrings([
+    ...candidate.run.matchedRecipeSlugs.filter((slug) => isIntentPlaybookRecipeSlug(slug)),
+    ...candidate.playbookSlugs.filter((slug) => isIntentPlaybookRecipeSlug(slug)),
+  ]);
+  const playbookOverlap = intersectStrings(queryIntentRecipeSlugs, candidateIntentRecipeSlugs);
+
+  if (playbookOverlap.length > 0) {
+    scoreBonus += Math.min(6, playbookOverlap.length * 3);
+    matchedSignals.push(`playbook=${playbookOverlap.slice(0, 2).join('/')}`);
+  }
+
+  const queryKeywords = extractKeywordCandidates(
+    [
+      input.requestInput,
+      input.scenarioTitle,
+      ...(input.visualAnchors || []),
+      ...(input.matchedRecipeSlugs || []),
+    ].join('\n')
+  );
+  const stableOverlap = intersectCaseInsensitiveStrings(candidate.stableEntityHints, queryKeywords);
+  if (stableOverlap.length > 0) {
+    scoreBonus += Math.min(2, stableOverlap.length);
+    matchedSignals.push(`stable=${stableOverlap.slice(0, 2).join('/')}`);
+  }
+
+  if (
+    playbookOverlap.length > 0 &&
+    input.priorityScenarioFamily &&
+    input.priorityScenarioFamily !== 'untracked' &&
+    candidate.run.priorityScenarioFamily === input.priorityScenarioFamily
+  ) {
+    scoreBonus += 1;
+    matchedSignals.push('同 priority family + playbook');
+  }
+
+  return {
+    scoreBonus,
+    matchedSignals,
+  };
+}
+
 export async function searchIntentE2EExperienceHints(
   input: SearchIntentE2EExperienceHintsInput
 ): Promise<IntentE2EExperienceSummary> {
@@ -375,11 +432,21 @@ export async function searchIntentE2EExperienceHints(
       if (!normalized) return null;
       const scored = scoreCandidate(input, normalized);
       if (scored.score < 5.5 || scored.matchedSignals.length === 0) return null;
+      const playbookSlugs = extractPlaybookSlugs(snapshot);
+      const stableEntityHints = extractStableEntityHints(snapshot);
+      const reranked = buildRecipeAwareRerank(input, {
+        run: normalized,
+        playbookSlugs,
+        stableEntityHints,
+      });
       return {
         run: normalized,
         snapshot,
-        score: scored.score,
-        matchedSignals: scored.matchedSignals,
+        baseScore: scored.score,
+        score: scored.score + reranked.scoreBonus,
+        matchedSignals: uniqueStrings([...scored.matchedSignals, ...reranked.matchedSignals]),
+        playbookSlugs,
+        stableEntityHints,
       } satisfies RankedExperienceCandidate;
     })
     .filter((item): item is RankedExperienceCandidate => Boolean(item))

@@ -501,6 +501,66 @@ function buildLatestPlanGenerationPromptProjectionSql(configAlias: string): stri
       )`;
 }
 
+async function listLatestPlanImportActionTypesByPlanUid(
+  input: Array<{
+    planUid?: string | null;
+    projectUid?: string | null;
+  }>
+): Promise<Map<string, string>> {
+  const planEntries = input
+    .map((item) => ({
+      planUid: typeof item.planUid === 'string' ? item.planUid.trim() : '',
+      projectUid: typeof item.projectUid === 'string' ? item.projectUid.trim() : '',
+    }))
+    .filter((item) => item.planUid);
+
+  if (planEntries.length === 0) {
+    return new Map();
+  }
+
+  await ensureProjectActivityLogTable();
+  const pool = getDbPool();
+  const planUidsByProjectUid = new Map<string, string[]>();
+
+  for (const entry of planEntries) {
+    const existing = planUidsByProjectUid.get(entry.projectUid) || [];
+    if (!existing.includes(entry.planUid)) {
+      existing.push(entry.planUid);
+      planUidsByProjectUid.set(entry.projectUid, existing);
+    }
+  }
+
+  const result = new Map<string, string>();
+
+  for (const [projectUid, planUids] of planUidsByProjectUid.entries()) {
+    const placeholders = planUids.map(() => '?').join(', ');
+    const scopeWhere = projectUid ? 'AND project_uid = ?' : '';
+    const scopeArgs = projectUid ? [projectUid] : [];
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT a.entity_uid AS plan_uid, a.action_type
+       FROM project_activity_logs a
+       JOIN (
+         SELECT entity_uid, MAX(id) AS latest_id
+         FROM project_activity_logs
+         WHERE entity_type = 'plan'
+           AND action_type IN ('plan_imported_passed', 'plan_imported_failed')
+           ${scopeWhere}
+           AND entity_uid IN (${placeholders})
+         GROUP BY entity_uid
+       ) latest ON latest.latest_id = a.id`,
+      [...scopeArgs, ...planUids]
+    );
+
+    for (const row of rows) {
+      const planUid = row.plan_uid ? String(row.plan_uid) : '';
+      if (!planUid || result.has(planUid)) continue;
+      result.set(planUid, row.action_type ? String(row.action_type) : '');
+    }
+  }
+
+  return result;
+}
+
 function buildLatestGeneratedSpecMetaProjectionSql(executionAlias: string): string {
   return `(
          SELECT a.meta
@@ -708,6 +768,7 @@ let projectKnowledgeTablesReady: Promise<void> | null = null;
 let projectIntentDraftTablesReady: Promise<void> | null = null;
 let intentE2ERunTablesReady: Promise<void> | null = null;
 const staleExecutionReconcileAt = new Map<string, number>();
+const staleExecutionReconcileInFlight = new Map<string, Promise<number>>();
 
 const DEFAULT_WORKSPACE_LLM_SCOPE_UID = 'workspace_default';
 
@@ -1659,10 +1720,21 @@ export async function reconcileStaleExecutions(scope: ExecutionReconcileScope = 
   const key = buildExecutionReconcileScopeKey(scope);
   const nowMs = Date.now();
   const lastAt = staleExecutionReconcileAt.get(key) || 0;
-  const shouldThrottle = !scope.force && key === 'global';
+  const shouldThrottle =
+    !scope.force &&
+    !scope.configUid &&
+    !scope.executionUid &&
+    !scope.planUid;
 
   if (shouldThrottle && nowMs - lastAt < STALE_EXECUTION_RECONCILE_INTERVAL_MS) {
     return 0;
+  }
+
+  if (shouldThrottle) {
+    const inFlight = staleExecutionReconcileInFlight.get(key);
+    if (inFlight) {
+      return inFlight;
+    }
   }
 
   const pool = getDbPool();
@@ -1692,7 +1764,7 @@ export async function reconcileStaleExecutions(scope: ExecutionReconcileScope = 
 
   args.push(STALE_QUEUED_EXECUTION_MINUTES, STALE_RUNNING_EXECUTION_MINUTES);
 
-  try {
+  const run = (async () => {
     const [rows] = await pool.query<RowDataPacket[]>(
       `SELECT
         e.execution_uid,
@@ -1741,14 +1813,24 @@ export async function reconcileStaleExecutions(scope: ExecutionReconcileScope = 
     }
 
     if (shouldThrottle) {
-      staleExecutionReconcileAt.set(key, nowMs);
+      staleExecutionReconcileAt.set(key, Date.now());
     }
     return updatedCount;
+  })();
+
+  if (!shouldThrottle) {
+    return run;
+  }
+
+  staleExecutionReconcileInFlight.set(key, run);
+
+  try {
+    return await run;
   } catch (error) {
-    if (shouldThrottle) {
-      staleExecutionReconcileAt.delete(key);
-    }
+    staleExecutionReconcileAt.delete(key);
     throw error;
+  } finally {
+    staleExecutionReconcileInFlight.delete(key);
   }
 }
 
@@ -3709,21 +3791,6 @@ export async function listTestConfigs(params: {
       ) AS latest_plan_version,
       ${latestPlanGenerationPromptProjectionSql} AS latest_plan_generation_prompt,
       (
-        SELECT a2.action_type
-        FROM project_activity_logs a2
-        WHERE a2.entity_type = 'plan'
-          AND a2.entity_uid = (
-            SELECT p2.plan_uid
-            FROM test_plans p2
-            WHERE p2.config_uid = c.config_uid
-            ORDER BY p2.plan_version DESC
-            LIMIT 1
-          )
-          AND a2.action_type IN ('plan_imported_passed', 'plan_imported_failed')
-        ORDER BY a2.created_at DESC, a2.id DESC
-        LIMIT 1
-      ) AS latest_plan_import_action_type,
-      (
         SELECT e2.execution_uid
         FROM test_executions e2
         WHERE e2.config_uid = c.config_uid
@@ -3779,6 +3846,19 @@ export async function listTestConfigs(params: {
   const total = Number(countRows[0]?.total || 0);
   let platformSummary = createEmptyPlatformAggregationSummary(total);
   let platformIndex = createEmptyPlatformMaterializedQueryIndex(total);
+  const latestPlanImportActionTypeByPlanUid = await listLatestPlanImportActionTypesByPlanUid(
+    rows.map((row) => ({
+      planUid: row.latest_plan_uid ? String(row.latest_plan_uid) : '',
+      projectUid: row.project_uid ? String(row.project_uid) : '',
+    }))
+  );
+  const normalizedRows = rows.map((row) => {
+    const latestPlanUid = row.latest_plan_uid ? String(row.latest_plan_uid) : '';
+    return {
+      ...row,
+      latest_plan_import_action_type: latestPlanUid ? latestPlanImportActionTypeByPlanUid.get(latestPlanUid) || '' : '',
+    } as RowDataPacket;
+  });
 
   if (total > 0) {
     const [summaryRows] = await pool.query<RowDataPacket[]>(
@@ -3802,7 +3882,7 @@ export async function listTestConfigs(params: {
     page,
     pageSize,
     total,
-    items: rows.map(normalizeConfigRow),
+    items: normalizedRows.map(normalizeConfigRow),
     platformSummary,
     platformIndex,
   };

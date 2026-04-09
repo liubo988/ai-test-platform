@@ -7,6 +7,10 @@
 - 反向代理：`nginx`
 - 运行方式：`Docker + systemd`
 
+如果你明确要走 `CentOS 7` 裸机、非 Docker 的 `best-effort` 方案，请改看：
+
+- `docs/linux-deploy-centos7-raw-best-effort-2026-04-09.md`
+
 ## 先说明边界
 
 当前项目不适合做 CentOS 7 宿主机原生部署，原因很直接：

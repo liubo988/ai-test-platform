@@ -6,6 +6,21 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+if ! command -v yum >/dev/null 2>&1; then
+  echo "当前环境未检测到 yum。"
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "这台机器更像 Debian/Ubuntu 系，不是 CentOS 7 原生宿主机。"
+    echo "如果你要走 Ubuntu 原生部署，请改用: sudo bash scripts/deploy/install-runtime-ubuntu.sh"
+    echo "如果你要走 Docker 部署，请先按当前发行版单独安装 docker 和 nginx。"
+  elif command -v dnf >/dev/null 2>&1; then
+    echo "这台机器更像新版本 RHEL/Rocky/Alma/CentOS Stream，当前脚本只针对 CentOS 7 + yum。"
+    echo "请改用 dnf 手工安装 docker、nginx，或迁到受支持的 Ubuntu/Debian 主机。"
+  else
+    echo "当前机器既没有 yum，也没有常见的 apt-get/dnf。请先执行: cat /etc/os-release"
+  fi
+  exit 1
+fi
+
 if [[ -f /etc/centos-release ]] && grep -q 'CentOS Linux release 7' /etc/centos-release; then
   echo "[0/7] rewrite CentOS 7 repos to vault"
   shopt -s nullglob

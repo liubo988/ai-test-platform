@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  aggregateIntentE2EPlaybookCandidates,
   buildIntentProjectRecipeMergeInputFromPlaybookCandidate,
   buildIntentProjectRecipeMergeInputsFromPlaybookCandidates,
 } from '@/lib/intent-e2e-playbook';
@@ -92,5 +93,65 @@ describe('intent-e2e-playbook', () => {
       },
     });
     expect(recipes[1]?.family).toBeUndefined();
+  });
+
+  it('aggregates duplicated playbook candidates by slug before building recipes', () => {
+    const candidates = aggregateIntentE2EPlaybookCandidates([
+      {
+        candidateId: 'candidate-a',
+        slug: 'intent.business-create-list-verify',
+        title: '创建商机后回列表',
+        scenarioFamily: 'generic',
+        targetPath: 'https://example.com/#/business/createbusiness',
+        matchedRecipeSlugs: ['business.create'],
+        stepTypes: ['ui'],
+        preconditions: ['保持登录态稳定'],
+        executorPlan: ['创建商机：保存后提取 businessId'],
+        verifierPlan: ['回列表：按 businessId 命中记录'],
+        preferredHelpers: ['__e2e.waitForApiResponse'],
+        knownPitfalls: ['不要只看 toast'],
+        sourceRunIds: ['intent-run-a'],
+        successRate: 88,
+        lastVerifiedAt: '2026-04-09T11:00:00.000Z',
+        promotionStatus: 'candidate',
+      },
+      {
+        candidateId: 'candidate-b',
+        slug: 'intent.business-create-list-verify',
+        title: '创建商机后回列表验收新入库',
+        scenarioFamily: 'business_create_list_verify',
+        targetPath: '/business/createbusiness',
+        matchedRecipeSlugs: ['business.list-ownership-switch'],
+        stepTypes: ['assert'],
+        preconditions: ['切到我创建的'],
+        executorPlan: ['切换我创建的后再回查'],
+        verifierPlan: ['单独校验商机进展=新入库'],
+        preferredHelpers: ['__e2e.findAntdTableRow'],
+        knownPitfalls: ['列表搜索后要等待刷新'],
+        sourceRunIds: ['intent-run-b'],
+        successRate: 100,
+        lastVerifiedAt: '2026-04-09T12:00:00.000Z',
+        promotionStatus: 'candidate',
+      },
+    ]);
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      slug: 'intent.business-create-list-verify',
+      title: '创建商机后回列表验收新入库',
+      scenarioFamily: 'business_create_list_verify',
+      matchedRecipeSlugs: ['business.create', 'business.list-ownership-switch'],
+      stepTypes: ['ui', 'assert'],
+      preconditions: ['保持登录态稳定', '切到我创建的'],
+      sourceRunIds: ['intent-run-a', 'intent-run-b'],
+      successRate: 100,
+      lastVerifiedAt: '2026-04-09T12:00:00.000Z',
+    });
+
+    const recipes = buildIntentProjectRecipeMergeInputsFromPlaybookCandidates(candidates);
+    expect(recipes).toHaveLength(1);
+    expect(recipes[0]?.matchers?.preferredHelpers).toEqual(
+      expect.arrayContaining(['__e2e.waitForApiResponse', '__e2e.findAntdTableRow'])
+    );
   });
 });

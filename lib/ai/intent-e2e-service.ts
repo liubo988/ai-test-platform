@@ -9,7 +9,7 @@ import {
   type PageSnapshot,
 } from '@/lib/page-analyzer';
 import { getIntentE2ERecipePerformanceMap, getIntentE2ERulePerformanceMap, getIntentE2EStarterHelpers } from '@/lib/ai/intent-e2e-insights';
-import { type TestResult } from '@/lib/test-executor';
+import { getTestCodeSyntaxError, type TestResult } from '@/lib/test-executor';
 import {
   generateTest,
   repairTest,
@@ -95,6 +95,7 @@ import { listIntentE2ERunSnapshots } from '@/lib/db/repository';
 import { searchIntentE2EExperienceHints, type IntentE2EExperienceSummary } from '@/lib/intent-e2e-experience-search';
 import { buildIntentE2ERunReview, type IntentE2ERunReview } from '@/lib/intent-e2e-run-review';
 import { resolveIntentE2EPriorityScenarioFamilyRoute } from '@/lib/intent-e2e-priority-scenario-family';
+import { selectIntentRecipeRegistry } from '@/lib/intent-recipe-registry';
 
 export interface IntentE2EKnowledgeSummary {
   profilePath: string;
@@ -663,6 +664,13 @@ function resolveIntentE2EPrefilledPlanReuseDecision(input: {
   successfulRunCodeCandidate?: IntentE2ESuccessfulRunCodeReuseCandidate | null;
 }): IntentE2EPrefilledPlanReuseDecision {
   if (input.successfulRunCodeCandidate?.code) {
+    const successfulRunCodeSyntaxError = getTestCodeSyntaxError(input.successfulRunCodeCandidate.code, 'recent_successful_run');
+    if (successfulRunCodeSyntaxError) {
+      return {
+        skipReason: `最近一次成功运行脚本存在语法错误（${successfulRunCodeSyntaxError}），已回退到当前生成链路。`,
+      };
+    }
+
     return {
       code: input.successfulRunCodeCandidate.code,
       source: 'recent_successful_run',
@@ -685,6 +693,13 @@ function resolveIntentE2EPrefilledPlanReuseDecision(input: {
   if (hitsLegacyBusinessCreateFinalSubmitFamily) {
     return {
       skipReason: '草稿首版脚本命中已知旧的最终提交按钮定位骨架，已回退到当前生成链路。',
+    };
+  }
+
+  const draftFirstPassSyntaxError = getTestCodeSyntaxError(code, 'draft_first_pass');
+  if (draftFirstPassSyntaxError) {
+    return {
+      skipReason: `草稿首版脚本存在语法错误（${draftFirstPassSyntaxError}），已回退到当前生成链路。`,
     };
   }
 
@@ -1110,6 +1125,31 @@ function uniqueStrings(values: Array<string | null | undefined>, max = Number.PO
   }
 
   return items;
+}
+
+function resolveIntentE2EExperienceSearchMatchedRecipeSlugs(input: {
+  projectUid: string;
+  snapshot: PageSnapshot;
+  promptContext: ReturnType<typeof buildGenerateInputFromScenarioCard>['context'];
+  auth?: AuthConfig;
+  priorityScenarioFamily: ReturnType<typeof resolveIntentE2EPriorityScenarioFamilyRoute>['family'];
+  recipePerformanceBySlug: Awaited<ReturnType<typeof loadIntentE2ERecipePerformanceFeedback>>;
+}): string[] {
+  if (!input.promptContext.actionDsl) {
+    return [];
+  }
+
+  return uniqueStrings(
+    selectIntentRecipeRegistry({
+      dsl: input.promptContext.actionDsl,
+      projectUid: input.projectUid,
+      auth: input.auth,
+      snapshot: input.snapshot,
+      priorityScenarioFamily: input.priorityScenarioFamily,
+      performanceBySlug: input.recipePerformanceBySlug,
+    }).items.map((item) => item.recipe.slug),
+    8
+  );
 }
 
 function buildFailureCtaSummary(values: Array<string | null | undefined>): string {
@@ -2644,23 +2684,32 @@ export async function runIntentDrivenE2EStream(
     ]).join('\n'),
     visualAnchors: scenarioCardOutput.card.visualAnchors,
   });
-  const [rulePerformanceById, starterHelpers, recipePerformanceBySlug, experienceSummary] = await Promise.all([
+  const [rulePerformanceById, starterHelpers, recipePerformanceBySlug] = await Promise.all([
     loadIntentE2ERulePerformanceFeedback(projectUid),
     loadIntentE2EStarterHelperFeedback(projectUid),
     loadIntentE2ERecipePerformanceFeedback(projectUid),
-    searchIntentE2EExperienceHints({
-      projectUid,
-      moduleUid: input.moduleUid?.trim() || '',
-      requestInput: trimmedInput,
-      targetUrl,
-      scenarioTitle: scenarioCardOutput.card.title,
-      taskMode: scenarioCardOutput.card.taskMode,
-      priorityScenarioFamily: priorityScenarioFamilyRoute.family,
-      visualAnchors: scenarioCardOutput.card.visualAnchors,
-      stepTypes: scenarioCardOutput.card.flowDefinition.steps.map((step) => step.stepType),
-      includeFailures: true,
-    }),
   ]);
+  const experienceSearchMatchedRecipeSlugs = resolveIntentE2EExperienceSearchMatchedRecipeSlugs({
+    projectUid,
+    snapshot,
+    promptContext,
+    auth: input.auth,
+    priorityScenarioFamily: priorityScenarioFamilyRoute.family,
+    recipePerformanceBySlug,
+  });
+  const experienceSummary = await searchIntentE2EExperienceHints({
+    projectUid,
+    moduleUid: input.moduleUid?.trim() || '',
+    requestInput: trimmedInput,
+    targetUrl,
+    scenarioTitle: scenarioCardOutput.card.title,
+    taskMode: scenarioCardOutput.card.taskMode,
+    priorityScenarioFamily: priorityScenarioFamilyRoute.family,
+    visualAnchors: scenarioCardOutput.card.visualAnchors,
+    stepTypes: scenarioCardOutput.card.flowDefinition.steps.map((step) => step.stepType),
+    matchedRecipeSlugs: experienceSearchMatchedRecipeSlugs,
+    includeFailures: true,
+  });
   const experience = experienceSummary;
   const planning = resolveIntentPromptPlanningContext(snapshot, description, promptContext, {
     auth: input.auth,

@@ -1576,12 +1576,27 @@ function buildBusinessBatchAddContactsTemplate(): string {
   }
   expect(businessRows.length).toBeGreaterThan(0);
 
-  const selected = businessRows[Math.floor(Math.random() * businessRows.length)];
+  let selected = null;
+  for (const candidate of businessRows) {
+    try {
+      await __e2e.clickAntdRowCheckbox(page, candidate.row, { timeoutMs: 5000 });
+      selected = candidate;
+      break;
+    } catch (error) {
+      console.log(
+        '[BATCH-CONTACTS-CHECKBOX-DEBUG]',
+        JSON.stringify({
+          phone: candidate.phone,
+          businessId: candidate.businessId || '',
+          error: error instanceof Error ? error.message : String(error || ''),
+        })
+      );
+    }
+  }
+
+  expect(Boolean(selected)).toBeTruthy();
   const targetRow = selected.row;
   const targetPhone = selected.phone;
-
-  await targetRow.locator('.ant-checkbox').first().click({ force: true, timeout: 10000 });
-  await expect(targetRow.locator('.ant-checkbox-checked')).toHaveCount(1, { timeout: 10000 });
 
   await page.getByRole('button', { name: '批量加入通讯录' }).click();
 
@@ -2063,6 +2078,7 @@ export function buildPrompt(
   parts.push(`13. 对“已拿到 businessId / orderId，再回列表检索并在必要时回退详情”的验收链，优先直接复用：
    - 如果你刚切完“我创建的 / 我跟进的”或刚回到列表页，不要看到搜索框就立刻填值搜索；先短超时检查当前可见列表是否已经出现目标行，例如 \`const currentVisibleRow = primaryValue ? await (async () => { try { return await __e2e.findAntdTableRow(page, { hasTexts: [primaryValue], timeoutMs: 1200 }); } catch { return null; } })() : null;\`。若 \`currentVisibleRow\` 已命中，先把它当作 \`table_row\` 身份证据继续做状态 / 详情校验；只有当前可见列表未命中时，才调用 \`__e2e.resolvePrimaryRecord(...)\` 触发关键词搜索。
    - 一旦准备把 \`keywordInput / searchButton\` 传给 \`__e2e.resolvePrimaryRecord(...)\`，就不要在同一分支先手写 \`await keywordInput.fill(primaryValue)\`、\`await searchButton.click()\` 或任何预搜索，再让 helper 重复搜索；helper 会自己负责这次检索。预搜索 + helper 再搜索很容易触发双重刷新、重复列表接口，甚至把页面自身打进 \`Cannot read properties of null (reading 'forEach')\` 这类前端异常。
+   - 如果最终目标只是拿到列表命中行或复用已缓存的 \`artifacts['plan_step_x_row'] / recordCheck\`，不要再手写 \`const searchResp = __e2e.waitForApiResponse(page, { urlIncludes: '/xxx', method: 'GET' }); await keywordInput.fill(primaryValue); await searchButton.click(); await searchResp;\` 这类“额外列表 GET 必须命中”的硬链。当前列表可能已经收敛，额外搜索也未必会再次发请求；应先查 \`currentVisibleRow\`，只有未命中时才让 \`__e2e.resolvePrimaryRecord(...)\` 触发一次保守搜索。
    - 如果 \`currentVisibleRow\` / \`recordCheck.row\` 已经由 helper 命中，不要紧接着再写 \`await expect(recordCheck.row).toContainText(primaryValue)\` 或 \`await expect(currentVisibleRow).toContainText(leadMobile)\` 去证明同一个身份；helper 命中本身已经是身份证据，这类重复断言很容易重新落回 \`locator(...).nth(...)\` 行漂移。若还需要行内可见文本，只做一次 \`const rowText = await recordCheck.row.innerText().catch(() => '')\` 的保守读取；\`rowText\` 为空但列表响应 / 详情证据还在时，继续沿响应 / 详情链闭环，不要因为 stale row 直接失败。
    - const recordCheck = await __e2e.resolvePrimaryRecord(page, {
    -   primaryValue: businessId,
@@ -2582,6 +2598,16 @@ export function buildRepairPrompt(
     /keywordInput\.fill\(|searchButton\.click\(\)|resolvePrimaryRecord\(/.test(repair.previousCode)
   ) {
     diagnosisHints.push("这次不是单个 step 的等待时间不够，而是脚本把同一条列表回查拆成了两次检索：前一步先为 `artifacts['plan_step_5']` 手动 `fill + 搜索`，后一步又在 `Step 6 / Verification` 里继续 `resolvePrimaryRecord(...)` 或 `waitForApiResponse + fill + click`。修复时优先把前一个步骤收口成 `await __e2e.switchBusinessListOwnershipView(...)` + 列表 ready，把唯一一次检索留给 `resolvePrimaryRecord(...)`；如果历史脚本暂时保留了 `artifacts['plan_step_5']`，后面也只能复用这次 response，不要再对同一主值第二次搜索。");
+  }
+  if (
+    /waitForResponse: Timeout .*event "response"/i.test(repair.executionError) &&
+    /waitForApiResponse\(/.test(repair.previousCode) &&
+    /keywordInput\.fill\(|searchButton\.click\(\)|getByRole\('button', \{ name: \/搜\\\\s\*索\/i \}\)\.first\(\)\.click\(\)/.test(
+      repair.previousCode
+    ) &&
+    /(findAntdTableRow|resolvePrimaryRecord|artifacts\['plan_step_[^']+_row'\])/.test(repair.previousCode)
+  ) {
+    diagnosisHints.push("这次不是接口单纯变慢，而是你把最终列表回查写成了“必须等到新的列表 GET 才算成功”。当前页面很可能已经停在正确列表并且数据已收敛，但 `waitForApiResponse / page.waitForResponse` 没再收到新请求。修复时不要继续保留 `const searchResp = __e2e.waitForApiResponse(...); await keywordInput.fill(primaryValue); await searchButton.click(); await searchResp;` 这条硬链；优先先短超时检查 `currentVisibleRow`，若已命中就直接复用该 row 或已缓存的 `artifacts['plan_step_x_row'] / recordCheck` 继续验收。只有当前列表未命中时，才改用 `__e2e.resolvePrimaryRecord(...)` 触发一次保守搜索；额外列表 GET 只能当辅助证据，不要再把它当最终成功前提。");
   }
   if (
     looksLikeBusinessCreateTask(snapshot, description, context) &&

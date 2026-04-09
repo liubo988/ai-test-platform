@@ -1,0 +1,23 @@
+[Unit]
+Description=AI Test Platform (CentOS 7 Raw)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=__APP_GROUP__
+WorkingDirectory=__APP_DIR__
+Environment=NODE_ENV=production
+Environment=PORT=__APP_PORT__
+Environment=PLAYWRIGHT_BROWSERS_PATH=__PLAYWRIGHT_BROWSERS_PATH__
+EnvironmentFile=__ENV_FILE__
+ExecStart=__NODE_BIN__ server.mjs
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=30
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

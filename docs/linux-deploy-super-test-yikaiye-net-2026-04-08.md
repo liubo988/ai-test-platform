@@ -122,11 +122,19 @@ sudo -u autotest ENV_FILE=/opt/ai-test-platform/shared/.env.production bash scri
 
 这个脚本会做：
 
-- `npm ci`
+- 先清理旧的 `node_modules`
+- `npm ci --include=dev`
 - `npm run build`
 - `npm run build:web`
 - 安装 Chromium 浏览器到 `PLAYWRIGHT_BROWSERS_PATH`
 - `npm run db:init`
+
+注意：
+
+- 不要直接在 `root` 下长期执行这个脚本，优先固定用部署用户（例如 `autotest`）。
+- 这个项目的构建阶段依赖 `typescript`、`@playwright/test` 等 `devDependencies`，所以脚本会显式保留 dev 依赖，再切回 `NODE_ENV=production` 做后续步骤。
+- 如果 `auto-test-platform` 正在运行，脚本会直接退出并提示先停服务，避免在同一个工作目录里边跑服务边重装 `node_modules`。
+- 脚本会在安装前检查关键的 Playwright Linux 运行库；如果像 `libatk-1.0.so.0` 这类库缺失，会直接提示先补系统依赖。
 
 ## 六、配置 systemd
 
@@ -213,6 +221,7 @@ cd /opt/ai-test-platform/current
 sudo -u autotest git fetch origin
 sudo -u autotest git checkout main
 sudo -u autotest git pull --ff-only origin main
+sudo systemctl stop auto-test-platform
 sudo -u autotest ENV_FILE=/opt/ai-test-platform/shared/.env.production bash scripts/deploy/deploy-web.sh
 sudo systemctl restart auto-test-platform
 sudo systemctl reload nginx
@@ -220,7 +229,49 @@ sudo systemctl reload nginx
 
 ## 十一、常见问题
 
-### 1. 服务能起来，但浏览器执行时报 Chromium 缺失
+### 1. `npm ci` 输出 `npm warn tar TAR_ENTRY_ERROR ENOENT ... node_modules/next/dist`
+
+这通常不是 Next 自身配置错误，而是部署目录里的旧 `node_modules` 残留、之前中断过安装，或混用了不同用户执行安装导致目录状态不一致。
+
+先按文档里的方式，用固定部署用户重跑：
+
+```bash
+cd /opt/ai-test-platform/current
+sudo systemctl stop auto-test-platform
+sudo chown -R autotest:autotest /opt/ai-test-platform/current
+sudo -u autotest ENV_FILE=/opt/ai-test-platform/shared/.env.production bash scripts/deploy/deploy-web.sh
+sudo systemctl start auto-test-platform
+```
+
+当前 `deploy-web.sh` 已经会先清理 `node_modules`，再执行 `npm ci --include=dev`；同时如果检测到 `auto-test-platform` 还在运行，会直接拒绝继续。你如果还是看到同类报错，优先排查是否仍在混用 `root` 和 `autotest`，或者是否有别的进程占着 `/opt/ai-test-platform/current`。
+
+### 2. 运行任务时报 `error while loading shared libraries: libatk-1.0.so.0`
+
+这是系统级 Playwright 运行库没装全，不是业务代码问题。先补运行库：
+
+```bash
+cd /opt/ai-test-platform/current
+sudo bash scripts/deploy/install-runtime-ubuntu.sh
+sudo systemctl restart auto-test-platform
+```
+
+如果你是在 Debian / Ubuntu 上，也可以直接按官方方式补：
+
+```bash
+cd /opt/ai-test-platform/current
+sudo npx playwright install-deps chromium
+sudo systemctl restart auto-test-platform
+```
+
+如果报错里的浏览器路径是 `/root/.cache/ms-playwright/...`，说明当前发起任务的进程大概率不是按部署文档里的 `autotest + PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers` 方式启动的，而是被你手工用 `root` 拉起来了。先检查：
+
+```bash
+systemctl status auto-test-platform --no-pager
+systemctl show auto-test-platform -p User -p Group -p Environment --no-pager
+ps -ef | grep -E 'node server.mjs' | grep -v grep
+```
+
+### 3. 服务能起来，但浏览器执行时报 Chromium 缺失
 
 重新执行：
 
@@ -232,11 +283,11 @@ sudo -u autotest ENV_FILE=/opt/ai-test-platform/shared/.env.production bash scri
 并确认：
 
 ```bash
-sudo -u autotest env | grep PLAYWRIGHT_BROWSERS_PATH
+sudo systemctl show auto-test-platform -p Environment --no-pager | grep PLAYWRIGHT_BROWSERS_PATH
 ls -la /opt/playwright-browsers
 ```
 
-### 2. 页面打开正常，但 AI 生成失败
+### 4. 页面打开正常，但 AI 生成失败
 
 先检查这些环境变量是否已配置：
 
@@ -244,7 +295,7 @@ ls -la /opt/playwright-browsers
 - `LLM_BASE_URL`
 - `LLM_MODEL`
 
-### 3. 页面打开正常，但真实业务流登录失败
+### 5. 页面打开正常，但真实业务流登录失败
 
 先检查这些环境变量：
 

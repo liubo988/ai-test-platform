@@ -894,6 +894,49 @@ Error: element(s) not found`,
     expect(prompt).toContain('后面也只能复用这次 response，不要再对同一主值第二次搜索');
   });
 
+  it('adds targeted repair hints when final list verification times out while waiting for an extra GET response', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/account/list',
+        title: '入账列表',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '入账列表' }],
+        screenshot: '',
+      },
+      '批量申请入账后在入账列表校验新记录',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: [
+          "const keywordInput = page.locator('#form_in_modal_testKeyWord:visible').first();",
+          "const searchResp = __e2e.waitForApiResponse(page, { urlIncludes: '/account', method: 'GET' });",
+          'await keywordInput.fill(shared.selectedOrderNo);',
+          "await page.getByRole('button', { name: /搜\\\\s*索/i }).first().click();",
+          "artifacts['plan_step_7'] = await searchResp;",
+          "const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [shared.selectedOrderNo], timeoutMs: 20000 });",
+          "artifacts['plan_step_7_row'] = targetRow;",
+        ].join('\n'),
+        executionError: 'page.waitForResponse: Timeout 15000ms exceeded while waiting for event "response"',
+        recentEvents: [],
+      },
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://uat.example.com/#/order/list',
+        expectedOutcome: '入账成功后在列表看到对应记录',
+      }
+    );
+
+    expect(prompt).toContain('必须等到新的列表 GET 才算成功');
+    expect(prompt).toContain('不要继续保留 `const searchResp = __e2e.waitForApiResponse(...); await keywordInput.fill(primaryValue); await searchButton.click(); await searchResp;` 这条硬链');
+    expect(prompt).toContain('优先先短超时检查 `currentVisibleRow`');
+    expect(prompt).toContain('只有当前列表未命中时，才改用 `__e2e.resolvePrimaryRecord(...)`');
+    expect(prompt).toContain('额外列表 GET 只能当辅助证据');
+  });
+
   it('adds targeted detail-status hints when 状态 误读成意向标签', () => {
     const prompt = buildRepairPrompt(
       {

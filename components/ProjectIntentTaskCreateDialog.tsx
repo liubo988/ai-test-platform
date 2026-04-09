@@ -76,10 +76,6 @@ type ProjectIntentTaskCreateDialogProps = {
   onSaved: (item: ProjectIntentTaskCreateItem) => void | Promise<void>;
 };
 
-type IntentDraftLlmOverride = Partial<
-  Pick<LLMConfigDraft, 'provider' | 'model' | 'baseUrl' | 'apiStyle' | 'visionEnabled' | 'selfHealRetries' | 'maxPlanSteps'>
->;
-
 function createDraftId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -104,47 +100,6 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
-function normalizeIntentDraftLlmOverride(value: unknown): IntentDraftLlmOverride | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const next: IntentDraftLlmOverride = {};
-
-  if (typeof record.provider === 'string' && record.provider.trim()) next.provider = record.provider.trim();
-  if (typeof record.model === 'string' && record.model.trim()) next.model = record.model.trim();
-  if (typeof record.baseUrl === 'string') next.baseUrl = record.baseUrl.trim();
-  if (typeof record.apiStyle === 'string' && record.apiStyle.trim()) next.apiStyle = record.apiStyle.trim();
-  if (typeof record.visionEnabled === 'boolean') next.visionEnabled = record.visionEnabled;
-  if (typeof record.selfHealRetries === 'number' && Number.isFinite(record.selfHealRetries)) {
-    next.selfHealRetries = Math.max(0, Math.floor(record.selfHealRetries));
-  }
-  if (typeof record.maxPlanSteps === 'number' && Number.isFinite(record.maxPlanSteps)) {
-    next.maxPlanSteps = Math.max(1, Math.floor(record.maxPlanSteps));
-  }
-
-  return Object.keys(next).length > 0 ? next : null;
-}
-
-function mergeIntentDraftLlmOverride(base: LLMConfigDraft, override?: IntentDraftLlmOverride | null): LLMConfigDraft {
-  if (!override) return base;
-
-  const next: LLMConfigDraft = { ...base };
-  if (typeof override.provider === 'string' && override.provider.trim()) {
-    next.provider = override.provider.trim();
-    next.providerImplemented = next.provider === 'openai';
-  }
-  if (typeof override.model === 'string') next.model = override.model;
-  if (typeof override.baseUrl === 'string') next.baseUrl = override.baseUrl;
-  if (typeof override.apiStyle === 'string' && override.apiStyle.trim()) next.apiStyle = override.apiStyle.trim();
-  if (typeof override.visionEnabled === 'boolean') next.visionEnabled = override.visionEnabled;
-  if (typeof override.selfHealRetries === 'number' && Number.isFinite(override.selfHealRetries)) {
-    next.selfHealRetries = Math.max(0, Math.floor(override.selfHealRetries));
-  }
-  if (typeof override.maxPlanSteps === 'number' && Number.isFinite(override.maxPlanSteps)) {
-    next.maxPlanSteps = Math.max(1, Math.floor(override.maxPlanSteps));
-  }
-
-  return next;
-}
 
 function createAttachmentDrafts(attachments: AttachmentSeed[]): AttachmentDraft[] {
   return attachments.map((item, index) => ({
@@ -164,7 +119,6 @@ export default function ProjectIntentTaskCreateDialog({
   onClose,
   onSaved,
 }: ProjectIntentTaskCreateDialogProps) {
-  const initialLlmOverride = useMemo(() => normalizeIntentDraftLlmOverride(initialDraft?.llmConfig), [initialDraft]);
   const [moduleUid, setModuleUid] = useState(initialDraft?.moduleUid || initialModuleUid);
   const [taskName, setTaskName] = useState(initialDraft?.title || '');
   const [input, setInput] = useState(initialDraft?.input || '登录后台后创建一个商机，保存成功后看到新建记录，并且列表中状态为待跟进。');
@@ -211,7 +165,7 @@ export default function ProjectIntentTaskCreateDialog({
           throw new Error(json?.error || '加载 LLM 配置失败');
         }
         if (!active) return;
-        setLlmConfig(mergeIntentDraftLlmOverride(toLlmDraft(json.llm), initialLlmOverride));
+        setLlmConfig(toLlmDraft(json.llm));
       } catch (loadError: unknown) {
         if (!active) return;
         setConfigError(loadError instanceof Error ? loadError.message : '加载 LLM 配置失败');
@@ -224,7 +178,7 @@ export default function ProjectIntentTaskCreateDialog({
     return () => {
       active = false;
     };
-  }, [initialLlmOverride]);
+  }, [initialDraft?.intentDraftUid]);
 
   async function handleAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files || []);
@@ -342,6 +296,12 @@ export default function ProjectIntentTaskCreateDialog({
               }`}
             >
               {configStatusMessage}
+            </div>
+          )}
+
+          {!configLoading && !configError && providerIsImplemented && (
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-600">
+              当前生成使用团队共享 LLM：{llmConfig.provider} / {llmConfig.model} / {llmConfig.apiStyle}
             </div>
           )}
 

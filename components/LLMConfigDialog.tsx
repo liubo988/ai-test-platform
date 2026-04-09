@@ -6,6 +6,7 @@ import {
   toLlmDraft,
   type LLMConfigDraft,
   type LLMConfigResponse,
+  type LLMConfigTestResponse,
 } from '@/lib/llm-config-browser';
 
 type LLMConfigDialogProps = {
@@ -16,10 +17,13 @@ type LLMConfigDialogProps = {
 export default function LLMConfigDialog({ open, onClose }: LLMConfigDialogProps) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [error, setError] = useState('');
+  const [testError, setTestError] = useState('');
   const [configResponse, setConfigResponse] = useState<LLMConfigResponse | null>(null);
   const [draft, setDraft] = useState<LLMConfigDraft>(defaultLlmConfigDraft);
   const [savedMessage, setSavedMessage] = useState('');
+  const [testResult, setTestResult] = useState<LLMConfigTestResponse | null>(null);
 
   const defaultDraft = useMemo(
     () => (configResponse ? toLlmDraft(configResponse.baseLlm) : defaultLlmConfigDraft),
@@ -30,6 +34,8 @@ export default function LLMConfigDialog({ open, onClose }: LLMConfigDialogProps)
     if (!open) {
       setError('');
       setSavedMessage('');
+      setTestError('');
+      setTestResult(null);
       return;
     }
 
@@ -62,10 +68,18 @@ export default function LLMConfigDialog({ open, onClose }: LLMConfigDialogProps)
 
   if (!open) return null;
 
+  function updateDraft(updater: (current: LLMConfigDraft) => LLMConfigDraft) {
+    setDraft((current) => updater(current));
+    setTestError('');
+    setTestResult(null);
+  }
+
   function handleRestoreDefault() {
     setDraft(defaultDraft);
     setSavedMessage('已恢复为环境默认草稿，点击“保存配置”后会清除团队共享覆盖。');
     setError('');
+    setTestError('');
+    setTestResult(null);
   }
 
   async function handleSave() {
@@ -103,6 +117,36 @@ export default function LLMConfigDialog({ open, onClose }: LLMConfigDialogProps)
     }
   }
 
+  async function handleTest() {
+    setTesting(true);
+    setTestError('');
+    setTestResult(null);
+    setSavedMessage('');
+
+    try {
+      const res = await fetch('/api/llm/config/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: draft.provider,
+          model: draft.model.trim(),
+          baseUrl: draft.baseUrl.trim(),
+          apiStyle: draft.apiStyle,
+          visionEnabled: draft.visionEnabled,
+          selfHealRetries: draft.selfHealRetries,
+          maxPlanSteps: draft.maxPlanSteps,
+        }),
+      });
+      const json = (await res.json()) as LLMConfigTestResponse & { error?: string };
+      if (!res.ok) throw new Error(json.error || '测试 LLM 配置失败');
+      setTestResult(json);
+    } catch (testLoadError: unknown) {
+      setTestError(testLoadError instanceof Error ? testLoadError.message : '测试 LLM 配置失败');
+    } finally {
+      setTesting(false);
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-sm">
       <div className="w-full max-w-[720px] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
@@ -133,6 +177,22 @@ export default function LLMConfigDialog({ open, onClose }: LLMConfigDialogProps)
                 </div>
               )}
 
+              {testError && (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{testError}</div>
+              )}
+
+              {testResult && (
+                <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
+                  <p className="font-medium">测试成功 · {testResult.durationMs}ms</p>
+                  <p className="mt-1 text-xs text-sky-700">
+                    {testResult.llm.provider} / {testResult.llm.model} / {testResult.llm.apiStyle}
+                  </p>
+                  <pre className="mt-3 overflow-x-auto rounded-xl bg-white/70 px-3 py-2 text-xs leading-5 text-slate-700">
+                    {testResult.outputPreview || '(empty response)'}
+                  </pre>
+                </div>
+              )}
+
               {configResponse?.sharedSettings ? (
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-600">
                   当前为团队共享默认值，最近一次更新：{new Date(configResponse.sharedSettings.updatedAt).toLocaleString('zh-CN')} · {configResponse.sharedSettings.updatedByLabel}
@@ -149,7 +209,7 @@ export default function LLMConfigDialog({ open, onClose }: LLMConfigDialogProps)
                   <select
                     value={draft.provider}
                     onChange={(event) =>
-                      setDraft((current) => ({
+                      updateDraft((current) => ({
                         ...current,
                         provider: event.target.value,
                         providerImplemented: event.target.value === 'openai',
@@ -169,7 +229,7 @@ export default function LLMConfigDialog({ open, onClose }: LLMConfigDialogProps)
                   <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">API Style</span>
                   <select
                     value={draft.apiStyle}
-                    onChange={(event) => setDraft((current) => ({ ...current, apiStyle: event.target.value }))}
+                    onChange={(event) => updateDraft((current) => ({ ...current, apiStyle: event.target.value }))}
                     className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
                   >
                     {(configResponse?.availableApiStyles || ['auto', 'responses', 'chat']).map((item) => (
@@ -185,7 +245,7 @@ export default function LLMConfigDialog({ open, onClose }: LLMConfigDialogProps)
                 <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">Model</span>
                 <input
                   value={draft.model}
-                  onChange={(event) => setDraft((current) => ({ ...current, model: event.target.value }))}
+                  onChange={(event) => updateDraft((current) => ({ ...current, model: event.target.value }))}
                   className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
                 />
               </label>
@@ -194,7 +254,7 @@ export default function LLMConfigDialog({ open, onClose }: LLMConfigDialogProps)
                 <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">Base URL</span>
                 <input
                   value={draft.baseUrl}
-                  onChange={(event) => setDraft((current) => ({ ...current, baseUrl: event.target.value }))}
+                  onChange={(event) => updateDraft((current) => ({ ...current, baseUrl: event.target.value }))}
                   className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
                 />
               </label>
@@ -208,7 +268,7 @@ export default function LLMConfigDialog({ open, onClose }: LLMConfigDialogProps)
                     max={5}
                     value={draft.selfHealRetries}
                     onChange={(event) =>
-                      setDraft((current) => ({
+                      updateDraft((current) => ({
                         ...current,
                         selfHealRetries: Math.max(0, Number(event.target.value) || 0),
                       }))
@@ -225,7 +285,7 @@ export default function LLMConfigDialog({ open, onClose }: LLMConfigDialogProps)
                     max={12}
                     value={draft.maxPlanSteps}
                     onChange={(event) =>
-                      setDraft((current) => ({
+                      updateDraft((current) => ({
                         ...current,
                         maxPlanSteps: Math.max(1, Number(event.target.value) || 1),
                       }))
@@ -243,7 +303,7 @@ export default function LLMConfigDialog({ open, onClose }: LLMConfigDialogProps)
                 <input
                   type="checkbox"
                   checked={draft.visionEnabled}
-                  onChange={(event) => setDraft((current) => ({ ...current, visionEnabled: event.target.checked }))}
+                  onChange={(event) => updateDraft((current) => ({ ...current, visionEnabled: event.target.checked }))}
                   className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-400"
                 />
               </label>
@@ -260,21 +320,28 @@ export default function LLMConfigDialog({ open, onClose }: LLMConfigDialogProps)
         <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-3">
           <button
             onClick={handleRestoreDefault}
-            disabled={loading || saving || !configResponse}
+            disabled={loading || saving || testing || !configResponse}
             className="h-10 rounded-xl border border-slate-200 px-4 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             恢复环境默认
           </button>
           <button
+            onClick={() => void handleTest()}
+            disabled={loading || saving || testing || !draft.providerImplemented || !draft.model.trim() || !draft.baseUrl.trim()}
+            className="h-10 rounded-xl border border-sky-200 bg-sky-50 px-4 text-sm text-sky-700 transition hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {testing ? '测试中...' : '测试配置'}
+          </button>
+          <button
             onClick={onClose}
-            disabled={saving}
+            disabled={saving || testing}
             className="h-10 rounded-xl border border-slate-200 px-4 text-sm text-slate-600 transition hover:bg-slate-50"
           >
             取消
           </button>
           <button
             onClick={() => void handleSave()}
-            disabled={loading || saving || Boolean(error)}
+            disabled={loading || saving || testing || Boolean(error)}
             className="h-10 rounded-xl bg-slate-900 px-4 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {saving ? '保存中...' : '保存配置'}

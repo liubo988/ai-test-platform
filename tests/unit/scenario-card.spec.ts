@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildGenerateInputFromScenarioCard, normalizeScenarioCard } from '@/lib/ai/scenario-card';
+import { applyIntentAttachmentOcrSummary, buildGenerateInputFromScenarioCard, normalizeScenarioCard } from '@/lib/ai/scenario-card';
 
 describe('scenario-card', () => {
   it('normalizes minimal card data and backfills expected outcome', () => {
@@ -452,6 +452,59 @@ describe('scenario-card', () => {
     expect(card.notes.some((note) => note.includes('不要搜索后直接点击第一行'))).toBe(true);
     expect(card.flowDefinition.steps[0]?.instruction).toContain('等待表格刷新并重新定位目标行');
     expect(card.flowDefinition.steps[1]?.instruction).toContain('优先按字段标签读取详情值');
+  });
+
+  it('merges attachment OCR anchors back into the card and lets family routing salvage the scenario', () => {
+    const card = normalizeScenarioCard(
+      applyIntentAttachmentOcrSummary(
+        {
+          version: 1,
+          title: '核对客户信息',
+          taskMode: 'scenario',
+          targetUrl: 'https://example.com/#/customer/list',
+          featureDescription: '核对目标客户的详情信息',
+          successCriteria: ['目标客户信息可见'],
+          visualAnchors: [],
+          notes: [],
+          flowDefinition: {
+            version: 1,
+            entryUrl: 'https://example.com/#/customer/list',
+            sharedVariables: [],
+            expectedOutcome: '看到目标客户信息',
+            cleanupNotes: '',
+            steps: [
+              {
+                stepUid: 'step_search_customer',
+                stepType: 'ui',
+                title: '搜索客户',
+                target: '当前页面',
+                instruction: '输入客户编号后查询目标客户',
+                expectedResult: '结果区出现目标客户',
+                extractVariable: '',
+              },
+              {
+                stepUid: 'step_open_customer',
+                stepType: 'ui',
+                title: '打开客户详情',
+                target: '目标记录',
+                instruction: '打开目标客户详情',
+                expectedResult: '客户详情可见',
+                extractVariable: '',
+              },
+            ],
+          },
+        },
+        {
+          visualAnchors: ['客户列表搜索框', '客户详情抽屉'],
+          textSnippets: ['客户详情抽屉标题清晰可见'],
+        }
+      )
+    );
+
+    expect(card.visualAnchors).toEqual(expect.arrayContaining(['客户列表搜索框', '客户详情抽屉']));
+    expect(card.notes.some((note) => note.includes('附件文字锚点：'))).toBe(true);
+    expect(card.notes.some((note) => note.includes('不要搜索后直接点击第一行'))).toBe(true);
+    expect(card.flowDefinition.steps[0]?.instruction).toContain('等待表格刷新并重新定位目标行');
   });
 
   it('emits clarify_signal when visual anchors conflict with a tracked text family', () => {

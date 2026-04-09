@@ -5,10 +5,11 @@ import { getIntentE2ERecipePerformanceMap, getIntentE2ERulePerformanceMap, getIn
 import { listIntentE2ERunSnapshots } from '@/lib/db/repository';
 import { searchIntentE2EExperienceHints } from '@/lib/intent-e2e-experience-search';
 import { buildIntentE2ERunReview } from '@/lib/intent-e2e-run-review';
+import { selectIntentRecipeRegistry } from '@/lib/intent-recipe-registry';
 import { getIntentProjectOnboardingPath, readIntentProjectOnboardingStatus } from '@/lib/intent-project-onboarding';
 import { getIntentProjectKnowledgePath } from '@/lib/intent-project-knowledge';
 import { analyzePage, precheckPageAccess } from '@/lib/page-analyzer';
-import { executeTest } from '@/lib/test-executor';
+import { executeTest, getTestCodeSyntaxError } from '@/lib/test-executor';
 import { generateTest, repairTest, resolveIntentPromptPlanningContext, type GenerateEvent } from '@/lib/test-generator';
 import { getLLMRuntimeConfig } from '@/lib/llm/provider-config';
 import { buildGenerateInputFromScenarioCard, generateScenarioCard } from '@/lib/ai/scenario-card';
@@ -38,6 +39,7 @@ vi.mock('@/lib/ai/intent-e2e-insights', () => ({
 
 vi.mock('@/lib/test-executor', () => ({
   executeTest: vi.fn(),
+  getTestCodeSyntaxError: vi.fn(() => ''),
 }));
 
 vi.mock('@/lib/test-generator', () => ({
@@ -89,6 +91,10 @@ vi.mock('@/lib/intent-e2e-experience-search', () => ({
 
 vi.mock('@/lib/intent-e2e-run-review', () => ({
   buildIntentE2ERunReview: vi.fn(),
+}));
+
+vi.mock('@/lib/intent-recipe-registry', () => ({
+  selectIntentRecipeRegistry: vi.fn(),
 }));
 
 function toAsyncGenerator(events: GenerateEvent[]): AsyncGenerator<GenerateEvent> {
@@ -456,6 +462,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.restoreAllMocks();
   resetIntentE2ESharedSessionCache();
+  vi.mocked(getTestCodeSyntaxError).mockReturnValue('');
   vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 0 } as any);
   vi.mocked(getIntentE2ERecipePerformanceMap).mockResolvedValue({
     'auth.unified-login': {
@@ -513,8 +520,40 @@ beforeEach(() => {
       expectedOutcome: '看到成功页面',
       sharedVariables: ['orderId'],
       cleanupNotes: '',
+      actionDsl: {
+        version: 1,
+        mode: 'scenario',
+        targetUrl: 'https://example.com/checkout',
+        summary: '打开页面 -> 提交表单 -> 验证成功页',
+        globalRules: [],
+        preferredPrimitives: [],
+        outputContract: [],
+        steps: [],
+      },
     },
   });
+  vi.mocked(selectIntentRecipeRegistry).mockReturnValue({
+    version: 1,
+    items: [
+      {
+        recipe: {
+          version: 1,
+          slug: 'intent.checkout-success',
+          title: '结算成功稳定链',
+          description: '项目级结算成功链路。',
+          matchers: {},
+          requiredContext: [],
+          executorPlan: [],
+          verifierPlan: [],
+          knownPitfalls: [],
+          successRate: 100,
+          lastVerifiedAt: '2026-04-09T12:00:00.000Z',
+        },
+        score: 10,
+        matchedSignals: ['url=/checkout'],
+      },
+    ],
+  } as never);
   vi.mocked(generateTest).mockReturnValue(
     toAsyncGenerator([
       {
@@ -880,6 +919,7 @@ describe('intent-e2e-service stream', () => {
       priorityScenarioFamily: 'untracked',
       visualAnchors: ['成功页头部'],
       stepTypes: [],
+      matchedRecipeSlugs: ['intent.checkout-success'],
       includeFailures: true,
     });
     expect(vi.mocked(buildIntentE2ERunReview)).toHaveBeenCalledTimes(1);
@@ -2530,6 +2570,49 @@ describe('intent-e2e-service stream', () => {
           type: 'attempt_log',
           log: expect.objectContaining({
             message: expect.stringContaining('命中已知旧的最终提交按钮定位骨架'),
+          }),
+        }),
+      ])
+    );
+  });
+
+  it('skips draft first-pass code reuse when the prefilled code has syntax errors', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+    const invalidPrefilledCode = `
+      test('draft-prefill', async ({ page }) => {
+        const broken = \`page.getByRole('button', { name: /^提\\\\s*交$/ }).first();
+        await page.goto('https://example.com/checkout');
+      });
+    `.trim();
+    vi.mocked(getTestCodeSyntaxError).mockReturnValueOnce("Unexpected identifier 'getByRole'");
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        prefilledScenarioCard: scenarioCard,
+        prefilledPlanCode: invalidPrefilledCode,
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(getTestCodeSyntaxError)).toHaveBeenCalledWith(invalidPrefilledCode, 'draft_first_pass');
+    expect(vi.mocked(generateScenarioCard)).not.toHaveBeenCalled();
+    expect(vi.mocked(generateTest)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).not.toBe(invalidPrefilledCode);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'generating',
+          message: expect.stringContaining('已回退到当前生成链路'),
+        }),
+        expect.objectContaining({
+          type: 'attempt_log',
+          log: expect.objectContaining({
+            message: expect.stringContaining('草稿首版脚本存在语法错误'),
           }),
         }),
       ])

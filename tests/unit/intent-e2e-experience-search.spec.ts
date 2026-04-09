@@ -233,6 +233,55 @@ describe('intent-e2e-experience-search', () => {
     expect(vi.mocked(listIntentE2ERunSnapshots)).not.toHaveBeenCalled();
   });
 
+  it('reranks candidates with matching project recipe / playbook slugs ahead of generic matches', async () => {
+    const playbookMatchSnapshot = createSnapshot('intent-run-playbook-match', {
+      playbookSlugs: ['intent.checkout-success'],
+      stableIdentifiers: ['orderId'],
+    });
+    const genericSnapshot = createSnapshot('intent-run-generic-match', {
+      playbookSlugs: ['intent.generic-flow'],
+      stableIdentifiers: ['customerId'],
+    });
+
+    vi.mocked(listIntentE2ERunSnapshots).mockResolvedValue([playbookMatchSnapshot, genericSnapshot] as never);
+    vi.mocked(normalizeIntentE2ETerminalRunSnapshot).mockImplementation((snapshot) => {
+      switch ((snapshot as any).runId) {
+        case 'intent-run-playbook-match':
+          return createInsightRun('intent-run-playbook-match', {
+            firstPassSucceeded: false,
+            repairedSucceeded: true,
+            matchedRecipeSlugs: ['business.create'],
+            finishedAtMs: 1_744_161_600_000,
+          }) as never;
+        case 'intent-run-generic-match':
+          return createInsightRun('intent-run-generic-match', {
+            firstPassSucceeded: true,
+            matchedRecipeSlugs: ['business.create'],
+            finishedAtMs: 1_744_161_900_000,
+          }) as never;
+        default:
+          return null;
+      }
+    });
+
+    const result = await searchIntentE2EExperienceHints({
+      projectUid: 'proj_default',
+      moduleUid: 'mod_checkout',
+      requestInput: '访问结算页并提交，最终看到成功页',
+      targetUrl: 'https://example.com/checkout',
+      scenarioTitle: '结算成功页',
+      taskMode: 'scenario',
+      matchedRecipeSlugs: ['intent.checkout-success'],
+      includeFailures: false,
+    });
+
+    expect(result.hints).toHaveLength(2);
+    expect(result.hints[0]?.runId).toBe('intent-run-playbook-match');
+    expect(result.hints[0]?.matchedSignals).toEqual(expect.arrayContaining(['playbook=intent.checkout-success']));
+    expect(result.hints[0]?.playbookSlugs).toContain('intent.checkout-success');
+    expect(result.hints[0]?.matchScore).toBeGreaterThan(result.hints[1]?.matchScore || 0);
+  });
+
   it('matches hash-route pages and tracked priority family signals', async () => {
     const hashSnapshot = createSnapshot('intent-run-business-hash', {
       stableIdentifiers: ['businessId'],

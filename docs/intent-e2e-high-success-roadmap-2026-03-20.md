@@ -15891,3 +15891,93 @@
 - 下一步：
   - 先观察这刀在新的真实 `AI生成` runs 上是否能抬高 `experience_hit_rate` / `first_pass_rate`。
   - 若收益仍不明显，再决定是继续增强 recall scoring，还是转入 `E4` 的图片文字锚点增强。
+
+## 2026-04-09 第二百四十二次更新（后续专项第八刀：历史 playbook promotion / recipe-aware rerank / E4 OCR / benchmark 重新冻结已完成）
+
+- 本轮目标：
+  - 把后续专项剩余 4 条直接影响成功率或量化闭环的缺口一次性收口：
+    - 历史成功 run 的 `playbookCandidates` 批量沉淀到项目 recipe
+    - experience recall 的 `recipe-aware / playbook-aware` 二次 rerank
+    - `E4` 最小 OCR / structured visual anchors
+    - benchmark 重新冻结与 compare
+- 已完成：
+  - 新增 [docs/intent-e2e-final-four-hardening-task-brief-2026-04-09.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-final-four-hardening-task-brief-2026-04-09.md)，固定本轮 4 条的目标、范围与验证命令。
+  - 在 [lib/intent-e2e-playbook.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-playbook.ts) 新增 `aggregateIntentE2EPlaybookCandidates(...)`，先按 slug 去重聚合历史 candidate 再生成 recipe merge inputs。
+  - 新增 [lib/intent-e2e-playbook-promotion.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-playbook-promotion.ts) 与 [scripts/intent-e2e-playbook-promotion.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-playbook-promotion.ts)，为历史成功 run 提供 repo-owned batch promotion 入口。
+  - 在真实 scope `projectUid=proj_default / moduleUid=mod_1773303139537_c84d8476` 上完成一次历史 promotion：
+    - 扫描 `60` 条 passed runs
+    - 命中 `6` 条带 `playbookCandidates` 的成功 runs
+    - 聚合为 `1` 条项目 recipe
+    - 写入 [reports/intent-e2e/projects/proj_default/intent-e2e.project-recipes.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.project-recipes.json)
+  - 在 [lib/intent-e2e-experience-search.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-experience-search.ts) 补第二阶段 rerank：
+    - 当前 query `matchedRecipeSlugs`
+    - 历史 `intent.*` recipe / playbook slug 重合
+    - stable identifier 重合
+  - 在 [lib/ai/intent-e2e-service.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-service.ts) 加入一层早期 recipe 选择，把当前 recipe slugs 透传给 recall，而不重复做完整 planning。
+  - 新增 [lib/ai/intent-attachment-ocr.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-attachment-ocr.ts)，并在 [lib/ai/scenario-card.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/scenario-card.ts) 接入：
+    - 仅 `attachments.length > 0 && visionEnabled` 时触发
+    - OCR 结果只增强 `visualAnchors / notes`
+    - family routing / clarify signal 继续复用现有逻辑
+  - 在 [docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md) 增补 `intent:playbook:promote` 命令入口与推荐顺序。
+  - 补齐回归：
+    - [tests/unit/intent-e2e-playbook.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-playbook.spec.ts)
+    - [tests/unit/intent-e2e-playbook-promotion.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-playbook-promotion.spec.ts)
+    - [tests/unit/intent-e2e-experience-search.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-experience-search.spec.ts)
+    - [tests/unit/intent-e2e-service.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-service.spec.ts)
+    - [tests/unit/scenario-card.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/scenario-card.spec.ts)
+    - [tests/unit/scenario-card-generate.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/scenario-card-generate.spec.ts)
+    - [tests/unit/intent-attachment-ocr.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-attachment-ocr.spec.ts)
+- 验证：
+  - `npm run intent:playbook:promote -- --help`
+  - `npm run intent:playbook:promote -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --run-limit 200 --json`
+  - `npx vitest run tests/unit/intent-e2e-playbook.spec.ts tests/unit/intent-e2e-playbook-promotion.spec.ts tests/unit/intent-e2e-experience-search.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/scenario-card.spec.ts tests/unit/scenario-card-generate.spec.ts tests/unit/intent-attachment-ocr.spec.ts`
+  - `npm run build`
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --run-limit 200 --compared-label final-four-current-before-refreeze`
+  - `npm run intent:benchmark:candidates -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --test-type browser_e2e`
+  - `npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --test-type browser_e2e --max-cases 5 --release-candidate ai-holdout-final-four-2026-04-09`
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --run-limit 200 --compared-label ai-holdout-final-four-2026-04-09-current`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+  - 结果：
+    - `intent:playbook:promote` 帮助输出通过，真实 promotion 命令成功落盘项目 recipe
+    - `7` 个测试文件通过，`69/69 passed`
+    - `build` 通过
+    - compare（旧 benchmark -> 当前 runs）结果：
+      - `terminal_pass_rate 30.0% -> 30.0%`
+      - `first_pass_pass_rate 24.0% -> 24.0%`
+      - `experience_hit_rate 3.0% -> 3.0%`
+      - `recipe_hit_rate 69.0% -> 69.0%`
+      - `playbook_hit_rate 0.0% -> 0.0%`
+    - 已重新冻结新 baseline：
+      - benchmark UID：`bench_4d5ceaef9de4`
+      - release candidate：`ai-holdout-final-four-2026-04-09`
+    - compare（新 baseline -> 当前 runs）结果为 `unchanged=5 / regressed=0 / missing=0`
+- 当前结果：
+  - `proj_default` 现在已有首份项目级 `intent.*` recipe 资产，后续新 run 已具备命中 `playbook` 的必要前提。
+  - recall 现在不是纯单阶段检索：若当前 query 已命中 project recipe，会优先把历史上同 `intent.*` slug 的成功经验顶上来。
+  - 带图任务现在会先提取轻量 OCR 文字锚点，再回灌到 `ScenarioCard` 的 `visualAnchors / notes`；无附件任务不承担额外成本。
+  - 本轮 benchmark 数字没有立刻上升，核心原因是 compare 消费的仍是“promotion 之前已有的 terminal run snapshots”；这些历史 runs 不会被事后改写成 `playbook hit`。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成（MVP，并补完 hash-route / priority family signal sharpen + recipe-aware rerank）
+    - `E2`：已完成（project-scoped recipe promotion / merge，并补齐历史 playbook 批量沉淀入口）
+    - `E3`：已完成（run 终态后异步补写 review）
+    - `E4`：已完成（轻量 OCR / structured visual anchors）
+- 风险 / 未完成：
+  - `playbook_hit_rate` 仍为 `0.0%`，要等 promotion 之后产生新的真实 `AI生成` runs，才能看到项目 recipe 的命中收益。
+  - 当前 benchmark case 里仍有历史 `targetPath=/` 的 cluster，说明旧 run snapshot 本身还带着早期路径语义；这会继续影响 case 可读性。
+  - `E4` 目前只做轻量 OCR / 文字锚点摘要，没有单独补 `ocr_used_rate / image_route_hit_rate` 的 benchmark 口径。
+- 下一步：
+  - 用当前已落盘的 project recipe，继续收集一小批新的真实 `AI生成` runs（尤其是带图片任务），再重跑 compare，观察：
+    - `playbook_hit_rate`
+    - `experience_hit_rate`
+    - `first_pass_pass_rate`
+  - 若新 runs 仍看不到 recipe / OCR 收益，再继续收口 benchmark case 的历史 `/` targetPath 语义与图片任务专用指标。

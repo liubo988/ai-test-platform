@@ -28,6 +28,11 @@ npm run test:all
 - `npm run intent:benchmark:freeze -- --project-uid <projectUid>`
 - `npm run intent:benchmark:compare -- --project-uid <projectUid>`
 
+## 部署入口
+- Ubuntu 裸机部署：`docs/linux-deploy-super-test-yikaiye-net-2026-04-08.md`
+- CentOS 7 Docker 部署：`docs/linux-deploy-centos7-super-test-yikaiye-net-2026-04-08.md`
+- CentOS 7 裸机 best-effort 部署：`docs/linux-deploy-centos7-raw-best-effort-2026-04-09.md`
+
 ## LLM 生成（可选）
 默认推荐模型：`api-proxy-codex/gpt-5.3-codex`
 
@@ -60,6 +65,7 @@ npm run edge:generate
 
 同时可读取当前服务端默认配置：
 - `GET /api/llm/config`
+- `POST /api/llm/config/test`
 
 ### Intent E2E 开发主线
 - `R0-R7` 的历史主线与高成功率能力收口，统一以 [docs/intent-e2e-high-success-roadmap-2026-03-20.md](docs/intent-e2e-high-success-roadmap-2026-03-20.md) 为准。

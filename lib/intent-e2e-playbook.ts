@@ -6,6 +6,11 @@ export function isIntentPlaybookRecipeSlug(value: string): boolean {
   return value.trim().toLowerCase().startsWith('intent.');
 }
 
+function normalizeIsoTimestamp(value: string): number {
+  const timestamp = Date.parse(String(value || '').trim());
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
 function uniqueStrings(values: Array<string | null | undefined>, max = 12): string[] {
   const seen = new Set<string>();
   const items: string[] = [];
@@ -86,6 +91,76 @@ function buildRecipeDescription(candidate: IntentE2EPlaybookCandidate): string {
   ]).join(' ');
 }
 
+function pickPreferredString(current: string, next: string): string {
+  const currentValue = String(current || '').trim();
+  const nextValue = String(next || '').trim();
+  if (!currentValue) return nextValue;
+  if (!nextValue) return currentValue;
+  return nextValue.length > currentValue.length ? nextValue : currentValue;
+}
+
+export function aggregateIntentE2EPlaybookCandidates(
+  candidates: IntentE2EPlaybookCandidate[] = []
+): IntentE2EPlaybookCandidate[] {
+  const orderedSlugs: string[] = [];
+  const aggregatedBySlug = new Map<string, IntentE2EPlaybookCandidate>();
+
+  for (const candidate of candidates) {
+    const slug = String(candidate?.slug || '').trim();
+    if (!slug) continue;
+
+    const normalizedCandidate: IntentE2EPlaybookCandidate = {
+      ...candidate,
+      slug,
+      targetPath: normalizeTargetPath(candidate.targetPath),
+      matchedRecipeSlugs: uniqueStrings(candidate.matchedRecipeSlugs || []),
+      stepTypes: uniqueStrings(candidate.stepTypes || []),
+      preconditions: uniqueStrings(candidate.preconditions || []),
+      executorPlan: uniqueStrings(candidate.executorPlan || [], 32),
+      verifierPlan: uniqueStrings(candidate.verifierPlan || [], 32),
+      preferredHelpers: uniqueStrings(candidate.preferredHelpers || [], 32),
+      knownPitfalls: uniqueStrings(candidate.knownPitfalls || [], 32),
+      sourceRunIds: uniqueStrings(candidate.sourceRunIds || [], 32),
+      successRate: Number.isFinite(candidate.successRate) ? Number(candidate.successRate) : 0,
+      lastVerifiedAt: String(candidate.lastVerifiedAt || '').trim(),
+    };
+
+    const existing = aggregatedBySlug.get(slug);
+    if (!existing) {
+      aggregatedBySlug.set(slug, normalizedCandidate);
+      orderedSlugs.push(slug);
+      continue;
+    }
+
+    const existingTimestamp = normalizeIsoTimestamp(existing.lastVerifiedAt);
+    const candidateTimestamp = normalizeIsoTimestamp(normalizedCandidate.lastVerifiedAt);
+    const latestTimestamp = candidateTimestamp >= existingTimestamp ? normalizedCandidate.lastVerifiedAt : existing.lastVerifiedAt;
+
+    aggregatedBySlug.set(slug, {
+      ...existing,
+      candidateId: pickPreferredString(existing.candidateId, normalizedCandidate.candidateId),
+      title: pickPreferredString(existing.title, normalizedCandidate.title),
+      scenarioFamily:
+        normalizeTrackedScenarioFamily(existing.scenarioFamily) || !normalizeTrackedScenarioFamily(normalizedCandidate.scenarioFamily)
+          ? existing.scenarioFamily
+          : normalizedCandidate.scenarioFamily,
+      targetPath: pickPreferredString(existing.targetPath, normalizedCandidate.targetPath),
+      matchedRecipeSlugs: uniqueStrings([...existing.matchedRecipeSlugs, ...normalizedCandidate.matchedRecipeSlugs]),
+      stepTypes: uniqueStrings([...existing.stepTypes, ...normalizedCandidate.stepTypes]),
+      preconditions: uniqueStrings([...existing.preconditions, ...normalizedCandidate.preconditions], 32),
+      executorPlan: uniqueStrings([...existing.executorPlan, ...normalizedCandidate.executorPlan], 32),
+      verifierPlan: uniqueStrings([...existing.verifierPlan, ...normalizedCandidate.verifierPlan], 32),
+      preferredHelpers: uniqueStrings([...existing.preferredHelpers, ...normalizedCandidate.preferredHelpers], 32),
+      knownPitfalls: uniqueStrings([...existing.knownPitfalls, ...normalizedCandidate.knownPitfalls], 32),
+      sourceRunIds: uniqueStrings([...existing.sourceRunIds, ...normalizedCandidate.sourceRunIds], 32),
+      successRate: Math.max(existing.successRate, normalizedCandidate.successRate),
+      lastVerifiedAt: latestTimestamp,
+    });
+  }
+
+  return orderedSlugs.map((slug) => aggregatedBySlug.get(slug)!);
+}
+
 export function buildIntentProjectRecipeMergeInputFromPlaybookCandidate(
   candidate: IntentE2EPlaybookCandidate
 ): IntentProjectRecipeMergeInput {
@@ -116,7 +191,7 @@ export function buildIntentProjectRecipeMergeInputFromPlaybookCandidate(
 export function buildIntentProjectRecipeMergeInputsFromPlaybookCandidates(
   candidates: IntentE2EPlaybookCandidate[] = []
 ): IntentProjectRecipeMergeInput[] {
-  return candidates
+  return aggregateIntentE2EPlaybookCandidates(candidates)
     .map((candidate) => buildIntentProjectRecipeMergeInputFromPlaybookCandidate(candidate))
     .filter((candidate) => candidate.slug && candidate.title && candidate.description);
 }

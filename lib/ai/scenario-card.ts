@@ -1,6 +1,11 @@
 import { callLLMStructured } from '@/lib/llm-client';
 import { getLLMRuntimeConfig, type LLMRuntimeOverrides } from '@/lib/llm/provider-config';
 import {
+  EMPTY_INTENT_ATTACHMENT_OCR_SUMMARY,
+  extractIntentAttachmentOcrSummary,
+  type IntentAttachmentOcrSummary,
+} from '@/lib/ai/intent-attachment-ocr';
+import {
   formatIntentE2EPriorityScenarioFamilyLabel,
   resolveIntentE2EPriorityScenarioFamilyRoute,
   type IntentE2EPriorityScenarioFamilyRoute,
@@ -756,7 +761,24 @@ function buildScenarioCardSchema(maxPlanSteps: number): Record<string, unknown> 
   };
 }
 
-function buildScenarioCardPrompt(input: ScenarioCardInput, maxPlanSteps: number): string {
+function buildIntentAttachmentOcrPromptSection(summary: IntentAttachmentOcrSummary): string {
+  if (summary.visualAnchors.length === 0 && summary.textSnippets.length === 0) {
+    return '';
+  }
+
+  return [
+    '',
+    '截图 OCR 文字锚点：',
+    summary.visualAnchors.length > 0 ? `- 视觉锚点：${summary.visualAnchors.join(' / ')}` : '- 视觉锚点：无',
+    summary.textSnippets.length > 0 ? `- 文字摘要：${summary.textSnippets.join(' / ')}` : '- 文字摘要：无',
+  ].join('\n');
+}
+
+function buildScenarioCardPrompt(
+  input: ScenarioCardInput,
+  maxPlanSteps: number,
+  attachmentOcrSummary: IntentAttachmentOcrSummary = EMPTY_INTENT_ATTACHMENT_OCR_SUMMARY
+): string {
   const attachmentNotes = (input.attachments || [])
     .map((item, index) => `- 图片 ${index + 1}: 名称=${item.name || `attachment-${index + 1}`}；用途=${item.purpose || '未标注'}`)
     .join('\n');
@@ -785,7 +807,27 @@ function buildScenarioCardPrompt(input: ScenarioCardInput, maxPlanSteps: number)
     '',
     '图片附件：',
     attachmentNotes || '- 无',
+    buildIntentAttachmentOcrPromptSection(attachmentOcrSummary),
   ].join('\n');
+}
+
+export function applyIntentAttachmentOcrSummary(
+  raw: unknown,
+  summary: IntentAttachmentOcrSummary = EMPTY_INTENT_ATTACHMENT_OCR_SUMMARY
+): unknown {
+  if (summary.visualAnchors.length === 0 && summary.textSnippets.length === 0) {
+    return raw;
+  }
+
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  return {
+    ...source,
+    visualAnchors: normalizeStringArray([...(Array.isArray(source.visualAnchors) ? source.visualAnchors : []), ...summary.visualAnchors]),
+    notes: normalizeStringArray([
+      ...(Array.isArray(source.notes) ? source.notes : []),
+      summary.textSnippets.length > 0 ? `附件文字锚点：${summary.textSnippets.join(' / ')}` : '',
+    ]),
+  };
 }
 
 export function normalizeScenarioCard(raw: unknown, fallbackTargetUrl = ''): ScenarioCard {
@@ -820,19 +862,34 @@ export async function generateScenarioCard(
 ): Promise<ScenarioCardGenerationOutput> {
   const config = getLLMRuntimeConfig(runtimeOverrides);
   const attachments = (input.attachments || []).filter((item) => Boolean(item?.dataUrl)).slice(0, 4);
+  const attachmentOcrSummary =
+    attachments.length > 0 && config.visionEnabled
+      ? await extractIntentAttachmentOcrSummary(
+          {
+            requestInput: input.input,
+            targetUrlHint: input.targetUrlHint,
+            attachments,
+          },
+          runtimeOverrides,
+          signal
+        ).catch(() => EMPTY_INTENT_ATTACHMENT_OCR_SUMMARY)
+      : EMPTY_INTENT_ATTACHMENT_OCR_SUMMARY;
   const card = normalizeScenarioCard(
-    await callLLMStructured<ScenarioCard>(
-      {
-        prompt: buildScenarioCardPrompt(input, config.maxPlanSteps),
-        systemPrompt: 'You convert loose user intent into a strict ScenarioCard JSON for an AI-driven Playwright E2E system.',
-        schemaName: 'scenario_card',
-        schema: buildScenarioCardSchema(config.maxPlanSteps),
-        imageDataUrls: attachments.map((item) => item.dataUrl),
-        temperature: 0.1,
-        maxOutputTokens: 1800,
-      },
-      runtimeOverrides,
-      signal
+    applyIntentAttachmentOcrSummary(
+      await callLLMStructured<ScenarioCard>(
+        {
+          prompt: buildScenarioCardPrompt(input, config.maxPlanSteps, attachmentOcrSummary),
+          systemPrompt: 'You convert loose user intent into a strict ScenarioCard JSON for an AI-driven Playwright E2E system.',
+          schemaName: 'scenario_card',
+          schema: buildScenarioCardSchema(config.maxPlanSteps),
+          imageDataUrls: attachments.map((item) => item.dataUrl),
+          temperature: 0.1,
+          maxOutputTokens: 1800,
+        },
+        runtimeOverrides,
+        signal
+      ),
+      attachmentOcrSummary
     ),
     input.targetUrlHint || ''
   );

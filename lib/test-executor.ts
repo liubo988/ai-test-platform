@@ -2,6 +2,7 @@ import { fork, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { Script } from 'node:vm';
 import type { BrowserContextOptions } from 'playwright';
 import { broadcastFrame } from './screencast-manager';
 import { normalizeExecutableTestCode } from './test-code-normalizer';
@@ -141,6 +142,17 @@ function containsTypeScriptOnlySyntax(code: string): boolean {
 export function prepareTestCodeForExecution(code: string): string {
   const normalizedCode = normalizeExecutableTestCode(code);
   return containsTypeScriptOnlySyntax(normalizedCode) ? tsToJs(normalizedCode) : normalizedCode;
+}
+
+export function getTestCodeSyntaxError(code: string, contextLabel = 'generated code'): string {
+  try {
+    new Script(prepareTestCodeForExecution(code), {
+      filename: `${contextLabel}.generated.js`,
+    });
+    return '';
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error || '未知错误');
+  }
 }
 
 export function renderWorkerCodeForExecution(template: string, executableCode: string): string {

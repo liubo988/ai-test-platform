@@ -32,6 +32,13 @@ export type LLMConfigDraft = {
   providerImplemented: boolean;
 };
 
+export type LLMConfigTestResponse = {
+  ok: boolean;
+  llm: PublicLLMConfig;
+  outputPreview: string;
+  durationMs: number;
+};
+
 export const defaultLlmConfigDraft: LLMConfigDraft = {
   provider: 'openai',
   model: '',
