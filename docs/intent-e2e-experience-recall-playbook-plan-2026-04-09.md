@@ -217,7 +217,7 @@
 当前阶段状态：
 
 - `E1`：已完成（MVP）
-- `E2`：已完成首刀（candidate-only，不自动写入 registry）
+- `E2`：已完成（project-scoped recipe promotion / merge；不做 knowledge draft 双写）
 - `E3`：已完成（run 终态后异步补写 review）
 - `E4`：未开始（可选）
 
@@ -617,3 +617,51 @@ Hermes 的 `skill_manage` 更适合通用 agent 的自由技能沉淀；当前�
 - 下一步：
   - 优先把 `E2 candidate -> registry / knowledge draft` 的 promotion 与回滚治理打通。
   - 再补 benchmark / holdout 回放，验证 recall + async review 的真实收益。
+
+## 2026-04-09 第二刀回写（E2 project-scoped recipe promotion 已落地）
+
+- 本轮目标：
+  - 严格按本文只完成 `E2` 的最小闭环：
+    - 把 `intent-project-recipe-registry` 补成真正的 `project-aware` 资产读写
+    - 把 `playbookCandidates` 接到现有项目 `recipe merge` 治理链路
+  - 不扩 `E4 OCR`，不新增 DB schema，不新增 route，不为 playbook 再造第二套治理流。
+- 已完成：
+  - 新增 `lib/intent-e2e-playbook.ts`，把 `playbook candidate` 受控转换为 `IntentProjectRecipeMergeInput[]`。
+  - 在 `lib/intent-project-recipe-registry.ts` 接入 `resolveProjectScopedIntentAssetStorage(...)`，让项目 recipe 的 registry / backup / audit 都落到项目作用域；项目上下文下不再继续写全局 legacy 文件。
+  - 在 `lib/intent-recipe-registry.ts`、`lib/test-generator.ts`、`lib/intent-project-recipe-governance.ts` 透传 `projectUid`，让 planning / governance 只消费当前项目 recipe。
+  - 在 `app/api/projects/[projectUid]/intent-recipes/**` 改为显式走项目作用域 registry / backup / audit path，复用现有 merge / restore / audit 流程，不新增 route。
+  - 在 `components/IntentE2EWorkbench.tsx` 为“运行复盘 -> Playbook Candidates”补充“沉淀到项目 Recipe”入口，直接复用现有 `/api/projects/[projectUid]/intent-recipes` merge 能力。
+  - 在 `lib/intent-e2e-run-review.ts` 修正 `#/hash-route` 归一化，避免 `playbook / run review` 把 `#/business/createbusiness` 误退化成 `/`，影响 recipe 命中。
+  - 补齐：
+    - `tests/unit/intent-e2e-playbook.spec.ts`
+    - `tests/unit/intent-project-recipe-registry.spec.ts`
+    - `tests/unit/api-project-intent-recipes-route.spec.ts`
+    - `tests/unit/api-project-intent-recipes-backups-route.spec.ts`
+    - `tests/unit/api-project-intent-recipes-backup-restore-route.spec.ts`
+    - `tests/unit/api-project-intent-recipes-audits-route.spec.ts`
+    - `tests/unit/intent-recipe-registry.spec.ts`
+    - `tests/unit/intent-project-recipe-governance.spec.ts`
+    - `tests/unit/test-generator.spec.ts`
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-playbook.spec.ts tests/unit/intent-project-recipe-registry.spec.ts tests/unit/api-project-intent-recipes-route.spec.ts tests/unit/api-project-intent-recipes-backups-route.spec.ts tests/unit/api-project-intent-recipes-backup-restore-route.spec.ts tests/unit/api-project-intent-recipes-audits-route.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/intent-project-recipe-governance.spec.ts`
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - `npm run build:web`
+  - `node scripts/check-doc-links.mjs`
+  - 结果：
+    - `9` 个测试文件通过，`119/119 passed`
+    - `build` 通过
+    - `build:web` 通过
+    - 文档链接校验通过
+- 当前阶段状态：
+  - `E1`：已完成（MVP）
+  - `E2`：已完成（project-scoped recipe promotion / merge）
+  - `E3`：已完成（run 终态后异步补写 review）
+  - `E4`：未开始（可选）
+- 风险 / 未完成：
+  - 本轮只把 `playbook candidate -> project recipe merge` 打通，没有把同一批 candidate 再双写到 `knowledge draft`；知识仍继续复用现有 `successful run knowledgeCandidates` 入口。
+  - `playbook promotion` 当前仍是 workbench 上的人工触发，不做自动发布。
+  - 当前还没有新增 benchmark / holdout 回放数据，无法量化 `E2` promotion 对真实首过率的提升幅度。
+- 下一步：
+  - 优先补 benchmark / holdout 回放，验证 `E1 recall + E2 recipe promotion + E3 async review` 的真实收益。
+  - 若后续证据显示 verifier / detail hints 仍有明显空缺，再按 typed 结构把少量 playbook 经验补进 `knowledge draft`，而不是直接做双写。

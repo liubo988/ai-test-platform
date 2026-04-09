@@ -54,6 +54,7 @@ export interface IntentRecipeRegistry {
 
 export interface SelectIntentRecipeRegistryInput {
   dsl: IntentActionDSL;
+  projectUid?: string;
   auth?: AuthConfig;
   snapshot: Pick<PageSnapshot, 'url' | 'title' | 'frames'>;
   priorityScenarioFamily?: IntentE2EPriorityScenarioFamily;
@@ -452,7 +453,8 @@ export function listBuiltinIntentRecipes(
 }
 
 export function listIntentRecipes(
-  performanceBySlug: Record<string, IntentRecipePerformanceFeedback> = {}
+  performanceBySlug: Record<string, IntentRecipePerformanceFeedback> = {},
+  projectUid = ''
 ): IntentRecipe[] {
   const recipesBySlug = new Map<string, IntentRecipe>();
 
@@ -460,7 +462,7 @@ export function listIntentRecipes(
     recipesBySlug.set(recipe.slug, recipe);
   }
 
-  for (const recipe of listIntentProjectRecipes().map((item) =>
+  for (const recipe of listIntentProjectRecipes(projectUid).map((item) =>
     applyIntentRecipePerformanceFeedback(item, performanceBySlug[item.slug])
   )) {
     recipesBySlug.set(recipe.slug, recipe);
@@ -477,7 +479,7 @@ export function selectIntentRecipeRegistry(input: SelectIntentRecipeRegistryInpu
 
   return {
     version: 1,
-    items: listIntentRecipes(input.performanceBySlug)
+    items: listIntentRecipes(input.performanceBySlug, input.projectUid)
       .map((recipe) => scoreIntentRecipe(recipe, input, haystack, allowedActions, preferredHelpers, sharedVariables))
       .filter((item): item is IntentMatchedRecipe => Boolean(item))
       .sort(

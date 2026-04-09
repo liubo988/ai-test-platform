@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildIntentActionDSL } from '@/lib/intent-action-dsl';
 import {
   createIntentProjectRecipeAuditEntry,
+  getIntentProjectRecipeBackupDir,
   getIntentProjectRecipeProfile,
+  getIntentProjectRecipeRegistryPath,
   listIntentProjectRecipeAuditEntries,
   listIntentProjectRecipeBackups,
   mergeIntentProjectRecipes,
@@ -22,15 +24,18 @@ let tempDir = '';
 let recipeFile = '';
 let backupDir = '';
 let auditFile = '';
+let projectAssetRoot = '';
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'intent-project-recipes-'));
   recipeFile = path.join(tempDir, 'project-recipes.json');
   backupDir = path.join(tempDir, 'backups');
   auditFile = path.join(tempDir, 'project-recipes.audit.jsonl');
+  projectAssetRoot = path.join(tempDir, 'projects');
   process.env.INTENT_E2E_PROJECT_RECIPE_REGISTRY_PATH = recipeFile;
   process.env.INTENT_E2E_PROJECT_RECIPE_BACKUP_DIR = backupDir;
   process.env.INTENT_E2E_PROJECT_RECIPE_AUDIT_PATH = auditFile;
+  process.env.INTENT_E2E_PROJECT_ASSET_ROOT = projectAssetRoot;
   resetIntentProjectRecipeCache();
 });
 
@@ -38,6 +43,7 @@ afterEach(() => {
   delete process.env.INTENT_E2E_PROJECT_RECIPE_REGISTRY_PATH;
   delete process.env.INTENT_E2E_PROJECT_RECIPE_BACKUP_DIR;
   delete process.env.INTENT_E2E_PROJECT_RECIPE_AUDIT_PATH;
+  delete process.env.INTENT_E2E_PROJECT_ASSET_ROOT;
   resetIntentProjectRecipeCache();
   if (tempDir) {
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -81,6 +87,49 @@ describe('intent-project-recipe-registry', () => {
         targetUrlIncludes: ['/checkout'],
       },
     });
+  });
+
+  it('writes recipes into project-scoped registry paths without polluting legacy global profile', async () => {
+    const projectRegistryPath = getIntentProjectRecipeRegistryPath({
+      projectUid: 'proj_alpha',
+      mode: 'write',
+      legacyFallback: false,
+    });
+    const projectBackupDir = getIntentProjectRecipeBackupDir('proj_alpha');
+
+    const result = await registerIntentProjectRecipes(
+      [
+        {
+          version: 1,
+          slug: 'custom.project-alpha',
+          title: '项目 Alpha 稳定链',
+          description: '仅作用于 proj_alpha 的稳定 recipe。',
+          family: 'business_create_list_verify',
+          matchers: {
+            targetUrlIncludes: ['/alpha'],
+          },
+          requiredContext: ['仅在 Alpha 项目中使用'],
+          executorPlan: ['先走 Alpha 固定流程'],
+          verifierPlan: ['再做 Alpha 结果验收'],
+          knownPitfalls: [],
+          successRate: 100,
+          lastVerifiedAt: '2026-04-09T12:30:00.000Z',
+        },
+      ],
+      projectRegistryPath,
+      projectBackupDir,
+      getIntentProjectRecipeRegistryPath('proj_alpha')
+    );
+
+    expect(result.writtenTo).toBe(projectRegistryPath);
+    expect(getIntentProjectRecipeProfile('proj_alpha').recipes).toHaveLength(1);
+    expect(getIntentProjectRecipeProfile('proj_alpha').recipes[0]).toMatchObject({
+      slug: 'custom.project-alpha',
+      family: 'business_create_list_verify',
+    });
+    expect(getIntentProjectRecipeProfile('proj_beta').recipes).toHaveLength(0);
+    expect(getIntentProjectRecipeProfile().recipes).toHaveLength(0);
+    expect(fs.existsSync(projectRegistryPath)).toBe(true);
   });
 
   it('prefers project-persisted recipe overrides over builtin definitions', async () => {
@@ -181,6 +230,108 @@ describe('intent-project-recipe-registry', () => {
     );
 
     expect(planning.recipes?.map((item) => item.recipe.slug)).toContain('custom.checkout-submit');
+  });
+
+  it('only injects scoped project recipes into matching project planning context', async () => {
+    const projectRegistryPath = getIntentProjectRecipeRegistryPath({
+      projectUid: 'proj_alpha',
+      mode: 'write',
+      legacyFallback: false,
+    });
+    await registerIntentProjectRecipes(
+      [
+        {
+          version: 1,
+          slug: 'custom.project-alpha',
+          title: '项目 Alpha 稳定链',
+          description: 'proj_alpha 专用 recipe。',
+          family: 'list_search_detail',
+          matchers: {
+            targetUrlIncludes: ['/checkout'],
+            summaryIncludes: ['成功页'],
+          },
+          requiredContext: [],
+          executorPlan: ['仅在 Alpha 项目生效'],
+          verifierPlan: ['只对 Alpha 项目注入'],
+          knownPitfalls: [],
+          successRate: 100,
+          lastVerifiedAt: '2026-04-09T12:40:00.000Z',
+        },
+      ],
+      projectRegistryPath,
+      getIntentProjectRecipeBackupDir('proj_alpha'),
+      getIntentProjectRecipeRegistryPath('proj_alpha')
+    );
+
+    const scopedPlanning = resolveIntentPromptPlanningContext(
+      {
+        url: 'https://example.com/checkout',
+        title: 'Checkout',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: 'Checkout' }],
+        screenshot: '',
+      },
+      '填写手机号后提交订单，并确认成功页出现',
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://example.com/checkout',
+        expectedOutcome: '成功页出现',
+        scenarioSummary: '打开结算页 -> 提交订单 -> 验证成功页',
+        scenarioSteps: [
+          {
+            stepUid: 'step_1',
+            stepType: 'ui',
+            title: '提交订单',
+            target: 'https://example.com/checkout',
+            instruction: '点击提交订单并等待成功页',
+            expectedResult: '成功页出现',
+            extractVariable: '',
+          },
+        ],
+      },
+      {
+        projectUid: 'proj_alpha',
+      }
+    );
+    const otherPlanning = resolveIntentPromptPlanningContext(
+      {
+        url: 'https://example.com/checkout',
+        title: 'Checkout',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: 'Checkout' }],
+        screenshot: '',
+      },
+      '填写手机号后提交订单，并确认成功页出现',
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://example.com/checkout',
+        expectedOutcome: '成功页出现',
+        scenarioSummary: '打开结算页 -> 提交订单 -> 验证成功页',
+        scenarioSteps: [
+          {
+            stepUid: 'step_1',
+            stepType: 'ui',
+            title: '提交订单',
+            target: 'https://example.com/checkout',
+            instruction: '点击提交订单并等待成功页',
+            expectedResult: '成功页出现',
+            extractVariable: '',
+          },
+        ],
+      },
+      {
+        projectUid: 'proj_beta',
+      }
+    );
+
+    expect(scopedPlanning.recipes?.map((item) => item.recipe.slug)).toContain('custom.project-alpha');
+    expect(otherPlanning.recipes?.map((item) => item.recipe.slug)).not.toContain('custom.project-alpha');
   });
 
   it('merges partial recipe updates without dropping existing fields', async () => {

@@ -6,6 +6,7 @@ vi.mock('@/lib/db/bootstrap', () => ({
 }));
 
 vi.mock('@/lib/intent-project-recipe-registry', () => ({
+  getIntentProjectRecipeAuditPath: vi.fn(),
   listIntentProjectRecipeAuditEntries: vi.fn(),
 }));
 
@@ -22,7 +23,10 @@ vi.mock('@/lib/server/project-actor', () => ({
 
 import { GET } from '../../app/api/projects/[projectUid]/intent-recipes/audits/route';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
-import { listIntentProjectRecipeAuditEntries } from '@/lib/intent-project-recipe-registry';
+import {
+  getIntentProjectRecipeAuditPath,
+  listIntentProjectRecipeAuditEntries,
+} from '@/lib/intent-project-recipe-registry';
 import { applyActorCookie, requireProjectRole } from '@/lib/server/project-actor';
 
 describe('project intent recipes audits route', () => {
@@ -32,6 +36,7 @@ describe('project intent recipes audits route', () => {
       actor: { userUid: 'user_1', displayName: 'bobo' },
       membership: { role: 'viewer' },
     } as never);
+    vi.mocked(getIntentProjectRecipeAuditPath).mockReturnValue('reports/intent-e2e/projects/proj_1/intent-e2e.project-recipes.audit.jsonl');
     vi.mocked(listIntentProjectRecipeAuditEntries).mockResolvedValue({
       auditLogPath: 'reports/intent-e2e.project-recipes.audit.jsonl',
       items: [],
@@ -44,7 +49,11 @@ describe('project intent recipes audits route', () => {
 
     expect(ensureDbBootstrap).toHaveBeenCalledTimes(1);
     expect(requireProjectRole).toHaveBeenCalledWith(req, 'proj_1', ['owner', 'editor', 'viewer'], '当前操作者没有权限查看项目 recipe 审计');
-    expect(listIntentProjectRecipeAuditEntries).toHaveBeenCalledWith(7, 'proj_1');
+    expect(listIntentProjectRecipeAuditEntries).toHaveBeenCalledWith(
+      7,
+      'proj_1',
+      'reports/intent-e2e/projects/proj_1/intent-e2e.project-recipes.audit.jsonl'
+    );
     expect(applyActorCookie).toHaveBeenCalledTimes(1);
     expect(res.status).toBe(200);
   });

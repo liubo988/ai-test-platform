@@ -7,6 +7,9 @@ vi.mock('@/lib/db/bootstrap', () => ({
 
 vi.mock('@/lib/intent-project-recipe-registry', () => ({
   createIntentProjectRecipeAuditEntry: vi.fn(),
+  getIntentProjectRecipeAuditPath: vi.fn(),
+  getIntentProjectRecipeBackupDir: vi.fn(),
+  getIntentProjectRecipeRegistryPath: vi.fn(),
   restoreIntentProjectRecipeBackup: vi.fn(),
   writeIntentProjectRecipeAuditEntry: vi.fn(),
 }));
@@ -26,6 +29,9 @@ import { POST } from '../../app/api/projects/[projectUid]/intent-recipes/backups
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import {
   createIntentProjectRecipeAuditEntry,
+  getIntentProjectRecipeAuditPath,
+  getIntentProjectRecipeBackupDir,
+  getIntentProjectRecipeRegistryPath,
   restoreIntentProjectRecipeBackup,
   writeIntentProjectRecipeAuditEntry,
 } from '@/lib/intent-project-recipe-registry';
@@ -58,6 +64,9 @@ describe('project intent recipes backup restore route', () => {
       actor: { userUid: 'user_1', displayName: 'bobo' },
       membership: { role: 'owner' },
     } as never);
+    vi.mocked(getIntentProjectRecipeRegistryPath).mockReturnValue('reports/intent-e2e/projects/proj_1/intent-e2e.project-recipes.json');
+    vi.mocked(getIntentProjectRecipeBackupDir).mockReturnValue('reports/intent-e2e/projects/proj_1/intent-e2e.project-recipes.backups');
+    vi.mocked(getIntentProjectRecipeAuditPath).mockReturnValue('reports/intent-e2e/projects/proj_1/intent-e2e.project-recipes.audit.jsonl');
     vi.mocked(restoreIntentProjectRecipeBackup).mockResolvedValue({
       restoredFrom: 'reports/intent-e2e.project-recipes.backups/backup.json',
       writtenTo: 'intent-e2e.project-recipes.json',
@@ -87,7 +96,12 @@ describe('project intent recipes backup restore route', () => {
 
     expect(ensureDbBootstrap).toHaveBeenCalledTimes(1);
     expect(requireProjectRole).toHaveBeenCalledWith(req, 'proj_1', ['owner', 'editor'], '当前操作者没有权限恢复项目 recipe 备份');
-    expect(restoreIntentProjectRecipeBackup).toHaveBeenCalledWith('reports/intent-e2e.project-recipes.backups/backup.json');
+    expect(restoreIntentProjectRecipeBackup).toHaveBeenCalledWith(
+      'reports/intent-e2e.project-recipes.backups/backup.json',
+      'reports/intent-e2e/projects/proj_1/intent-e2e.project-recipes.json',
+      'reports/intent-e2e/projects/proj_1/intent-e2e.project-recipes.backups',
+      'reports/intent-e2e/projects/proj_1/intent-e2e.project-recipes.json'
+    );
     expect(createIntentProjectRecipeAuditEntry).toHaveBeenCalledWith(
       expect.objectContaining({
         operation: 'restore',
@@ -98,7 +112,10 @@ describe('project intent recipes backup restore route', () => {
         }),
       })
     );
-    expect(writeIntentProjectRecipeAuditEntry).toHaveBeenCalledTimes(1);
+    expect(writeIntentProjectRecipeAuditEntry).toHaveBeenCalledWith(
+      expect.any(Object),
+      'reports/intent-e2e/projects/proj_1/intent-e2e.project-recipes.audit.jsonl'
+    );
     expect(applyActorCookie).toHaveBeenCalledTimes(1);
     expect(res.status).toBe(200);
   });

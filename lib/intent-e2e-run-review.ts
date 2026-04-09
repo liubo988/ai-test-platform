@@ -116,7 +116,10 @@ function normalizeTargetPath(value: string): string {
   try {
     const url = raw.startsWith('http://') || raw.startsWith('https://') ? new URL(raw) : new URL(raw, 'https://intent.local');
     if (url.protocol === 'about:') return raw;
-    return url.pathname || '/';
+    const hash = (url.hash || '').replace(/^#/, '').trim();
+    const hashPart = hash && hash !== '/' ? (hash.startsWith('/') ? hash : `/${hash}`) : '';
+    const pathPart = url.pathname && url.pathname !== '/' ? url.pathname : '';
+    return hashPart || pathPart || '/';
   } catch {
     return raw.replace(/[?#].*$/, '');
   }

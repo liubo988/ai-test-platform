@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import {
   createIntentProjectRecipeAuditEntry,
+  getIntentProjectRecipeAuditPath,
+  getIntentProjectRecipeBackupDir,
+  getIntentProjectRecipeRegistryPath,
   restoreIntentProjectRecipeBackup,
   writeIntentProjectRecipeAuditEntry,
 } from '@/lib/intent-project-recipe-registry';
@@ -15,7 +18,16 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ projectUid
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
     const backupPath = typeof body.backupPath === 'string' ? body.backupPath.trim() : '';
 
-    const result = await restoreIntentProjectRecipeBackup(backupPath || null);
+    const result = await restoreIntentProjectRecipeBackup(
+      backupPath || null,
+      getIntentProjectRecipeRegistryPath({
+        projectUid,
+        mode: 'write',
+        legacyFallback: false,
+      }),
+      getIntentProjectRecipeBackupDir(projectUid),
+      getIntentProjectRecipeRegistryPath(projectUid)
+    );
     let auditEntry = createIntentProjectRecipeAuditEntry({
       operation: 'restore',
       projectUid,
@@ -34,7 +46,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ projectUid
     let auditWarning = '';
 
     try {
-      auditEntry = await writeIntentProjectRecipeAuditEntry(auditEntry);
+      auditEntry = await writeIntentProjectRecipeAuditEntry(auditEntry, getIntentProjectRecipeAuditPath(projectUid));
     } catch (error: unknown) {
       auditWarning = error instanceof Error ? error.message : '写入项目 recipe 审计失败';
     }

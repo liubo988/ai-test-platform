@@ -15570,3 +15570,70 @@
 - 下一步：
   - 优先把 `E2 candidate -> registry / knowledge draft` 的 promotion 和回滚治理打通。
   - 再补 benchmark / holdout 回放，验证 recall + async review 的真实收益。
+
+## 2026-04-09 第二百三十七次更新（后续专项第三刀：E2 project-scoped recipe promotion 已落地）
+
+- 本轮目标：
+  - 严格按 [docs/intent-e2e-experience-recall-playbook-plan-2026-04-09.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-experience-recall-playbook-plan-2026-04-09.md) 只完成 `E2` 的最小闭环：
+    - 把 `intent-project-recipe-registry` 补成真正的 `project-aware` 资产读写
+    - 把 `playbookCandidates` 接到现有项目 `recipe merge` 治理链路
+  - 不新增 DB schema，不新增 route，不为 playbook 再造第二套治理流，不做 `knowledge draft` 双写。
+- 已完成：
+  - 新增 [lib/intent-e2e-playbook.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-playbook.ts)，把 `playbook candidate` 受控转换为 `IntentProjectRecipeMergeInput[]`。
+  - 在 [lib/intent-project-recipe-registry.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-project-recipe-registry.ts)：
+    - 接入 `resolveProjectScopedIntentAssetStorage(...)`
+    - 让项目 recipe 的 registry / backup / audit 都进入项目作用域
+    - 为 merge / register / update / restore 暴露显式 path 参数，复用现有回滚与审计治理
+  - 在 [lib/intent-recipe-registry.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-recipe-registry.ts)、[lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts)、[lib/intent-project-recipe-governance.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-project-recipe-governance.ts) 透传 `projectUid`，让 planning / governance 只加载当前项目 recipe。
+  - 在 [app/api/projects/[projectUid]/intent-recipes/route.ts](/Users/xiaolongbao/Workspace/ai-test/app/api/projects/[projectUid]/intent-recipes/route.ts)、[app/api/projects/[projectUid]/intent-recipes/backups/route.ts](/Users/xiaolongbao/Workspace/ai-test/app/api/projects/[projectUid]/intent-recipes/backups/route.ts)、[app/api/projects/[projectUid]/intent-recipes/backups/restore/route.ts](/Users/xiaolongbao/Workspace/ai-test/app/api/projects/[projectUid]/intent-recipes/backups/restore/route.ts)、[app/api/projects/[projectUid]/intent-recipes/audits/route.ts](/Users/xiaolongbao/Workspace/ai-test/app/api/projects/[projectUid]/intent-recipes/audits/route.ts) 显式走项目作用域 path，继续复用现有 merge / restore / audit 流程。
+  - 在 [components/IntentE2EWorkbench.tsx](/Users/xiaolongbao/Workspace/ai-test/components/IntentE2EWorkbench.tsx) 为“运行复盘 -> Playbook Candidates”补充“沉淀到项目 Recipe”入口，直接调用现有项目 recipe merge API。
+  - 在 [lib/intent-e2e-run-review.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-run-review.ts) 修正 `#/hash-route` 归一化，避免 `playbook / run review` 把 `#/business/createbusiness` 误退化成 `/`，影响 recipe 命中。
+  - 补齐回归：
+    - [tests/unit/intent-e2e-playbook.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-playbook.spec.ts)
+    - [tests/unit/intent-project-recipe-registry.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-project-recipe-registry.spec.ts)
+    - [tests/unit/api-project-intent-recipes-route.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/api-project-intent-recipes-route.spec.ts)
+    - [tests/unit/api-project-intent-recipes-backups-route.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/api-project-intent-recipes-backups-route.spec.ts)
+    - [tests/unit/api-project-intent-recipes-backup-restore-route.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/api-project-intent-recipes-backup-restore-route.spec.ts)
+    - [tests/unit/api-project-intent-recipes-audits-route.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/api-project-intent-recipes-audits-route.spec.ts)
+    - [tests/unit/intent-recipe-registry.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-recipe-registry.spec.ts)
+    - [tests/unit/intent-project-recipe-governance.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-project-recipe-governance.spec.ts)
+    - [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts)
+- 验证：
+  - 执行：
+    - `npx vitest run tests/unit/intent-e2e-playbook.spec.ts tests/unit/intent-project-recipe-registry.spec.ts tests/unit/api-project-intent-recipes-route.spec.ts tests/unit/api-project-intent-recipes-backups-route.spec.ts tests/unit/api-project-intent-recipes-backup-restore-route.spec.ts tests/unit/api-project-intent-recipes-audits-route.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/intent-project-recipe-governance.spec.ts`
+    - `npx vitest run tests/unit/test-generator.spec.ts`
+    - `npm run build`
+    - `npm run build:web`
+    - `node scripts/check-doc-links.mjs`
+    - `node scripts/check-roadmap-progress.mjs`
+  - 结果：
+    - `9` 个测试文件通过，`119/119 passed`
+    - `build` 通过
+    - `build:web` 通过
+    - 文档链接校验通过
+    - roadmap 进度校验通过
+- 当前结果：
+  - `playbook candidate` 现在可以在项目上下文下直接进入现有 `recipe merge / audit / backup / restore` 治理链路，不再停留在只展示不落库的状态。
+  - planning / governance 现在只会加载当前项目 recipe，避免一个项目沉淀的 playbook 污染其它项目。
+  - `#/hash-route` 目标路径不再被错误归一化成 `/`，减少 `playbook -> recipe` 命中链路中的路径退化。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成（MVP）
+    - `E2`：已完成（project-scoped recipe promotion / merge）
+    - `E3`：已完成（run 终态后异步补写 review）
+    - `E4`：未开始
+- 风险 / 未完成：
+  - 本轮没有把同一批 `playbook candidate` 再同步到 `knowledge draft`；知识仍继续复用现有 `successful run knowledgeCandidates` 入口。
+  - `playbook promotion` 当前仍是 workbench 上的人工触发，不做自动 promotion。
+  - 还没有 benchmark / holdout 回放数据，暂时无法量化 `E2` promotion 的真实收益。
+- 下一步：
+  - 先补 benchmark / holdout 回放，验证 `E1 recall + E2 recipe promotion + E3 async review` 的真实收益。
+  - 如果后续证据显示 verifier / detail hints 仍有明显缺口，再按 typed 结构把少量 playbook 经验补进 `knowledge draft`，而不是直接做双写。

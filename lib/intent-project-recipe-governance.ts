@@ -474,8 +474,8 @@ async function loadIntentProjectRecipeGovernanceContext(
   options: ListIntentProjectRecipeGovernanceDecisionsOptions = {}
 ): Promise<IntentProjectRecipeGovernanceContext> {
   const runLimit = Math.max(1, Math.min(200, Math.floor(options.runLimit || 50)));
-  const profile = getIntentProjectRecipeProfile();
   const projectUid = normalizeString(options.projectUid);
+  const profile = getIntentProjectRecipeProfile(projectUid);
   const [performanceBySlug, insights] = await Promise.all([
     getIntentE2ERecipePerformanceMap({
       projectUid,

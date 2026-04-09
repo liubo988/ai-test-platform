@@ -53,6 +53,7 @@ import {
   normalizeIntentVerificationFailurePressureViewSummary,
   summarizeIntentVerificationFailurePressureViewSummaryFromItems,
 } from '@/lib/intent-verification-failure-pressure-view';
+import { buildIntentProjectRecipeMergeInputsFromPlaybookCandidates } from '@/lib/intent-e2e-playbook';
 import { buildWorkspaceProjectPath } from '@/lib/workspace-platform-query-state';
 import { buildIntentE2EPromotionCoverageSummary } from '@/lib/intent-e2e-promotion-coverage';
 import type { IntentSuccessfulRunKnowledgePromotionReceipt } from '@/lib/intent-successful-run-knowledge-promotion-receipt';
@@ -559,6 +560,20 @@ type IntentRunResponse = {
 type IntentRunCancelResponse = {
   ok: boolean;
   run: IntentRunRecord | null;
+  error?: string;
+};
+
+type ProjectIntentRecipeMutationResponse = {
+  mode: 'merge' | 'register' | 'update';
+  result: {
+    writtenTo: string;
+    backupPath?: string | null;
+    addedRecipeSlugs: string[];
+    updatedRecipeSlugs: string[];
+    skippedRecipeSlugs: string[];
+  };
+  auditWarning?: string;
+  rolloutWarning?: string;
   error?: string;
 };
 
@@ -4169,6 +4184,26 @@ async function fetchIntentRunRecord(runId: string): Promise<IntentRunRecord> {
   return json.run;
 }
 
+async function mergeProjectRecipesFromPlaybookCandidates(
+  projectUid: string,
+  candidates: IntentPlaybookCandidate[]
+): Promise<ProjectIntentRecipeMutationResponse> {
+  const recipes = buildIntentProjectRecipeMergeInputsFromPlaybookCandidates(candidates);
+  const res = await fetch(`/api/projects/${encodeURIComponent(projectUid)}/intent-recipes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      mode: 'merge',
+      recipes,
+    }),
+  });
+  const json = (await res.json().catch(() => null)) as ProjectIntentRecipeMutationResponse | null;
+  if (!res.ok || !json?.result) {
+    throw new Error(json?.error || '沉淀 playbook 到项目 recipe 失败');
+  }
+  return json;
+}
+
 const INTENT_RUN_REVIEW_POLL_INTERVAL_MS = 250;
 const INTENT_RUN_REVIEW_POLL_MAX_ATTEMPTS = 5;
 
@@ -4600,6 +4635,9 @@ export default function IntentE2EWorkbench({
   const [starterCapabilitySaving, setStarterCapabilitySaving] = useState(false);
   const [starterCapabilitySaveError, setStarterCapabilitySaveError] = useState('');
   const [starterCapabilitySaveNotice, setStarterCapabilitySaveNotice] = useState('');
+  const [playbookPromotionSaving, setPlaybookPromotionSaving] = useState(false);
+  const [playbookPromotionError, setPlaybookPromotionError] = useState('');
+  const [playbookPromotionNotice, setPlaybookPromotionNotice] = useState('');
   const streamAbortRef = useRef<AbortController | null>(null);
   const workspaceTaskNamePrefillRunIdRef = useRef('');
   const launchFormHydratedRunIdRef = useRef('');
@@ -4666,6 +4704,12 @@ export default function IntentE2EWorkbench({
     workspaceProjectUid ||
     searchWorkspaceProjectUid.trim();
   const failureProjectUid = displayAssetReadiness?.projectUid || workspaceProjectUid || searchWorkspaceProjectUid.trim();
+  const playbookPromotionProjectUid =
+    workspaceProjectUid.trim() ||
+    searchWorkspaceProjectUid.trim() ||
+    displayAssetReadiness?.projectUid ||
+    displayLaunchDecision?.signals?.projectUid ||
+    '';
   const projectReturnHref = useMemo(() => {
     const sourceProjectUid = searchWorkspaceProjectUid.trim() || initialWorkspaceProjectUid.trim();
     const sourceModuleUid = searchWorkspaceModuleUid.trim() || initialWorkspaceModuleUid.trim();
@@ -7237,11 +7281,44 @@ export default function IntentE2EWorkbench({
     setStreamState(createEmptyStreamState());
     setWorkspaceSaveError('');
     setWorkspaceSaveResult(null);
+    setPlaybookPromotionError('');
+    setPlaybookPromotionNotice('');
     if (!options?.keepRunId) {
       setActiveRunId('');
       workspaceTaskNamePrefillRunIdRef.current = '';
     }
   }, []);
+
+  const promotePlaybookCandidates = useCallback(async () => {
+    const projectUid = playbookPromotionProjectUid.trim();
+    const candidates = displayReview?.playbookCandidates || [];
+    if (!projectUid || candidates.length === 0) {
+      return;
+    }
+
+    setPlaybookPromotionSaving(true);
+    setPlaybookPromotionError('');
+    setPlaybookPromotionNotice('');
+    try {
+      const response = await mergeProjectRecipesFromPlaybookCandidates(projectUid, candidates);
+      const totalChanged = (response.result.addedRecipeSlugs?.length || 0) + (response.result.updatedRecipeSlugs?.length || 0);
+      const skippedCount = response.result.skippedRecipeSlugs?.length || 0;
+      setPlaybookPromotionNotice(
+        [
+          `已写入 ${totalChanged} 条 project recipe`,
+          skippedCount > 0 ? `跳过 ${skippedCount} 条` : '',
+          response.result.writtenTo ? `目标：${response.result.writtenTo}` : '',
+          response.auditWarning ? `audit：${response.auditWarning}` : '',
+        ]
+          .filter(Boolean)
+          .join('；')
+      );
+    } catch (error: unknown) {
+      setPlaybookPromotionError(error instanceof Error ? error.message : '沉淀 playbook 到项目 recipe 失败');
+    } finally {
+      setPlaybookPromotionSaving(false);
+    }
+  }, [displayReview, playbookPromotionProjectUid]);
 
   useEffect(() => {
     if (embedded || typeof window === 'undefined' || !restoreChecked) return;
@@ -12833,10 +12910,33 @@ export default function IntentE2EWorkbench({
                   {displayReview.playbookCandidates.length > 0 && (
                     <div className="mt-4">
                       <div className="flex items-center justify-between gap-3">
-                        <p className="text-sm font-medium text-slate-900">Playbook Candidates</p>
-                        <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-medium text-emerald-700">
-                          {displayReview.playbookCandidates.length} 条
-                        </span>
+                        <div className="flex items-center gap-3">
+                          <p className="text-sm font-medium text-slate-900">Playbook Candidates</p>
+                          <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-medium text-emerald-700">
+                            {displayReview.playbookCandidates.length} 条
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={promotePlaybookCandidates}
+                          disabled={!playbookPromotionProjectUid || playbookPromotionSaving}
+                          className={`inline-flex items-center rounded-full px-3 py-1 text-[11px] font-medium transition ${
+                            !playbookPromotionProjectUid || playbookPromotionSaving
+                              ? 'cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400'
+                              : 'border border-slate-300 bg-white text-slate-700 hover:border-slate-400 hover:text-slate-900'
+                          }`}
+                        >
+                          {playbookPromotionSaving ? '沉淀中…' : '沉淀到项目 Recipe'}
+                        </button>
+                      </div>
+                      <div className="mt-2 space-y-1 text-[11px] leading-5 text-slate-500">
+                        {playbookPromotionProjectUid ? (
+                          <p>目标项目：{playbookPromotionProjectUid}</p>
+                        ) : (
+                          <p>当前没有项目上下文，暂时无法把 playbook candidate 沉淀到项目 recipe。</p>
+                        )}
+                        {playbookPromotionNotice ? <p className="text-emerald-700">{playbookPromotionNotice}</p> : null}
+                        {playbookPromotionError ? <p className="text-rose-600">{playbookPromotionError}</p> : null}
                       </div>
                       <div className="mt-3 space-y-3">
                         {displayReview.playbookCandidates.slice(0, 3).map((candidate) => (

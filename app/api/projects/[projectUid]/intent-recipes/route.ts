@@ -3,6 +3,8 @@ import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { evaluateIntentProjectRecipeGovernanceMutationRollout } from '@/lib/intent-project-recipe-governance';
 import {
   createIntentProjectRecipeAuditEntry,
+  getIntentProjectRecipeAuditPath,
+  getIntentProjectRecipeBackupDir,
   getIntentProjectRecipeProfile,
   getIntentProjectRecipeRegistryPath,
   mergeIntentProjectRecipes,
@@ -80,8 +82,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ projectUid:
     const { actor } = await requireProjectRole(req, projectUid, ['owner', 'editor', 'viewer'], '当前操作者没有权限查看项目 recipe 资产');
 
     const response = NextResponse.json({
-      registryPath: getIntentProjectRecipeRegistryPath(),
-      profile: getIntentProjectRecipeProfile(),
+      registryPath: getIntentProjectRecipeRegistryPath(projectUid),
+      profile: getIntentProjectRecipeProfile(projectUid),
     });
 
     return applyActorCookie(response, actor.userUid);
@@ -114,13 +116,25 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ projectUid
       ReturnType<typeof evaluateIntentProjectRecipeGovernanceMutationRollout>
     >['rolloutPolicyDecision'] = null;
 
+    const registryReadPath = getIntentProjectRecipeRegistryPath(projectUid);
+    const registryPath = getIntentProjectRecipeRegistryPath({
+      projectUid,
+      mode: 'write',
+      legacyFallback: false,
+    });
+
     if (mode === 'register') {
       const recipes = normalizeRecipeArray(body.recipes);
       if (recipes.length === 0) {
         return NextResponse.json({ error: '缺少必要字段: recipes' }, { status: 400 });
       }
-      const beforeCount = getIntentProjectRecipeProfile().recipes.length;
-      const registerResult = await registerIntentProjectRecipes(recipes);
+      const beforeCount = getIntentProjectRecipeProfile(projectUid).recipes.length;
+      const registerResult = await registerIntentProjectRecipes(
+        recipes,
+        registryPath,
+        getIntentProjectRecipeBackupDir(projectUid),
+        registryReadPath
+      );
       result = registerResult;
       comparison = buildRegisterAuditComparison(beforeCount, registerResult);
     } else if (mode === 'merge') {
@@ -128,7 +142,12 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ projectUid
       if (recipes.length === 0) {
         return NextResponse.json({ error: '缺少必要字段: recipes' }, { status: 400 });
       }
-      const mergeResult = await mergeIntentProjectRecipes(recipes);
+      const mergeResult = await mergeIntentProjectRecipes(
+        recipes,
+        registryPath,
+        getIntentProjectRecipeBackupDir(projectUid),
+        registryReadPath
+      );
       result = mergeResult;
       comparison = buildMutationAuditComparison(mergeResult);
     } else {
@@ -161,7 +180,12 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ projectUid
         }
       }
 
-      const updateResult = await updateIntentProjectRecipe(recipe);
+      const updateResult = await updateIntentProjectRecipe(
+        recipe,
+        registryPath,
+        getIntentProjectRecipeBackupDir(projectUid),
+        registryReadPath
+      );
       result = updateResult;
       comparison = buildMutationAuditComparison(updateResult);
     }
@@ -177,7 +201,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ projectUid
     let auditWarning = '';
 
     try {
-      auditEntry = await writeIntentProjectRecipeAuditEntry(auditEntry);
+      auditEntry = await writeIntentProjectRecipeAuditEntry(auditEntry, getIntentProjectRecipeAuditPath(projectUid));
     } catch (error: unknown) {
       auditWarning = error instanceof Error ? error.message : '写入项目 recipe 审计失败';
     }

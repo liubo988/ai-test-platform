@@ -7,6 +7,8 @@ vi.mock('@/lib/db/bootstrap', () => ({
 
 vi.mock('@/lib/intent-project-recipe-registry', () => ({
   createIntentProjectRecipeAuditEntry: vi.fn(),
+  getIntentProjectRecipeAuditPath: vi.fn(),
+  getIntentProjectRecipeBackupDir: vi.fn(),
   getIntentProjectRecipeProfile: vi.fn(),
   getIntentProjectRecipeRegistryPath: vi.fn(),
   mergeIntentProjectRecipes: vi.fn(),
@@ -34,6 +36,8 @@ import { GET, POST } from '../../app/api/projects/[projectUid]/intent-recipes/ro
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import {
   createIntentProjectRecipeAuditEntry,
+  getIntentProjectRecipeAuditPath,
+  getIntentProjectRecipeBackupDir,
   getIntentProjectRecipeProfile,
   getIntentProjectRecipeRegistryPath,
   mergeIntentProjectRecipes,
@@ -71,6 +75,8 @@ describe('project intent recipes route', () => {
       actor: { userUid: 'user_1', displayName: 'bobo' },
       membership: { role: 'owner' },
     } as never);
+    vi.mocked(getIntentProjectRecipeAuditPath).mockReturnValue('reports/intent-e2e/projects/proj_1/intent-e2e.project-recipes.audit.jsonl');
+    vi.mocked(getIntentProjectRecipeBackupDir).mockReturnValue('reports/intent-e2e/projects/proj_1/intent-e2e.project-recipes.backups');
     vi.mocked(getIntentProjectRecipeRegistryPath).mockReturnValue('intent-e2e.project-recipes.json');
     vi.mocked(getIntentProjectRecipeProfile).mockReturnValue({
       version: 1,
@@ -135,8 +141,8 @@ describe('project intent recipes route', () => {
 
     expect(ensureDbBootstrap).toHaveBeenCalledTimes(1);
     expect(requireProjectRole).toHaveBeenCalledWith(req, 'proj_1', ['owner', 'editor', 'viewer'], '当前操作者没有权限查看项目 recipe 资产');
-    expect(getIntentProjectRecipeRegistryPath).toHaveBeenCalledTimes(1);
-    expect(getIntentProjectRecipeProfile).toHaveBeenCalledTimes(1);
+    expect(getIntentProjectRecipeRegistryPath).toHaveBeenCalledWith('proj_1');
+    expect(getIntentProjectRecipeProfile).toHaveBeenCalledWith('proj_1');
     expect(applyActorCookie).toHaveBeenCalledTimes(1);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
@@ -171,11 +177,16 @@ describe('project intent recipes route', () => {
     const res = await POST(req, { params: Promise.resolve({ projectUid: 'proj_1' }) });
 
     expect(requireProjectRole).toHaveBeenCalledWith(req, 'proj_1', ['owner', 'editor'], '当前操作者没有权限修改项目 recipe 资产');
-    expect(registerIntentProjectRecipes).toHaveBeenCalledWith([
-      expect.objectContaining({
-        slug: 'custom.checkout-submit',
-      }),
-    ]);
+    expect(registerIntentProjectRecipes).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          slug: 'custom.checkout-submit',
+        }),
+      ],
+      'intent-e2e.project-recipes.json',
+      'reports/intent-e2e/projects/proj_1/intent-e2e.project-recipes.backups',
+      'intent-e2e.project-recipes.json'
+    );
     expect(createIntentProjectRecipeAuditEntry).toHaveBeenCalledWith(
       expect.objectContaining({
         operation: 'register',
@@ -189,7 +200,10 @@ describe('project intent recipes route', () => {
         }),
       })
     );
-    expect(writeIntentProjectRecipeAuditEntry).toHaveBeenCalledTimes(1);
+    expect(writeIntentProjectRecipeAuditEntry).toHaveBeenCalledWith(
+      expect.any(Object),
+      'reports/intent-e2e/projects/proj_1/intent-e2e.project-recipes.audit.jsonl'
+    );
     expect(applyActorCookie).toHaveBeenCalledTimes(1);
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({
@@ -218,10 +232,15 @@ describe('project intent recipes route', () => {
     });
     const res = await POST(req, { params: Promise.resolve({ projectUid: 'proj_1' }) });
 
-    expect(updateIntentProjectRecipe).toHaveBeenCalledWith({
-      slug: 'custom.checkout-submit',
-      title: '结算提交稳定链 v2',
-    });
+    expect(updateIntentProjectRecipe).toHaveBeenCalledWith(
+      {
+        slug: 'custom.checkout-submit',
+        title: '结算提交稳定链 v2',
+      },
+      'intent-e2e.project-recipes.json',
+      'reports/intent-e2e/projects/proj_1/intent-e2e.project-recipes.backups',
+      'intent-e2e.project-recipes.json'
+    );
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({
       mode: 'update',
@@ -366,11 +385,16 @@ describe('project intent recipes route', () => {
       rolloutCanaryAcknowledged: true,
       rolloutCanaryLabel: 'governance-canary-a',
     });
-    expect(updateIntentProjectRecipe).toHaveBeenCalledWith({
-      slug: 'custom.checkout-submit',
-      successRate: 100,
-      lastVerifiedAt: '2026-03-26T10:00:00.000Z',
-    });
+    expect(updateIntentProjectRecipe).toHaveBeenCalledWith(
+      {
+        slug: 'custom.checkout-submit',
+        successRate: 100,
+        lastVerifiedAt: '2026-03-26T10:00:00.000Z',
+      },
+      'intent-e2e.project-recipes.json',
+      'reports/intent-e2e/projects/proj_1/intent-e2e.project-recipes.backups',
+      'intent-e2e.project-recipes.json'
+    );
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({
       mode: 'update',

@@ -2,6 +2,10 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
+import {
+  resolveProjectScopedIntentAssetPath,
+  resolveProjectScopedIntentAssetStorage,
+} from './intent-project-knowledge';
 import type { IntentRecipe, IntentRecipeMatcher } from './intent-recipe-registry';
 
 export interface IntentProjectRecipeProfile {
@@ -20,6 +24,7 @@ export interface RegisterIntentProjectRecipesResult {
 
 export interface IntentProjectRecipeMergeInput {
   slug: string;
+  family?: IntentRecipe['family'];
   title?: string;
   description?: string;
   matchers?: Partial<IntentRecipeMatcher>;
@@ -109,6 +114,12 @@ export interface ListIntentProjectRecipeAuditEntriesResult {
   items: IntentProjectRecipeAuditEntry[];
 }
 
+export interface IntentProjectRecipePathOptions {
+  projectUid?: string;
+  mode?: 'read' | 'write';
+  legacyFallback?: boolean;
+}
+
 const DEFAULT_PROJECT_RECIPE_REGISTRY_PATH = path.join(process.cwd(), 'intent-e2e.project-recipes.json');
 const DEFAULT_PROJECT_RECIPE_BACKUP_DIR = path.join(process.cwd(), 'reports', 'intent-e2e.project-recipes.backups');
 const DEFAULT_PROJECT_RECIPE_AUDIT_PATH = path.join(process.cwd(), 'reports', 'intent-e2e.project-recipes.audit.jsonl');
@@ -148,6 +159,21 @@ function normalizePercent(value: unknown): number {
 function normalizeCount(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0;
+}
+
+function normalizeProjectUid(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeRecipeFamily(value: unknown): IntentRecipe['family'] {
+  return value === 'business_create_list_verify' ||
+    value === 'business_to_order' ||
+    value === 'list_search_detail' ||
+    value === 'modal_or_drawer_save' ||
+    value === 'row_action_menu' ||
+    value === 'list_ownership_switch'
+    ? value
+    : undefined;
 }
 
 function normalizeRecipeMatcher(raw: unknown): IntentRecipeMatcher {
@@ -200,6 +226,7 @@ function normalizeRecipeMatcherPatch(raw: unknown): Partial<IntentRecipeMatcher>
 function cloneIntentRecipe(recipe: IntentRecipe): IntentRecipe {
   return {
     ...recipe,
+    ...(recipe.family ? { family: recipe.family } : {}),
     matchers: {
       requiresAuth: recipe.matchers.requiresAuth === true,
       requiresStableIdentifier: recipe.matchers.requiresStableIdentifier === true,
@@ -255,6 +282,7 @@ function normalizeRecipe(raw: unknown): IntentRecipe | null {
     slug,
     title,
     description,
+    ...(normalizeRecipeFamily(source.family) ? { family: normalizeRecipeFamily(source.family) } : {}),
     matchers: normalizeRecipeMatcher(source.matchers),
     requiredContext: normalizeStringArray(source.requiredContext),
     executorPlan: normalizeStringArray(source.executorPlan),
@@ -276,6 +304,9 @@ function normalizeMergeInput(raw: unknown): IntentProjectRecipeMergeInput | null
     slug,
   };
 
+  if (Object.prototype.hasOwnProperty.call(source, 'family')) {
+    normalized.family = normalizeRecipeFamily(source.family);
+  }
   if (Object.prototype.hasOwnProperty.call(source, 'title')) {
     normalized.title = normalizeString(source.title);
   }
@@ -317,6 +348,7 @@ function mergeIntentRecipe(existing: IntentRecipe | null, input: IntentProjectRe
   return {
     version: 1,
     slug: input.slug.trim(),
+    family: input.family || existing?.family,
     title,
     description,
     matchers: mergeRecipeMatcher(existing?.matchers, input.matchers || {}),
@@ -350,16 +382,31 @@ function normalizeProfile(raw: unknown): IntentProjectRecipeProfile {
   };
 }
 
-function resolveProjectRecipeRegistryPath(): string {
-  return process.env.INTENT_E2E_PROJECT_RECIPE_REGISTRY_PATH?.trim() || DEFAULT_PROJECT_RECIPE_REGISTRY_PATH;
+function resolveProjectRecipeStorage(options: IntentProjectRecipePathOptions = {}) {
+  const legacyPath = process.env.INTENT_E2E_PROJECT_RECIPE_REGISTRY_PATH?.trim() || DEFAULT_PROJECT_RECIPE_REGISTRY_PATH;
+  const legacyBackupDir = process.env.INTENT_E2E_PROJECT_RECIPE_BACKUP_DIR?.trim() || DEFAULT_PROJECT_RECIPE_BACKUP_DIR;
+  const legacyAuditPath = process.env.INTENT_E2E_PROJECT_RECIPE_AUDIT_PATH?.trim() || DEFAULT_PROJECT_RECIPE_AUDIT_PATH;
+  const storage = resolveProjectScopedIntentAssetStorage({
+    projectUid: options.projectUid,
+    legacyPath,
+    projectFileName: 'intent-e2e.project-recipes.json',
+    legacyFallback: options.legacyFallback,
+  });
+
+  return {
+    ...storage,
+    backupDir: storage.projectUid
+      ? resolveProjectScopedIntentAssetPath(storage.projectUid, 'intent-e2e.project-recipes.backups')
+      : legacyBackupDir,
+    auditPath: storage.projectUid
+      ? resolveProjectScopedIntentAssetPath(storage.projectUid, 'intent-e2e.project-recipes.audit.jsonl')
+      : legacyAuditPath,
+  };
 }
 
-function resolveProjectRecipeBackupDir(): string {
-  return process.env.INTENT_E2E_PROJECT_RECIPE_BACKUP_DIR?.trim() || DEFAULT_PROJECT_RECIPE_BACKUP_DIR;
-}
-
-function resolveProjectRecipeAuditPath(): string {
-  return process.env.INTENT_E2E_PROJECT_RECIPE_AUDIT_PATH?.trim() || DEFAULT_PROJECT_RECIPE_AUDIT_PATH;
+function resolveProjectRecipeRegistryPath(options: IntentProjectRecipePathOptions = {}): string {
+  const storage = resolveProjectRecipeStorage(options);
+  return options.mode === 'write' ? storage.writePath : storage.readPath;
 }
 
 function toDisplayPath(filePath: string): string {
@@ -377,8 +424,7 @@ function isPathInsideDir(filePath: string, dirPath: string): boolean {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-function loadIntentProjectRecipeProfile(): IntentProjectRecipeProfile {
-  const registryPath = resolveProjectRecipeRegistryPath();
+function loadIntentProjectRecipeProfile(registryPath = resolveProjectRecipeRegistryPath()): IntentProjectRecipeProfile {
   if (cacheProfile && cachePath === registryPath) {
     return cacheProfile;
   }
@@ -394,29 +440,35 @@ function loadIntentProjectRecipeProfile(): IntentProjectRecipeProfile {
   return cacheProfile;
 }
 
-export function getIntentProjectRecipeRegistryPath(): string {
-  return toDisplayPath(resolveProjectRecipeRegistryPath());
+export function getIntentProjectRecipeRegistryPath(options: string | IntentProjectRecipePathOptions = {}): string {
+  const normalizedOptions =
+    typeof options === 'string'
+      ? {
+          projectUid: options,
+        }
+      : options;
+  return toDisplayPath(resolveProjectRecipeRegistryPath(normalizedOptions));
 }
 
-export function getIntentProjectRecipeBackupDir(): string {
-  return toDisplayPath(resolveProjectRecipeBackupDir());
+export function getIntentProjectRecipeBackupDir(projectUid = ''): string {
+  return toDisplayPath(resolveProjectRecipeStorage({ projectUid }).backupDir);
 }
 
-export function getIntentProjectRecipeAuditPath(): string {
-  return toDisplayPath(resolveProjectRecipeAuditPath());
+export function getIntentProjectRecipeAuditPath(projectUid = ''): string {
+  return toDisplayPath(resolveProjectRecipeStorage({ projectUid }).auditPath);
 }
 
-export function getIntentProjectRecipeProfile(): IntentProjectRecipeProfile {
-  return loadIntentProjectRecipeProfile();
+export function getIntentProjectRecipeProfile(projectUid = ''): IntentProjectRecipeProfile {
+  return loadIntentProjectRecipeProfile(resolveProjectRecipeRegistryPath({ projectUid }));
 }
 
-export function listIntentProjectRecipes(): IntentRecipe[] {
-  return getIntentProjectRecipeProfile().recipes.map((item) => cloneIntentRecipe(item));
+export function listIntentProjectRecipes(projectUid = ''): IntentRecipe[] {
+  return getIntentProjectRecipeProfile(projectUid).recipes.map((item) => cloneIntentRecipe(item));
 }
 
 export async function writeIntentProjectRecipeProfile(
   profile: IntentProjectRecipeProfile,
-  outputPath = resolveProjectRecipeRegistryPath()
+  outputPath = resolveProjectRecipeRegistryPath({ mode: 'write' })
 ): Promise<string> {
   const normalizedProfile = normalizeProfile(profile);
   await fsPromises.mkdir(path.dirname(outputPath), { recursive: true });
@@ -543,10 +595,12 @@ export function createIntentProjectRecipeAuditEntry(
   };
 }
 
-async function backupIntentProjectRecipeFile(targetPath = resolveProjectRecipeRegistryPath()): Promise<string | null> {
+async function backupIntentProjectRecipeFile(
+  targetPath = resolveProjectRecipeRegistryPath(),
+  backupDir = resolveProjectRecipeStorage().backupDir
+): Promise<string | null> {
   try {
     const raw = await fsPromises.readFile(targetPath, 'utf8');
-    const backupDir = resolveProjectRecipeBackupDir();
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const backupPath = path.join(backupDir, `${stamp}-${path.basename(targetPath)}`);
     await fsPromises.mkdir(path.dirname(backupPath), { recursive: true });
@@ -562,9 +616,11 @@ async function backupIntentProjectRecipeFile(targetPath = resolveProjectRecipeRe
 
 export async function registerIntentProjectRecipes(
   recipes: IntentRecipe[],
-  outputPath = resolveProjectRecipeRegistryPath()
+  outputPath = resolveProjectRecipeRegistryPath({ mode: 'write' }),
+  backupDir = resolveProjectRecipeStorage().backupDir,
+  currentProfilePath = outputPath
 ): Promise<RegisterIntentProjectRecipesResult> {
-  const currentProfile = getIntentProjectRecipeProfile();
+  const currentProfile = loadIntentProjectRecipeProfile(currentProfilePath);
   const nextRecipes = currentProfile.recipes.map((item) => cloneIntentRecipe(item));
   const recipeIndexBySlug = new Map(nextRecipes.map((item, index) => [item.slug, index]));
   const addedRecipeSlugs: string[] = [];
@@ -602,7 +658,7 @@ export async function registerIntentProjectRecipes(
     recipes: nextRecipes,
   });
   const shouldWrite = addedRecipeSlugs.length > 0 || updatedRecipeSlugs.length > 0;
-  const backupPath = shouldWrite ? await backupIntentProjectRecipeFile(outputPath) : null;
+  const backupPath = shouldWrite ? await backupIntentProjectRecipeFile(outputPath, backupDir) : null;
   const writtenTo = shouldWrite ? await writeIntentProjectRecipeProfile(nextProfile, outputPath) : toDisplayPath(outputPath);
 
   return {
@@ -617,9 +673,11 @@ export async function registerIntentProjectRecipes(
 
 export async function mergeIntentProjectRecipes(
   recipes: IntentProjectRecipeMergeInput[],
-  outputPath = resolveProjectRecipeRegistryPath()
+  outputPath = resolveProjectRecipeRegistryPath({ mode: 'write' }),
+  backupDir = resolveProjectRecipeStorage().backupDir,
+  currentProfilePath = outputPath
 ): Promise<MergeIntentProjectRecipesResult> {
-  const currentProfile = getIntentProjectRecipeProfile();
+  const currentProfile = loadIntentProjectRecipeProfile(currentProfilePath);
   const nextRecipes = currentProfile.recipes.map((item) => cloneIntentRecipe(item));
   const recipeIndexBySlug = new Map(nextRecipes.map((item, index) => [item.slug, index]));
   const addedRecipeSlugs: string[] = [];
@@ -668,7 +726,7 @@ export async function mergeIntentProjectRecipes(
     recipes: nextRecipes,
   });
   const shouldWrite = addedRecipeSlugs.length > 0 || updatedRecipeSlugs.length > 0;
-  const backupPath = shouldWrite ? await backupIntentProjectRecipeFile(outputPath) : null;
+  const backupPath = shouldWrite ? await backupIntentProjectRecipeFile(outputPath, backupDir) : null;
   const writtenTo = shouldWrite ? await writeIntentProjectRecipeProfile(nextProfile, outputPath) : toDisplayPath(outputPath);
 
   return {
@@ -685,25 +743,27 @@ export async function mergeIntentProjectRecipes(
 
 export async function updateIntentProjectRecipe(
   recipe: IntentProjectRecipeMergeInput,
-  outputPath = resolveProjectRecipeRegistryPath()
+  outputPath = resolveProjectRecipeRegistryPath({ mode: 'write' }),
+  backupDir = resolveProjectRecipeStorage().backupDir,
+  currentProfilePath = outputPath
 ): Promise<MergeIntentProjectRecipesResult> {
   const slug = normalizeString(recipe.slug);
   if (!slug) {
     throw new Error('缺少必要字段: slug');
   }
 
-  const currentProfile = getIntentProjectRecipeProfile();
+  const currentProfile = loadIntentProjectRecipeProfile(currentProfilePath);
   if (!currentProfile.recipes.some((item) => item.slug === slug)) {
     throw new Error(`目标 recipe 不存在: ${slug}`);
   }
 
-  return mergeIntentProjectRecipes([recipe], outputPath);
+  return mergeIntentProjectRecipes([recipe], outputPath, backupDir, currentProfilePath);
 }
 
 export async function listIntentProjectRecipeBackups(
   limit = 12,
-  outputPath = resolveProjectRecipeRegistryPath(),
-  backupDir = resolveProjectRecipeBackupDir()
+  outputPath = resolveProjectRecipeRegistryPath({ mode: 'write' }),
+  backupDir = resolveProjectRecipeStorage().backupDir
 ): Promise<ListIntentProjectRecipeBackupsResult> {
   const normalizedLimit = Math.max(1, Math.floor(limit || 12));
   const absoluteBackupDir = toAbsolutePath(backupDir);
@@ -743,10 +803,11 @@ export async function listIntentProjectRecipeBackups(
 
 export async function restoreIntentProjectRecipeBackup(
   backupPath: string | null | undefined,
-  outputPath = resolveProjectRecipeRegistryPath(),
-  backupDir = resolveProjectRecipeBackupDir()
+  outputPath = resolveProjectRecipeRegistryPath({ mode: 'write' }),
+  backupDir = resolveProjectRecipeStorage().backupDir,
+  currentProfilePath = outputPath
 ): Promise<RestoreIntentProjectRecipeBackupResult> {
-  const currentProfile = getIntentProjectRecipeProfile();
+  const currentProfile = loadIntentProjectRecipeProfile(currentProfilePath);
   const backups = await listIntentProjectRecipeBackups(50, outputPath, backupDir);
   const selectedDisplayPath = backupPath?.trim() || backups.backups[0]?.path || '';
   if (!selectedDisplayPath) {
@@ -761,7 +822,7 @@ export async function restoreIntentProjectRecipeBackup(
 
   const raw = await fsPromises.readFile(absoluteBackupPath, 'utf8');
   const restoredProfile = normalizeProfile(JSON.parse(raw));
-  const backupCreated = await backupIntentProjectRecipeFile(outputPath);
+  const backupCreated = await backupIntentProjectRecipeFile(outputPath, backupDir);
   const writtenTo = await writeIntentProjectRecipeProfile(restoredProfile, outputPath);
   const comparison = buildIntentProjectRecipeProfileComparison(currentProfile, restoredProfile);
 
@@ -776,7 +837,7 @@ export async function restoreIntentProjectRecipeBackup(
 
 export async function writeIntentProjectRecipeAuditEntry(
   entry: IntentProjectRecipeAuditEntry,
-  auditPath = resolveProjectRecipeAuditPath()
+  auditPath = resolveProjectRecipeStorage().auditPath
 ): Promise<IntentProjectRecipeAuditEntry> {
   const normalized = normalizeIntentProjectRecipeAuditEntry(entry);
   if (!normalized) {
@@ -791,7 +852,7 @@ export async function writeIntentProjectRecipeAuditEntry(
 export async function listIntentProjectRecipeAuditEntries(
   limit = 12,
   projectUid = '',
-  auditPath = resolveProjectRecipeAuditPath()
+  auditPath = resolveProjectRecipeStorage().auditPath
 ): Promise<ListIntentProjectRecipeAuditEntriesResult> {
   const normalizedLimit = Math.max(1, Math.floor(limit || 12));
   const normalizedProjectUid = projectUid.trim();

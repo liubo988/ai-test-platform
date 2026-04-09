@@ -494,6 +494,7 @@ export function resolveIntentPromptPlanningContext(
   const priorityScenarioFamily = priorityScenarioFamilyRoute.family;
   const recipes = selectIntentRecipeRegistry({
     dsl: finalDsl,
+    projectUid: options.projectUid,
     auth: options.auth,
     snapshot,
     priorityScenarioFamily,
