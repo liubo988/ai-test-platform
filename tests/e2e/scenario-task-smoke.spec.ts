@@ -446,6 +446,107 @@ function buildPlanArtifacts(task: Task) {
   return { plan, planCases };
 }
 
+function buildEmptyCapabilityStarterHelperHealthSnapshotResponse(state: MockState) {
+  return {
+    snapshot: {
+      version: 1 as const,
+      snapshotId: 'snapshot_helper_health_empty',
+      capturedAt: now,
+      projectUid: state.project.projectUid,
+      actorLabel: state.actor.displayName,
+      source: {
+        runLimit: 50,
+        auditLimit: 12,
+        queueLimit: 8,
+        starterHelperCount: 0,
+        suppressedStarterHelperCount: 0,
+        capabilityCount: state.capabilities.length,
+        activeCapabilityCount: state.capabilities.filter((item) => item.status === 'active').length,
+        archivedCapabilityCount: state.capabilities.filter((item) => item.status === 'archived').length,
+        queueCandidateCount: 0,
+        queueReturnedCount: 0,
+      },
+      summary: {
+        totalHelpers: 0,
+        preferredCount: 0,
+        watchingCount: 0,
+        recoveringWatchingCount: 0,
+        mixedWatchingCount: 0,
+        neutralCount: 0,
+        suppressedCount: 0,
+        promoteReadyCount: 0,
+        blockedByFailurePressureCount: 0,
+        weakRecoveryCount: 0,
+        governanceHelperCount: 0,
+        linkedActiveCapabilityCount: 0,
+        linkedArchivedCapabilityCount: 0,
+        recommendedCapabilityCount: 0,
+        recommendedRepairCount: 0,
+        recommendedReviewCount: 0,
+        failurePressureSummary: {
+          recentFailedReviewCapabilityCount: 0,
+          recentFailedVerifyCapabilityCount: 0,
+          recentFailedReviewExecutionCount: 0,
+          recentFailedVerifyExecutionCount: 0,
+          recentFailureWindowDays: 14,
+          highFailureCandidateCount: 0,
+          highFailureRepairCount: 0,
+          highFailureGovernanceCount: 0,
+          latestRepairObservationAt: '',
+          latestRepairObservationSummary: '',
+          latestRepairObservationVerifierCheckUids: [],
+        },
+        failurePressure: {
+          recentFailedReviewCapabilityCount: 0,
+          recentFailedVerifyCapabilityCount: 0,
+          recentFailedReviewExecutionCount: 0,
+          recentFailedVerifyExecutionCount: 0,
+          recentFailureWindowDays: 14,
+        },
+        recentFailedReviewCapabilityCount: 0,
+        recentFailedVerifyCapabilityCount: 0,
+      },
+      items: [],
+    },
+    auditLogPath: '',
+    fresh: true,
+    staleFallback: false,
+    refreshError: '',
+  };
+}
+
+function buildEmptyCapabilityVerificationQueueResponse(state: MockState) {
+  return {
+    summary: {
+      totalActiveCapabilities: state.capabilities.filter((item) => item.status === 'active').length,
+      candidateCount: 0,
+      returnedCount: 0,
+      repairCount: 0,
+      suppressedReviewCount: 0,
+      starterVerificationCount: 0,
+      knowledgeVerificationCount: 0,
+      unknownVerificationCount: 0,
+      failurePressureSummary: {
+        recentFailedReviewCapabilityCount: 0,
+        recentFailedVerifyCapabilityCount: 0,
+        recentFailedReviewExecutionCount: 0,
+        recentFailedVerifyExecutionCount: 0,
+        recentFailureWindowDays: 14,
+        highFailureCandidateCount: 0,
+        highFailureRepairCount: 0,
+        highFailureGovernanceCount: 0,
+        latestRepairObservationAt: '',
+        latestRepairObservationSummary: '',
+        latestRepairObservationVerifierCheckUids: [],
+      },
+      highFailureCandidateCount: 0,
+      highFailureRepairCount: 0,
+      highFailureGovernanceCount: 0,
+    },
+    items: [],
+  };
+}
+
 async function installApiMocks(
   page: Page,
   options?: {
@@ -689,6 +790,14 @@ async function installApiMocks(
         .filter((item) => status === 'all' || item.status === status)
         .sort((left, right) => left.sortOrder - right.sortOrder);
       return jsonResponse(route, { items });
+    }
+
+    if (method === 'GET' && pathname === `/api/projects/${projectUid}/capabilities/helper-health`) {
+      return jsonResponse(route, buildEmptyCapabilityStarterHelperHealthSnapshotResponse(state));
+    }
+
+    if (method === 'GET' && pathname === `/api/projects/${projectUid}/capabilities/verification-queue`) {
+      return jsonResponse(route, buildEmptyCapabilityVerificationQueueResponse(state));
     }
 
     if (method === 'POST' && pathname === `/api/projects/${projectUid}/capabilities`) {
@@ -1381,6 +1490,7 @@ test('smoke: archived capability is excluded from recipe until restored @smoke',
 
   await expect(workbench.getByText('能力「归档前商机检索能力」已归档')).toBeVisible();
   await expect(workbench).toContainText('0 项可用能力');
+  await expect(workbench.getByText(/Unhandled API route/)).toHaveCount(0);
   await expect(workbench.getByRole('button', { name: '恢复能力 归档前商机检索能力' })).toBeVisible();
 
   await workbench.getByRole('button', { name: '需求编排', exact: true }).click();
@@ -1395,6 +1505,7 @@ test('smoke: archived capability is excluded from recipe until restored @smoke',
 
   await expect(workbench.getByText('能力「归档前商机检索能力」已恢复')).toBeVisible();
   await expect(workbench).toContainText('1 项可用能力');
+  await expect(workbench.getByText(/Unhandled API route/)).toHaveCount(0);
 
   await workbench.getByRole('button', { name: '需求编排', exact: true }).click();
   await workbench.getByRole('button', { name: '生成 recipe' }).click();

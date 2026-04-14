@@ -2,6 +2,7 @@ import type { NextRequest } from 'next/server';
 import type { IntentE2ERunRequest } from '@/lib/ai/intent-e2e-service';
 import { normalizeIntentE2ERequestBody } from '@/lib/ai/intent-e2e-request';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
+import { loadWorkspaceIntentE2EGlobalRunConfig } from '@/lib/intent-e2e-global-config';
 import { resolveIntentE2ESystemOnboardingDefaults } from '@/lib/intent-e2e-system-onboarding';
 import { getWorkspaceLLMRuntimeOverrides, mergeLLMRuntimeOverrides } from '@/lib/llm/workspace-config';
 import { resolveIntentE2EProjectAuth } from '@/lib/server/intent-e2e-project-auth';
@@ -30,6 +31,7 @@ export async function prepareIntentE2ERequest(
   }
 
   await ensureDbBootstrap();
+  await loadWorkspaceIntentE2EGlobalRunConfig();
   request = {
     ...request,
     llmConfig: mergeLLMRuntimeOverrides(await getWorkspaceLLMRuntimeOverrides(), request.llmConfig),

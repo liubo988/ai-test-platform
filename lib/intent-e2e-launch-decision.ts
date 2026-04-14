@@ -2,6 +2,7 @@ import { hasIntentVerificationFailurePressureSummaryHighFailure, type IntentVeri
 import type { IntentE2ERuntimeGovernance } from '@/lib/intent-e2e-runtime-governance';
 import type { IntentE2EProjectAssetAvailability } from '@/lib/intent-e2e-asset-readiness';
 import { shouldEnforceIntentE2ERuntimeGovernance } from '@/lib/intent-e2e-runtime-governance';
+import type { IntentE2EPriorityScenarioFamilyRoute } from '@/lib/intent-e2e-priority-scenario-family';
 
 export type IntentE2ELaunchDecisionValue =
   | 'auto_run'
@@ -21,6 +22,14 @@ export interface IntentE2ELaunchDecision {
     assetStatus: IntentE2EProjectAssetAvailability['status'];
     requiresFixture: boolean;
     hasFixtureContract: boolean;
+    priorityScenarioFamily: IntentE2EPriorityScenarioFamilyRoute['family'];
+    priorityScenarioFamilySource: IntentE2EPriorityScenarioFamilyRoute['source'] | '';
+    priorityScenarioTextFamily: IntentE2EPriorityScenarioFamilyRoute['textFamily'];
+    priorityScenarioVisualFamily: IntentE2EPriorityScenarioFamilyRoute['visualFamily'];
+    hasTrackedPriorityScenarioFamily: boolean;
+    hasPriorityScenarioFamilyConflict: boolean;
+    hasStablePriorityScenarioPath: boolean;
+    hasExplicitVerifierSignal: boolean;
     hasHighFailurePressure: boolean;
     hasRepeatedFailureSuppression: boolean;
     repeatedFailureDecision: '' | Extract<IntentE2ELaunchDecisionValue, 'needs_bootstrap' | 'needs_fixture' | 'draft_only'>;
@@ -44,6 +53,7 @@ export interface ResolveIntentE2ELaunchDecisionInput {
   assetAvailability?: IntentE2EProjectAssetAvailability | null;
   failurePressureSummary?: IntentVerificationFailurePressureSummary | null;
   requiresFixture?: boolean;
+  priorityScenarioFamilyRoute?: IntentE2EPriorityScenarioFamilyRoute | null;
   repeatedFailureSuppression?: IntentE2ELaunchDecisionRepeatedFailureSuppression | null;
 }
 
@@ -110,6 +120,36 @@ function hasTaskSpecificSignal(value: string): boolean {
   );
 }
 
+function hasExplicitVerifierSignal(value: string): boolean {
+  return /(校验|验证|断言|检查|状态|字段|接口|响应|结果|成功|失败|verify|assert|check|status|field|response|result|success|fail)/i.test(
+    value
+  );
+}
+
+function createNeutralPriorityScenarioFamilyRoute(): IntentE2EPriorityScenarioFamilyRoute {
+  return {
+    family: 'untracked',
+    textFamily: 'untracked',
+    visualFamily: 'untracked',
+    source: 'text_only',
+    clarifySignals: [],
+  };
+}
+
+function hasPriorityScenarioFamilyConflict(route: IntentE2EPriorityScenarioFamilyRoute): boolean {
+  return (
+    route.textFamily !== 'untracked' &&
+    route.visualFamily !== 'untracked' &&
+    route.textFamily !== route.visualFamily
+  );
+}
+
+function hasStablePriorityScenarioPath(route: IntentE2EPriorityScenarioFamilyRoute): boolean {
+  if (route.family === 'untracked') return false;
+  if (hasPriorityScenarioFamilyConflict(route)) return false;
+  return route.source === 'text_only' || route.source === 'text_confirmed_by_visual';
+}
+
 function needsClarify(input: {
   normalizedInput: string;
   hasTargetUrl: boolean;
@@ -155,6 +195,31 @@ function createNeutralAssetAvailability(projectUid: string): IntentE2EProjectAss
   };
 }
 
+function shouldDraftForWeakStructuredPath(input: {
+  requiresFixture: boolean;
+  hasExplicitVerifierSignal: boolean;
+  hasStablePriorityScenarioPath: boolean;
+  hasPriorityScenarioFamilyConflict: boolean;
+}): boolean {
+  if (input.hasPriorityScenarioFamilyConflict) {
+    return false;
+  }
+
+  if (input.hasStablePriorityScenarioPath && input.hasExplicitVerifierSignal) {
+    return false;
+  }
+
+  if (!input.hasExplicitVerifierSignal) {
+    return true;
+  }
+
+  if (!input.hasStablePriorityScenarioPath && input.requiresFixture) {
+    return true;
+  }
+
+  return false;
+}
+
 export function resolveIntentE2ELaunchDecision(input: ResolveIntentE2ELaunchDecisionInput): IntentE2ELaunchDecision {
   const normalizedInput = normalizeString(input.input);
   const projectUid = normalizeString(input.projectUid);
@@ -168,6 +233,11 @@ export function resolveIntentE2ELaunchDecision(input: ResolveIntentE2ELaunchDeci
       ? input.requiresFixture
       : looksLikeMutatingIntentText([normalizedInput, targetUrl].filter(Boolean).join('\n'));
   const fixtureContract = hasFixtureContract(input.runtimeGovernance);
+  const priorityScenarioFamilyRoute = input.priorityScenarioFamilyRoute || createNeutralPriorityScenarioFamilyRoute();
+  const hasTrackedPriorityScenarioFamily = priorityScenarioFamilyRoute.family !== 'untracked';
+  const hasPriorityScenarioConflict = hasPriorityScenarioFamilyConflict(priorityScenarioFamilyRoute);
+  const stablePriorityScenarioPath = hasStablePriorityScenarioPath(priorityScenarioFamilyRoute);
+  const explicitVerifierSignal = hasExplicitVerifierSignal([normalizedInput, targetUrl].filter(Boolean).join('\n'));
   const hasHighFailurePressure = Boolean(
     input.failurePressureSummary && hasIntentVerificationFailurePressureSummaryHighFailure(input.failurePressureSummary)
   );
@@ -188,6 +258,14 @@ export function resolveIntentE2ELaunchDecision(input: ResolveIntentE2ELaunchDeci
     assetStatus: assetAvailability.status,
     requiresFixture,
     hasFixtureContract: fixtureContract,
+    priorityScenarioFamily: priorityScenarioFamilyRoute.family,
+    priorityScenarioFamilySource: priorityScenarioFamilyRoute.source || '',
+    priorityScenarioTextFamily: priorityScenarioFamilyRoute.textFamily,
+    priorityScenarioVisualFamily: priorityScenarioFamilyRoute.visualFamily,
+    hasTrackedPriorityScenarioFamily,
+    hasPriorityScenarioFamilyConflict: hasPriorityScenarioConflict,
+    hasStablePriorityScenarioPath: stablePriorityScenarioPath,
+    hasExplicitVerifierSignal: explicitVerifierSignal,
     hasHighFailurePressure,
     hasRepeatedFailureSuppression: Boolean(repeatedFailureSuppression),
     repeatedFailureDecision: repeatedFailureSuppression?.recommendedDecision || '',
@@ -213,7 +291,18 @@ export function resolveIntentE2ELaunchDecision(input: ResolveIntentE2ELaunchDeci
   if (needsClarify({ normalizedInput, hasTargetUrl, attachmentCount })) {
     return {
       decision: 'needs_clarify',
-      reasons: ['insufficient_request_context'],
+      reasons: uniqueStrings([
+        'insufficient_request_context',
+        attachmentCount > 0 && !explicitVerifierSignal ? 'image_led_request_needs_task_details' : '',
+      ]),
+      signals,
+    };
+  }
+
+  if (hasPriorityScenarioConflict) {
+    return {
+      decision: 'needs_clarify',
+      reasons: ['family_route_conflict'],
       signals,
     };
   }
@@ -223,7 +312,27 @@ export function resolveIntentE2ELaunchDecision(input: ResolveIntentE2ELaunchDeci
       decision: repeatedFailureSuppression.recommendedDecision,
       reasons: uniqueStrings([
         repeatedFailureSuppression.reason,
+        !stablePriorityScenarioPath ? 'missing_stable_family_path' : '',
         repeatedFailureSuppression.recommendedDecision === 'draft_only' && hasHighFailurePressure ? 'high_failure_pressure' : '',
+      ]),
+      signals,
+    };
+  }
+
+  if (
+    shouldDraftForWeakStructuredPath({
+      requiresFixture,
+      hasExplicitVerifierSignal: explicitVerifierSignal,
+      hasStablePriorityScenarioPath: stablePriorityScenarioPath,
+      hasPriorityScenarioFamilyConflict: hasPriorityScenarioConflict,
+    })
+  ) {
+    return {
+      decision: 'draft_only',
+      reasons: uniqueStrings([
+        !explicitVerifierSignal ? 'missing_stable_verifier_path' : '',
+        !stablePriorityScenarioPath ? 'missing_stable_family_path' : '',
+        !hasTrackedPriorityScenarioFamily ? 'untracked_family_requires_draft' : '',
       ]),
       signals,
     };
@@ -232,7 +341,10 @@ export function resolveIntentE2ELaunchDecision(input: ResolveIntentE2ELaunchDeci
   if (hasHighFailurePressure) {
     return {
       decision: 'draft_only',
-      reasons: ['high_failure_pressure'],
+      reasons: uniqueStrings([
+        'high_failure_pressure',
+        !stablePriorityScenarioPath ? 'missing_stable_family_path' : '',
+      ]),
       signals,
     };
   }

@@ -1,5 +1,6 @@
 import type { IntentActionDSL } from './intent-action-dsl';
 import type { IntentE2EPriorityScenarioFamily, IntentTrackedE2EPriorityScenarioFamily } from './intent-e2e-priority-scenario-family';
+import { getIntentE2EPriorityScenarioFamilyAssetProfile } from './intent-e2e-priority-scenario-family';
 import { listIntentProjectRecipes } from './intent-project-recipe-registry';
 import { looksLikeIntentStableIdentifierVariable } from './intent-shared-variable-utils';
 import type { AuthConfig, PageSnapshot } from './page-analyzer';
@@ -63,6 +64,7 @@ export interface SelectIntentRecipeRegistryInput {
 }
 
 const INTENT_RECIPE_FAMILY_SCORE_WEIGHT = 3;
+const INTENT_RECIPE_FAMILY_PREFERRED_SKELETON_SCORE_WEIGHT = 2;
 
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
   const seen = new Set<string>();
@@ -155,6 +157,7 @@ function scoreIntentRecipe(
   const authAvailable = Boolean(input.auth?.loginUrl?.trim());
   const preferredCapabilitySlugSet = new Set((input.preferredCapabilitySlugs || []).map((item) => item.trim()).filter(Boolean));
   const stableIdentifierMatched = sharedVariables.some((item) => looksLikeIntentStableIdentifierVariable(item));
+  const familyProfile = getIntentE2EPriorityScenarioFamilyAssetProfile(input.priorityScenarioFamily);
 
   if (recipe.matchers.requiresAuth) {
     if (!authAvailable) return null;
@@ -222,6 +225,11 @@ function scoreIntentRecipe(
   ) {
     score += INTENT_RECIPE_FAMILY_SCORE_WEIGHT;
     matchedSignals.push(`family=${input.priorityScenarioFamily}`);
+  }
+
+  if (familyProfile && familyProfile.preferredRecipeSlugs.includes(recipe.slug)) {
+    score += INTENT_RECIPE_FAMILY_PREFERRED_SKELETON_SCORE_WEIGHT;
+    matchedSignals.push(`family_skeleton=${familyProfile.family}`);
   }
 
   return {
@@ -507,6 +515,7 @@ export function renderIntentRecipeRegistry(registry: IntentRecipeRegistry): stri
       `### Recipe ${index + 1} ${item.recipe.slug}`,
       `- 标题: ${item.recipe.title}`,
       `- 描述: ${item.recipe.description}`,
+      `- family: ${item.recipe.family || '未标记'}`,
       `- 匹配信号: ${item.matchedSignals.join(' / ') || '未记录'}`,
       `- 命中分数: ${item.score}`,
       `- 成功率: ${formatRecipePercent(item.recipe.successRate)}`,

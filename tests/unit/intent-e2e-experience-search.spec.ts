@@ -233,6 +233,32 @@ describe('intent-e2e-experience-search', () => {
     expect(vi.mocked(listIntentE2ERunSnapshots)).not.toHaveBeenCalled();
   });
 
+  it('reuses preloaded run snapshots without querying repository again', async () => {
+    const snapshots = [createSnapshot('intent-run-preloaded-success')];
+    vi.mocked(normalizeIntentE2ETerminalRunSnapshot).mockReturnValue(
+      createInsightRun('intent-run-preloaded-success', {
+        firstPassSucceeded: true,
+        matchedRecipeSlugs: ['auth.unified-login'],
+      }) as never
+    );
+
+    const result = await searchIntentE2EExperienceHints({
+      projectUid: 'proj_default',
+      moduleUid: 'mod_checkout',
+      requestInput: '访问结算页并提交，最终看到成功页',
+      targetUrl: 'https://example.com/checkout',
+      scenarioTitle: '结算成功页',
+      taskMode: 'scenario',
+      stepTypes: ['ui'],
+      includeFailures: true,
+      runSnapshots: snapshots as any,
+    });
+
+    expect(vi.mocked(listIntentE2ERunSnapshots)).not.toHaveBeenCalled();
+    expect(result.scannedRunCount).toBe(1);
+    expect(result.hints[0]?.runId).toBe('intent-run-preloaded-success');
+  });
+
   it('reranks candidates with matching project recipe / playbook slugs ahead of generic matches', async () => {
     const playbookMatchSnapshot = createSnapshot('intent-run-playbook-match', {
       playbookSlugs: ['intent.checkout-success'],

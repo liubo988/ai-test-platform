@@ -1,16 +1,26 @@
 import fs from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { runIntentDrivenE2EStream, type IntentE2EStreamEvent } from '@/lib/ai/intent-e2e-service';
-import { getIntentE2ERecipePerformanceMap, getIntentE2ERulePerformanceMap, getIntentE2EStarterHelpers } from '@/lib/ai/intent-e2e-insights';
+import {
+  buildIntentE2ERecipePerformanceMapFromData,
+  buildIntentE2ERulePerformanceMapFromData,
+  buildIntentE2EStarterHelpersFromData,
+} from '@/lib/ai/intent-e2e-insights';
 import { listIntentE2ERunSnapshots } from '@/lib/db/repository';
 import { searchIntentE2EExperienceHints } from '@/lib/intent-e2e-experience-search';
 import { buildIntentE2ERunReview } from '@/lib/intent-e2e-run-review';
 import { selectIntentRecipeRegistry } from '@/lib/intent-recipe-registry';
 import { getIntentProjectOnboardingPath, readIntentProjectOnboardingStatus } from '@/lib/intent-project-onboarding';
-import { getIntentProjectKnowledgePath } from '@/lib/intent-project-knowledge';
+import { getIntentProjectKnowledgePath, listIntentProjectKnowledgeAuditEntries } from '@/lib/intent-project-knowledge';
 import { analyzePage, precheckPageAccess } from '@/lib/page-analyzer';
 import { executeTest, getTestCodeSyntaxError } from '@/lib/test-executor';
-import { generateTest, repairTest, resolveIntentPromptPlanningContext, type GenerateEvent } from '@/lib/test-generator';
+import {
+  generateTest,
+  repairTest,
+  resolveIntentPromptPlanningContext,
+  sanitizeGeneratedCode,
+  type GenerateEvent,
+} from '@/lib/test-generator';
 import { getLLMRuntimeConfig } from '@/lib/llm/provider-config';
 import { buildGenerateInputFromScenarioCard, generateScenarioCard } from '@/lib/ai/scenario-card';
 import { executeIntentE2EFixture } from '@/lib/intent-e2e-fixture-executor';
@@ -32,9 +42,9 @@ vi.mock('@/lib/page-analyzer', () => ({
 }));
 
 vi.mock('@/lib/ai/intent-e2e-insights', () => ({
-  getIntentE2ERecipePerformanceMap: vi.fn(),
-  getIntentE2ERulePerformanceMap: vi.fn(),
-  getIntentE2EStarterHelpers: vi.fn(),
+  buildIntentE2ERecipePerformanceMapFromData: vi.fn(),
+  buildIntentE2ERulePerformanceMapFromData: vi.fn(),
+  buildIntentE2EStarterHelpersFromData: vi.fn(),
 }));
 
 vi.mock('@/lib/test-executor', () => ({
@@ -46,6 +56,7 @@ vi.mock('@/lib/test-generator', () => ({
   generateTest: vi.fn(),
   repairTest: vi.fn(),
   resolveIntentPromptPlanningContext: vi.fn(),
+  sanitizeGeneratedCode: vi.fn((code: string) => code),
 }));
 
 vi.mock('@/lib/llm/provider-config', () => ({
@@ -72,6 +83,7 @@ vi.mock('@/lib/intent-project-onboarding', () => ({
 
 vi.mock('@/lib/intent-project-knowledge', () => ({
   getIntentProjectKnowledgePath: vi.fn(),
+  listIntentProjectKnowledgeAuditEntries: vi.fn(),
 }));
 
 vi.mock('@/lib/ai/intent-repair-memory', () => ({
@@ -357,6 +369,11 @@ function createPassedRunSnapshot(input?: {
   targetUrl?: string;
   attachmentCount?: number;
   code?: string;
+  fallbackTelemetry?: Record<string, unknown> | null;
+  createdAt?: string;
+  updatedAt?: string;
+  startedAt?: string;
+  endedAt?: string;
 }) {
   const runId = input?.runId || 'intent-run-passed-1';
   const projectUid = input?.projectUid || 'proj_default';
@@ -365,6 +382,10 @@ function createPassedRunSnapshot(input?: {
   const requestInput = input?.requestInput || '访问结算页并提交，最终看到成功页';
   const targetUrl = input?.targetUrl || 'https://example.com/checkout';
   const attachmentCount = input?.attachmentCount ?? 0;
+  const createdAt = input?.createdAt || '2026-04-07T09:00:00.000Z';
+  const updatedAt = input?.updatedAt || '2026-04-07T09:05:00.000Z';
+  const startedAt = input?.startedAt || '2026-04-07T09:00:05.000Z';
+  const endedAt = input?.endedAt || '2026-04-07T09:05:00.000Z';
   const code =
     input?.code ||
     "test('reused-successful-run', async ({ page }) => { await page.goto('https://example.com/checkout'); });";
@@ -381,10 +402,10 @@ function createPassedRunSnapshot(input?: {
       runId,
       status: 'passed',
       stage: 'completed',
-      createdAt: '2026-04-07T09:00:00.000Z',
-      updatedAt: '2026-04-07T09:05:00.000Z',
-      startedAt: '2026-04-07T09:00:05.000Z',
-      endedAt: '2026-04-07T09:05:00.000Z',
+      createdAt,
+      updatedAt,
+      startedAt,
+      endedAt,
       request: {
         input: requestInput,
         targetUrl,
@@ -431,6 +452,7 @@ function createPassedRunSnapshot(input?: {
             attempt: 1,
             kind: 'generate',
             code,
+            fallbackTelemetry: input?.fallbackTelemetry ?? null,
             events: [],
             logs: [],
             result: {
@@ -451,20 +473,196 @@ function createPassedRunSnapshot(input?: {
       error: null,
     },
     error: '',
-    createdAt: '2026-04-07T09:00:00.000Z',
-    updatedAt: '2026-04-07T09:05:00.000Z',
-    startedAt: '2026-04-07T09:00:05.000Z',
-    endedAt: '2026-04-07T09:05:00.000Z',
+    createdAt,
+    updatedAt,
+    startedAt,
+    endedAt,
+  } as any;
+}
+
+function createFailedRunSnapshot(input?: {
+  runId?: string;
+  projectUid?: string;
+  moduleUid?: string;
+  intentDraftUid?: string;
+  requestInput?: string;
+  targetUrl?: string;
+  attachmentCount?: number;
+  attempts?: Array<{
+    attempt?: number;
+    kind?: 'generate' | 'repair';
+    code?: string;
+    failedStepTitle?: string;
+    progressedStepCount?: number;
+    error?: string;
+  }>;
+}) {
+  const runId = input?.runId || 'intent-run-failed-1';
+  const projectUid = input?.projectUid || 'proj_default';
+  const moduleUid = input?.moduleUid || 'mod_checkout';
+  const intentDraftUid = input?.intentDraftUid || 'idraft_checkout';
+  const requestInput = input?.requestInput || '访问结算页并提交，最终看到成功页';
+  const targetUrl = input?.targetUrl || 'https://example.com/checkout';
+  const attachmentCount = input?.attachmentCount ?? 0;
+  const attempts =
+    input?.attempts && input.attempts.length > 0
+      ? input.attempts
+      : [
+          {
+            attempt: 1,
+            kind: 'generate' as const,
+            code: "test('failed-run-generate', async ({ page }) => { await page.goto('https://example.com/checkout'); });",
+            failedStepTitle: 'Step 4: 提交失败',
+            progressedStepCount: 3,
+            error: '提交失败',
+          },
+        ];
+
+  const normalizedAttempts = attempts.map((rawAttempt, index) => {
+    const attempt = rawAttempt.attempt ?? index + 1;
+    const kind = rawAttempt.kind || (attempt === 1 ? 'generate' : 'repair');
+    const failedStepTitle = rawAttempt.failedStepTitle || 'Step 2: 失败';
+    const parsedFailedStepNumber = Number((failedStepTitle.match(/\bstep\s*(\d+)\b/i) || [])[1] || 0);
+    const progressedStepCount =
+      rawAttempt.progressedStepCount ?? (Number.isFinite(parsedFailedStepNumber) && parsedFailedStepNumber > 0 ? parsedFailedStepNumber - 1 : 0);
+    const error = rawAttempt.error || `失败 attempt ${attempt}`;
+    const code =
+      rawAttempt.code ||
+      `test('failed-run-${attempt}', async ({ page }) => { await page.goto('${targetUrl}'); await page.getByText('attempt-${attempt}').click(); });`;
+
+    return {
+      attempt,
+      kind,
+      code,
+      events: [],
+      logs: [],
+      triage: {
+        failureClass: 'unknown',
+        repairable: true,
+        summary: '暂未识别明确失败类型，先沿用自动修复策略。',
+        matchedSignals: [],
+        diagnosis: {
+          failureSignature: `unknown|${failedStepTitle}|${error}`,
+          failedStepTitle,
+          failedLocator: '',
+          targetAnchor: '',
+          pageUrl: targetUrl,
+          repeatedCount: 1,
+          candidateAnchors: [],
+          frameHints: [],
+          nextActions: [],
+        },
+      },
+      result: {
+        success: false,
+        duration: 1200,
+        steps: [
+          ...Array.from({ length: Math.max(0, progressedStepCount) }, (_unused, stepIndex) => ({
+            title: `Step ${stepIndex + 1}: 已通过`,
+            status: 'passed',
+            duration: 120,
+            error: '',
+            at: `2026-04-08T09:0${Math.min(stepIndex, 9)}:00.000Z`,
+          })),
+          {
+            title: failedStepTitle,
+            status: 'failed',
+            duration: 120,
+            error,
+            at: '2026-04-08T09:10:00.000Z',
+          },
+        ],
+        error,
+      },
+    };
+  });
+
+  const lastAttempt = normalizedAttempts[normalizedAttempts.length - 1];
+
+  return {
+    runId,
+    projectUid,
+    moduleUid,
+    status: 'failed',
+    stage: 'completed',
+    requestInput,
+    targetUrl,
+    state: {
+      runId,
+      status: 'failed',
+      stage: 'completed',
+      createdAt: '2026-04-08T09:00:00.000Z',
+      updatedAt: '2026-04-08T09:05:00.000Z',
+      startedAt: '2026-04-08T09:00:05.000Z',
+      endedAt: '2026-04-08T09:05:00.000Z',
+      request: {
+        input: requestInput,
+        targetUrl,
+        attachmentCount,
+        hasAuth: false,
+        intentDraftUid,
+        cicdProfile: 'manual',
+        llm: {
+          provider: 'openai',
+          model: 'gpt-5.3-codex',
+          apiStyle: 'responses',
+          visionEnabled: false,
+          selfHealRetries: 5,
+          maxPlanSteps: 8,
+        },
+      },
+      taskPlatform: {
+        requestFingerprint: `fp-${runId}`,
+        priority: 'normal',
+        timeoutMs: 720000,
+        retryLimit: 0,
+        retryCount: 0,
+        retryReasons: [],
+        replayOfRunId: '',
+        replayRootRunId: runId,
+        replaySequence: 0,
+        flaky: false,
+        flakyReason: '',
+        flakyPeerRunIds: [],
+      },
+      events: [],
+      result: {
+        scenarioCard,
+        llmMeta: {
+          provider: 'openai',
+          model: 'gpt-5.3-codex',
+          visionEnabled: false,
+          attachmentCount,
+        },
+        targetUrl,
+        description: requestInput,
+        attempts: normalizedAttempts,
+        finalResult: {
+          success: false,
+          duration: 1200,
+          steps: lastAttempt.result.steps,
+          error: lastAttempt.result.error,
+        },
+        finalFailureTriage: lastAttempt.triage,
+      },
+      error: lastAttempt.result.error,
+    },
+    error: lastAttempt.result.error,
+    createdAt: '2026-04-08T09:00:00.000Z',
+    updatedAt: '2026-04-08T09:05:00.000Z',
+    startedAt: '2026-04-08T09:00:05.000Z',
+    endedAt: '2026-04-08T09:05:00.000Z',
   } as any;
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
   resetIntentE2ESharedSessionCache();
   vi.mocked(getTestCodeSyntaxError).mockReturnValue('');
   vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 0 } as any);
-  vi.mocked(getIntentE2ERecipePerformanceMap).mockResolvedValue({
+  vi.mocked(buildIntentE2ERecipePerformanceMapFromData).mockReturnValue({
     'auth.unified-login': {
       runCount: 8,
       passedRuns: 7,
@@ -474,7 +672,7 @@ beforeEach(() => {
       lastVerifiedAt: '2026-03-25T09:00:00.000Z',
     },
   } as never);
-  vi.mocked(getIntentE2ERulePerformanceMap).mockResolvedValue({
+  vi.mocked(buildIntentE2ERulePerformanceMapFromData).mockReturnValue({
     'checkout.submit': {
       ruleId: 'checkout.submit',
       title: '结算提交页',
@@ -486,7 +684,7 @@ beforeEach(() => {
       rollbackCandidateCount: 0,
     },
   } as never);
-  vi.mocked(getIntentE2EStarterHelpers).mockResolvedValue([
+  vi.mocked(buildIntentE2EStarterHelpersFromData).mockReturnValue([
     {
       helper: '__e2e.waitForApiResponse',
       runCount: 4,
@@ -610,6 +808,10 @@ beforeEach(() => {
   vi.mocked(getIntentProjectKnowledgePath).mockImplementation((projectUid?: string) =>
     projectUid ? `reports/intent-e2e/projects/${projectUid}/intent-e2e.project-knowledge.json` : 'intent-e2e.project-knowledge.json'
   );
+  vi.mocked(listIntentProjectKnowledgeAuditEntries).mockResolvedValue({
+    items: [],
+    nextCursor: null,
+  } as never);
   vi.mocked(getIntentRepairMemoryPath).mockImplementation((projectUid?: string) =>
     projectUid ? `reports/intent-e2e/projects/${projectUid}/intent-e2e-repair-memory.json` : 'reports/intent-e2e-repair-memory.json'
   );
@@ -921,6 +1123,7 @@ describe('intent-e2e-service stream', () => {
       stepTypes: [],
       matchedRecipeSlugs: ['intent.checkout-success'],
       includeFailures: true,
+      runSnapshots: [],
     });
     expect(vi.mocked(buildIntentE2ERunReview)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(generateTest).mock.calls[0]?.[6]).toMatchObject({
@@ -950,6 +1153,13 @@ describe('intent-e2e-service stream', () => {
     expect(events.some((event) => event.type === 'description')).toBe(true);
     expect(events.some((event) => event.type === 'stage' && event.stage === 'prechecking')).toBe(true);
     expect(events.some((event) => event.type === 'stage' && event.stage === 'analyzing')).toBe(true);
+    const analyzingMessages = events.flatMap((event) =>
+      event.type === 'stage' && event.stage === 'analyzing' ? [event.message] : []
+    );
+    expect(analyzingMessages.some((message) => message.includes('页面快照已就绪'))).toBe(true);
+    expect(analyzingMessages.some((message) => message.includes('历史经验检索已完成'))).toBe(true);
+    expect(analyzingMessages.some((message) => message.includes('执行上下文已整理完成'))).toBe(true);
+    expect(analyzingMessages.some((message) => message.includes('历史脚本候选已完成'))).toBe(true);
     expect(vi.mocked(precheckPageAccess)).toHaveBeenCalledWith('https://example.com/checkout', undefined, {
       captureSnapshot: true,
     });
@@ -964,6 +1174,114 @@ describe('intent-e2e-service stream', () => {
     expect(events.some((event) => event.type === 'attempt_log' && event.log.message === 'page loaded')).toBe(true);
     expect(events.some((event) => event.type === 'attempt_result' && event.result.success)).toBe(true);
     expect(events.at(-1)?.type).toBe('final_result');
+  });
+
+  it('reuses analyze support data from memory cache across repeated project runs within ttl', async () => {
+    vi.stubEnv('INTENT_E2E_ANALYZE_SUPPORT_CACHE_TTL_MS', '30000');
+    vi.mocked(generateTest).mockImplementation(() =>
+      toAsyncGenerator([
+        {
+          type: 'complete',
+          content: "test('checkout-default-cache', async ({ page }) => { await page.goto('https://example.com/checkout'); });",
+        },
+      ])
+    );
+
+    const projectFeedbackRuns = [
+      createPassedRunSnapshot({
+        runId: 'intent-run-project-feedback',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+      }),
+    ];
+    const moduleExperienceRuns = [
+      createPassedRunSnapshot({
+        runId: 'intent-run-module-feedback',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+      }),
+    ];
+
+    vi.mocked(listIntentE2ERunSnapshots).mockImplementation(async (query) => {
+      const resolvedQuery = query ?? {};
+      if (
+        resolvedQuery.status === 'terminal' &&
+        resolvedQuery.projectUid === 'proj_default' &&
+        resolvedQuery.moduleUid === 'mod_checkout'
+      ) {
+        return moduleExperienceRuns as never;
+      }
+      if (resolvedQuery.status === 'terminal' && resolvedQuery.projectUid === 'proj_default') {
+        return projectFeedbackRuns as never;
+      }
+      return [] as never;
+    });
+
+    await runIntentDrivenE2EStream({
+      input: '访问结算页并提交，最终看到成功页',
+      projectUid: 'proj_default',
+      moduleUid: 'mod_checkout',
+      prefilledScenarioCard: scenarioCard,
+    });
+
+    const secondRunEvents: IntentE2EStreamEvent[] = [];
+    await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        prefilledScenarioCard: scenarioCard,
+      },
+      (event) => {
+        secondRunEvents.push(event);
+      }
+    );
+
+    expect(vi.mocked(listIntentE2ERunSnapshots)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(listIntentProjectKnowledgeAuditEntries)).toHaveBeenCalledTimes(1);
+    expect(secondRunEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'analyzing',
+          message: expect.stringContaining('source=memory_cache'),
+        }),
+      ])
+    );
+  });
+
+  it('records legacy free-generate fallback debt and sanitizer rescue in attempt metadata', async () => {
+    vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 0 } as any);
+    const rawLegacyCode = `
+      test('legacy-batch-account', async ({ page }) => {
+        const shared = { selectedOrderNo: '', orderNo: '' };
+        await page.goto('https://example.com/checkout');
+      });
+    `.trim();
+    const sanitizedLegacyCode = `
+      test('legacy-batch-account-sanitized', async ({ page }) => {
+        await page.goto('https://example.com/checkout');
+      });
+    `.trim();
+    vi.mocked(sanitizeGeneratedCode).mockImplementationOnce(() => sanitizedLegacyCode);
+    vi.mocked(generateTest).mockReturnValue(
+      toAsyncGenerator([
+        { type: 'thinking', content: '结构化 slot patch 失败（schema mismatch），当前显式回退到自由代码生成（legacy fallback，非主链）...' },
+        { type: 'code', content: rawLegacyCode },
+        { type: 'complete', content: sanitizedLegacyCode },
+      ])
+    );
+
+    const result = await runIntentDrivenE2EStream({
+      input: '访问结算页并提交，最终看到成功页',
+    });
+
+    expect(result.finalResult.success).toBe(true);
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'legacy_free_generate',
+      legacyFallbackReasonCode: 'structured_slot_patch_failed',
+      sanitizerRescueSource: 'legacy_free_generate',
+    });
   });
 
   it('rejects partial generated code when the LLM stream errors before a complete event', async () => {
@@ -2352,6 +2670,7 @@ describe('intent-e2e-service stream', () => {
   });
 
   it('reuses precheck snapshot and skips analyzePage when no fixture setup is configured', async () => {
+    const events: IntentE2EStreamEvent[] = [];
     vi.mocked(precheckPageAccess).mockResolvedValueOnce({
       status: 'ready',
       url: 'https://example.com/checkout',
@@ -2372,15 +2691,28 @@ describe('intent-e2e-service stream', () => {
       },
     } as any);
 
-    const result = await runIntentDrivenE2EStream({
-      input: '访问结算页并提交，最终看到成功页',
-    });
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
 
     expect(result.finalResult.success).toBe(true);
     expect(vi.mocked(precheckPageAccess)).toHaveBeenCalledWith('https://example.com/checkout', undefined, {
       captureSnapshot: true,
     });
     expect(vi.mocked(analyzePage)).not.toHaveBeenCalled();
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'stage' &&
+          event.stage === 'analyzing' &&
+          event.message.includes('页面快照已就绪（复用预检查快照）')
+      )
+    ).toBe(true);
     expect(vi.mocked(generateTest).mock.calls[0]?.[0]).toMatchObject({
       title: 'Checkout Snapshot',
       bodyTextExcerpt: '来自 precheck 的页面快照',
@@ -2416,6 +2748,10 @@ describe('intent-e2e-service stream', () => {
       storageState: { cookies: [], origins: [] },
     });
     expect(result.attempts[0]?.code).toBe(prefilledCode);
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'prefilled_plan_reuse',
+      prefilledPlanReuseSource: 'draft_first_pass',
+    });
     expect(events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -2492,6 +2828,11 @@ describe('intent-e2e-service stream', () => {
     });
     expect(vi.mocked(generateTest)).not.toHaveBeenCalled();
     expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toBe(successfulRunCode);
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'prefilled_plan_reuse',
+      prefilledPlanReuseSource: 'recent_successful_run',
+      reusedRunId: 'intent-run-passed-reuse',
+    });
     expect(events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -2503,6 +2844,470 @@ describe('intent-e2e-service stream', () => {
           type: 'attempt_log',
           log: expect.objectContaining({
             message: expect.stringContaining('intent-run-passed-reuse'),
+          }),
+        }),
+      ])
+    );
+  });
+
+  it('prefers a newer sanitizer-clean compatible successful run over an older exact-match run that still needs rescue', async () => {
+    const dirtyExactRunCode =
+      "test('dirty-exact-run', async ({ page }) => { await page.getByText('CURRENT_TABLE_SHORTCUT').click(); });";
+    const sanitizedDirtyExactRunCode =
+      "test('dirty-exact-run-cleaned', async ({ page }) => { await page.getByText('VISIBLE_PLACEHOLDER_SEARCH').click(); });";
+    const cleanCompatibleRunCode =
+      "test('clean-compatible-run', async ({ page }) => { await page.getByText('VISIBLE_PLACEHOLDER_SEARCH_COMPAT').click(); });";
+    vi.mocked(sanitizeGeneratedCode).mockImplementation((code: string) =>
+      code === dirtyExactRunCode ? sanitizedDirtyExactRunCode : code
+    );
+    vi.mocked(listIntentE2ERunSnapshots).mockResolvedValue([
+      createPassedRunSnapshot({
+        runId: 'intent-run-older-exact',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        requestInput: '访问结算页并提交，最终看到成功页',
+        attachmentCount: 0,
+        code: dirtyExactRunCode,
+        createdAt: '2026-04-13T08:46:21.498Z',
+      }),
+      createPassedRunSnapshot({
+        runId: 'intent-run-newer-compatible',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        requestInput: '访问结算页并提交，最终看到成功页\n本轮只验证 placeholder 收口。',
+        attachmentCount: 1,
+        code: cleanCompatibleRunCode,
+        createdAt: '2026-04-13T10:19:52.059Z',
+      }),
+    ] as never);
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        prefilledScenarioCard: scenarioCard,
+      },
+      () => {}
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(generateTest)).not.toHaveBeenCalled();
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toBe(cleanCompatibleRunCode);
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'prefilled_plan_reuse',
+      prefilledPlanReuseSource: 'recent_successful_run',
+      reusedRunId: 'intent-run-newer-compatible',
+    });
+  });
+
+  it('keeps an exact successful run candidate when it is already sanitizer-clean', async () => {
+    const exactCleanRunCode =
+      "test('exact-clean-run', async ({ page }) => { await page.getByText('VISIBLE_PLACEHOLDER_SEARCH').click(); });";
+    const newerCompatibleRunCode =
+      "test('compatible-clean-run', async ({ page }) => { await page.getByText('VISIBLE_PLACEHOLDER_SEARCH_COMPAT').click(); });";
+    vi.mocked(sanitizeGeneratedCode).mockImplementation((code: string) => code);
+    vi.mocked(listIntentE2ERunSnapshots).mockResolvedValue([
+      createPassedRunSnapshot({
+        runId: 'intent-run-newer-compatible',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        requestInput: '访问结算页并提交，最终看到成功页\n本轮只验证 placeholder 收口。',
+        attachmentCount: 1,
+        code: newerCompatibleRunCode,
+        createdAt: '2026-04-13T10:19:52.059Z',
+      }),
+      createPassedRunSnapshot({
+        runId: 'intent-run-exact-clean',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        requestInput: '访问结算页并提交，最终看到成功页',
+        attachmentCount: 0,
+        code: exactCleanRunCode,
+        createdAt: '2026-04-13T08:46:21.498Z',
+      }),
+    ] as never);
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        prefilledScenarioCard: scenarioCard,
+      },
+      () => {}
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(generateTest)).not.toHaveBeenCalled();
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toBe(exactCleanRunCode);
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'prefilled_plan_reuse',
+      prefilledPlanReuseSource: 'recent_successful_run',
+      reusedRunId: 'intent-run-exact-clean',
+    });
+  });
+
+  it('does not record sanitizer rescue when successful-run reuse only changes whitespace', async () => {
+    const rawWhitespaceOnlyRunCode = `
+      test('whitespace-only-run', async ({ page }) => {
+        await page.getByText('VISIBLE_PLACEHOLDER_SEARCH').click();
+      });
+    `.trim();
+    const sanitizedWhitespaceOnlyRunCode =
+      "test('whitespace-only-run', async ({ page }) => { await page.getByText('VISIBLE_PLACEHOLDER_SEARCH').click(); });";
+    vi.mocked(sanitizeGeneratedCode).mockImplementation((code: string) =>
+      code === rawWhitespaceOnlyRunCode ? sanitizedWhitespaceOnlyRunCode : code
+    );
+    vi.mocked(listIntentE2ERunSnapshots).mockResolvedValue([
+      createPassedRunSnapshot({
+        runId: 'intent-run-whitespace-only-clean',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        requestInput: '访问结算页并提交，最终看到成功页',
+        attachmentCount: 0,
+        code: rawWhitespaceOnlyRunCode,
+        createdAt: '2026-04-14T02:40:00.000Z',
+      }),
+    ] as never);
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        prefilledScenarioCard: scenarioCard,
+      },
+      () => {}
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(generateTest)).not.toHaveBeenCalled();
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toBe(sanitizedWhitespaceOnlyRunCode);
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'prefilled_plan_reuse',
+      prefilledPlanReuseSource: 'recent_successful_run',
+      reusedRunId: 'intent-run-whitespace-only-clean',
+    });
+    expect(result.attempts[0]?.fallbackTelemetry?.sanitizerRescueSource).toBeUndefined();
+  });
+
+  it('downranks a successful run whose historical attempt already recorded sanitizer rescue', async () => {
+    const exactRescuedRunCode =
+      "test('exact-rescued-run', async ({ page }) => { await page.getByText('VISIBLE_PLACEHOLDER_SEARCH').click(); });";
+    const compatibleCleanRunCode =
+      "test('compatible-clean-run', async ({ page }) => { await page.getByText('VISIBLE_PLACEHOLDER_SEARCH_COMPAT').click(); });";
+    vi.mocked(sanitizeGeneratedCode).mockImplementation((code: string) => code);
+    vi.mocked(listIntentE2ERunSnapshots).mockResolvedValue([
+      createPassedRunSnapshot({
+        runId: 'intent-run-exact-rescued',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        requestInput: '访问结算页并提交，最终看到成功页',
+        attachmentCount: 3,
+        code: exactRescuedRunCode,
+        fallbackTelemetry: {
+          path: 'prefilled_plan_reuse',
+          prefilledPlanReuseSource: 'recent_successful_run',
+          reusedRunId: 'intent-run-older-clean',
+          sanitizerRescueSource: 'recent_successful_run',
+        },
+        createdAt: '2026-04-14T01:50:23.490Z',
+      }),
+      createPassedRunSnapshot({
+        runId: 'intent-run-compatible-clean',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        requestInput: '访问结算页并提交，最终看到成功页\n本轮只验证 placeholder 收口。',
+        attachmentCount: 0,
+        code: compatibleCleanRunCode,
+        createdAt: '2026-04-13T10:19:52.059Z',
+      }),
+    ] as never);
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        prefilledScenarioCard: scenarioCard,
+        attachments: [{ type: 'image', contentType: 'image/png', name: '1.png', dataUrl: 'data:image/png;base64,AAAA' }] as any,
+      },
+      () => {}
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(generateTest)).not.toHaveBeenCalled();
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toBe(compatibleCleanRunCode);
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'prefilled_plan_reuse',
+      prefilledPlanReuseSource: 'recent_successful_run',
+      reusedRunId: 'intent-run-compatible-clean',
+    });
+  });
+
+  it('reuses the most-progressed failed run code when newer failed runs regress to earlier steps', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+    const progressedRepairCode =
+      "test('reused-progressed-run', async ({ page }) => { await page.goto('https://example.com/checkout'); await page.getByText('step-7').click(); });";
+    vi.mocked(listIntentE2ERunSnapshots)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([
+        createFailedRunSnapshot({
+          runId: 'intent-run-regressed-latest',
+          projectUid: 'proj_default',
+          moduleUid: 'mod_checkout',
+          intentDraftUid: 'idraft_checkout',
+          attempts: [
+            {
+              attempt: 1,
+              kind: 'generate',
+              code: "test('regressed-run', async ({ page }) => { await page.goto('https://example.com/checkout'); await page.getByText('step-1').click(); });",
+              failedStepTitle: 'Step 2: 再次卡回前置筛选',
+              progressedStepCount: 1,
+              error: '重新卡在前置筛选',
+            },
+          ],
+        }),
+        createFailedRunSnapshot({
+          runId: 'intent-run-progressed-best',
+          projectUid: 'proj_default',
+          moduleUid: 'mod_checkout',
+          intentDraftUid: 'idraft_checkout',
+          attempts: [
+            {
+              attempt: 1,
+              kind: 'generate',
+              code: "test('progressed-run-a1', async ({ page }) => { await page.goto('https://example.com/checkout'); await page.getByText('step-4').click(); });",
+              failedStepTitle: 'Step 4: 提取关键字段失败',
+              progressedStepCount: 3,
+              error: '提取字段失败',
+            },
+            {
+              attempt: 2,
+              kind: 'repair',
+              code: progressedRepairCode,
+              failedStepTitle: 'Step 7: 搜索回查失败',
+              progressedStepCount: 6,
+              error: '搜索回查失败',
+            },
+            {
+              attempt: 3,
+              kind: 'repair',
+              code: "test('progressed-run-a3', async ({ page }) => { await page.goto('https://example.com/checkout'); await page.getByText('step-5').click(); });",
+              failedStepTitle: 'Step 5: 提交失败',
+              progressedStepCount: 4,
+              error: '提交失败',
+            },
+          ],
+        }),
+      ] as never);
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        prefilledScenarioCard: scenarioCard,
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(listIntentE2ERunSnapshots).mock.calls).toEqual([
+      [
+        {
+          projectUid: 'proj_default',
+          moduleUid: 'mod_checkout',
+          status: 'passed',
+          limit: 12,
+        },
+      ],
+      [
+        {
+          projectUid: 'proj_default',
+          status: 'terminal',
+          limit: 50,
+        },
+      ],
+      [
+        {
+          projectUid: 'proj_default',
+          moduleUid: 'mod_checkout',
+          status: 'terminal',
+          limit: 36,
+        },
+      ],
+      [
+        {
+          projectUid: 'proj_default',
+          moduleUid: 'mod_checkout',
+          status: 'failed',
+          limit: 12,
+        },
+      ],
+    ]);
+    expect(vi.mocked(generateTest)).not.toHaveBeenCalled();
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toBe(progressedRepairCode);
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'prefilled_plan_reuse',
+      prefilledPlanReuseSource: 'recent_progressed_run',
+      reusedRunId: 'intent-run-progressed-best',
+    });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'generating',
+          message: expect.stringContaining('推进更远的修复脚本'),
+        }),
+        expect.objectContaining({
+          type: 'attempt_log',
+          log: expect.objectContaining({
+            message: expect.stringContaining('intent-run-progressed-best'),
+          }),
+        }),
+      ])
+    );
+  });
+
+  it('prefers a passed run final code over a progressed failed run reuse candidate', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+    const successfulRunCode =
+      "test('reused-successful-run-priority', async ({ page }) => { await page.goto('https://example.com/checkout'); await page.getByText('passed').click(); });";
+    vi.mocked(listIntentE2ERunSnapshots)
+      .mockResolvedValueOnce([
+        createPassedRunSnapshot({
+          runId: 'intent-run-passed-priority',
+          projectUid: 'proj_default',
+          moduleUid: 'mod_checkout',
+          intentDraftUid: 'idraft_checkout',
+          code: successfulRunCode,
+        }),
+      ] as never)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([
+        createFailedRunSnapshot({
+          runId: 'intent-run-progressed-ignored',
+          projectUid: 'proj_default',
+          moduleUid: 'mod_checkout',
+          intentDraftUid: 'idraft_checkout',
+          attempts: [
+            {
+              attempt: 2,
+              kind: 'repair',
+              code: "test('reused-progressed-ignored', async ({ page }) => { await page.goto('https://example.com/checkout'); await page.getByText('failed').click(); });",
+              failedStepTitle: 'Step 7: 搜索回查失败',
+              progressedStepCount: 6,
+              error: '搜索回查失败',
+            },
+          ],
+        }),
+      ] as never);
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        prefilledScenarioCard: scenarioCard,
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(listIntentE2ERunSnapshots)).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(generateTest)).not.toHaveBeenCalled();
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toBe(successfulRunCode);
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'stage' && event.stage === 'generating' && /推进更远的修复脚本/.test(event.message)
+      )
+    ).toBe(false);
+  });
+
+  it('falls back to fresh generation when the progressed failed run code has syntax errors', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+    const invalidProgressedCode =
+      "test('broken-progressed-run', async ({ page }) => { const broken = await page.locator('button')=> ''; });";
+    vi.mocked(listIntentE2ERunSnapshots)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([
+        createFailedRunSnapshot({
+          runId: 'intent-run-progressed-invalid',
+          projectUid: 'proj_default',
+          moduleUid: 'mod_checkout',
+          intentDraftUid: 'idraft_checkout',
+          attempts: [
+            {
+              attempt: 2,
+              kind: 'repair',
+              code: invalidProgressedCode,
+              failedStepTitle: 'Step 7: 搜索回查失败',
+              progressedStepCount: 6,
+              error: '搜索回查失败',
+            },
+          ],
+        }),
+      ] as never);
+    vi.mocked(getTestCodeSyntaxError).mockImplementation((_code, source) =>
+      source === 'recent_progressed_run' ? 'Malformed arrow function parameter list' : ''
+    );
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        prefilledScenarioCard: scenarioCard,
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(generateTest)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(sanitizeGeneratedCode)).toHaveBeenCalledWith(invalidProgressedCode);
+    expect(vi.mocked(getTestCodeSyntaxError)).toHaveBeenCalledWith(
+      invalidProgressedCode,
+      'recent_progressed_run'
+    );
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toContain("test('checkout-default'");
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'prefilled_plan_reuse',
+      prefilledPlanSkipReason: expect.stringContaining('最近一次推进更远的修复脚本存在语法错误'),
+    });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'attempt_log',
+          log: expect.objectContaining({
+            message: expect.stringContaining('最近一次推进更远的修复脚本存在语法错误'),
           }),
         }),
       ])
@@ -2559,6 +3364,10 @@ describe('intent-e2e-service stream', () => {
     expect(vi.mocked(generateTest)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(executeTest).mock.calls[0]?.[0]).not.toBe(stalePrefilledCode);
     expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toContain("test('checkout-default'");
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'prefilled_plan_reuse',
+      prefilledPlanSkipReason: expect.stringContaining('命中已知旧的最终提交按钮定位骨架'),
+    });
     expect(events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -2602,6 +3411,10 @@ describe('intent-e2e-service stream', () => {
     expect(vi.mocked(generateScenarioCard)).not.toHaveBeenCalled();
     expect(vi.mocked(generateTest)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(executeTest).mock.calls[0]?.[0]).not.toBe(invalidPrefilledCode);
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'prefilled_plan_reuse',
+      prefilledPlanSkipReason: expect.stringContaining('草稿首版脚本存在语法错误'),
+    });
     expect(events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -2614,6 +3427,54 @@ describe('intent-e2e-service stream', () => {
           log: expect.objectContaining({
             message: expect.stringContaining('草稿首版脚本存在语法错误'),
           }),
+        }),
+      ])
+    );
+  });
+
+  it('sanitizes reused draft first-pass code before executing it', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+    const reusedDraftCode = `
+      test('batch-account-reuse', async ({ page }) => {
+        const shared = { selectedOrderNo: '', selectedServiceItem: '', selectedAmount: '' };
+        const artifacts = Object.create(null);
+        const keywordInput = page.locator('input#form_in_modal_testKeyWord:visible').first();
+        await expect(keywordInput).toBeVisible({ timeout: 15000 });
+      });
+    `.trim();
+    const sanitizedDraftCode = `
+      test('batch-account-sanitized', async ({ page }) => {
+        await page.goto('https://example.com/checkout');
+      });
+    `.trim();
+    vi.mocked(sanitizeGeneratedCode).mockReturnValue(sanitizedDraftCode);
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        prefilledScenarioCard: scenarioCard,
+        prefilledPlanCode: reusedDraftCode,
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(sanitizeGeneratedCode)).toHaveBeenCalledWith(reusedDraftCode);
+    expect(vi.mocked(getTestCodeSyntaxError)).toHaveBeenCalledWith(sanitizedDraftCode, 'draft_first_pass');
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toBe(sanitizedDraftCode);
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'prefilled_plan_reuse',
+      prefilledPlanReuseSource: 'draft_first_pass',
+      sanitizerRescueSource: 'draft_first_pass',
+    });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'generating',
+          message: expect.stringContaining('已复用草稿首版脚本'),
         }),
       ])
     );
@@ -3006,6 +3867,267 @@ describe('intent-e2e-service stream', () => {
     expect(events.some((event) => event.type === 'attempt_log' && event.log.message === 'repair run ok')).toBe(true);
   });
 
+  it('reuses the recent progressed run code as the repair baseline when a newer repair regresses earlier', async () => {
+    vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 2 } as any);
+    const progressedRepairCode =
+      "test('reused-progressed-run', async ({ page }) => { await page.goto('https://example.com/checkout'); await page.getByText('step-7').click(); });";
+    const regressedRepairCode =
+      "test('regressed-repair-run', async ({ page }) => { await page.goto('https://example.com/checkout'); await page.getByText('step-2').click(); });";
+    const recoveredRepairCode =
+      "test('recovered-repair-run', async ({ page }) => { await page.goto('https://example.com/checkout'); await page.getByText('step-8').click(); });";
+
+    vi.mocked(listIntentE2ERunSnapshots)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([
+        createFailedRunSnapshot({
+          runId: 'intent-run-progressed-baseline',
+          projectUid: 'proj_default',
+          moduleUid: 'mod_checkout',
+          intentDraftUid: 'idraft_checkout',
+          attempts: [
+            {
+              attempt: 2,
+              kind: 'repair',
+              code: progressedRepairCode,
+              failedStepTitle: 'Step 7: 搜索回查失败',
+              progressedStepCount: 6,
+              error: '搜索回查失败',
+            },
+          ],
+        }),
+      ] as never);
+
+    vi.mocked(repairTest)
+      .mockImplementationOnce((_snapshot, _description, repair) =>
+        toAsyncGenerator([{ type: 'complete', content: regressedRepairCode }])
+      )
+      .mockImplementationOnce((_snapshot, _description, repair) => {
+        expect(repair.previousCode).toBe(progressedRepairCode);
+        expect(repair.executionError).toBe('searchResp is not defined');
+        return toAsyncGenerator([{ type: 'complete', content: recoveredRepairCode }]);
+      });
+
+    vi.mocked(executeTest)
+      .mockImplementationOnce(async (code) => {
+        expect(code).toBe(progressedRepairCode);
+        return {
+          success: false,
+          duration: 1100,
+          steps: [
+            {
+              title: 'Step 7: 搜索回查失败',
+              status: 'failed',
+              duration: 1100,
+              error: '入账列表未找到订单号',
+              at: '2026-04-14T09:10:00.000Z',
+            },
+          ],
+          error: '入账列表未找到订单号',
+        } as never;
+      })
+      .mockImplementationOnce(async (code) => {
+        expect(code).toBe(regressedRepairCode);
+        return {
+          success: false,
+          duration: 420,
+          steps: [
+            {
+              title: 'Step 2: 前置筛选失败',
+              status: 'failed',
+              duration: 420,
+              error: 'searchResp is not defined',
+              at: '2026-04-14T09:11:00.000Z',
+            },
+          ],
+          error: 'searchResp is not defined',
+        } as never;
+      })
+      .mockImplementationOnce(async (code) => {
+        expect(code).toBe(recoveredRepairCode);
+        return {
+          success: true,
+          duration: 380,
+          steps: [
+            {
+              title: 'Step 8: 最终验收',
+              status: 'passed',
+              duration: 380,
+              at: '2026-04-14T09:12:00.000Z',
+            },
+          ],
+          error: null,
+        } as never;
+      });
+
+    const events: IntentE2EStreamEvent[] = [];
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        prefilledScenarioCard: scenarioCard,
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(result.attempts).toHaveLength(3);
+    expect(vi.mocked(generateTest)).not.toHaveBeenCalled();
+    expect(vi.mocked(repairTest)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(repairTest).mock.calls[0]?.[2]).toMatchObject({
+      previousCode: progressedRepairCode,
+      executionError: '入账列表未找到订单号',
+    });
+    expect(vi.mocked(repairTest).mock.calls[1]?.[2]).toMatchObject({
+      previousCode: progressedRepairCode,
+      executionError: 'searchResp is not defined',
+    });
+    expect(result.attempts[2]?.fallbackTelemetry).toMatchObject({
+      repairBaselineReuseSource: 'recent_progressed_run',
+      repairBaselineReusedRunId: 'intent-run-progressed-baseline',
+    });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'attempt_log',
+          log: expect.objectContaining({
+            message: expect.stringContaining('repair 基线已切回最近一次推进更远的历史脚本'),
+          }),
+        }),
+      ])
+    );
+  });
+
+  it('keeps the current repair code as baseline when it has already progressed farther than the historical candidate', async () => {
+    vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 2 } as any);
+    const progressedRepairCode =
+      "test('reused-progressed-run', async ({ page }) => { await page.goto('https://example.com/checkout'); await page.getByText('step-7').click(); });";
+    const improvedRepairCode =
+      "test('improved-repair-run', async ({ page }) => { await page.goto('https://example.com/checkout'); await page.getByText('step-8').click(); });";
+    const recoveredRepairCode =
+      "test('recovered-repair-run', async ({ page }) => { await page.goto('https://example.com/checkout'); await page.getByText('done').click(); });";
+
+    vi.mocked(listIntentE2ERunSnapshots)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([
+        createFailedRunSnapshot({
+          runId: 'intent-run-progressed-baseline',
+          projectUid: 'proj_default',
+          moduleUid: 'mod_checkout',
+          intentDraftUid: 'idraft_checkout',
+          attempts: [
+            {
+              attempt: 2,
+              kind: 'repair',
+              code: progressedRepairCode,
+              failedStepTitle: 'Step 7: 搜索回查失败',
+              progressedStepCount: 6,
+              error: '搜索回查失败',
+            },
+          ],
+        }),
+      ] as never);
+
+    vi.mocked(repairTest)
+      .mockImplementationOnce((_snapshot, _description, repair) =>
+        toAsyncGenerator([{ type: 'complete', content: improvedRepairCode }])
+      )
+      .mockImplementationOnce((_snapshot, _description, repair) => {
+        expect(repair.previousCode).toBe(improvedRepairCode);
+        expect(repair.executionError).toBe('最终验收缺少状态证据');
+        return toAsyncGenerator([{ type: 'complete', content: recoveredRepairCode }]);
+      });
+
+    vi.mocked(executeTest)
+      .mockImplementationOnce(async (code) => {
+        expect(code).toBe(progressedRepairCode);
+        return {
+          success: false,
+          duration: 1100,
+          steps: [
+            {
+              title: 'Step 7: 搜索回查失败',
+              status: 'failed',
+              duration: 1100,
+              error: '入账列表未找到订单号',
+              at: '2026-04-14T09:20:00.000Z',
+            },
+          ],
+          error: '入账列表未找到订单号',
+        } as never;
+      })
+      .mockImplementationOnce(async (code) => {
+        expect(code).toBe(improvedRepairCode);
+        return {
+          success: false,
+          duration: 420,
+          steps: [
+            {
+              title: 'Step 8: 最终验收',
+              status: 'failed',
+              duration: 420,
+              error: '最终验收缺少状态证据',
+              at: '2026-04-14T09:21:00.000Z',
+            },
+          ],
+          error: '最终验收缺少状态证据',
+        } as never;
+      })
+      .mockImplementationOnce(async (code) => {
+        expect(code).toBe(recoveredRepairCode);
+        return {
+          success: true,
+          duration: 380,
+          steps: [
+            {
+              title: 'Step 8: 最终验收',
+              status: 'passed',
+              duration: 380,
+              at: '2026-04-14T09:22:00.000Z',
+            },
+          ],
+          error: null,
+        } as never;
+      });
+
+    const events: IntentE2EStreamEvent[] = [];
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        prefilledScenarioCard: scenarioCard,
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(result.attempts).toHaveLength(3);
+    expect(vi.mocked(repairTest)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(repairTest).mock.calls[1]?.[2]).toMatchObject({
+      previousCode: improvedRepairCode,
+      executionError: '最终验收缺少状态证据',
+    });
+    expect(result.attempts[2]?.fallbackTelemetry?.repairBaselineReuseSource).toBeUndefined();
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'attempt_log' &&
+          event.log.message.includes('repair 基线已切回最近一次推进更远的历史脚本')
+      )
+    ).toBe(false);
+  });
+
   it('does not continue into repair when project assets are missing', async () => {
     vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 3 } as any);
     vi.spyOn(fs, 'existsSync').mockImplementation((target) => !String(target).includes('intent-e2e.project-knowledge.json'));
@@ -3051,7 +4173,7 @@ describe('intent-e2e-service stream', () => {
     expect(vi.mocked(repairTest)).not.toHaveBeenCalled();
   });
 
-  it('caps repair budget to one retry when project knowledge is a no_hit', async () => {
+  it('does not additionally cap repair budget when project knowledge is a no_hit', async () => {
     vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 3 } as any);
     vi.mocked(resolveIntentPromptPlanningContext).mockReturnValue(
       createPlanningContext({
@@ -3064,25 +4186,42 @@ describe('intent-e2e-service stream', () => {
         { type: 'complete', content: "test('checkout-no-hit', async ({ page }) => { await page.goto('https://example.com/checkout'); });" },
       ])
     );
-    vi.mocked(repairTest).mockImplementation(() =>
-      toAsyncGenerator([
-        { type: 'complete', content: "test('checkout-no-hit-repair', async ({ page }) => { await page.goto('https://example.com/checkout'); });" },
-      ])
-    );
-    vi.mocked(executeTest).mockResolvedValue({
-      success: false,
-      duration: 860,
-      steps: [
+    let repairGenerationCount = 0;
+    vi.mocked(repairTest).mockImplementation(() => {
+      repairGenerationCount += 1;
+      return toAsyncGenerator([
         {
-          title: '点击提交按钮',
-          status: 'failed',
-          duration: 860,
-          error: 'locator not found',
-          at: '2026-03-16T09:21:00.000Z',
+          type: 'complete',
+          content: `test('checkout-no-hit-repair-${repairGenerationCount}', async ({ page }) => { await page.goto('https://example.com/checkout?repair=${repairGenerationCount}'); });`,
         },
-      ],
-      error: 'locator not found',
-    } as any);
+      ]);
+    });
+    let executionCount = 0;
+    vi.mocked(executeTest).mockImplementation(async () => {
+      executionCount += 1;
+      const failures = [
+        '执行失败-A',
+        '执行失败-B',
+        '执行失败-C',
+        '执行失败-D',
+      ];
+      const error = failures[Math.min(executionCount - 1, failures.length - 1)];
+
+      return {
+        success: false,
+        duration: 860,
+        steps: [
+          {
+            title: `执行步骤 ${executionCount}`,
+            status: 'failed',
+            duration: 860,
+            error,
+            at: '2026-03-16T09:21:00.000Z',
+          },
+        ],
+        error,
+      } as any;
+    });
 
     const events: IntentE2EStreamEvent[] = [];
     const result = await runIntentDrivenE2EStream(
@@ -3100,17 +4239,19 @@ describe('intent-e2e-service stream', () => {
       status: 'no_hit',
       knowledgeMatchCount: 0,
     });
-    expect(result.attempts).toHaveLength(2);
+    expect(result.attempts).toHaveLength(4);
     expect(result.repairBudget).toMatchObject({
-      maxRepairAttempts: 1,
-      usedRepairAttempts: 1,
+      maxRepairAttempts: 3,
+      usedRepairAttempts: 3,
       exhausted: true,
       reasonCode: 'knowledge_no_hit',
     });
+    expect(result.repairBudget?.summary).toContain('当前不再额外收紧 repair budget');
     expect(result.failureCta).toMatchObject({
       primaryAction: 'preview_knowledge_draft',
     });
-    expect(vi.mocked(repairTest)).toHaveBeenCalledTimes(1);
+    expect(result.failureCta?.summary).toContain('当前不再额外收紧 repair budget');
+    expect(vi.mocked(repairTest)).toHaveBeenCalledTimes(3);
     expect(events.some((event) => event.type === 'attempt_log' && event.log.message.includes('项目知识未命中'))).toBe(true);
   });
 
@@ -3121,11 +4262,16 @@ describe('intent-e2e-service stream', () => {
         { type: 'complete', content: "test('checkout-workflow-gap', async ({ page }) => { await page.goto('https://example.com/checkout'); });" },
       ])
     );
-    vi.mocked(repairTest).mockImplementation(() =>
-      toAsyncGenerator([
-        { type: 'complete', content: "test('checkout-workflow-gap-repair', async ({ page }) => { await page.goto('https://example.com/checkout'); });" },
-      ])
-    );
+    let repairGenerationCount = 0;
+    vi.mocked(repairTest).mockImplementation(() => {
+      repairGenerationCount += 1;
+      return toAsyncGenerator([
+        {
+          type: 'complete',
+          content: `test('checkout-workflow-gap-repair-${repairGenerationCount}', async ({ page }) => { await page.goto('https://example.com/checkout?repair=${repairGenerationCount}'); });`,
+        },
+      ]);
+    });
 
     let executionCount = 0;
     vi.mocked(executeTest).mockImplementation(async () => {
@@ -3334,13 +4480,13 @@ describe('intent-e2e-service stream', () => {
     expect(result.attempts).toHaveLength(0);
     expect(result.finalResult.error).toContain('fixture setup');
     expect(result.finalFailureTriage).toMatchObject({
-      failureClass: 'data_missing',
+      failureClass: 'fixture_contract_missing',
       repairable: false,
     });
     expect(result.repairBudget).toMatchObject({
       maxRepairAttempts: 0,
       exhausted: true,
-      reasonCode: 'data_blocked',
+      reasonCode: 'fixture_contract_missing',
     });
     expect(result.failureCta).toMatchObject({
       primaryAction: 'prepare_prerequisites',
@@ -3395,7 +4541,7 @@ describe('intent-e2e-service stream', () => {
     expect(result.finalResult.success).toBe(false);
     expect(result.finalResult.error).toContain('fixture cleanup');
     expect(result.finalFailureTriage).toMatchObject({
-      failureClass: 'data_missing',
+      failureClass: 'fixture_contract_missing',
       repairable: false,
     });
     expect(result.qualitySplit).toEqual({
@@ -3407,7 +4553,7 @@ describe('intent-e2e-service stream', () => {
     expect(result.repairBudget).toMatchObject({
       maxRepairAttempts: 0,
       exhausted: true,
-      reasonCode: 'data_blocked',
+      reasonCode: 'fixture_contract_missing',
     });
     expect(result.failureCta).toMatchObject({
       primaryAction: 'prepare_prerequisites',
@@ -3487,6 +4633,100 @@ describe('intent-e2e-service stream', () => {
     expect(events.some((event) => event.type === 'attempt_log' && event.log.message.includes('环境阻塞'))).toBe(true);
   });
 
+  it('stops self-heal early for runtime syntax damage before entering repair', async () => {
+    vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 3 } as any);
+    vi.mocked(generateTest).mockReturnValue(
+      toAsyncGenerator([
+        { type: 'complete', content: "test('checkout-broken-runtime', async ({ page }) => { await page.goto('https://example.com/checkout'); });" },
+      ])
+    );
+
+    vi.mocked(executeTest).mockResolvedValue({
+      success: false,
+      duration: 0,
+      steps: [
+        {
+          title: '准备测试脚本',
+          status: 'failed',
+          duration: 0,
+          error: '测试脚本预处理失败（runtime_syntax_damage）：TypeScript 兼容降级后仍存在语法错误：Unexpected token',
+          at: '2026-03-16T09:20:00.000Z',
+        },
+      ],
+      error: '测试脚本预处理失败（runtime_syntax_damage）：TypeScript 兼容降级后仍存在语法错误：Unexpected token',
+    } as never);
+
+    const result = await runIntentDrivenE2EStream({
+      input: '访问结算页并提交，最终看到成功页',
+    });
+
+    expect(result.finalResult.success).toBe(false);
+    expect(result.attempts).toHaveLength(1);
+    expect(result.finalFailureTriage).toMatchObject({
+      failureClass: 'runtime_syntax_damage',
+      repairable: false,
+    });
+    expect(result.repairBudget).toMatchObject({
+      maxRepairAttempts: 0,
+      exhausted: true,
+      reasonCode: 'runtime_syntax_damage',
+    });
+    expect(result.failureCta).toMatchObject({
+      primaryAction: 'handoff_manual',
+    });
+    expect(vi.mocked(repairTest)).not.toHaveBeenCalled();
+  });
+
+  it('stops self-heal when repair produces no effective code delta', async () => {
+    vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 3 } as any);
+    const sameCode = "test('checkout-same-code', async ({ page }) => { await page.goto('https://example.com/checkout'); });";
+    vi.mocked(generateTest).mockReturnValue(
+      toAsyncGenerator([
+        { type: 'complete', content: sameCode },
+      ])
+    );
+    vi.mocked(repairTest).mockReturnValue(
+      toAsyncGenerator([
+        { type: 'complete', content: sameCode },
+      ])
+    );
+
+    vi.mocked(executeTest).mockResolvedValue({
+      success: false,
+      duration: 900,
+      steps: [
+        {
+          title: '点击提交按钮',
+          status: 'failed',
+          duration: 900,
+          error: 'locator not found',
+          at: '2026-03-16T09:20:00.000Z',
+        },
+      ],
+      error: 'locator not found',
+    } as never);
+
+    const result = await runIntentDrivenE2EStream({
+      input: '访问结算页并提交，最终看到成功页',
+    });
+
+    expect(result.finalResult.success).toBe(false);
+    expect(result.attempts).toHaveLength(2);
+    expect(result.finalFailureTriage).toMatchObject({
+      failureClass: 'repair_non_progress',
+      repairable: false,
+    });
+    expect(result.repairBudget).toMatchObject({
+      maxRepairAttempts: 1,
+      exhausted: true,
+      reasonCode: 'repair_non_progress',
+    });
+    expect(result.failureCta).toMatchObject({
+      primaryAction: 'handoff_manual',
+    });
+    expect(vi.mocked(repairTest)).toHaveBeenCalledTimes(1);
+  });
+
   it('stops self-heal early when repeated repairs stagnate on the same failure signature', async () => {
     vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 5 } as any);
     vi.mocked(generateTest).mockReturnValue(
@@ -3494,11 +4734,16 @@ describe('intent-e2e-service stream', () => {
         { type: 'complete', content: "test('checkout-stagnated', async ({ page }) => { await page.goto('https://example.com/checkout'); });" },
       ])
     );
-    vi.mocked(repairTest).mockImplementation(() =>
-      toAsyncGenerator([
-        { type: 'complete', content: "test('checkout-stagnated-repair', async ({ page }) => { await page.goto('https://example.com/checkout'); });" },
-      ])
-    );
+    let repairGenerationCount = 0;
+    vi.mocked(repairTest).mockImplementation(() => {
+      repairGenerationCount += 1;
+      return toAsyncGenerator([
+        {
+          type: 'complete',
+          content: `test('checkout-stagnated-repair-${repairGenerationCount}', async ({ page }) => { await page.goto('https://example.com/checkout?repair=${repairGenerationCount}'); });`,
+        },
+      ]);
+    });
 
     vi.mocked(executeTest).mockImplementation(async () => ({
       success: false,

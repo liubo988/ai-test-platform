@@ -1,3 +1,4 @@
+import { collectFlowVariableNames } from './task-flow';
 import { looksLikeIntentStableIdentifierVariable } from './intent-shared-variable-utils';
 
 export type IntentActionStepType = 'ui' | 'api' | 'assert' | 'extract' | 'cleanup';
@@ -181,8 +182,8 @@ function needsExtraction(text: string, step: IntentActionStepInput): boolean {
 }
 
 function needsResponseJsonExtraction(step: IntentActionStepInput, input: BuildIntentActionDSLInput): boolean {
-  const extractVariable = String(step.extractVariable || '').trim();
-  if (!extractVariable) return false;
+  const extractVariables = collectFlowVariableNames(step.extractVariable);
+  if (extractVariables.length === 0) return false;
 
   const haystack = buildHaystack(step, input);
   const stepHaystack = buildStepHaystack(step);
@@ -191,14 +192,14 @@ function needsResponseJsonExtraction(step: IntentActionStepInput, input: BuildIn
   return (
     step.stepType === 'api' ||
     needsResponseAssertion(stepHaystack, contextHaystack) ||
-    looksLikeIntentStableIdentifierVariable(extractVariable) ||
+    extractVariables.some((item) => looksLikeIntentStableIdentifierVariable(item)) ||
     /(接口|响应|返回|json|payload|response|api)/i.test(haystack)
   );
 }
 
 function hasStableIdentifierVerificationContext(step: IntentActionStepInput, input: BuildIntentActionDSLInput): boolean {
   const haystack = buildHaystack(step, input);
-  const candidateVariables = uniqueStrings([step.extractVariable, ...(input.sharedVariables || [])]);
+  const candidateVariables = collectFlowVariableNames([step.extractVariable, ...(input.sharedVariables || [])]);
 
   if (!needsRowActionHelper(haystack)) return false;
   if (candidateVariables.some((variable) => looksLikeIntentStableIdentifierVariable(variable))) return true;
@@ -327,7 +328,7 @@ export function buildIntentActionDSL(input: BuildIntentActionDSLInput): IntentAc
     allowedActions: buildAllowedActions(step, input),
     preferredHelpers: buildPreferredHelpers(step, input),
     requiredAssertions: buildRequiredAssertions(step, input),
-    sharedVariables: uniqueStrings([step.extractVariable, ...(input.sharedVariables || [])]),
+    sharedVariables: collectFlowVariableNames([step.extractVariable, ...(input.sharedVariables || [])]),
     forbiddenPatterns: buildForbiddenPatterns(step, input),
   }));
 

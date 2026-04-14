@@ -11,12 +11,33 @@ const ROOT = process.cwd();
 const WORKER_TEMPLATE_PATH = path.join(ROOT, 'lib', 'test-worker.mjs');
 const AUTH_SHARED_MODULE_PLACEHOLDER = '__INTENT_E2E_AUTH_SHARED_MODULE__';
 const AUTH_SHARED_MODULE_URL = pathToFileURL(path.join(ROOT, 'lib', 'intent-e2e-auth-shared.mjs')).href;
+const SIMPLE_ARROW_PARAM_PATTERN =
+  String.raw`(?:\.\.\.)?[A-Za-z_$][\w$]*(?:\?)?(?:\s*:\s*[^,)=\n]+)?(?:\s*=\s*[^,)\n]+)?`;
+const PARENTHESIZED_ARROW_RETURN_TYPE_PATTERN = new RegExp(
+  String.raw`((?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?\(\s*(?:` +
+    SIMPLE_ARROW_PARAM_PATTERN +
+    String.raw`(?:\s*,\s*` +
+    SIMPLE_ARROW_PARAM_PATTERN +
+    String.raw`)*)?\s*\))\s*:\s*[^=\n]+(?=\s*=>)`,
+  'gm'
+);
+const SINGLE_PARAM_ARROW_RETURN_TYPE_PATTERN = new RegExp(
+  String.raw`((?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?(?:\.\.\.)?[A-Za-z_$][\w$]*\??)\s*:\s*[^=\n]+(?=\s*=>)`,
+  'gm'
+);
 
 export interface TestResult {
   success: boolean;
   duration: number;
   steps: StepResult[];
   error: string | null;
+}
+
+interface PreparedTestCodeResult {
+  ok: boolean;
+  executableCode: string;
+  error: string;
+  usedTypeScriptFallback: boolean;
 }
 
 interface ExecuteHooks {
@@ -114,9 +135,9 @@ function tsToJs(code: string): string {
   // 这里只收窄到真实函数签名，避免把三元表达式 `?:` 误判成返回类型。
   // function foo(): void { ... } → function foo() { ... }
   // const foo = (): Promise<void> => ... → const foo = () => ...
-  result = result.replace(/((?:async\s+)?function\s+\w+\s*\([^)]*\))\s*:\s*[^={>\n]+(?=\s*\{)/gm, '$1');
-  result = result.replace(/((?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?\([^)]*\))\s*:\s*[^={>\n]+(?=\s*=>)/gm, '$1');
-  result = result.replace(/((?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?[A-Za-z_$][\w$]*)\s*:\s*[^={>\n]+(?=\s*=>)/gm, '$1');
+  result = result.replace(/((?:async\s+)?function\s+\w+\s*\([^)]*\))\s*:\s*[^={\n]+(?=\s*\{)/gm, '$1');
+  result = result.replace(PARENTHESIZED_ARROW_RETURN_TYPE_PATTERN, '$1');
+  result = result.replace(SINGLE_PARAM_ARROW_RETURN_TYPE_PATTERN, '$1');
 
   return result;
 }
@@ -127,9 +148,9 @@ const TYPESCRIPT_ONLY_SYNTAX_PATTERNS: RegExp[] = [
   /(^|\n)\s*(?:export\s+)?type\s+\w+\s*=/m,
   /(?:const|let|var)\s+\w+\s*:\s*[^=;\n]+(?=\s*=)/m,
   /[,(]\s*\w+\s*:\s*[^=),\n]+(?=\s*(?:[=,)]))/m,
-  /(?:async\s+)?function\s+\w+\s*\([^)]*\)\s*:\s*[^={>\n]+(?=\s*\{)/m,
-  /(?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?\([^)]*\)\s*:\s*[^={>\n]+(?=\s*=>)/m,
-  /(?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?[A-Za-z_$][\w$]*\s*:\s*[^={>\n]+(?=\s*=>)/m,
+  /(?:async\s+)?function\s+\w+\s*\([^)]*\)\s*:\s*[^={\n]+(?=\s*\{)/m,
+  new RegExp(PARENTHESIZED_ARROW_RETURN_TYPE_PATTERN.source, 'm'),
+  new RegExp(SINGLE_PARAM_ARROW_RETURN_TYPE_PATTERN.source, 'm'),
   /\s+as\s+[A-Za-z_$][\w<>{},\s\[\]|&?:]*/m,
   /\s+satisfies\s+[A-Za-z_$][\w<>{},\s\[\]|&?:]*/m,
   /[\w\)\]]!(?=(?:[.\[),;\s}:]|$))/m,
@@ -139,20 +160,76 @@ function containsTypeScriptOnlySyntax(code: string): boolean {
   return TYPESCRIPT_ONLY_SYNTAX_PATTERNS.some((pattern) => pattern.test(code));
 }
 
-export function prepareTestCodeForExecution(code: string): string {
-  const normalizedCode = normalizeExecutableTestCode(code);
-  return containsTypeScriptOnlySyntax(normalizedCode) ? tsToJs(normalizedCode) : normalizedCode;
-}
-
-export function getTestCodeSyntaxError(code: string, contextLabel = 'generated code'): string {
+function tryParseJavaScript(code: string, contextLabel = 'generated code'): string {
   try {
-    new Script(prepareTestCodeForExecution(code), {
+    new Script(code, {
       filename: `${contextLabel}.generated.js`,
     });
     return '';
   } catch (error) {
     return error instanceof Error ? error.message : String(error || '未知错误');
   }
+}
+
+function resolvePreparedTestCode(code: string, contextLabel = 'generated code'): PreparedTestCodeResult {
+  const normalizedCode = normalizeExecutableTestCode(code);
+  const normalizedSyntaxError = tryParseJavaScript(normalizedCode, contextLabel);
+  if (!normalizedSyntaxError) {
+    return {
+      ok: true,
+      executableCode: normalizedCode,
+      error: '',
+      usedTypeScriptFallback: false,
+    };
+  }
+
+  if (!containsTypeScriptOnlySyntax(normalizedCode)) {
+    return {
+      ok: false,
+      executableCode: '',
+      error: `脚本不是合法 JavaScript，且未检测到可安全降级的 TypeScript 语法：${normalizedSyntaxError}`,
+      usedTypeScriptFallback: false,
+    };
+  }
+
+  const transformedCode = tsToJs(normalizedCode);
+  if (transformedCode === normalizedCode) {
+    return {
+      ok: false,
+      executableCode: '',
+      error: `检测到 TypeScript-like 语法，但兼容降级未产生变化：${normalizedSyntaxError}`,
+      usedTypeScriptFallback: true,
+    };
+  }
+
+  const transformedSyntaxError = tryParseJavaScript(transformedCode, contextLabel);
+  if (transformedSyntaxError) {
+    return {
+      ok: false,
+      executableCode: '',
+      error: `TypeScript 兼容降级后仍存在语法错误：${transformedSyntaxError}`,
+      usedTypeScriptFallback: true,
+    };
+  }
+
+  return {
+    ok: true,
+    executableCode: transformedCode,
+    error: '',
+    usedTypeScriptFallback: true,
+  };
+}
+
+export function prepareTestCodeForExecution(code: string): string {
+  const prepared = resolvePreparedTestCode(code);
+  if (!prepared.ok) {
+    throw new Error(prepared.error);
+  }
+  return prepared.executableCode;
+}
+
+export function getTestCodeSyntaxError(code: string, contextLabel = 'generated code'): string {
+  return resolvePreparedTestCode(code, contextLabel).error;
 }
 
 export function renderWorkerCodeForExecution(template: string, executableCode: string): string {
@@ -176,7 +253,30 @@ export async function executeTest(
   await fs.mkdir(tmpDir, { recursive: true });
 
   const template = await fs.readFile(WORKER_TEMPLATE_PATH, 'utf8');
-  const executableCode = prepareTestCodeForExecution(code);
+  const preparedCode = resolvePreparedTestCode(code, 'runtime_syntax_damage');
+  if (!preparedCode.ok) {
+    const errorMessage = `测试脚本预处理失败（runtime_syntax_damage）：${preparedCode.error}`;
+    hooks?.onLog?.({
+      level: 'error',
+      message: errorMessage,
+      at: new Date().toISOString(),
+    });
+    return {
+      success: false,
+      duration: 0,
+      steps: [
+        {
+          title: '准备测试脚本',
+          status: 'failed',
+          duration: 0,
+          error: errorMessage,
+          at: new Date().toISOString(),
+        },
+      ],
+      error: errorMessage,
+    };
+  }
+  const executableCode = preparedCode.executableCode;
   const workerCode = renderWorkerCodeForExecution(template, executableCode);
 
   const fileSeed = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

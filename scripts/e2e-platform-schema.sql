@@ -1,5 +1,5 @@
 -- Current MySQL schema snapshot for the main E2E platform database.
--- 18 tables are included.
+-- 19 tables are included.
 -- Note: Termite protocol tables are NOT included here because they use SQLite (.termite.db),
 -- not MySQL. See scripts/termite-db-schema.sql if you need that separate store.
 
@@ -70,6 +70,21 @@ CREATE TABLE IF NOT EXISTS workspace_llm_settings (
   PRIMARY KEY (id),
   UNIQUE KEY uk_workspace_llm_settings_scope (scope_uid),
   CONSTRAINT fk_workspace_llm_settings_updated_by_user_uid FOREIGN KEY (updated_by_user_uid) REFERENCES workspace_users (user_uid)
+    ON UPDATE CASCADE ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS workspace_intent_run_settings (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  scope_uid VARCHAR(64) NOT NULL,
+  max_concurrent_runs INT NOT NULL DEFAULT 2,
+  default_retry_limit INT NOT NULL DEFAULT 0,
+  updated_by_user_uid VARCHAR(64) NULL,
+  updated_by_label VARCHAR(128) NOT NULL DEFAULT 'system',
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_workspace_intent_run_settings_scope (scope_uid),
+  CONSTRAINT fk_workspace_intent_run_settings_updated_by_user_uid FOREIGN KEY (updated_by_user_uid) REFERENCES workspace_users (user_uid)
     ON UPDATE CASCADE ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

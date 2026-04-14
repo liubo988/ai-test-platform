@@ -1503,6 +1503,7 @@ export default function ProjectIntentWorkbench({
   const documentNameByUid = useMemo(() => new Map(documents.map((item) => [item.documentUid, item.name])), [documents]);
   const activeDocuments = documents.filter((item) => item.status === 'active');
   const activeCapabilities = capabilities.filter((item) => item.status === 'active');
+  const archivedCapabilityCount = Math.max(0, capabilities.length - activeCapabilities.length);
   const deferredDocumentPreviewSearch = useDeferredValue(documentPreviewSearch);
   const documentPreviewSearchQuery = deferredDocumentPreviewSearch.trim().toLowerCase();
   const deferredCapabilitySearch = useDeferredValue(capabilitySearch);
@@ -1530,7 +1531,7 @@ export default function ProjectIntentWorkbench({
   );
   const capabilityCatalogItems = useMemo(
     () =>
-      activeCapabilities
+      capabilities
         .filter((item) => {
           const sourceDocumentName = documentNameByUid.get(item.sourceDocumentUid) || '';
           const origin = describeIntentCapabilityOrigin(item.meta);
@@ -1549,9 +1550,14 @@ export default function ProjectIntentWorkbench({
             (!capabilityHelperFilter || starterHelper === capabilityHelperFilter)
           );
         })
-        .sort(compareCapabilityVerificationOrder),
+        .sort((left, right) => {
+          if (left.status !== right.status) {
+            return left.status === 'active' ? -1 : 1;
+          }
+          return compareCapabilityVerificationOrder(left, right);
+        }),
     [
-      activeCapabilities,
+      capabilities,
       capabilityHelperFilter,
       capabilityOriginFilter,
       capabilitySearchQuery,
@@ -4043,7 +4049,10 @@ export default function ProjectIntentWorkbench({
           <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] text-slate-500">
             {activeCapabilities.length} 项可用能力
           </span>
-          <p className="mt-1 text-[11px] text-slate-400">其中 {starterCapabilityCount} 项来自 Starter 资产</p>
+          <p className="mt-1 text-[11px] text-slate-400">
+            其中 {starterCapabilityCount} 项来自 Starter 资产
+            {archivedCapabilityCount > 0 ? ` · ${archivedCapabilityCount} 项已归档` : ''}
+          </p>
           {capabilitySearchQuery && <p className="mt-1 text-[11px] text-slate-400">{capabilityCatalogItems.length} 条匹配</p>}
         </div>
       </div>
@@ -5000,10 +5009,10 @@ export default function ProjectIntentWorkbench({
             </div>
           </div>
         )}
-        {activeCapabilities.length === 0 && (
+        {capabilities.length === 0 && (
           <p className="rounded-xl bg-slate-50 px-3 py-4 text-sm text-slate-400">当前项目还没有稳定能力。</p>
         )}
-        {activeCapabilities.length > 0 && capabilityCatalogItems.length === 0 && (
+        {capabilities.length > 0 && capabilityCatalogItems.length === 0 && (
           <p className="rounded-xl bg-slate-50 px-3 py-4 text-sm text-slate-400">
             没有匹配的稳定能力，试试名称、slug、来源标签、Starter Helper 或验证状态。
           </p>

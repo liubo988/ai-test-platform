@@ -13,6 +13,10 @@ vi.mock('@/lib/llm/workspace-config', () => ({
   })),
 }));
 
+vi.mock('@/lib/intent-e2e-global-config', () => ({
+  loadWorkspaceIntentE2EGlobalRunConfig: vi.fn(),
+}));
+
 vi.mock('@/lib/server/intent-e2e-project-auth', () => ({
   resolveIntentE2EProjectAuth: vi.fn(),
 }));
@@ -42,6 +46,7 @@ vi.mock('@/lib/ai/intent-e2e-run-registry', () => ({
 import { POST } from '../../app/api/intent-e2e/runs/route';
 import { createIntentE2ERun, startIntentE2ERun, waitForIntentE2ERunPersistence } from '@/lib/ai/intent-e2e-run-registry';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
+import { loadWorkspaceIntentE2EGlobalRunConfig } from '@/lib/intent-e2e-global-config';
 import { getWorkspaceLLMRuntimeOverrides, mergeLLMRuntimeOverrides } from '@/lib/llm/workspace-config';
 import { resolveIntentE2EProjectAuth } from '@/lib/server/intent-e2e-project-auth';
 import { applyActorCookie } from '@/lib/server/project-actor';
@@ -49,6 +54,12 @@ import { applyActorCookie } from '@/lib/server/project-actor';
 describe('POST /api/intent-e2e/runs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(loadWorkspaceIntentE2EGlobalRunConfig).mockResolvedValue({
+      maxConcurrentRuns: 2,
+      projectConcurrentRuns: 1,
+      defaultRetryLimit: 0,
+      sharedSettings: null,
+    } as never);
   });
 
   it('waits for the initial run snapshot to persist before returning run metadata', async () => {
@@ -125,6 +136,7 @@ describe('POST /api/intent-e2e/runs', () => {
     const json = await res.json();
 
     expect(ensureDbBootstrap).toHaveBeenCalledTimes(1);
+    expect(loadWorkspaceIntentE2EGlobalRunConfig).toHaveBeenCalledTimes(1);
     expect(mergeLLMRuntimeOverrides).toHaveBeenCalledWith(
       {
         model: 'shared-model',

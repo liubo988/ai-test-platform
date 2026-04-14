@@ -13,6 +13,7 @@ const app = next({
   conf: distDir ? { distDir } : undefined,
 });
 const handle = app.getRequestHandler();
+const restoreWorkspaceFiles = typeof globalThis.__restoreWorkspaceFiles === 'function' ? globalThis.__restoreWorkspaceFiles : null;
 
 // WebSocket 会话管理
 const sessions = new Map(); // sessionId -> Set<WebSocket>
@@ -30,6 +31,14 @@ export function broadcastFrame(sessionId, base64Data) {
 globalThis.__broadcastFrame = broadcastFrame;
 
 app.prepare().then(() => {
+  if (restoreWorkspaceFiles) {
+    try {
+      restoreWorkspaceFiles();
+    } catch (error) {
+      console.error('failed to restore workspace files', error);
+    }
+  }
+
   const handleUpgrade = app.getUpgradeHandler();
   const server = createServer(async (req, res) => {
     try {

@@ -326,6 +326,70 @@ describe('intent-e2e insights', () => {
     });
   });
 
+  it('surfaces fallback debt metadata from terminal run snapshots', () => {
+    const scenarioCard = {
+      title: '提交并验证成功页',
+      taskMode: 'scenario',
+      flowDefinition: {
+        steps: [
+          {
+            stepType: 'ui',
+            title: '打开结算页并提交',
+            target: 'checkout',
+            instruction: '打开结算页并提交',
+            expectedResult: '提交完成',
+          },
+          {
+            stepType: 'assert',
+            title: '校验成功页',
+            target: 'success',
+            instruction: '校验成功页',
+            expectedResult: '成功页可见',
+          },
+        ],
+      },
+    };
+    const run = normalizeIntentE2ETerminalRunSnapshot(
+      makeRunSnapshot({
+        runId: 'run_fallback_debt',
+        status: 'passed',
+        requestInput: '访问结算页并提交，最终看到成功页',
+        targetUrl: 'https://example.com/checkout',
+        state: {
+          result: {
+            scenarioCard,
+            attempts: [
+              {
+                attempt: 1,
+                kind: 'generate',
+                result: { success: true },
+                fallbackTelemetry: {
+                  path: 'legacy_free_generate',
+                  priorityScenarioFamily: 'business_create_list_verify',
+                  priorityScenarioFamilySource: 'text_only',
+                  highConfidenceFamily: true,
+                  legacyFallbackReasonCode: 'structured_slot_patch_failed',
+                  sanitizerRescueSource: 'legacy_free_generate',
+                },
+              },
+            ],
+          },
+        },
+      })
+    );
+
+    expect(run?.attempts[0]).toMatchObject({
+      fallback: {
+        path: 'legacy_free_generate',
+        priorityScenarioFamily: 'business_create_list_verify',
+        priorityScenarioFamilySource: 'text_only',
+        highConfidenceFamily: true,
+        legacyFallbackReasonCode: 'structured_slot_patch_failed',
+        sanitizerRescueSource: 'legacy_free_generate',
+      },
+    });
+  });
+
   it('aggregates pass rate, knowledge hits, helper reuse, top rules, helpers, and failure classes', () => {
     const runSnapshots = [
       makeRunSnapshot({

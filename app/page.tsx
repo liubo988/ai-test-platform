@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useEffect, useState, useTransition } from 'react';
+import GlobalConfigDialog from '@/components/GlobalConfigDialog';
 import LLMConfigDialog from '@/components/LLMConfigDialog';
 
 type ProjectStatus = 'active' | 'archived';
@@ -108,6 +109,7 @@ export default function HomePage() {
   const [error, setError] = useState('');
   const [openModal, setOpenModal] = useState(false);
   const [llmConfigModalOpen, setLlmConfigModalOpen] = useState(false);
+  const [globalConfigModalOpen, setGlobalConfigModalOpen] = useState(false);
   const [editingUid, setEditingUid] = useState('');
   const [navigatingProjectUid, setNavigatingProjectUid] = useState('');
   const [form, setForm] = useState<ProjectFormState>(defaultForm);
@@ -323,6 +325,12 @@ async function loadProjects() {
               className="inline-flex h-12 items-center justify-center rounded-2xl border border-slate-200/80 bg-white/84 px-5 text-sm font-medium text-slate-700 transition hover:bg-white"
             >
               LLM 配置
+            </button>
+            <button
+              onClick={() => setGlobalConfigModalOpen(true)}
+              className="inline-flex h-12 items-center justify-center rounded-2xl border border-slate-200/80 bg-white/84 px-5 text-sm font-medium text-slate-700 transition hover:bg-white"
+            >
+              全局配置
             </button>
             <button
               onClick={() => {
@@ -600,6 +608,7 @@ async function loadProjects() {
       )}
 
       <LLMConfigDialog open={llmConfigModalOpen} onClose={() => setLlmConfigModalOpen(false)} />
+      <GlobalConfigDialog open={globalConfigModalOpen} onClose={() => setGlobalConfigModalOpen(false)} />
     </main>
   );
 }

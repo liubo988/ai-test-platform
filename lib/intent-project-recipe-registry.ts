@@ -13,6 +13,22 @@ export interface IntentProjectRecipeProfile {
   recipes: IntentRecipe[];
 }
 
+export interface ExportIntentProjectRecipeProfileResult {
+  sourcePath: string;
+  writtenTo: string;
+  recipeCount: number;
+  profile: IntentProjectRecipeProfile;
+}
+
+export interface ImportIntentProjectRecipeProfileResult {
+  sourcePath: string;
+  writtenTo: string;
+  backupPath: string | null;
+  recipeCount: number;
+  comparison: IntentProjectRecipeProfileComparison;
+  profile: IntentProjectRecipeProfile;
+}
+
 export interface RegisterIntentProjectRecipesResult {
   writtenTo: string;
   backupPath: string | null;
@@ -478,6 +494,26 @@ export async function writeIntentProjectRecipeProfile(
   return toDisplayPath(outputPath);
 }
 
+export async function exportIntentProjectRecipeProfile(
+  outputPath: string,
+  projectUid = '',
+  currentProfilePath = resolveProjectRecipeRegistryPath({ projectUid })
+): Promise<ExportIntentProjectRecipeProfileResult> {
+  const normalizedOutputPath = normalizeString(outputPath);
+  if (!normalizedOutputPath) {
+    throw new Error('缺少项目 recipe 导出路径');
+  }
+
+  const profile = loadIntentProjectRecipeProfile(currentProfilePath);
+  const writtenTo = await writeIntentProjectRecipeProfile(profile, normalizedOutputPath);
+  return {
+    sourcePath: toDisplayPath(currentProfilePath),
+    writtenTo,
+    recipeCount: profile.recipes.length,
+    profile,
+  };
+}
+
 function buildIntentProjectRecipeProfileComparison(
   previousProfile: IntentProjectRecipeProfile,
   nextProfile: IntentProjectRecipeProfile
@@ -612,6 +648,36 @@ async function backupIntentProjectRecipeFile(
     }
     throw error;
   }
+}
+
+export async function importIntentProjectRecipeProfile(
+  inputPath: string,
+  outputPath = resolveProjectRecipeRegistryPath({ mode: 'write' }),
+  backupDir = resolveProjectRecipeStorage().backupDir,
+  currentProfilePath = outputPath
+): Promise<ImportIntentProjectRecipeProfileResult> {
+  const normalizedInputPath = normalizeString(inputPath);
+  if (!normalizedInputPath) {
+    throw new Error('缺少项目 recipe 导入路径');
+  }
+
+  const currentProfile = loadIntentProjectRecipeProfile(currentProfilePath);
+  const absoluteInputPath = toAbsolutePath(normalizedInputPath);
+  const raw = await fsPromises.readFile(absoluteInputPath, 'utf8');
+  const importedProfile = normalizeProfile(JSON.parse(raw));
+  const shouldWrite =
+    JSON.stringify(currentProfile) !== JSON.stringify(importedProfile) || !fs.existsSync(toAbsolutePath(outputPath));
+  const backupPath = shouldWrite ? await backupIntentProjectRecipeFile(outputPath, backupDir) : null;
+  const writtenTo = shouldWrite ? await writeIntentProjectRecipeProfile(importedProfile, outputPath) : toDisplayPath(outputPath);
+
+  return {
+    sourcePath: toDisplayPath(absoluteInputPath),
+    writtenTo,
+    backupPath,
+    recipeCount: importedProfile.recipes.length,
+    comparison: buildIntentProjectRecipeProfileComparison(currentProfile, importedProfile),
+    profile: importedProfile,
+  };
 }
 
 export async function registerIntentProjectRecipes(

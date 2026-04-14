@@ -86,6 +86,10 @@ export interface BuildIntentE2ERunReviewInput {
     helperUsage?: {
       usedHelpers: string[];
     };
+    fallbackTelemetry?: {
+      path: string;
+      sanitizerRescueSource?: string;
+    };
     triage?: {
       failureClass: string;
     } | null;
@@ -173,6 +177,14 @@ function buildPlaybookCandidates(input: BuildIntentE2ERunReviewInput, reviewedAt
       .filter((attempt) => attempt.kind === 'repair' || attempt.result?.success === false)
       .flatMap((attempt) => (attempt.triage?.failureClass ? [attempt.triage.failureClass] : []))
   );
+  const fallbackPaths = uniqueStrings(
+    input.attempts.flatMap((attempt) =>
+      attempt.fallbackTelemetry?.path === 'legacy_free_generate' || attempt.fallbackTelemetry?.path === 'legacy_free_repair'
+        ? [attempt.fallbackTelemetry.path]
+        : []
+    )
+  );
+  const sanitizerRescueUsed = input.attempts.some((attempt) => Boolean(attempt.fallbackTelemetry?.sanitizerRescueSource));
   const matchedRecipeSlugs = uniqueStrings([
     ...(input.recipes || []).map((item) => item.recipe.slug),
     ...(input.executionPlan.matchedRecipeSlugs || []),
@@ -202,6 +214,10 @@ function buildPlaybookCandidates(input: BuildIntentE2ERunReviewInput, reviewedAt
       preferredHelpers: planHelpers.slice(0, 10),
       knownPitfalls: uniqueStrings([
         repairedFailureClasses.length > 0 ? `这条链路曾在 repair 中命中过 ${repairedFailureClasses.join(' / ')}` : '',
+        fallbackPaths.length > 0
+          ? `本次通过仍依赖 ${fallbackPaths.join(' / ')}；在补齐 family skeleton / verifier 前，不要直接把它当成稳定 playbook。`
+          : '',
+        sanitizerRescueUsed ? '本次通过仍依赖 sanitizer 抢救代码，优先把修复提升成结构化 patch / helper 资产。' : '',
         matchedRecipeSlugs.length === 0 ? '当前未命中明确 recipe，后续复用时优先保留现有 ExecutionPlan / VerificationPlan 骨架。' : '',
       ]).slice(0, 4),
       sourceRunIds: uniqueStrings([input.runId]).filter(Boolean),

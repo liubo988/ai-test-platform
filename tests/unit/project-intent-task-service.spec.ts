@@ -31,6 +31,10 @@ vi.mock('@/lib/services/test-plan-service', () => ({
   generatePlanDraftFromTaskSpec: vi.fn(),
 }));
 
+vi.mock('@/lib/test-generator', () => ({
+  sanitizeGeneratedCode: vi.fn((code: string) => code),
+}));
+
 import { generateScenarioCard } from '@/lib/ai/scenario-card';
 import {
   createPlanCases,
@@ -48,6 +52,7 @@ import {
 } from '@/lib/db/repository';
 import { getWorkspaceLLMRuntimeOverrides } from '@/lib/llm/workspace-config';
 import { generatePlanDraftFromTaskSpec } from '@/lib/services/test-plan-service';
+import { sanitizeGeneratedCode } from '@/lib/test-generator';
 import { createProjectIntentTask, importProjectIntentDraftAsTask } from '../../lib/services/project-intent-task-service';
 
 function createPassedRunSnapshot(input?: {
@@ -536,6 +541,9 @@ describe('project-intent-task-service', () => {
   it('prefers the latest passed intent run final code when importing a formal task', async () => {
     const reusedCode =
       "test('reused-successful-run', async ({ page }) => { await page.goto('https://app.example.com/#/business/create'); await expect(page).toHaveURL(/business/); });";
+    const sanitizedReusedCode =
+      "test('reused-successful-run-sanitized', async ({ page }) => { await page.goto('https://app.example.com/#/business/create'); await expect(page).toHaveURL(/business/); });";
+    vi.mocked(sanitizeGeneratedCode).mockReturnValueOnce(sanitizedReusedCode);
     vi.mocked(getProjectIntentDraftByUid).mockResolvedValue({
       intentDraftUid: 'idraft_1',
       projectUid: 'proj_1',
@@ -647,14 +655,15 @@ describe('project-intent-task-service', () => {
       status: 'passed',
       limit: 12,
     });
+    expect(vi.mocked(sanitizeGeneratedCode)).toHaveBeenCalledWith(reusedCode);
     expect(createTestPlan).toHaveBeenCalledWith(
       expect.objectContaining({
-        planCode: reusedCode,
+        planCode: sanitizedReusedCode,
         planSummary: expect.stringContaining('最近成功运行脚本'),
         generationPrompt: expect.stringContaining('[intent_draft_reuse] run=intent-run-passed-import'),
         generatedFiles: [
           expect.objectContaining({
-            content: reusedCode,
+            content: sanitizedReusedCode,
           }),
         ],
       })

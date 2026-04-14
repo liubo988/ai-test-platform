@@ -65,9 +65,9 @@ import {
 import { readExecutionEntryNavigationTargets } from '@/lib/execution-entry-navigation';
 import { buildExecutionWorkspaceLinkActions } from '@/lib/execution-workspace-link-contract';
 import {
-  buildIntentDraftWorkbenchHref,
+  buildIntentDraftTestFlowHref,
   canRunIntentDraftTestFlowStatus,
-  INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE,
+  resolveIntentDraftTestFlowActionLabel,
 } from '@/lib/intent-e2e-draft-launch';
 
 type ProjectStatus = 'active' | 'archived';
@@ -2460,14 +2460,46 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
     try {
       setIntentDraftDetailOpen(false);
       setIntentDraftsModalOpen(false);
-      const existingRunId = draft.activeRunId.trim();
+      let latestActiveRunId = draft.activeRunId.trim();
+
+      if (!latestActiveRunId) {
+        const latestDraft = await fetchIntentDraftDetail(draft.intentDraftUid).catch(() => null);
+        if (latestDraft) {
+          latestActiveRunId = latestDraft.activeRunId.trim();
+          setIntentDrafts((current) =>
+            current.map((item) =>
+              item.intentDraftUid === latestDraft.intentDraftUid
+                ? normalizeIntentDraftItem({
+                    ...item,
+                    activeRunId: latestDraft.activeRunId,
+                    activeRunStatus: latestDraft.activeRunStatus,
+                    activeRunStage: latestDraft.activeRunStage,
+                    activeRunUpdatedAt: latestDraft.activeRunUpdatedAt,
+                  })
+                : item
+            )
+          );
+          setIntentDraftDetail((current) =>
+            current?.intentDraftUid === latestDraft.intentDraftUid
+              ? normalizeIntentDraftDetail({
+                  ...current,
+                  activeRunId: latestDraft.activeRunId,
+                  activeRunStatus: latestDraft.activeRunStatus,
+                  activeRunStage: latestDraft.activeRunStage,
+                  activeRunUpdatedAt: latestDraft.activeRunUpdatedAt,
+                })
+              : current
+          );
+        }
+      }
+
       router.push(
-        buildIntentDraftWorkbenchHref({
+        buildIntentDraftTestFlowHref({
           projectUid: draft.projectUid || projectUid,
           moduleUid: draft.moduleUid,
           draftUid: draft.intentDraftUid,
-          runId: existingRunId || undefined,
-          launchMode: existingRunId ? '' : INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE,
+          activeRunId: draft.activeRunId,
+          latestActiveRunId,
         })
       );
     } catch (err: unknown) {
@@ -4378,9 +4410,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                           >
                             {intentDraftTestingUid === draft.intentDraftUid
                               ? '打开中...'
-                              : hasActiveIntentDraftRun(draft)
-                                ? '继续测试'
-                                : '测试流程'}
+                              : resolveIntentDraftTestFlowActionLabel(hasActiveIntentDraftRun(draft))}
                           </button>
                           <button
                             onClick={() => void importIntentDraft(draft)}
@@ -4617,9 +4647,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                       >
                         {intentDraftTestingUid === intentDraftDetail.intentDraftUid
                           ? '打开中...'
-                          : hasActiveIntentDraftRun(intentDraftDetail)
-                            ? '继续测试'
-                            : '测试流程'}
+                          : resolveIntentDraftTestFlowActionLabel(hasActiveIntentDraftRun(intentDraftDetail))}
                       </button>
                       <button
                         type="button"

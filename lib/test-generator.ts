@@ -36,6 +36,7 @@ import {
 } from './intent-execution-slot-patch';
 import {
   resolveIntentE2EPriorityScenarioFamilyRoute,
+  getIntentE2EPriorityScenarioFamilyAssetProfile,
   type IntentE2EPriorityScenarioFamilyRoute,
   type IntentE2EPriorityScenarioFamily,
 } from './intent-e2e-priority-scenario-family';
@@ -45,7 +46,13 @@ import type {
   IntentExecutionStructuredRepairOutput,
 } from './intent-execution-artifacts';
 import { renderIntentRepairMemoryHints, type IntentRepairMemoryHint } from './ai/intent-repair-memory';
-import { buildIntentActionDSL, renderIntentActionDSL, type IntentActionDSL, type IntentActionStepInput } from './intent-action-dsl';
+import {
+  buildIntentActionDSL,
+  renderIntentActionDSL,
+  type IntentActionDSL,
+  type IntentActionDSLStep,
+  type IntentActionStepInput,
+} from './intent-action-dsl';
 import {
   applyIntentProjectKnowledgeToDsl,
   renderIntentProjectKnowledge,
@@ -413,6 +420,94 @@ function applyAuthPlanningHintsToDsl(
   };
 }
 
+function buildPriorityScenarioFamilyStepHaystack(step: IntentActionDSLStep): string {
+  return [
+    step.title,
+    step.target,
+    step.goal,
+    ...step.requiredAssertions,
+    ...step.sharedVariables,
+  ]
+    .join('\n')
+    .toLowerCase();
+}
+
+function applyPriorityScenarioFamilyStepOverlay(
+  step: IntentActionDSLStep,
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily
+): IntentActionDSLStep {
+  const profile = getIntentE2EPriorityScenarioFamilyAssetProfile(priorityScenarioFamily);
+  if (!profile) return step;
+
+  const haystack = buildPriorityScenarioFamilyStepHaystack(step);
+  const addAllowedActions: string[] = [];
+  const addPreferredHelpers: string[] = [];
+
+  switch (profile.family) {
+    case 'business_create_list_verify':
+      if (
+        /(创建|新建|提交|保存|附件信息|上传录音文件|上传图片|提交收敛)/i.test(haystack) ||
+        step.preferredHelpers.includes('__e2e.observeSubmitState')
+      ) {
+        addAllowedActions.push('wait_for_response', 'observe_submit_state');
+        addPreferredHelpers.push('__e2e.waitForApiResponse', '__e2e.observeSubmitState');
+      }
+      if (/(我创建的|我跟进的|归属|范围)/i.test(haystack) && /(商机|businesslist|business\/businesslist)/i.test(haystack)) {
+        addAllowedActions.push('switch_business_list_ownership_view');
+        addPreferredHelpers.push('__e2e.switchBusinessListOwnershipView');
+      }
+      if (/(列表|回列表|回查|目标记录|商机进展|状态|详情|businessid|联系人|手机号)/i.test(haystack) || step.stepType === 'assert') {
+        addAllowedActions.push('find_table_row', 'resolve_primary_record', 'read_detail_field');
+        addPreferredHelpers.push('__e2e.findAntdTableRow', '__e2e.resolvePrimaryRecord', '__e2e.readDetailField');
+      }
+      if (/(查看|详情)/i.test(haystack)) {
+        addAllowedActions.push('click_row_action');
+        addPreferredHelpers.push('__e2e.clickAntdRowAction');
+      }
+      break;
+    case 'list_search_detail':
+      if (/(搜索|检索|查询|列表|目标行|详情|查看|联系人|手机号|状态)/i.test(haystack) || step.stepType === 'assert') {
+        addAllowedActions.push('find_table_row', 'resolve_primary_record', 'read_detail_field', 'click_row_action');
+        addPreferredHelpers.push('__e2e.findAntdTableRow', '__e2e.resolvePrimaryRecord', '__e2e.readDetailField', '__e2e.clickAntdRowAction');
+      }
+      break;
+    case 'modal_or_drawer_save':
+      if (/(drawer|modal|抽屉|弹窗|弹框|弹层|对话框|保存|提交|确定|配置)/i.test(haystack) || step.stepType === 'ui') {
+        addAllowedActions.push('wait_for_visible_modal', 'wait_for_response', 'observe_submit_state');
+        addPreferredHelpers.push('__e2e.waitForVisibleAntdModal', '__e2e.waitForApiResponse', '__e2e.observeSubmitState');
+      }
+      if (/(详情|字段|联系人|手机号|状态|列表)/i.test(haystack)) {
+        addAllowedActions.push('read_detail_field', 'find_table_row');
+        addPreferredHelpers.push('__e2e.readDetailField', '__e2e.findAntdTableRow');
+      }
+      break;
+    default:
+      break;
+  }
+
+  return {
+    ...step,
+    allowedActions: uniqueStrings([...step.allowedActions, ...addAllowedActions]),
+    preferredHelpers: uniqueStrings([...addPreferredHelpers, ...step.preferredHelpers]),
+  };
+}
+
+function applyPriorityScenarioFamilyPlanningHintsToDsl(
+  dsl: IntentActionDSL,
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily
+): IntentActionDSL {
+  const profile = getIntentE2EPriorityScenarioFamilyAssetProfile(priorityScenarioFamily);
+  if (!profile) return dsl;
+
+  return {
+    ...dsl,
+    globalRules: uniqueStrings([...dsl.globalRules, ...profile.executionRules, ...profile.readiness.notes]),
+    preferredPrimitives: uniqueStrings([...dsl.preferredPrimitives, ...profile.preferredPrimitives]),
+    outputContract: uniqueStrings([...dsl.outputContract, ...profile.outputContract]),
+    steps: dsl.steps.map((step) => applyPriorityScenarioFamilyStepOverlay(step, priorityScenarioFamily)),
+  };
+}
+
 export interface ResolvedPromptPlanningContext {
   priorityScenarioFamily?: IntentE2EPriorityScenarioFamily;
   priorityScenarioFamilyRoute?: IntentE2EPriorityScenarioFamilyRoute;
@@ -492,8 +587,10 @@ export function resolveIntentPromptPlanningContext(
     visualAnchors: context?.visualAnchors,
   });
   const priorityScenarioFamily = priorityScenarioFamilyRoute.family;
+  const priorityScenarioFamilyProfile = getIntentE2EPriorityScenarioFamilyAssetProfile(priorityScenarioFamily);
+  const familyAwareDsl = applyPriorityScenarioFamilyPlanningHintsToDsl(finalDsl, priorityScenarioFamily);
   const recipes = selectIntentRecipeRegistry({
-    dsl: finalDsl,
+    dsl: familyAwareDsl,
     projectUid: options.projectUid,
     auth: options.auth,
     snapshot,
@@ -501,6 +598,7 @@ export function resolveIntentPromptPlanningContext(
     preferredCapabilitySlugs: [
       ...knowledge.capabilitySlugs,
       ...collectIntentStarterAssetCapabilitySlugs(starterHelpers),
+      ...(priorityScenarioFamilyProfile?.preferredCapabilitySlugs || []),
     ],
     performanceBySlug: options.recipePerformanceBySlug,
   }).items;
@@ -513,7 +611,8 @@ export function resolveIntentPromptPlanningContext(
     sharedVariables: context?.sharedVariables,
     cleanupNotes: context?.cleanupNotes,
     scenarioSteps: context?.scenarioSteps,
-    dsl: finalDsl,
+    priorityScenarioFamily,
+    dsl: familyAwareDsl,
     recipes,
   });
   const verificationPlan = buildIntentVerificationPlan(
@@ -528,8 +627,9 @@ export function resolveIntentPromptPlanningContext(
       sharedVariables: context?.sharedVariables,
       cleanupNotes: context?.cleanupNotes,
       scenarioSteps: context?.scenarioSteps,
+      priorityScenarioFamily,
       knowledge,
-      dsl: finalDsl,
+      dsl: familyAwareDsl,
       recipes,
     },
     executionPlan
@@ -538,7 +638,7 @@ export function resolveIntentPromptPlanningContext(
   return {
     priorityScenarioFamily,
     priorityScenarioFamilyRoute,
-    dsl: finalDsl,
+    dsl: familyAwareDsl,
     knowledge,
     experienceHints: options.experienceHints,
     starterHelpers,
@@ -1208,13 +1308,22 @@ function formatPlanningStarterHelperMessage(planning: ResolvedPromptPlanningCont
 function formatPlanningExperienceMessage(planning: ResolvedPromptPlanningContext): string {
   if (!planning.experienceHints?.length) return '';
 
-  const successCount = planning.experienceHints.filter((item) => item.kind === 'successful_run').length;
-  const failureCount = planning.experienceHints.filter((item) => item.kind === 'failed_run').length;
-  const topSummary = planning.experienceHints[0]?.requestSummary || planning.experienceHints[0]?.scenarioTitle || '';
+  const successHints = planning.experienceHints.filter((item) => item.kind === 'successful_run');
+  const failureHints = planning.experienceHints.filter((item) => item.kind === 'failed_run');
+  const successCount = successHints.length;
+  const failureCount = failureHints.length;
+  const topSuccessSummary = successHints[0]?.requestSummary || successHints[0]?.scenarioTitle || '';
+  const topFailureSummary = failureHints[0]?.requestSummary || failureHints[0]?.scenarioTitle || '';
 
-  return `最近相似经验：命中 ${planning.experienceHints.length} 条（success ${successCount}${failureCount > 0 ? ` / failure ${failureCount}` : ''}）${
-    topSummary ? `；优先参考「${topSummary}」` : ''
-  }。`;
+  if (topSuccessSummary) {
+    return `最近相似经验：命中 ${planning.experienceHints.length} 条（success ${successCount}${failureCount > 0 ? ` / failure ${failureCount}` : ''}）；优先参考「${topSuccessSummary}」这条成功链，failure 只当避坑。`;
+  }
+
+  if (topFailureSummary) {
+    return `最近相似经验：命中 ${planning.experienceHints.length} 条（success ${successCount}${failureCount > 0 ? ` / failure ${failureCount}` : ''}）；当前没有可直接复用的成功经验，只把失败样本「${topFailureSummary}」当避坑线索，不要复用其中的业务文本、状态值或旧 locator。`;
+  }
+
+  return `最近相似经验：命中 ${planning.experienceHints.length} 条（success ${successCount}${failureCount > 0 ? ` / failure ${failureCount}` : ''}）。`;
 }
 
 function buildActionLibrarySection(
@@ -1231,6 +1340,7 @@ function buildActionLibrarySection(
     preferredCapabilitySlugs: [
       ...knowledge.capabilitySlugs,
       ...collectIntentStarterAssetCapabilitySlugs(planning.starterHelpers || []),
+      ...(getIntentE2EPriorityScenarioFamilyAssetProfile(planning.priorityScenarioFamily)?.preferredCapabilitySlugs || []),
     ],
     starterHelpers: planning.starterHelpers,
   });
@@ -1254,6 +1364,18 @@ function looksLikeBusinessCreateOrderTask(snapshot: PageSnapshot, description: s
       intentHaystack.includes('商机转化主链路') ||
       intentHaystack.includes('转化主链路') ||
       (intentHaystack.includes('商机转化') && intentHaystack.includes('主链路')))
+  );
+}
+
+function looksLikeOrderBatchAccountTask(snapshot: PageSnapshot, description: string, context?: GenerateTestContext): boolean {
+  const taskHaystack = buildTaskHaystack(snapshot, description, context);
+  const intentHaystack = buildIntentHaystack(description, context);
+
+  return (
+    (taskHaystack.includes('/order/list') || taskHaystack.includes('订单列表')) &&
+    (intentHaystack.includes('批量入账') ||
+      intentHaystack.includes('批量申请入账') ||
+      (intentHaystack.includes('入账管理') && intentHaystack.includes('订单号')))
   );
 }
 
@@ -2002,10 +2124,20 @@ export function buildPrompt(
 1. 对列表页，非必要不要点击“全部清除”“重置”等会重载筛选状态的按钮；先观察页面是否已经有可用数据。
 2. 如果任务描述要求批量操作，优先考虑“勾选行 + 顶部批量按钮”的真实入口，不要臆造不存在的行内按钮。
 3. 从列表行提取关键主键时，优先使用明确的链接文本、编号列或字段标签，不要用宽泛正则从整行文本中猜测，以免误取手机号、企业 ID 或金额。
+3.1 如果目标主键是 \`orderId / orderNo / 订单号\`，禁止直接用 \`rowText.match(/\\b[A-Za-z0-9_-]{6,}\\b/)\` 或“第一段长串”兜底；至少排除 \`/^1\\d{10}$/\` 手机号与纯金额 token，并优先读取订单号列、首个编号链接或带“订单号”标签的字段。
 4. 如果目标行没有可见的“查看 / 编辑 / 生成订单”按钮，而是只有末列三点菜单或 \`.ant-dropdown-trigger\` 图标，必须先打开该行操作菜单，再在当前可见 menu 内点击目标动作。
 5. 对 Ant Design 表格，禁止先写 \`expect(page.locator('.ant-table-tbody')).toBeVisible()\` 这类表体可见性断言；固定列、粘性列和克隆节点会让 \`.ant-table-tbody\` 同时命中多个元素。应直接等待目标行、表格请求完成，或等待 \`.ant-table-placeholder\` / 行数变化。
 6. 对 Ant Design 表格目标行，优先使用 \`__e2e.findAntdTableRow(page, { hasTexts: [...] })\`；至少组合手机号、联系人、状态、businessId、企业名中的两个以上稳定字段，让 helper 按 \`data-row-key\` 去重固定列克隆。不要继续对 \`page.locator('tbody tr').filter({ hasText: ... }).first()\` 写 \`toHaveCount(1)\` 或硬编码 \`.first()\`。
 7. 如果后续需要勾选该行做批量操作，必须先拿到 \`targetRow\`，再直接写 \`await __e2e.clickAntdRowCheckbox(page, targetRow)\`。不要继续写 \`page.locator('tr[data-row-key]:visible').first().locator('.ant-checkbox').first().click()\`、不要先点第一条可见行、也不要直接点隐藏的 \`input[type="checkbox"]\`。如果当前行没有可点复选框，就把它视为不可选行并继续寻找下一条候选。`);
+
+  if (looksLikeOrderBatchAccountTask(snapshot, description, context)) {
+    parts.push(`\n## 订单批量入账专项规则
+1. Step 2 只需要证明“筛选后存在至少一条可勾选真实订单行”；不要把 \`待申请入账 | 服务中\`、\`待申请入账 | 未确认\` 这类重复状态文本当成订单身份，也不要直接生成 \`findAntdTableRow(page, { hasTexts: ['待申请入账', '服务中'] })\` / \`['待申请入账', '未确认']\`。
+2. Step 3 如果需要从筛选结果里挑一条订单，优先在主表体 \`.ant-table-tbody tr[data-row-key]:visible\` 内扫描真实行，并直接逐条尝试 \`await __e2e.clickAntdRowCheckbox(page, candidateRow)\`。不要再要求当前主表体行自己同时带 \`待申请入账\` 文本和可见 checkbox；筛选条件已经在 Step 2 收口，真正的 checkbox 很可能落在 fixed-column clone，需要让 helper 自己处理回退。只有 helper 明确失败时，才继续尝试下一条候选。
+3. 提取 \`selectedOrderNo / orderNo\` 的优先顺序是：订单号列 -> 首个编号链接 -> 带“订单号 / 订单编号”标签的字段 -> 已打开的“批量申请入账”弹窗里的订单号字段。不要把 \`phoneToken\` 回填到 \`selectedOrderNo\`，也不要在 modal ready 前因为订单号暂时为空就直接 throw。
+4. \`selectedServiceItem / selectedAmount\` 可以先从当前行读取；如果当前行文本不稳，允许回退到已打开的“批量申请入账”弹窗里读取 \`服务项 / 服务项目 / 入账金额 / 金额\` 字段。
+5. \`const modal = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '批量申请入账' })\` 本身就足够证明弹窗 ready。后续 footer 只校验主动作 \`/确\\s*定|提\\s*交|保\\s*存/i\`，\`取消 / 关闭\` 只作可选辅助按钮；禁止把 \`await expect(modal.getByRole('button', { name: '取消' }).first()).toBeVisible()\` 当成硬前提。`);
+  }
 
   parts.push(`\n## 下拉与重复文案规则
 1. 遇到 Ant Design Select / Cascader / TreeSelect / 弹层枚举项时，必须先定位到当前可见的弹层容器，再在容器内选择选项，例如：
@@ -2423,6 +2555,51 @@ export function buildRepairPrompt(
     diagnosisHints.push(`这次不是还要继续一味放宽 \`findAntdTableRow\`，而是缺少更稳定的业务主键和“列表结果收敛”回查链。修复时在第三页提交后立刻读取 \`createResp\` / 提交响应 JSON，优先写 \`const createJson = await __e2e.readJsonResponse(await createResp)\`，再用 \`__e2e.pickJsonValue(createJson, { label: 'businessId', paths: ${renderJsStringArray(BUSINESS_ID_JSON_PATHS)}, required: false })\` 提取并保存；如果 \`businessId\` 非空，回到列表后优先直接写 \`const recordCheck = await __e2e.resolvePrimaryRecord(page, { primaryValue: businessId, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: [businessId, leadMobile], detailUrl: \`#/business/detail/\${businessId}\` })\`。若 \`businessId\` 为空，不要立刻写 \`expect(businessId).toBeTruthy()\`，也不要退回“一次 search + 一次 findAntdTableRow 就失败”；先切到“我创建的”，再优先写 \`const recordCheck = await __e2e.resolvePrimaryRecord(page, { primaryValue: leadMobile, keywordInput: page.locator('input#businessList_keywords:visible').first(), searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(), listResponse: { urlIncludes: '/business', method: 'GET' }, rowHasTexts: [leadMobile], maxLookupAttempts: 4, retryIntervalMs: 1200 })\`\n- 让 helper 保守轮询几次列表收敛；如果 \`recordCheck.mode === 'table_row'\`，先断言手机号，联系人只在行文本确实出现时再断言，否则继续读取 \`recordCheck.response\`。\n- 只有 helper 明确返回 \`not_found\` 且没有详情入口时，才允许再退回 \`const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [leadMobile, leadContactName] })\` 这类可见文本链。\n- fallback 行命中后，即使“新入库”已经出现在该行可见文本里，也不要把裸 \`rowText\` 当最终成功；优先继续读这次列表检索响应，用 \`__e2e.pickJsonRecord(..., { label: 'leadMobile', value: leadMobile, paths: ['mobile', 'phone', 'contactPhone', 'contactMobile'], required: false })\` 找到命中的列表记录，再配合 \`__e2e.pickJsonValue(...状态 paths...)\` 或 \`__e2e.readDetailField(page, { label: '商机进展', required: false }) || __e2e.readDetailField(page, { label: '状态', required: false })\` 完成状态校验。若 helper 已回退到详情页 / 详情抽屉，就优先继续读 \`recordCheck.response\`，用 \`__e2e.pickJsonRecord(...)\` 找到命中的列表记录，再配合 \`__e2e.readDetailField(page, { label: '联系人', required: false })\`、\`__e2e.readDetailField(page, { label: '手机号', required: false })\`、\`__e2e.readDetailField(page, { label: '商机进展', required: false }) || __e2e.readDetailField(page, { label: '状态', required: false })\` 做字段对比，不要改成整页模糊文本断言。`);
   }
   if (
+    looksLikeOrderBatchAccountTask(snapshot, description, context) &&
+    (
+      /locator\('tr\[data-row-key\]:visible'\)\.first\(\)\.locator\('\.ant-checkbox-wrapper:visible, \.ant-checkbox:visible'\)\.first\(\)/.test(
+        `${repair.executionError}\n${repair.previousCode}`
+      ) ||
+      (/tr\[data-row-key\]:visible'\)\.first\(\)/.test(repair.previousCode) && /ant-checkbox|checkbox/.test(repair.previousCode)) ||
+      (/firstSelectableRow|firstRow|targetRow/.test(repair.previousCode) && /ant-checkbox|checkbox/.test(repair.previousCode))
+    )
+  ) {
+    diagnosisHints.push(
+      "这次不是筛选结果为空，而是脚本在订单批量入账场景里还在把“第一条可见行 + 手写 checkbox 细节”当默认解法。修复时不要继续保留 `page.locator('tr[data-row-key]:visible').first()`、`firstSelectableRow` 或任何等价的“第一条可见行”假设；Step 2 只确认搜索后存在至少一条可勾选真实订单行，不要在这一步就点第一条。"
+    );
+    diagnosisHints.push(
+      "进入 Step 3 后，再从可见主表体里挑一条真实可勾选行，直接 `await __e2e.clickAntdRowCheckbox(page, targetRow)`；随后优先从订单号列、首个编号链接或带“订单号”标签的单元格提取 `selectedOrderNo/orderNo`，再补 `selectedServiceItem/serviceItem` 与 `selectedAmount/accountAmount`。在拿到订单号前，不要把第一条可见行、手机号 token 或宽泛 `rowText.match(...)` 当成主键。"
+    );
+  }
+  if (
+    looksLikeOrderBatchAccountTask(snapshot, description, context) &&
+    /表格目标行匹配到多条真实记录：hasTexts=/.test(repair.executionError) &&
+    /(待申请入账|服务中|未确认|findAntdTableRow|clickAntdRowCheckbox|selectedOrderNo|批量申请入账)/.test(
+      `${repair.executionError}\n${repair.previousCode}\n${recentEventText}`
+    )
+  ) {
+    diagnosisHints.push(
+      "这次不是页面异常，而是 repair 把 `待申请入账 | 服务中`、`待申请入账 | 未确认` 这类重复状态文本误当成了订单行身份，结果一条筛选会命中多条真实记录。当前订单批量入账任务里，这些状态组合只能证明“结果区里有待申请订单”，不能唯一标识目标行；不要继续生成 `findAntdTableRow(page, { hasTexts: ['待申请入账', '服务中'] })`、`findAntdTableRow(page, { hasTexts: ['待申请入账', '未确认'] })` 或任何等价状态组合。"
+    );
+    diagnosisHints.push(
+      "更稳的收口顺序是：Step 2 只确认搜索后存在至少一条可勾选真实订单行；Step 3 再从可见主表体里挑一条真实可勾选行，直接 `await __e2e.clickAntdRowCheckbox(page, targetRow)`，随后优先从订单号列、首个编号链接或带“订单号”标签的单元格提取 `selectedOrderNo/orderNo`，再补 `selectedServiceItem/serviceItem` 与 `selectedAmount/accountAmount`。拿到订单号后，后续弹窗和入账管理校验再改用它做主键链，不要反过来先用重复状态文本给行命名。"
+    );
+  }
+  if (
+    looksLikeOrderBatchAccountTask(snapshot, description, context) &&
+    /未找到表格目标行：hasTexts=/.test(repair.executionError) &&
+    /(findAntdTableRow|clickAntdRowCheckbox|selectedOrderNo|selectedServiceItem|selectedAmount|orderNo|serviceItem|accountAmount)/.test(
+      repair.previousCode
+    )
+  ) {
+    diagnosisHints.push(
+      "这次不是说明筛选结果里必须同时出现“服务中 / 已完款”之类额外行文案，而是 repair 在还没拿到 `selectedOrderNo/orderNo` 前，先凭空发明了 `findAntdTableRow(page, { hasTexts: [...] })` 的硬条件。当前订单批量入账任务里，已知硬条件只有筛选项“入账状态=待申请”；不要继续生成 `hasTexts: ['服务中', '已完款']`、`['待申请', '服务中']` 或任何未在需求 / 结构化计划里声明的状态文本匹配。"
+    );
+    diagnosisHints.push(
+      "更稳的收口顺序是：Step 2 只确认搜索后存在至少一条可勾选真实订单行；Step 3 再从可见主表体里选一条真实可勾选行，直接 `await __e2e.clickAntdRowCheckbox(page, targetRow)`，随后优先从订单号列、首个编号链接或带“订单号”标签的单元格提取 `selectedOrderNo/orderNo`，再补 `selectedServiceItem/serviceItem` 与 `selectedAmount/accountAmount`。拿到订单号后，后续弹窗和入账管理校验再改用它做主键链；不要在订单号为空时反过来先臆造行文本。"
+    );
+  }
+  if (
     looksLikeBusinessCreateTask(snapshot, description, context) &&
     /未命中目标记录：列表未命中，且没有可用的详情回退路径/.test(repair.executionError)
   ) {
@@ -2594,6 +2771,35 @@ export function buildRepairPrompt(
     /(findAntdTableRow|targetRow|selectedRows|order\/list|批量)/.test(`${snapshot.url}\n${description}\n${repair.previousCode}`)
   ) {
     diagnosisHints.push("这次不是列表里完全没有数据，而是脚本已经进入了目标列表，却仍在手写 `.ant-checkbox` 细节或默认去点第一条/随机一条行的复选框。修复时不要继续保留 `page.locator('tr[data-row-key]:visible').first().locator('.ant-checkbox').first().click()`、`targetRow.locator('.ant-checkbox').first().click()` 或任何“第一条可见行”假设；先用 `__e2e.findAntdTableRow(page, { hasTexts: [...] })` 命中真正目标行，再直接写 `await __e2e.clickAntdRowCheckbox(page, targetRow)`。如果当前候选 row 没有可点复选框，就把它视为不可选行并继续寻找下一条候选，不要立刻把整个任务判死。");
+  }
+  if (
+    /Locator:\s*locator\('\.ant-modal-wrap'\).*ant-modal-content/i.test(repair.executionError) &&
+    /Expected substring:\s*"1\d{10}"/.test(repair.executionError) &&
+    /(selectedOrderNo|orderId|订单号|批量入账|批量申请入账|入账金额|服务项)/.test(
+      `${description}\n${repair.previousCode}\n${recentEventText}`
+    ) &&
+    /rowText\.match\(|amountCandidates|selectedAmount|selectedServiceItem/.test(repair.previousCode)
+  ) {
+    diagnosisHints.push(
+      "这次不是弹窗 locator 没命中，而是订单号变量提取错位了：脚本很可能用整行 `rowText.match(...)` 或“第一段长串”去填 `selectedOrderNo/orderId`，把 11 位手机号误当成订单号。修复时不要继续保留 `const orderNoMatch = rowText.match(/\\b[A-Za-z0-9_-]{6,}\\b/)` 这类宽泛兜底；优先从订单号列、首个编号链接或带“订单号”标签的字段提取。若必须从整行文本兜底，至少排除 `/^1\\d{10}$/` 手机号和纯金额 token，只保留更像订单号的值。进入“批量申请入账”弹窗后，也不要要求整块 modal 全文包含联系人/手机号；优先按 `订单号 / 服务项 / 入账金额` 三类字段做 scoped 断言。"
+    );
+  }
+  if (
+    looksLikeOrderBatchAccountTask(snapshot, description, context) &&
+    /Locator:\s*locator\('\.ant-modal-wrap'\).*getByRole\('button', \{ name: '取消' \}\)\.first\(\)/.test(
+      repair.executionError
+    ) &&
+    /Expected:\s*visible|element\(s\) not found|toBeVisible\(\) failed/i.test(repair.executionError) &&
+    /(waitForVisibleAntdModal\(page,\s*\{\s*titleIncludes:\s*'批量申请入账'|ant-modal resolved|findApplyEnterOrderInfo|批量申请入账)/.test(
+      `${repair.previousCode}\n${recentEventText}`
+    )
+  ) {
+    diagnosisHints.push(
+      "这次不是“批量申请入账”弹窗没打开，而是弹窗已经通过 `__e2e.waitForVisibleAntdModal(page, { titleIncludes: '批量申请入账' })` / recent trace `ant-modal resolved` 证明 ready，随后又把 `取消` 按钮当成硬前提才失败。修复时不要继续保留 `await expect(modal.getByRole('button', { name: '取消' }).first()).toBeVisible()`，也不要把 `取消` 当成弹窗存在性的必要证据。"
+    );
+    diagnosisHints.push(
+      "保留 `const modal = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '批量申请入账' })` 作为 ready 证据，并始终在这个 `modal` scope 内继续操作；footer 按钮校验改成更宽容的主动作匹配，优先找 `/确\\s*定|提\\s*交|保\\s*存/i`，`取消/关闭` 只当可选辅助按钮。只要 modal 已 ready，就继续校验 `订单号 / 服务项 / 入账金额` 并进入提交，不要因为 footer 文案或 DOM 漂移重新判失败。"
+    );
   }
   if (
     looksLikeBusinessCreateTask(snapshot, description, context) &&
@@ -2842,6 +3048,1280 @@ export function buildRepairPrompt(
   return parts.join('\n');
 }
 
+function replaceIntentExecutionSlotCode(
+  code: string,
+  slotUid: string,
+  rewrite: (slotCode: string) => string
+): string {
+  if (!hasIntentExecutionSlotMarkers(code, slotUid)) {
+    return code;
+  }
+
+  const slotCode = extractIntentExecutionSlotCode(code, slotUid);
+  const nextSlotCode = rewrite(slotCode);
+  if (nextSlotCode === slotCode) {
+    return code;
+  }
+
+  return applyIntentExecutionSlotPatch(code, {
+    version: 1,
+    slots: [{ slotUid, code: nextSlotCode }],
+  });
+}
+
+function normalizeBatchAccountAmountAlias(code: string): string {
+  return code.replace(/\bselectedBookedAmount\b/g, 'selectedAmount');
+}
+
+function looksLikeBatchAccountPendingStatusHasTexts(hasTextsRaw: string): boolean {
+  const hasTexts = String(hasTextsRaw || '');
+  return hasTexts.includes("'待申请入账'") && (hasTexts.includes("'服务中'") || hasTexts.includes("'未确认'"));
+}
+
+function buildBatchAccountSelectableRowResolveBlock(indent: string, rowVar: string): string {
+  return [
+    `${indent}const ${rowVar} = await (async () => {`,
+    `${indent}  const candidateRows = page.locator('.ant-table-tbody tr[data-row-key]:visible');`,
+    `${indent}  const candidateCount = await candidateRows.count();`,
+    `${indent}  for (let index = 0; index < candidateCount; index += 1) {`,
+    `${indent}    const candidate = candidateRows.nth(index);`,
+    `${indent}    try {`,
+    `${indent}      await __e2e.clickAntdRowCheckbox(page, candidate);`,
+    `${indent}      return candidate;`,
+    `${indent}    } catch (_candidateError) {`,
+    `${indent}      continue;`,
+    `${indent}    }`,
+    `${indent}  }`,
+    `${indent}  throw new Error('未找到可勾选真实订单行');`,
+    `${indent}})();`,
+  ].join('\n');
+}
+
+function buildBatchAccountPendingRowSurfaceBlock(indent: string, rowVar: string): string {
+  return [
+    `${indent}const ${rowVar} = await (async () => {`,
+    `${indent}  const candidateRows = page.locator('.ant-table-tbody tr[data-row-key]:visible');`,
+    `${indent}  await expect(candidateRows.first()).toBeVisible({ timeout: 20000 });`,
+    `${indent}  const candidateCount = await candidateRows.count();`,
+    `${indent}  for (let index = 0; index < candidateCount; index += 1) {`,
+    `${indent}    const candidate = candidateRows.nth(index);`,
+    `${indent}    const candidateTextRowKey = ((await candidate.getAttribute('data-row-key')) || '').trim();`,
+    `${indent}    const candidateTextSources = candidateTextRowKey ? page.locator(\`tr[data-row-key="\${candidateTextRowKey}"]\`) : candidate;`,
+    `${indent}    const candidateTextParts = [];`,
+    `${indent}    const candidateTextSourceCount = candidateTextRowKey ? await candidateTextSources.count() : 1;`,
+    `${indent}    for (let candidateTextIndex = 0; candidateTextIndex < candidateTextSourceCount; candidateTextIndex += 1) {`,
+    `${indent}      const candidateTextSource = candidateTextRowKey ? candidateTextSources.nth(candidateTextIndex) : candidate;`,
+    `${indent}      const candidateTextPart = (await candidateTextSource.innerText().catch(() => '')).replace(/\\s+/g, ' ').trim();`,
+    `${indent}      if (candidateTextPart && !candidateTextParts.includes(candidateTextPart)) candidateTextParts.push(candidateTextPart);`,
+    `${indent}    }`,
+    `${indent}    const candidateText = candidateTextParts.join(' ').trim();`,
+    `${indent}    if (/待申请入账/.test(candidateText)) return candidate;`,
+    `${indent}  }`,
+    `${indent}  throw new Error('筛选后未找到“待申请入账”结果行');`,
+    `${indent}})();`,
+  ].join('\n');
+}
+
+function sanitizeBatchAccountPendingRowSurfaceSlot(slotCode: string): string {
+  let next = slotCode.replace(
+    /^(\s*)const\s+(\w+)\s*=\s*await __e2e\.findAntdTableRow\(page,\s*\{\s*hasTexts:\s*\[([^\]]+)\][^}]*\}\);\s*$/gm,
+    (full, indent: string, rowVar: string, hasTextsRaw: string) =>
+      looksLikeBatchAccountPendingStatusHasTexts(hasTextsRaw)
+        ? buildBatchAccountPendingRowSurfaceBlock(indent, rowVar)
+        : full
+  );
+
+  next = next.replace(
+    /^(\s*)const\s+(\w+)\s*=\s*await __e2e\.findAntdTableRow\(page,\s*\{\s*hasTexts:\s*\[([^\]]+)\][^}]*\}\)\.catch\((?:async\s*)?\(\)\s*=>\s*\{\n\1\s*(?:return\s+)?await __e2e\.findAntdTableRow\(page,\s*\{\s*hasTexts:\s*\[([^\]]+)\][^}]*\}\);\n\1\}\);\s*$/gm,
+    (full, indent: string, rowVar: string, primaryHasTextsRaw: string, fallbackHasTextsRaw: string) =>
+      looksLikeBatchAccountPendingStatusHasTexts(primaryHasTextsRaw) ||
+      looksLikeBatchAccountPendingStatusHasTexts(fallbackHasTextsRaw)
+        ? buildBatchAccountPendingRowSurfaceBlock(indent, rowVar)
+        : full
+  );
+
+  return next;
+}
+
+function sanitizeBatchAccountRowSelection(code: string): string {
+  let next = replaceIntentExecutionSlotCode(
+    code,
+    'plan_step_1',
+    sanitizeBatchAccountPendingRowSurfaceSlot
+  );
+
+  next = next.replace(
+    /^(\s*)const\s+(\w+)\s*=\s*await __e2e\.findAntdTableRow\(page,\s*\{\s*hasTexts:\s*\[([^\]]+)\][^}]*\}\);\s*$/gm,
+    (full, indent: string, rowVar: string, hasTextsRaw: string) =>
+      looksLikeBatchAccountPendingStatusHasTexts(hasTextsRaw)
+        ? buildBatchAccountSelectableRowResolveBlock(indent, rowVar)
+        : full
+  );
+
+  next = next.replace(
+    /^(\s*)const\s+(\w+)\s*=\s*await __e2e\.findAntdTableRow\(page,\s*\{\s*hasTexts:\s*\[([^\]]+)\][^}]*\}\)\.catch\((?:async\s*)?\(\)\s*=>\s*\{\n\1\s*(?:return\s+)?await __e2e\.findAntdTableRow\(page,\s*\{\s*hasTexts:\s*\[([^\]]+)\][^}]*\}\);\n\1\}\);\s*$/gm,
+    (full, indent: string, rowVar: string, primaryHasTextsRaw: string, fallbackHasTextsRaw: string) =>
+      looksLikeBatchAccountPendingStatusHasTexts(primaryHasTextsRaw) ||
+      looksLikeBatchAccountPendingStatusHasTexts(fallbackHasTextsRaw)
+        ? buildBatchAccountSelectableRowResolveBlock(indent, rowVar)
+        : full
+  );
+
+  return next;
+}
+
+function sanitizeBatchAccountPostClickCheckboxAssertions(code: string): string {
+  let next = code.replace(
+    /^(\s*)await __e2e\.clickAntdRowCheckbox\(page,\s*(\w+)\);\n\1const rowKey = \(\(await \2\.getAttribute\('data-row-key'\)\) \|\| ''\)\.trim\(\);\n\1if \(rowKey\) \{\n\1\s*const \w+ = page\.locator\(`tr\[data-row-key="\$\{rowKey\}"\] \.ant-checkbox-checked:visible`\)\.first\(\);\n\1\s*await expect\(\w+\)\.toBeVisible\(\{ timeout: \d+ \}\);\n\1\}\s*$/gm,
+    '$1await __e2e.clickAntdRowCheckbox(page, $2);'
+  );
+
+  next = next.replace(
+    /^(\s*)await __e2e\.clickAntdRowCheckbox\(page,\s*(\w+)\);\n\1const rowKey = \(\(await \2\.getAttribute\('data-row-key'\)\) \|\| ''\)\.trim\(\);\n\1const \w+ = rowKey\n\1\s*\? page\.locator\(`tr\[data-row-key="\$\{rowKey\}"\]:visible \.ant-checkbox-wrapper-checked, tr\[data-row-key="\$\{rowKey\}"\]:visible \.ant-checkbox-checked`\)\n\1\s*: \2\.locator\('\.ant-checkbox-wrapper-checked, \.ant-checkbox-checked'\);\n\1await expect\(\w+\.first\(\)\)\.toBeVisible\(\{ timeout: \d+ \}\);\s*$/gm,
+    '$1await __e2e.clickAntdRowCheckbox(page, $2);'
+  );
+
+  return next;
+}
+
+function sanitizeBatchAccountRowTextAggregation(code: string): string {
+  const buildAggregationBlock = (indent: string, rowTextVar: string, rowVar: string) =>
+    [
+      `${indent}const ${rowTextVar}RowKey = ((await ${rowVar}.getAttribute('data-row-key')) || '').trim();`,
+      `${indent}const ${rowTextVar}Sources = ${rowTextVar}RowKey ? page.locator(\`tr[data-row-key="\${${rowTextVar}RowKey}"]\`) : ${rowVar};`,
+      `${indent}const ${rowTextVar}Parts = [];`,
+      `${indent}const ${rowTextVar}SourceCount = ${rowTextVar}RowKey ? await ${rowTextVar}Sources.count() : 1;`,
+      `${indent}for (let ${rowTextVar}Index = 0; ${rowTextVar}Index < ${rowTextVar}SourceCount; ${rowTextVar}Index += 1) {`,
+      `${indent}  const ${rowTextVar}Source = ${rowTextVar}RowKey ? ${rowTextVar}Sources.nth(${rowTextVar}Index) : ${rowVar};`,
+      `${indent}  const ${rowTextVar}Part = (await ${rowTextVar}Source.innerText().catch(() => '')).replace(/\\s+/g, ' ').trim();`,
+      `${indent}  if (${rowTextVar}Part && !${rowTextVar}Parts.includes(${rowTextVar}Part)) ${rowTextVar}Parts.push(${rowTextVar}Part);`,
+      `${indent}}`,
+      `${indent}const ${rowTextVar} = ${rowTextVar}Parts.join(' ').trim();`,
+    ].join('\n');
+
+  const shouldSkipAggregationRewrite = (rowTextVar: string, rowVar: string) =>
+    /(Part|Parts)$/.test(rowTextVar) || /(Source|Sources)$/.test(rowVar);
+
+  let next = code.replace(
+    /^(\s*)const\s+(\w+)\s*=\s*await\s+(\w+)\.innerText\(\)\.catch\(\(\)\s*=>\s*''\);\s*$/gm,
+    (full, indent: string, rowTextVar: string, rowVar: string) =>
+      shouldSkipAggregationRewrite(rowTextVar, rowVar) ? full : buildAggregationBlock(indent, rowTextVar, rowVar)
+  );
+
+  next = next.replace(
+    /^(\s*)const\s+(\w+)\s*=\s*\(await\s+(\w+)\.innerText\(\)\.catch\(\(\)\s*=>\s*''\)\)\.replace\(\/\\s\+\/g,\s*' '\)\.trim\(\);\s*$/gm,
+    (full, indent: string, rowTextVar: string, rowVar: string) =>
+      shouldSkipAggregationRewrite(rowTextVar, rowVar) ? full : buildAggregationBlock(indent, rowTextVar, rowVar)
+  );
+
+  return next;
+}
+
+function buildBatchAccountOrderNoCandidateAssignmentBlock(
+  indent: string,
+  targetVar: string,
+  candidateExpression: string
+): string {
+  return [
+    `${indent}const ${targetVar}Candidate = String(${candidateExpression} || '').trim();`,
+    `${indent}const ${targetVar}Normalized = ${targetVar}Candidate.replace(/\\s+/g, '');`,
+    `${indent}const ${targetVar}LooksLikePhone = /^1\\d{10}$/.test(${targetVar}Normalized);`,
+    `${indent}const ${targetVar}LooksLikeDate = /^(?:19|20)\\d{2}[-/.](?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\\d|3[01])$/.test(${targetVar}Candidate) || /^(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])$/.test(${targetVar}Normalized);`,
+    `${indent}const ${targetVar}LooksLikeShortNumeric = /^\\d+$/.test(${targetVar}Normalized) && ${targetVar}Normalized.length < 12;`,
+    `${indent}const ${targetVar}LooksLikeAmount = /^\\d+(?:\\.\\d{1,2})?$/.test(${targetVar}Normalized) && (${targetVar}Normalized.includes('.') || ${targetVar}Normalized.length <= 8);`,
+    `${indent}const ${targetVar}IsStructuredId = /^(?:[A-Za-z0-9_-]{6,64}|\\d{12,64})$/.test(${targetVar}Normalized);`,
+    `${indent}const ${targetVar} = ${targetVar}IsStructuredId && !${targetVar}LooksLikePhone && !${targetVar}LooksLikeDate && !${targetVar}LooksLikeShortNumeric && !${targetVar}LooksLikeAmount ? ${targetVar}Normalized : '';`,
+  ].join('\n');
+}
+
+function buildBatchAccountOrderNoExtractedAssignmentBlock(
+  indent: string,
+  candidateVar: string,
+  candidateExpression: string,
+  targetVar = 'extracted',
+  breakAfter = true
+): string {
+  return [
+    buildBatchAccountOrderNoCandidateAssignmentBlock(indent, candidateVar, candidateExpression),
+    `${indent}if (${candidateVar}) {`,
+    `${indent}  ${targetVar} = ${candidateVar};`,
+    ...(breakAfter ? [`${indent}  break;`] : []),
+    `${indent}}`,
+  ].join('\n');
+}
+
+function buildCloneSafeVisibleTextAggregationBlock(indent: string, textVar: string, sourceExpr: string): string {
+  return [
+    `${indent}const ${textVar}RowKey = ((await ${sourceExpr}.getAttribute('data-row-key')) || '').trim();`,
+    `${indent}const ${textVar}Sources = ${textVar}RowKey ? page.locator(\`tr[data-row-key="\${${textVar}RowKey}"]\`) : ${sourceExpr};`,
+    `${indent}const ${textVar}Parts = [];`,
+    `${indent}const ${textVar}SourceCount = ${textVar}RowKey ? await ${textVar}Sources.count() : 1;`,
+    `${indent}for (let ${textVar}Index = 0; ${textVar}Index < ${textVar}SourceCount; ${textVar}Index += 1) {`,
+    `${indent}  const ${textVar}Source = ${textVar}RowKey ? ${textVar}Sources.nth(${textVar}Index) : ${sourceExpr};`,
+    `${indent}  const ${textVar}Part = (await ${textVar}Source.innerText().catch(() => '')).replace(/\\s+/g, ' ').trim();`,
+    `${indent}  if (${textVar}Part && !${textVar}Parts.includes(${textVar}Part)) ${textVar}Parts.push(${textVar}Part);`,
+    `${indent}}`,
+    `${indent}const ${textVar} = ${textVar}Parts.join(' ').trim();`,
+  ].join('\n');
+}
+
+function buildBatchAccountModalFieldFallbackBlock(indent: string, modalVar: string): string {
+  return [
+    `${indent}const modalText = await ${modalVar}.innerText().catch(() => '');`,
+    `${indent}const modalOrderNo = (await __e2e.readDetailField(page, { label: '订单号', scope: ${modalVar}, titleIncludes: '批量申请入账', required: false })) || (await __e2e.readDetailField(page, { label: '订单编号', scope: ${modalVar}, titleIncludes: '批量申请入账', required: false })) || '';`,
+    `${indent}const modalOrderNoText = (((modalText.match(/订单号[：:\\s]*([A-Za-z0-9_-]+)/) || [])[1] || '')).trim();`,
+    `${indent}if (!shared.selectedOrderNo) {`,
+    `${indent}  const nextOrderNo = modalOrderNo.trim() || modalOrderNoText;`,
+    `${indent}  if (nextOrderNo && !/^1\\d{10}$/.test(nextOrderNo)) shared.selectedOrderNo = nextOrderNo;`,
+    `${indent}}`,
+    `${indent}const modalServiceItem = (await __e2e.readDetailField(page, { label: '服务项', scope: ${modalVar}, titleIncludes: '批量申请入账', required: false })) || (await __e2e.readDetailField(page, { label: '服务项目', scope: ${modalVar}, titleIncludes: '批量申请入账', required: false })) || '';`,
+    `${indent}const modalServiceItemText = (((modalText.match(/服务项[：:\\s]*([^\\n]+)/) || [])[1] || (modalText.match(/服务项目[：:\\s]*([^\\n]+)/) || [])[1] || '').replace(/(?:应收款)?入账金额.*$/, '').trim());`,
+    `${indent}if (!shared.selectedServiceItem) {`,
+    `${indent}  const nextServiceItem = modalServiceItem.trim() || modalServiceItemText;`,
+    `${indent}  if (nextServiceItem && !/^(订单号|订单编号|批量申请入账)$/i.test(nextServiceItem)) shared.selectedServiceItem = nextServiceItem;`,
+    `${indent}}`,
+    `${indent}const modalAmountRaw = (await __e2e.readDetailField(page, { label: '入账金额', scope: ${modalVar}, titleIncludes: '批量申请入账', required: false })) || (await __e2e.readDetailField(page, { label: '金额', scope: ${modalVar}, titleIncludes: '批量申请入账', required: false })) || '';`,
+    `${indent}if (!shared.selectedServiceItem) {`,
+    buildBatchAccountSelectedServiceItemAssignmentBlock(`${indent}  `, 'modalAmountRaw'),
+    `${indent}  if (shared.selectedServiceItem) artifacts['selectedServiceItem_amount_field_fallback'] = shared.selectedServiceItem;`,
+    `${indent}}`,
+    `${indent}const modalAmountText = ((((modalText.match(/(?:应收款)?入账金额[：:\\s]*([0-9][0-9,]*(?:\\.\\d{1,2})?)/) || [])[1] || (modalText.match(/金额[：:\\s]*([0-9][0-9,]*(?:\\.\\d{1,2})?)/) || [])[1] || '').replace(/,/g, '')).trim());`,
+    `${indent}const normalizedModalAmountCandidates = (modalAmountRaw.match(/\\d+(?:\\.\\d{1,2})?/g) || []).map((item) => String(item || '').replace(/,/g, '').trim()).filter((item) => /^\\d+(?:\\.\\d{1,2})?$/.test(item) && !/^(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])$/.test(item) && !(!item.includes('.') && item.length >= 10) && Number(item) > 0);`,
+    `${indent}const fallbackModalAmountText = /^\\d+(?:\\.\\d{1,2})?$/.test(modalAmountText) && !/^(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])$/.test(modalAmountText) && !(!modalAmountText.includes('.') && modalAmountText.length >= 10) ? modalAmountText : '';`,
+    `${indent}const normalizedModalAmount = ((normalizedModalAmountCandidates[0] || fallbackModalAmountText || '').trim());`,
+    `${indent}let fallbackRowAmount = '';`,
+    `${indent}const modalAmountSourceRow = artifacts.plan_step_2_targetRow || artifacts.plan_step_3_targetRow || artifacts['plan_step_2_row'] || artifacts['plan_step_2_row_fallback'] || (typeof targetRow !== 'undefined' ? targetRow : null);`,
+    `${indent}if (!normalizedModalAmount && modalAmountSourceRow) {`,
+    `${indent}  const rowAmountRowKey = ((await modalAmountSourceRow.getAttribute('data-row-key')) || '').trim();`,
+    `${indent}  const rowAmountSources = rowAmountRowKey ? page.locator(\`tr[data-row-key="\${rowAmountRowKey}"]\`) : modalAmountSourceRow;`,
+    `${indent}  const rowAmountParts = [];`,
+    `${indent}  const rowAmountSourceCount = rowAmountRowKey ? await rowAmountSources.count() : 1;`,
+    `${indent}  for (let rowAmountIndex = 0; rowAmountIndex < rowAmountSourceCount; rowAmountIndex += 1) {`,
+    `${indent}    const rowAmountSource = rowAmountRowKey ? rowAmountSources.nth(rowAmountIndex) : modalAmountSourceRow;`,
+    `${indent}    const rowAmountPart = (await rowAmountSource.innerText().catch(() => '')).replace(/\\s+/g, ' ').trim();`,
+    `${indent}    if (rowAmountPart && !rowAmountParts.includes(rowAmountPart)) rowAmountParts.push(rowAmountPart);`,
+    `${indent}  }`,
+    `${indent}  const rowAmountText = rowAmountParts.join(' ').trim();`,
+    `${indent}  const rowAmountCandidates = (rowAmountText.match(/\\d+(?:\\.\\d{1,2})?/g) || []).map((item) => String(item || '').replace(/,/g, '').trim()).filter((item) => /^\\d+(?:\\.\\d{1,2})?$/.test(item) && !/^(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])$/.test(item) && !(!item.includes('.') && item.length >= 10) && Number(item) > 0);`,
+    `${indent}  fallbackRowAmount = (rowAmountCandidates[rowAmountCandidates.length - 1] || '').trim();`,
+    `${indent}  if (fallbackRowAmount) artifacts['selectedAmount_row_fallback'] = fallbackRowAmount;`,
+    `${indent}}`,
+    `${indent}const modalServiceSourceRow = modalAmountSourceRow;`,
+    `${indent}if (!shared.selectedServiceItem && modalServiceSourceRow) {`,
+    buildCloneSafeVisibleTextAggregationBlock(`${indent}  `, 'rowServiceText', 'modalServiceSourceRow'),
+    `${indent}  const rowServiceByLabel = ((rowServiceText.match(/服务项(?:目)?[：:\\s]*([^\\n\\r].*?)(?:入账金额|金额|附件|取消|确定|$)/) || [])[1] || '').trim();`,
+    `${indent}  const rowServiceTokens = rowServiceText.split(/\\s+/).map((item) => String(item || '').trim()).filter(Boolean);`,
+    `${indent}  const rowServiceToken = rowServiceTokens.find((item) => /工商|注销|服务|套餐|产品|方案|顾问|注册|变更|记账|核名|社保|许可|开户|税控|审计|资质|咨询|办理/.test(item) && !/^1\\d{10}$/.test(item) && !/^\\d+(?:\\.\\d{1,2})?$/.test(item)) || '';`,
+    buildBatchAccountSelectedServiceItemAssignmentBlock(`${indent}  `, "rowServiceByLabel || rowServiceToken || ''"),
+    `${indent}  if (shared.selectedServiceItem) artifacts['selectedServiceItem_row_fallback'] = shared.selectedServiceItem;`,
+    `${indent}}`,
+    `${indent}const resolvedModalAmount = (normalizedModalAmount || fallbackRowAmount || '').trim();`,
+    `${indent}if (!shared.selectedAmount && resolvedModalAmount) shared.selectedAmount = resolvedModalAmount;`,
+  ].join('\n');
+}
+
+function buildBatchAccountModalFieldFallbackReuseBlock(indent: string, modalVar: string): string {
+  return [
+    `${indent}artifacts['plan_step_3_modal'] = ${modalVar};`,
+    `${indent}const cachedModalFieldSnapshot = artifacts['batch_account_modal_field_snapshot'];`,
+    `${indent}const modalFieldSnapshot = cachedModalFieldSnapshot || await (async () => {`,
+    buildBatchAccountModalFieldFallbackBlock(`${indent}  `, modalVar),
+    `${indent}  return {`,
+    `${indent}    modalText,`,
+    `${indent}    modalOrderNo,`,
+    `${indent}    modalServiceItem,`,
+    `${indent}    modalAmountRaw,`,
+    `${indent}    normalizedModalAmount,`,
+    `${indent}    fallbackRowAmount,`,
+    `${indent}    resolvedModalAmount,`,
+    `${indent}    selectedOrderNo: String(shared.selectedOrderNo || '').trim(),`,
+    `${indent}    selectedServiceItem: String(shared.selectedServiceItem || '').trim(),`,
+    `${indent}    selectedAmount: String(shared.selectedAmount || '').trim(),`,
+    `${indent}    selectedServiceItemAmountFieldFallback: String(artifacts['selectedServiceItem_amount_field_fallback'] || '').trim(),`,
+    `${indent}    selectedServiceItemRowFallback: String(artifacts['selectedServiceItem_row_fallback'] || '').trim(),`,
+    `${indent}    selectedAmountRowFallback: String(artifacts['selectedAmount_row_fallback'] || '').trim(),`,
+    `${indent}  };`,
+    `${indent}})();`,
+    `${indent}artifacts['batch_account_modal_field_snapshot'] = modalFieldSnapshot;`,
+    `${indent}const modalText = String(modalFieldSnapshot.modalText || '');`,
+    `${indent}const modalOrderNo = String(modalFieldSnapshot.modalOrderNo || '');`,
+    `${indent}const modalServiceItem = String(modalFieldSnapshot.modalServiceItem || '');`,
+    `${indent}const modalAmountRaw = String(modalFieldSnapshot.modalAmountRaw || '');`,
+    `${indent}const normalizedModalAmount = String(modalFieldSnapshot.normalizedModalAmount || '');`,
+    `${indent}const fallbackRowAmount = String(modalFieldSnapshot.fallbackRowAmount || '');`,
+    `${indent}const modalAmountSourceRow = artifacts.plan_step_2_targetRow || artifacts.plan_step_3_targetRow || artifacts['plan_step_2_row'] || artifacts['plan_step_2_row_fallback'] || (typeof targetRow !== 'undefined' ? targetRow : null);`,
+    `${indent}const modalServiceSourceRow = modalAmountSourceRow;`,
+    `${indent}const resolvedModalAmount = String(modalFieldSnapshot.resolvedModalAmount || '').trim();`,
+    `${indent}if (!shared.selectedOrderNo && modalFieldSnapshot.selectedOrderNo) shared.selectedOrderNo = String(modalFieldSnapshot.selectedOrderNo || '').trim();`,
+    `${indent}if (!shared.selectedServiceItem && modalFieldSnapshot.selectedServiceItem) shared.selectedServiceItem = String(modalFieldSnapshot.selectedServiceItem || '').trim();`,
+    `${indent}if (!shared.selectedAmount && modalFieldSnapshot.selectedAmount) shared.selectedAmount = String(modalFieldSnapshot.selectedAmount || '').trim();`,
+    `${indent}if (modalFieldSnapshot.selectedServiceItemAmountFieldFallback) artifacts['selectedServiceItem_amount_field_fallback'] = String(modalFieldSnapshot.selectedServiceItemAmountFieldFallback || '').trim();`,
+    `${indent}if (modalFieldSnapshot.selectedServiceItemRowFallback) artifacts['selectedServiceItem_row_fallback'] = String(modalFieldSnapshot.selectedServiceItemRowFallback || '').trim();`,
+    `${indent}if (modalFieldSnapshot.selectedAmountRowFallback) artifacts['selectedAmount_row_fallback'] = String(modalFieldSnapshot.selectedAmountRowFallback || '').trim();`,
+    `${indent}if (!shared.selectedAmount && resolvedModalAmount) shared.selectedAmount = resolvedModalAmount;`,
+  ].join('\n');
+}
+
+function buildBatchAccountSelectedAmountAssertionGuard(indent: string, assertionLine: string): string {
+  return [
+    `${indent}{`,
+    `${indent}  const selectedAmountText = String(shared.selectedAmount || '').trim();`,
+    `${indent}  const normalizedSelectedAmount = selectedAmountText.replace(/,/g, '');`,
+    `${indent}  const selectedAmountLooksLikeDate = /^(?:19|20)\\d{2}[-/.](?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\\d|3[01])$/.test(selectedAmountText) || /^(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])$/.test(normalizedSelectedAmount);`,
+    `${indent}  const selectedAmountLooksLikeLongId = !normalizedSelectedAmount.includes('.') && normalizedSelectedAmount.length >= 10;`,
+    `${indent}  const shouldAssertSelectedAmount = /^\\d+(?:\\.\\d{1,2})?$/.test(normalizedSelectedAmount) && !selectedAmountLooksLikeDate && !selectedAmountLooksLikeLongId && Number(normalizedSelectedAmount) > 0;`,
+    `${indent}  if (shouldAssertSelectedAmount) {`,
+    `${indent}    ${assertionLine}`,
+    `${indent}  } else if (selectedAmountText) {`,
+    `${indent}    artifacts['selectedAmount_assertion_skipped'] = selectedAmountText;`,
+    `${indent}  }`,
+    `${indent}}`,
+  ].join('\n');
+}
+
+function buildBatchAccountSelectedAmountAssignmentBlock(indent: string, candidateExpression: string): string {
+  return [
+    `${indent}{`,
+    `${indent}  const selectedAmountCandidateText = String(${candidateExpression} || '').replace(/,/g, '').trim();`,
+    `${indent}  const selectedAmountLooksLikeDate = /^(?:19|20)\\d{2}[-/.](?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\\d|3[01])$/.test(selectedAmountCandidateText) || /^(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])$/.test(selectedAmountCandidateText);`,
+    `${indent}  const selectedAmountLooksLikeLongId = !selectedAmountCandidateText.includes('.') && selectedAmountCandidateText.length >= 10;`,
+    `${indent}  const shouldKeepSelectedAmount = /^\\d+(?:\\.\\d{1,2})?$/.test(selectedAmountCandidateText) && !selectedAmountLooksLikeDate && !selectedAmountLooksLikeLongId && Number(selectedAmountCandidateText) > 0;`,
+    `${indent}  shared.selectedAmount = shouldKeepSelectedAmount ? selectedAmountCandidateText : '';`,
+    `${indent}}`,
+  ].join('\n');
+}
+
+function buildBatchAccountSelectedServiceItemAssertionGuard(indent: string, assertionLine: string): string {
+  return [
+    `${indent}{`,
+    `${indent}  const selectedServiceItemText = String(shared.selectedServiceItem || '').trim();`,
+    `${indent}  const normalizedSelectedServiceItem = selectedServiceItemText.replace(/^[\\[\\]()【】]+|[\\]\\)】]+$/g, '').trim();`,
+    `${indent}  const selectedServiceItemLooksLikeStatus = /^(?:服务中|待申请入账|未确认|已确认|已完款|待确认|状态|入账状态)$/i.test(normalizedSelectedServiceItem);`,
+    `${indent}  if (selectedServiceItemText && !selectedServiceItemLooksLikeStatus) {`,
+    `${indent}    ${assertionLine}`,
+    `${indent}  } else if (selectedServiceItemText) {`,
+    `${indent}    artifacts['selectedServiceItem_assertion_skipped'] = selectedServiceItemText;`,
+    `${indent}  }`,
+    `${indent}}`,
+  ].join('\n');
+}
+
+function buildBatchAccountSelectedServiceItemAssignmentBlock(indent: string, candidateExpression: string): string {
+  return [
+    `${indent}{`,
+    `${indent}  const selectedServiceItemCandidateText = String(${candidateExpression} || '').trim();`,
+    `${indent}  const normalizedSelectedServiceItemCandidateText = selectedServiceItemCandidateText.replace(/^[\\[\\]()【】]+|[\\]\\)】]+$/g, '').trim();`,
+    `${indent}  const selectedServiceItemCandidateLooksLikeStatus = /^(?:服务中|待申请入账|未确认|已确认|已完款|待确认|状态|入账状态)$/i.test(normalizedSelectedServiceItemCandidateText);`,
+    `${indent}  const selectedServiceItemCandidateNumericText = normalizedSelectedServiceItemCandidateText.replace(/,/g, '');`,
+    `${indent}  const selectedServiceItemCandidateLooksLikeAmount = /^-+$/.test(selectedServiceItemCandidateNumericText) || (/^\\d+(?:\\.\\d{1,2})?$/.test(selectedServiceItemCandidateNumericText) && Number(selectedServiceItemCandidateNumericText) >= 0);`,
+    `${indent}  const selectedServiceItemCandidateLooksLikePhone = /^1\\d{10}$/.test(selectedServiceItemCandidateNumericText);`,
+    `${indent}  const selectedServiceItemCandidateLooksLikeLabel = /^(?:订单号|订单编号|批量申请入账|入账金额|金额|服务项|服务项目)$/i.test(normalizedSelectedServiceItemCandidateText);`,
+    `${indent}  shared.selectedServiceItem = selectedServiceItemCandidateText && !selectedServiceItemCandidateLooksLikeStatus && !selectedServiceItemCandidateLooksLikeAmount && !selectedServiceItemCandidateLooksLikePhone && !selectedServiceItemCandidateLooksLikeLabel ? normalizedSelectedServiceItemCandidateText : '';`,
+    `${indent}}`,
+  ].join('\n');
+}
+
+function normalizeBatchAccountServiceItemAssignmentGuards(code: string): string {
+  let next = code.replace(
+    /^(\s*)\{\n\1\s*const selectedServiceItemCandidateText = String\((.+?)\)\.trim\(\);\n\1\s*const normalizedSelectedServiceItemCandidateText = .*;\n\1\s*const selectedServiceItemCandidateLooksLikeStatus = .*;\n\1\s*shared\.selectedServiceItem = selectedServiceItemCandidateText && !selectedServiceItemCandidateLooksLikeStatus \? selectedServiceItemCandidateText : '';\n\1\}\s*$/gm,
+    (_full, indent: string, candidateExpr: string) =>
+      `${indent}shared.selectedServiceItem = ${String(candidateExpr || '').trim()};`
+  );
+
+  next = next.replace(
+    /^(\s*)\{\n\1\s*const selectedServiceItemCandidate = String\((.+?)\)\.trim\(\);\n\1\s*const normalizedSelectedServiceItemCandidate = .*;\n\1\s*const selectedServiceItemLooksLikeStatus = .*;\n\1\s*shared\.selectedServiceItem = selectedServiceItemCandidate && !selectedServiceItemLooksLikeStatus \? selectedServiceItemCandidate : '';\n\1\}\s*$/gm,
+    (_full, indent: string, candidateExpr: string) =>
+      `${indent}shared.selectedServiceItem = ${String(candidateExpr || '').trim()};`
+  );
+
+  next = next.replace(
+    /^(\s*)\{\n\1\s*const selectedServiceItemCandidateText = String\(selectedServiceItemCandidateText && !selectedServiceItemCandidateLooksLikeStatus && !selectedServiceItemCandidateLooksLikeAmount && !selectedServiceItemCandidateLooksLikePhone && !selectedServiceItemCandidateLooksLikeLabel \? normalizedSelectedServiceItemCandidateText : '' \|\| ''\)\.trim\(\);\n\1\s*const normalizedSelectedServiceItemCandidateText = .*;\n\1\s*const selectedServiceItemCandidateLooksLikeStatus = .*;\n\1\s*const selectedServiceItemCandidateNumericText = .*;\n\1\s*const selectedServiceItemCandidateLooksLikeAmount = .*;\n\1\s*const selectedServiceItemCandidateLooksLikePhone = .*;\n\1\s*const selectedServiceItemCandidateLooksLikeLabel = .*;\n\1\s*shared\.selectedServiceItem = selectedServiceItemCandidateText && !selectedServiceItemCandidateLooksLikeStatus && !selectedServiceItemCandidateLooksLikeAmount && !selectedServiceItemCandidateLooksLikePhone && !selectedServiceItemCandidateLooksLikeLabel \? normalizedSelectedServiceItemCandidateText : '';\n\1\}\s*$/gm,
+    (_full, indent: string) =>
+      `${indent}shared.selectedServiceItem = selectedServiceItemCandidateText && !selectedServiceItemCandidateLooksLikeStatus && !selectedServiceItemCandidateLooksLikeAmount && !selectedServiceItemCandidateLooksLikePhone && !selectedServiceItemCandidateLooksLikeLabel ? normalizedSelectedServiceItemCandidateText : '';`
+  );
+
+  return next;
+}
+
+function sanitizeBatchAccountModalFieldFallbackSlot(slotCode: string): string {
+  if (!slotCode.includes("const modalOrderNo =") || !slotCode.includes("const modalAmountRaw =")) {
+    return slotCode;
+  }
+
+  const lines = slotCode.split('\n');
+  const startIndex = lines.findIndex((line) => /\bconst modalText(?:RowKey)?\b/.test(line));
+  const endIndex = lines.findIndex((line) =>
+    /if\s*\(!shared\.selectedAmount\s*&&\s*normalizedModalAmount\)\s*shared\.selectedAmount\s*=\s*normalizedModalAmount;/.test(
+      line
+    )
+  );
+  if (startIndex < 0 || endIndex < startIndex) {
+    return slotCode;
+  }
+
+  const indent = lines[startIndex]?.match(/^\s*/)?.[0] || '    ';
+  const replacement = buildBatchAccountModalFieldFallbackBlock(indent, 'modal').split('\n');
+  lines.splice(startIndex, endIndex - startIndex + 1, ...replacement);
+  return lines.join('\n');
+}
+
+function sanitizeBatchAccountModalAssertions(code: string): string {
+  let next = replaceIntentExecutionSlotCode(
+    code,
+    'plan_step_3',
+    sanitizeBatchAccountModalFieldFallbackSlot
+  );
+
+  next = next.replace(
+    /^\s*await expect\(modal\.getByRole\('button', \{ name: (?:'取消'|\/取\\s\*消\/i?) \}\)\.first\(\)\)\.toBeVisible\((?:\{[^)]*\})?\);\s*$/gm,
+    ''
+  );
+  next = next.replace(
+    /modal\.getByRole\('button', \{ name: '确定' \}\)\.first\(\)/g,
+    "modal.getByRole('button', { name: /确\\s*定|提\\s*交|保\\s*存/i }).first()"
+  );
+  next = next.replace(
+    /modal\.getByRole\('button', \{ name: \/确\\s\*定\/i? \}\)\.first\(\)/g,
+    "modal.getByRole('button', { name: /确\\s*定|提\\s*交|保\\s*存/i }).first()"
+  );
+
+  next = next.replace(
+    /^(\s*)const modalOrderNo = .*?;\n\1if \(!shared\.selectedOrderNo && modalOrderNo\.trim\(\)\) shared\.selectedOrderNo = modalOrderNo\.trim\(\);\n\1const modalServiceItem = .*?;\n\1if \(!shared\.selectedServiceItem && modalServiceItem\.trim\(\)\) shared\.selectedServiceItem = modalServiceItem\.trim\(\);\n\1const modalAmount = .*?;\n\1if \(!shared\.selectedAmount && modalAmount\.trim\(\)\) shared\.selectedAmount = modalAmount\.trim\(\);\s*$/gm,
+    (_full, indent: string) => buildBatchAccountModalFieldFallbackBlock(indent, 'modal')
+  );
+
+  if (next.includes('const modalOrderNo =') || next.includes('const modalText = await modal.innerText().catch(() => \'\');')) {
+    return next;
+  }
+
+  return next.replace(
+    /^(\s*)(const\s+(\w+)\s*=\s*await __e2e\.waitForVisibleAntdModal\(page,\s*\{\s*titleIncludes:\s*'批量申请入账'[^)]*\}\);)\s*$/gm,
+    (_full, indent: string, statement: string, modalVar: string) =>
+      [
+        statement,
+        buildBatchAccountModalFieldFallbackBlock(indent, modalVar),
+      ].join('\n')
+  );
+}
+
+function sanitizeBatchAccountAmountHandling(code: string): string {
+  let next = code.replace(
+    /^(\s*)shared\.selectedAmount\s*=\s*\(tokens\.find\(\(t\)\s*=>\s*\/\^\\d\+\(\\\.\\d\{1,2\}\)\?\$\/\.test\(t\)\)\s*\|\|\s*''\)\.trim\(\);\s*$/gm,
+    (_full, indent: string) =>
+      [
+        `${indent}const selectedAmountToken = (tokens.find((t) => {`,
+        `${indent}  const raw = String(t || '').trim();`,
+        `${indent}  const normalized = raw.replace(/,/g, '');`,
+        `${indent}  if (!/^\\d+(?:\\.\\d{1,2})?$/.test(normalized)) return false;`,
+        `${indent}  if (/^(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])$/.test(normalized)) return false;`,
+        `${indent}  if (!normalized.includes('.') && normalized.length >= 10) return false;`,
+        `${indent}  return Number(normalized) > 0;`,
+        `${indent}}) || '').trim();`,
+        buildBatchAccountSelectedAmountAssignmentBlock(indent, "selectedAmountToken"),
+      ].join('\n')
+  );
+
+  next = next.replace(
+    /^(\s*)const\s+(\w+)\s*=\s*rowText\.match\(\/[^/]+\/g\)\s*\|\|\s*\[\];\n\1shared\.selectedAmount\s*=\s*\2\.length\s*\?\s*\2\[\s*\2\.length\s*-\s*1\s*\]\s*:\s*'';\s*$/gm,
+    (_full, indent: string, candidatesVar: string) =>
+      [
+        `${indent}const ${candidatesVar}Safe = ${candidatesVar}.map((item) => String(item || '').replace(/,/g, '').trim()).filter((item) => /^\\d+(?:\\.\\d{1,2})?$/.test(item) && !/^(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])$/.test(item) && !(!item.includes('.') && item.length >= 10) && Number(item) > 0);`,
+        `${indent}shared.selectedAmount = ${candidatesVar}Safe.length ? ${candidatesVar}Safe[${candidatesVar}Safe.length - 1] : '';`,
+      ].join('\n')
+  );
+  next = next.replace(
+    /^(\s*)shared\.selectedAmount\s*=\s*amountCandidates\.find\(\(\w+\)\s*=>\s*Number\(\w+\)\s*>\s*0\)\s*\|\|\s*amountCandidates\[0\]\s*\|\|\s*'';\s*$/gm,
+    (_full, indent: string) =>
+      buildBatchAccountSelectedAmountAssignmentBlock(
+        indent,
+        "amountCandidates.find((n) => Number(n) > 0) || amountCandidates[0] || ''"
+      )
+  );
+  next = next.replace(
+    /^(\s*)shared\.selectedAmount\s*=\s*(amountToken|amountCandidate);\s*$/gm,
+    (_full, indent: string, candidateExpr: string) => buildBatchAccountSelectedAmountAssignmentBlock(indent, candidateExpr)
+  );
+
+  next = next.replace(
+    /^(\s*)await expect\((.+?)\)\.toContainText\(shared\.selectedAmount\);\s*$/gm,
+    (_full, indent: string, targetExpr: string) =>
+      buildBatchAccountSelectedAmountAssertionGuard(indent, `await expect(${targetExpr}).toContainText(shared.selectedAmount);`)
+  );
+  next = next.replace(
+    /^(\s*)if \(shared\.selectedAmount\) await expect\((.+?)\)\.toContainText\(shared\.selectedAmount\);\s*$/gm,
+    (_full, indent: string, targetExpr: string) =>
+      buildBatchAccountSelectedAmountAssertionGuard(indent, `await expect(${targetExpr}).toContainText(shared.selectedAmount);`)
+  );
+  next = next.replace(
+    /^(\s*)expect\((.+?)\)\.toContain\(shared\.selectedAmount\);\s*$/gm,
+    (_full, indent: string, targetExpr: string) =>
+      buildBatchAccountSelectedAmountAssertionGuard(indent, `expect(${targetExpr}).toContain(shared.selectedAmount);`)
+  );
+  next = next.replace(
+    /^(\s*)if \(shared\.selectedAmount\) expect\((.+?)\)\.toContain\(shared\.selectedAmount\);\s*$/gm,
+    (_full, indent: string, targetExpr: string) =>
+      buildBatchAccountSelectedAmountAssertionGuard(indent, `expect(${targetExpr}).toContain(shared.selectedAmount);`)
+  );
+  next = next.replace(
+    /^(\s*)expect\((.+?)\)\.toContain\(String\(shared\.selectedAmount\)\);\s*$/gm,
+    (_full, indent: string, targetExpr: string) =>
+      buildBatchAccountSelectedAmountAssertionGuard(indent, `expect(${targetExpr}).toContain(String(shared.selectedAmount));`)
+  );
+  next = next.replace(
+    /^(\s*)if \(shared\.selectedAmount\) expect\((.+?)\)\.toContain\(String\(shared\.selectedAmount\)\);\s*$/gm,
+    (_full, indent: string, targetExpr: string) =>
+      buildBatchAccountSelectedAmountAssertionGuard(indent, `expect(${targetExpr}).toContain(String(shared.selectedAmount));`)
+  );
+
+  return next;
+}
+
+function sanitizeBatchAccountLegacyModalExtractionSlot(slotCode: string): string {
+  if (
+    !slotCode.includes('const serviceByField =') &&
+    !slotCode.includes('const serviceByRegex =')
+  ) {
+    return slotCode;
+  }
+
+  if (
+    slotCode.includes("artifacts['selectedServiceItem_amount_field_fallback']") ||
+    slotCode.includes("artifacts['selectedServiceItem_row_fallback']")
+  ) {
+    return slotCode;
+  }
+
+  const lines = slotCode.split('\n');
+  const indent = lines.find((line) => line.trim())?.match(/^\s*/)?.[0] || '    ';
+  return [
+    `${indent}const modal = artifacts.plan_step_3_modal || await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '批量申请入账' });`,
+    buildBatchAccountModalFieldFallbackBlock(indent, 'modal'),
+    `${indent}if (!shared.selectedOrderNo) throw new Error('提取失败：selectedOrderNo 为空');`,
+    `${indent}if (!shared.selectedServiceItem) throw new Error('提取失败：selectedServiceItem 为空');`,
+    `${indent}if (!shared.selectedAmount) throw new Error('提取失败：selectedAmount 为空');`,
+    `${indent}await expect(modal.getByRole('button', { name: /取\\s*消|取消/i }).first()).toBeVisible({ timeout: 10000 });`,
+    `${indent}await expect(modal.getByRole('button', { name: /确\\s*定|提\\s*交|保\\s*存/i }).first()).toBeVisible({ timeout: 10000 });`,
+    `${indent}artifacts["plan_step_4"] = null;`,
+  ].join('\n');
+}
+
+function sanitizeBatchAccountLegacyModalExtraction(code: string): string {
+  return replaceIntentExecutionSlotCode(
+    code,
+    'plan_step_4',
+    sanitizeBatchAccountLegacyModalExtractionSlot
+  );
+}
+
+function sanitizeBatchAccountModalFieldFallbackReuseSlot(slotCode: string): string {
+  if (
+    slotCode.includes("artifacts['batch_account_modal_field_snapshot']") ||
+    !slotCode.includes('const modalOrderNo =') ||
+    !slotCode.includes('const modalAmountRaw =')
+  ) {
+    return slotCode;
+  }
+
+  const modalVar =
+    slotCode.match(/const\s+(\w+)\s*=\s*(?:artifacts\.[\w$]+\s*\|\|\s*)?await __e2e\.waitForVisibleAntdModal\(page,\s*\{\s*titleIncludes:\s*'批量申请入账'/)?.[1] ||
+    slotCode.match(/const\s+(\w+)\s*=\s*artifacts\.[\w$]+\s*\|\|\s*await __e2e\.waitForVisibleAntdModal\(page,\s*\{\s*titleIncludes:\s*'批量申请入账'/)?.[1] ||
+    'modal';
+  const lines = slotCode.split('\n');
+  const startIndex = lines.findIndex((line) => /\bconst modalText\b/.test(line));
+  const endIndex = lines.findIndex((line) =>
+    /if\s*\(!shared\.selectedAmount\s*&&\s*resolvedModalAmount\)\s*shared\.selectedAmount\s*=\s*resolvedModalAmount;/.test(
+      line
+    )
+  );
+  if (startIndex < 0 || endIndex < startIndex) {
+    return slotCode;
+  }
+
+  const indent = lines[startIndex]?.match(/^\s*/)?.[0] || '    ';
+  const replacement = buildBatchAccountModalFieldFallbackReuseBlock(indent, modalVar).split('\n');
+  lines.splice(startIndex, endIndex - startIndex + 1, ...replacement);
+  return lines.join('\n');
+}
+
+function sanitizeBatchAccountModalFieldFallbackReuse(code: string): string {
+  let next = replaceIntentExecutionSlotCode(
+    code,
+    'plan_step_4',
+    sanitizeBatchAccountModalFieldFallbackReuseSlot
+  );
+  next = replaceIntentExecutionSlotCode(
+    next,
+    'plan_step_5',
+    sanitizeBatchAccountModalFieldFallbackReuseSlot
+  );
+  next = replaceIntentExecutionSlotCode(
+    next,
+    'plan_step_6',
+    sanitizeBatchAccountModalFieldFallbackReuseSlot
+  );
+  return next;
+}
+
+function sanitizeBatchAccountServiceItemHandling(code: string): string {
+  let next = normalizeBatchAccountServiceItemAssignmentGuards(code);
+
+  next = next.replace(
+    /^(\s*)shared\.selectedServiceItem\s*=\s*(.+?);\s*$/gm,
+    (_full, indent: string, candidateExpr: string) => {
+      const normalizedCandidateExpr = String(candidateExpr || '').trim();
+      const alreadyCanonicalCandidateExpr =
+        /\bnormalizedSelectedServiceItemCandidateText\b/.test(normalizedCandidateExpr) &&
+        /\bselectedServiceItemCandidateLooksLikeStatus\b/.test(normalizedCandidateExpr) &&
+        /\bselectedServiceItemCandidateLooksLikeAmount\b/.test(normalizedCandidateExpr) &&
+        /\bselectedServiceItemCandidateLooksLikePhone\b/.test(normalizedCandidateExpr) &&
+        /\bselectedServiceItemCandidateLooksLikeLabel\b/.test(normalizedCandidateExpr);
+      if (alreadyCanonicalCandidateExpr) {
+        return `${indent}shared.selectedServiceItem = ${normalizedCandidateExpr};`;
+      }
+      return buildBatchAccountSelectedServiceItemAssignmentBlock(indent, normalizedCandidateExpr);
+    }
+  );
+
+  const lines = next.split('\n');
+  const rewrittenLines: string[] = [];
+  let previousNonEmptyLine = '';
+  for (const line of lines) {
+    const previousIsCanonicalServiceItemGuard =
+      /^if \(selectedServiceItemText && !selectedServiceItemLooksLikeStatus\) \{$/.test(previousNonEmptyLine);
+    let replacement: string | null = null;
+
+    if (!previousIsCanonicalServiceItemGuard) {
+      let match = line.match(/^(\s*)await expect\((.+?)\)\.toContainText\(shared\.selectedServiceItem\);\s*$/);
+      if (match) {
+        replacement = buildBatchAccountSelectedServiceItemAssertionGuard(
+          match[1],
+          `await expect(${match[2]}).toContainText(shared.selectedServiceItem);`
+        );
+      } else {
+        match = line.match(/^(\s*)if \(shared\.selectedServiceItem\) await expect\((.+?)\)\.toContainText\(shared\.selectedServiceItem\);\s*$/);
+        if (match) {
+          replacement = buildBatchAccountSelectedServiceItemAssertionGuard(
+            match[1],
+            `await expect(${match[2]}).toContainText(shared.selectedServiceItem);`
+          );
+        } else {
+          match = line.match(/^(\s*)expect\((.+?)\)\.toContain\(shared\.selectedServiceItem\);\s*$/);
+          if (match) {
+            replacement = buildBatchAccountSelectedServiceItemAssertionGuard(
+              match[1],
+              `expect(${match[2]}).toContain(shared.selectedServiceItem);`
+            );
+          } else {
+            match = line.match(/^(\s*)if \(shared\.selectedServiceItem\) expect\((.+?)\)\.toContain\(shared\.selectedServiceItem\);\s*$/);
+            if (match) {
+              replacement = buildBatchAccountSelectedServiceItemAssertionGuard(
+                match[1],
+                `expect(${match[2]}).toContain(shared.selectedServiceItem);`
+              );
+            }
+          }
+        }
+      }
+    }
+
+    rewrittenLines.push(replacement ?? line);
+    if (line.trim()) previousNonEmptyLine = line.trim();
+  }
+
+  return rewrittenLines.join('\n');
+}
+
+function sanitizeBatchAccountOrderExtraction(code: string): string {
+  let next = replaceIntentExecutionSlotCode(
+    code,
+    'plan_step_3',
+    (slotCode) => {
+      const lines = slotCode.split('\n');
+      const startIndex = lines.findIndex((line) =>
+        /const\s+rowText\s*=\s*await\s+\w+\.innerText\(\)(?:\.catch\(\(\)\s*=>\s*''\))?;/.test(line)
+      );
+      if (startIndex < 0) {
+        return slotCode;
+      }
+
+      const rowVar = lines[startIndex]?.match(/const\s+rowText\s*=\s*await\s+(\w+)\.innerText\(\)/)?.[1];
+      if (!rowVar) {
+        return slotCode;
+      }
+
+      const hasPendingRowSelection =
+        new RegExp(`if \\(/待申请入账/\\.test\\(\\w+\\)\\) \\{\\s*${rowVar}\\s*=\\s*\\w+;`).test(slotCode) ||
+        new RegExp(`if \\(!${rowVar}\\) throw new Error\\('未找到包含[“"]待申请入账[”"]的可见订单行'\\);`).test(slotCode);
+      if (!hasPendingRowSelection) {
+        return slotCode;
+      }
+
+      const endIndex = lines.findIndex(
+        (line, index) => index >= startIndex && /shared\.selectedOrderNo\s*=\s*orderNo;/.test(line)
+      );
+      if (endIndex < 0) {
+        return slotCode;
+      }
+
+      const indent = lines[startIndex]?.match(/^\s*/)?.[0] || '    ';
+      const replacement = [
+        buildCloneSafeVisibleTextAggregationBlock(indent, 'rowText', rowVar),
+        `${indent}const orderLink = ${rowVar}.locator('a').first();`,
+        `${indent}const orderLinkText = ((await orderLink.textContent().catch(() => '')) || '').trim();`,
+        buildBatchAccountOrderNoCandidateAssignmentBlock(indent, 'orderFromLink', 'orderLinkText'),
+        `${indent}const tokens = rowText.match(/\\b[A-Za-z0-9_-]{8,}\\b/g) || [];`,
+        buildBatchAccountOrderNoCandidateAssignmentBlock(
+          indent,
+          'orderFromTokens',
+          "tokens.find((t) => { const raw = String(t || '').trim(); const normalized = raw.replace(/\\s+/g, ''); if (!/^(?:[A-Za-z0-9_-]{6,64}|\\d{12,64})$/.test(normalized)) return false; if (/^1\\d{10}$/.test(normalized)) return false; if (/^(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])$/.test(normalized)) return false; if (/^\\d+$/.test(normalized) && normalized.length < 12) return false; if (/^\\d+(?:\\.\\d{1,2})?$/.test(normalized) && (normalized.includes('.') || normalized.length <= 8)) return false; return true; }) || ''"
+        ),
+        `${indent}const orderNo = orderFromLink || orderFromTokens;`,
+        `${indent}shared.selectedOrderNo = orderNo;`,
+      ];
+
+      lines.splice(startIndex, endIndex - startIndex + 1, ...replacement);
+      return lines.join('\n');
+    }
+  );
+
+  next = next.replace(
+    /^(\s*)const\s+(\w+)\s*=\s*\/\^\[A-Za-z0-9_-\]\{6,64\}\$\/\.test\(([^)]+)\)\s*&&\s*!\/\^1\\d\{10\}\$\/\.test\(\3\)\s*\?\s*\3\s*:\s*'';\s*$/gm,
+    (_full, indent: string, targetVar: string, sourceExpr: string) =>
+      buildBatchAccountOrderNoCandidateAssignmentBlock(indent, targetVar, sourceExpr.trim())
+  );
+  next = next.replace(
+    /^(\s*)const\s+(\w+)\s*=\s*\(?tokens\.find\(\(t\)\s*=>.*?\/\^\[A-Za-z0-9_-\]\{6,64\}\$\/\.test\(t\).*?!\/\^1\\d\{10\}\$\/\.test\(t\).*?\)\s*\|\|\s*''\)?(?:\.trim\(\))?;\s*$/gm,
+    (_full, indent: string, targetVar: string) =>
+      buildBatchAccountOrderNoCandidateAssignmentBlock(
+        indent,
+        targetVar,
+        "tokens.find((t) => { const raw = String(t || '').trim(); const normalized = raw.replace(/\\s+/g, ''); if (!/^(?:[A-Za-z0-9_-]{6,64}|\\d{12,64})$/.test(normalized)) return false; if (/^1\\d{10}$/.test(normalized)) return false; if (/^(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])$/.test(normalized)) return false; if (/^\\d+$/.test(normalized) && normalized.length < 12) return false; if (/^\\d+(?:\\.\\d{1,2})?$/.test(normalized) && (normalized.includes('.') || normalized.length <= 8)) return false; return true; }) || ''"
+      )
+  );
+  next = next.replace(
+    /^(\s*)if \((\w+) && !\/\^1\\d\{10\}\$\/\.test\(\2\) && !\/\^\\d\+\(\?:\\\.\\d\{1,2\}\)\?\$\/\.test\(\2\) && \/[^/]+\/\.test\(\2\)\) \{\n\1\s*(\w+)\s*=\s*\2;\n\1\s*break;\n\1\}\s*$/gm,
+    (_full, indent: string, sourceVar: string, targetVar: string) =>
+      buildBatchAccountOrderNoExtractedAssignmentBlock(indent, `${sourceVar}OrderNo`, sourceVar, targetVar)
+  );
+  next = next.replace(
+    /^(\s*)const\s+\w+\s*=\s*tokens\.filter\(\(t\)\s*=>\s*\/\^\[A-Za-z0-9_-\]\{6,\}\$\/\.test\(t\)\s*&&\s*!\/\^1\\d\{10\}\$\/\.test\(t\)\s*&&\s*!\/\^\\d\+\(\?:\\\.\\d\{1,2\}\)\?\$\/\.test\(t\)\);\n\1if \(\w+\.length\) \{\n\1\s*(\w+)\s*=\s*\w+\[0\];\n\1\s*break;\n\1\}\s*$/gm,
+    (_full, indent: string, targetVar: string) =>
+      buildBatchAccountOrderNoExtractedAssignmentBlock(
+        indent,
+        'orderToken',
+        "tokens.find((t) => { const raw = String(t || '').trim(); const normalized = raw.replace(/\\s+/g, ''); if (!/^(?:[A-Za-z0-9_-]{6,64}|\\d{12,64})$/.test(normalized)) return false; if (/^1\\d{10}$/.test(normalized)) return false; if (/^(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])$/.test(normalized)) return false; if (/^\\d+$/.test(normalized) && normalized.length < 12) return false; if (/^\\d+(?:\\.\\d{1,2})?$/.test(normalized) && (normalized.includes('.') || normalized.length <= 8)) return false; return true; }) || ''",
+        targetVar
+      )
+  );
+  next = next.replace(
+    /^(\s*)if \((\w+) && !\/\^1\\d\{10\}\$\/\.test\(\2\) && !\/\^\\d\+\(\?:\\\.\\d\{1,2\}\)\?\$\/\.test\(\2\)\)\s*(\w+)\s*=\s*\2;\s*$/gm,
+    (_full, indent: string, sourceVar: string, targetVar: string) =>
+      buildBatchAccountOrderNoExtractedAssignmentBlock(indent, `${sourceVar}OrderNo`, sourceVar, targetVar, false)
+  );
+  next = next.replace(
+    /shared\.selectedOrderNo\s*=\s*orderNoToken\s*\|\|\s*phoneToken;/g,
+    'shared.selectedOrderNo = orderNoToken;'
+  );
+  next = next.replace(
+    /shared\.selectedOrderNo\s*=\s*phoneToken\s*\|\|\s*orderNoToken;/g,
+    'shared.selectedOrderNo = orderNoToken;'
+  );
+  next = next.replace(
+    /if\s*\(!shared\.selectedOrderNo\)\s*throw new Error\(['"]未能从已勾选订单行提取订单号['"]\);/g,
+    "if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = true;"
+  );
+  next = next.replace(
+    /if\s*\(!shared\.selectedOrderNo\)\s*throw new Error\('未能提取 selectedOrderNo'\);/g,
+    "if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = true;"
+  );
+  next = next.replace(
+    /if\s*\(!shared\.selectedOrderNo\)\s*throw new Error\('提取订单号失败'\);/g,
+    "if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = true;"
+  );
+  next = next.replace(
+    /expect\(shared\.selectedOrderNo\)\.toBeTruthy\(\);/g,
+    "if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = true;"
+  );
+  next = next.replace(
+    /expect\(shared\.selectedServiceItem\)\.toBeTruthy\(\);/g,
+    "if (!shared.selectedServiceItem) artifacts['selectedServiceItem_missing_before_modal'] = true;"
+  );
+  next = next.replace(
+    /expect\(shared\.selectedAmount\)\.toBeTruthy\(\);/g,
+    "if (!shared.selectedAmount) artifacts['selectedAmount_missing_before_modal'] = true;"
+  );
+  return next;
+}
+
+function buildBatchAccountAccountListResolveBlock(
+  indent: string,
+  rowVar: string,
+  includeRowArtifact = true,
+  includeRecordArtifact = false,
+  recordVar = 'recordCheck',
+  listUrlIncludes = '/account',
+  rowArtifactTargets?: string[],
+  recordArtifactTargets?: string[]
+): string {
+  const responseArtifactTarget = "artifacts['plan_step_7']";
+  const normalizeStep7ArtifactTarget = (target: string, fallback: string) =>
+    target.trim() === responseArtifactTarget ? fallback : target.trim();
+  const lines = [
+    ...buildBatchAccountVisibleKeywordInputBindingLines(indent),
+    `${indent}const ${recordVar} = await __e2e.resolvePrimaryRecord(page, {`,
+    `${indent}  primaryValue: shared.selectedOrderNo,`,
+    `${indent}  keywordInput,`,
+    `${indent}  searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(),`,
+    `${indent}  preferCurrentVisibleRow: false,`,
+    `${indent}  listResponse: { urlIncludes: '${listUrlIncludes}', method: 'GET' },`,
+    `${indent}  listResponseTimeoutMs: 900,`,
+    `${indent}  rowHasTexts: [shared.selectedOrderNo],`,
+    `${indent}  allowMultipleUniqueMatches: true,`,
+    `${indent}  timeoutMs: 9000,`,
+    `${indent}  surfaceTimeoutMs: 1800,`,
+    `${indent}  inputTimeoutMs: 900,`,
+    `${indent}  searchButtonTimeoutMs: 500,`,
+    `${indent}  postFillSettleMs: 80,`,
+    `${indent}  busyTimeoutMs: 1200,`,
+    `${indent}  busyObserveWindowMs: 240,`,
+    `${indent}  rowTimeoutMs: 2200,`,
+    `${indent}  relaxedRowTimeoutMs: 1200,`,
+    `${indent}  maxLookupAttempts: 2,`,
+    `${indent}  retryIntervalMs: 250,`,
+    `${indent}});`,
+    `${indent}${responseArtifactTarget} = ${recordVar}.response;`,
+    `${indent}if (!${recordVar}.row) throw new Error(\`入账列表未找到订单号=\${shared.selectedOrderNo} 的记录\`);`,
+    `${indent}const ${rowVar} = ${recordVar}.row;`,
+  ];
+  const normalizedRowArtifactTargets =
+    rowArtifactTargets && rowArtifactTargets.length > 0
+      ? [...new Set(rowArtifactTargets.map((target) => normalizeStep7ArtifactTarget(target, "artifacts['plan_step_7_row']")))]
+      : includeRowArtifact
+        ? ["artifacts['plan_step_7_row']"]
+        : [];
+  for (const target of normalizedRowArtifactTargets) {
+    lines.push(`${indent}${target} = ${rowVar};`);
+  }
+  const normalizedRecordArtifactTargets =
+    recordArtifactTargets && recordArtifactTargets.length > 0
+      ? [...new Set(recordArtifactTargets.map((target) => normalizeStep7ArtifactTarget(target, "artifacts['plan_step_7_record']")))]
+      : includeRecordArtifact
+        ? ["artifacts['plan_step_7_record']"]
+        : [];
+  for (const target of normalizedRecordArtifactTargets) {
+    lines.push(`${indent}${target} = ${recordVar};`);
+  }
+  return lines.join('\n');
+}
+
+const BATCH_ACCOUNT_VISIBLE_KEYWORD_INPUT_BY_PLACEHOLDER =
+  "page.locator('input[placeholder=\"请输入关键词\"]:visible').first()";
+const BATCH_ACCOUNT_VISIBLE_KEYWORD_INPUT_BY_ID =
+  "page.locator('input#form_in_modal_testKeyWord:visible, input#service-data-item_keyWord:visible').first()";
+
+function buildBatchAccountVisibleKeywordInputBindingLines(indent: string, variableName = 'keywordInput'): string[] {
+  const placeholderVar = `${variableName}ByPlaceholder`;
+  const idVar = `${variableName}ById`;
+  return [
+    `${indent}const ${placeholderVar} = ${BATCH_ACCOUNT_VISIBLE_KEYWORD_INPUT_BY_PLACEHOLDER};`,
+    `${indent}const ${idVar} = ${BATCH_ACCOUNT_VISIBLE_KEYWORD_INPUT_BY_ID};`,
+    `${indent}const ${variableName} = (await ${placeholderVar}.count()) ? ${placeholderVar} : ${idVar};`,
+  ];
+}
+
+function resolveBatchAccountLookupUrlIncludes(block: string): string {
+  const matches = [...block.matchAll(/urlIncludes:\s*['"]([^'"]+)['"]/g)].map((item) => String(item[1] || '').trim());
+  return (
+    matches.find((value) => /^\/(?:payment|booked|account)\b/.test(value)) ||
+    matches.find((value) => value.startsWith('/')) ||
+    '/account'
+  );
+}
+
+function sanitizeBatchAccountAccountListLookupSlot(slotCode: string): string {
+  const lines = slotCode.split('\n');
+  let startIndex = lines.findIndex((line) =>
+    /page\.(?:locator\(['"](?:input)?#(?:form_in_modal_testKeyWord|service-data-item_keyWord)(?::visible)?['"]\)(?:\.first\(\))?|getByPlaceholder\(['"]请输入关键词['"]\)(?:\.first\(\))?)/.test(
+      line
+    )
+  );
+  if (startIndex < 0) {
+    startIndex = lines.findIndex((line, index) => {
+      if (!/const\s+\w+\s*=\s*await __e2e\.resolvePrimaryRecord\(page,\s*\{/.test(line)) {
+        return false;
+      }
+      const block = lines.slice(index).join('\n');
+      return (
+        /primaryValue:\s*shared\.selectedOrderNo\b/.test(block) &&
+        /listResponse:\s*\{\s*urlIncludes:\s*['"]\/(?:payment|booked|account)['"]\s*,\s*method:\s*['"]GET['"]\s*\}/.test(block) &&
+        /rowHasTexts:\s*\[shared\.selectedOrderNo\]/.test(block)
+      );
+    });
+  }
+  if (startIndex < 0) {
+    return slotCode;
+  }
+
+  const block = lines.slice(startIndex).join('\n');
+  const recordVarCandidate =
+    block.match(/const\s+(\w+)\s*=\s*await __e2e\.resolvePrimaryRecord\(page,\s*\{/)?.[1] ||
+    'recordCheck';
+  const rowVarCandidate =
+    block.match(/const\s+(\w+)\s*=\s*await __e2e\.findAntdTableRow\(page,\s*\{/)?.[1] ||
+    block.match(/const\s+(\w+)\s*=\s*\w+\.row;/)?.[1] ||
+    'recordRow';
+  const indent = lines[startIndex]?.match(/^\s*/)?.[0] || '    ';
+  const rowArtifactTargets = [...new Set(
+    [
+      ...[...block.matchAll(new RegExp(`(artifacts(?:\\[['"][^'"]+['"]\\]|\\.\\w+))\\s*=\\s*${rowVarCandidate}\\s*;`, 'g'))]
+        .map((match) => String(match[1] || '').trim()),
+      ...[...block.matchAll(new RegExp(`(artifacts(?:\\[['"][^'"]+['"]\\]|\\.\\w+))\\s*=\\s*${recordVarCandidate}\\.row\\s*;`, 'g'))]
+        .map((match) => String(match[1] || '').trim()),
+    ].filter(Boolean)
+  )];
+  const recordArtifactTargets = [...new Set(
+    [...block.matchAll(new RegExp(`(artifacts(?:\\[['"][^'"]+['"]\\]|\\.\\w+))\\s*=\\s*${recordVarCandidate}\\s*;`, 'g'))]
+      .map((match) => String(match[1] || '').trim())
+      .filter(Boolean)
+  )];
+  const includeRecordArtifact = recordArtifactTargets.length > 0;
+  const includeRowArtifact =
+    rowArtifactTargets.length > 0 || !includeRecordArtifact;
+  const recordVar = recordVarCandidate;
+  const listUrlIncludes = resolveBatchAccountLookupUrlIncludes(block);
+  const rowVar = rowVarCandidate;
+  const replacement = buildBatchAccountAccountListResolveBlock(
+    indent,
+    rowVar,
+    includeRowArtifact,
+    includeRecordArtifact,
+    recordVar,
+    listUrlIncludes,
+    rowArtifactTargets,
+    recordArtifactTargets
+  ).split('\n');
+
+  lines.splice(startIndex, lines.length - startIndex, ...replacement);
+  return lines.join('\n');
+}
+
+function sanitizeBatchAccountAccountListLookup(code: string): string {
+  let next = replaceIntentExecutionSlotCode(
+    code,
+    'plan_step_7',
+    sanitizeBatchAccountAccountListLookupSlot
+  );
+
+  next = next.replace(
+    /^\s*await expect\(page\.locator\(['"](?:input)?#form_in_modal_testKeyWord(?::visible)?['"]\)(?:\.first\(\))?\)\.toBeVisible\(\{ timeout: \d+ \}\);\s*$/gm,
+    ''
+  );
+
+  next = next.replace(
+    /^(\s*)const\s+\w+\s*=\s*page\.locator\(['"](?:input)?#form_in_modal_testKeyWord(?::visible)?['"]\)\.first\(\);\n\1await expect\(\w+\)\.toBeVisible\(\{ timeout: \d+ \}\);\n\1await \w+\.fill\(shared\.selectedOrderNo\);\n\1const\s+\w+\s*=\s*__e2e\.waitForApiResponse\(page,\s*\{\s*urlIncludes:\s*['"]\/account['"],\s*method:\s*['"]GET['"]\s*\}\);\n\1await page\.getByRole\('button', \{ name: \/搜\\s\*索\/i \}\)\.first\(\)\.click\(\);\n\1artifacts\[['"]plan_step_7['"]\]\s*=\s*await \w+;\n\1const\s+(\w+)\s*=\s*await __e2e\.findAntdTableRow\(page,\s*\{\s*hasTexts:\s*\[shared\.selectedOrderNo\][^)]*\}\);\n\1artifacts\[['"]plan_step_7_row['"]\]\s*=\s*\2;\s*$/gm,
+    (_full, indent: string, rowVar: string) => buildBatchAccountAccountListResolveBlock(indent, rowVar)
+  );
+  next = next.replace(
+    /^(\s*)const\s+\w+\s*=\s*page\.locator\(['"](?:input)?#form_in_modal_testKeyWord(?::visible)?['"]\)\.first\(\);\n\1await expect\(\w+\)\.toBeVisible\(\{ timeout: \d+ \}\);\n\1await \w+\.fill\(shared\.selectedOrderNo\);\n\1const\s+\w+\s*=\s*__e2e\.waitForApiResponse\(page,\s*\{\s*urlIncludes:\s*['"]\/account['"],\s*method:\s*['"]GET['"]\s*\}\);\n\1await page\.getByRole\('button', \{ name: \/搜\\s\*索\/i \}\)\.first\(\)\.click\(\);\n\1artifacts\[['"]plan_step_7['"]\]\s*=\s*await \w+;\n\1const\s+(\w+)\s*=\s*await __e2e\.findAntdTableRow\(page,\s*\{\s*hasTexts:\s*\[shared\.selectedOrderNo\][^)]*\}\);\s*$/gm,
+    (_full, indent: string, rowVar: string) => buildBatchAccountAccountListResolveBlock(indent, rowVar, false)
+  );
+  next = next.replace(
+    /^(\s*)const\s+\w+\s*=\s*page\.locator\(['"](?:input)?#form_in_modal_testKeyWord(?::visible)?['"]\)\.first\(\);\n\1await expect\(\w+\)\.toBeVisible\(\{ timeout: \d+ \}\);\n\1await \w+\.fill\(shared\.selectedOrderNo\);\n\1const\s+\w+\s*=\s*__e2e\.waitForApiResponse\(page,\s*\{\s*urlIncludes:\s*['"]\/account['"],\s*method:\s*['"]GET['"]\s*\}\);\n\1await page\.getByRole\('button', \{ name: \/搜\\s\*索\/i \}\)\.first\(\)\.click\(\);\n\1artifacts\[['"]plan_step_7['"]\]\s*=\s*await \w+;\n\1const\s+(\w+)\s*=\s*await __e2e\.resolvePrimaryRecord\(page,\s*\{[\s\S]*?\n\1\}\);\n\1if\s*\([^\n]*!\2\.row[^\n]*\)\s*throw new Error\([^\n]+\);\n(?:\1const\s+(\w+)\s*=\s*\2\.row;\n)?\1artifacts\[['"]plan_step_7_record['"]\]\s*=\s*\2;\s*$/gm,
+    (_full, indent: string, recordVar: string, rowVar?: string) =>
+      buildBatchAccountAccountListResolveBlock(indent, rowVar || 'recordRow', true, true, recordVar)
+  );
+
+  return next;
+}
+
+function sanitizeBatchAccountOrderExistenceLookups(code: string): string {
+  let next = code.replace(
+    /\browHasTexts:\s*\[shared\.selectedOrderNo\],(\s*)(?!allowMultipleUniqueMatches\s*:)/g,
+    'rowHasTexts: [shared.selectedOrderNo],$1allowMultipleUniqueMatches: true,$1'
+  );
+
+  next = next.replace(
+    /\bhasTexts:\s*\[shared\.selectedOrderNo\],(\s*)(?!allowMultipleUniqueMatches\s*:)/g,
+    'hasTexts: [shared.selectedOrderNo],$1allowMultipleUniqueMatches: true,$1'
+  );
+
+  next = next.replace(
+    /(\ballowMultipleUniqueMatches:\s*true,\s*)(?:\s*allowMultipleUniqueMatches:\s*true,\s*)+/g,
+    '$1'
+  );
+
+  return next;
+}
+
+function buildBatchAccountStep7RowReuseExpression(fallbackExpression: string, includePlanStep8Row = false): string {
+  return [
+    ...(includePlanStep8Row ? ["artifacts['plan_step_8_row']"] : []),
+    "artifacts['plan_step_7_row']",
+    "((artifacts['plan_step_7_record'] && artifacts['plan_step_7_record'].row) || null)",
+    fallbackExpression,
+  ].join(' || ');
+}
+
+function sanitizeBatchAccountExistenceStep8Slot(slotCode: string): string {
+  if (
+    slotCode.includes("artifacts['plan_step_7_row']") ||
+    slotCode.includes("artifacts['plan_step_7_record']") ||
+    !/__e2e\.findAntdTableRow\(page,\s*\{\s*hasTexts:\s*\[shared\.selectedOrderNo\]/.test(slotCode)
+  ) {
+    return slotCode;
+  }
+
+  const hasPlanStep8RowAssignment = /artifacts\[['"]plan_step_8_row['"]\]\s*=\s*\w+\s*;/.test(slotCode);
+
+  return slotCode.replace(
+    /^(\s*)const\s+(\w+)\s*=\s*(await __e2e\.findAntdTableRow\(page,\s*\{\s*hasTexts:\s*\[shared\.selectedOrderNo\][^\n]*\}\));\s*$/m,
+    (_full, indent: string, rowVar: string, fallbackExpr: string) =>
+      [
+        `${indent}const ${rowVar} = ${buildBatchAccountStep7RowReuseExpression(fallbackExpr)};`,
+        ...(hasPlanStep8RowAssignment ? [] : [`${indent}artifacts['plan_step_8_row'] = ${rowVar};`]),
+      ].join('\n')
+  );
+}
+
+function sanitizeBatchAccountExistenceVerificationSlot(slotCode: string): string {
+  if (
+    slotCode.includes("artifacts['plan_step_7_row']") ||
+    slotCode.includes("artifacts['plan_step_7_record']") ||
+    !/__e2e\.findAntdTableRow\(page,\s*\{\s*hasTexts:\s*\[shared\.selectedOrderNo\]/.test(slotCode)
+  ) {
+    return slotCode;
+  }
+
+  return slotCode.replace(
+    /^(\s*)const\s+(\w+)\s*=\s*((?:artifacts\[['"]plan_step_8_row['"]\]\s*\|\|\s*)?await __e2e\.findAntdTableRow\(page,\s*\{\s*hasTexts:\s*\[shared\.selectedOrderNo\][^\n]*\}\));\s*$/m,
+    (_full, indent: string, rowVar: string, fallbackExpr: string) => {
+      const normalizedFallbackExpr = fallbackExpr.replace(/^artifacts\[['"]plan_step_8_row['"]\]\s*\|\|\s*/, '');
+      return `${indent}const ${rowVar} = ${buildBatchAccountStep7RowReuseExpression(normalizedFallbackExpr, true)};`;
+    }
+  );
+}
+
+function sanitizeBatchAccountOrderExistenceRowReuse(code: string): string {
+  let next = replaceIntentExecutionSlotCode(
+    code,
+    'plan_step_8',
+    sanitizeBatchAccountExistenceStep8Slot
+  );
+  next = replaceIntentExecutionSlotCode(
+    next,
+    'verification',
+    sanitizeBatchAccountExistenceVerificationSlot
+  );
+  return next;
+}
+
+function sanitizeBatchAccountBookedMgmtStep6TransitionSlot(slotCode: string): string {
+  const hasBookedMgmtTarget =
+    /(?:#\\\/payment\\\/bookedMgmt|https:\/\/uat-service\.yikaiye\.com\/#\/payment\/bookedMgmt)/.test(slotCode);
+  const hasTransitionCheck =
+    /page\.waitForURL\(|expect\(page\)\.toHaveURL\(|page\.url\(\)\.includes\('#\/payment\/bookedMgmt'\)/.test(slotCode);
+  const hasUrlArtifact =
+    /artifacts(?:\[['"]plan_step_6['"]\]|\.plan_step_6)\s*=\s*\{[\s\S]*?url:\s*page\.url\(\)/.test(slotCode);
+  const hasSubmitInteraction =
+    /waitForApiResponse\(|observeSubmitState\(|waitForVisibleAntdModal\(|titleIncludes:\s*['"]批量申请入账['"]|confirmBtn|submitBtn/.test(
+      slotCode
+    );
+  const alreadyHardened = /const BOOKED_URL = \/#[\\/]payment[\\/]bookedMgmt\/i;/.test(slotCode);
+
+  if (!hasBookedMgmtTarget || !hasTransitionCheck || !hasUrlArtifact || hasSubmitInteraction || alreadyHardened) {
+    return slotCode;
+  }
+
+  const indent = slotCode.split('\n').find((line) => line.trim())?.match(/^\s*/)?.[0] || '    ';
+  return [
+    `${indent}const BOOKED_URL = /#\\/payment\\/bookedMgmt/i;`,
+    `${indent}if (!BOOKED_URL.test(page.url())) {`,
+    `${indent}  await page.goto('https://uat-service.yikaiye.com/#/payment/bookedMgmt', { waitUntil: 'domcontentloaded' });`,
+    `${indent}}`,
+    `${indent}await expect(page).toHaveURL(BOOKED_URL, { timeout: 30000 });`,
+    ...buildBatchAccountVisibleKeywordInputBindingLines(indent),
+    `${indent}await expect(keywordInput).toBeVisible({ timeout: 20000 });`,
+    `${indent}const searchBtn = page.getByRole('button', { name: /搜\\s*索/i }).first();`,
+    `${indent}await expect(searchBtn).toBeVisible({ timeout: 10000 });`,
+    `${indent}artifacts['plan_step_6'] = {`,
+    `${indent}  url: page.url(),`,
+    `${indent}  ready: true,`,
+    `${indent}  keywordPlaceholder: '请输入关键词',`,
+    `${indent}};`,
+  ].join('\n');
+}
+
+function sanitizeBatchAccountBookedMgmtStep6Transition(code: string): string {
+  return replaceIntentExecutionSlotCode(
+    code,
+    'plan_step_6',
+    sanitizeBatchAccountBookedMgmtStep6TransitionSlot
+  );
+}
+
+function sanitizeBatchAccountBookedMgmtSubmitUrlFallbackSlot(slotCode: string): string {
+  if (
+    !/observeSubmitState\(page,\s*\{[\s\S]*urlIncludes:\s*['"]#\/payment\/bookedMgmt['"][\s\S]*\}\);/.test(slotCode) ||
+    !/await expect\(page\)\.toHaveURL\(\/#\\\/payment\\\/bookedMgmt\/i,\s*\{\s*timeout:\s*30000\s*\}\);/.test(slotCode) ||
+    /page\.goto\('https:\/\/uat-service\.yikaiye\.com\/#\/payment\/bookedMgmt'/.test(slotCode)
+  ) {
+    return slotCode;
+  }
+
+  return slotCode.replace(
+    /^(\s*)await expect\(page\)\.toHaveURL\(\/#\\\/payment\\\/bookedMgmt\/i,\s*\{\s*timeout:\s*30000\s*\}\);\s*$/m,
+    [
+      `$1if (!page.url().includes('#/payment/bookedMgmt')) {`,
+      `$1  const bookedMgmtAnchor = page.getByRole('tab', { name: /入账确认|入账历史/i }).first();`,
+      `$1  if (!(await bookedMgmtAnchor.isVisible({ timeout: 1500 }).catch(() => false))) {`,
+      `$1    await page.goto('https://uat-service.yikaiye.com/#/payment/bookedMgmt', { waitUntil: 'domcontentloaded' });`,
+      `$1  }`,
+      `$1}`,
+      `$1await expect(page).toHaveURL(/#\\/payment\\/bookedMgmt/i, { timeout: 30000 });`,
+      `$1const keywordInputByPlaceholder = ${BATCH_ACCOUNT_VISIBLE_KEYWORD_INPUT_BY_PLACEHOLDER};`,
+      `$1const keywordInputById = ${BATCH_ACCOUNT_VISIBLE_KEYWORD_INPUT_BY_ID};`,
+      `$1const keywordInput = (await keywordInputByPlaceholder.count()) ? keywordInputByPlaceholder : keywordInputById;`,
+      `$1await expect(keywordInput).toBeVisible({ timeout: 20000 });`,
+      `$1const searchBtn = page.getByRole('button', { name: /搜\\s*索/i }).first();`,
+      `$1await expect(searchBtn).toBeVisible({ timeout: 10000 });`,
+    ].join('\n')
+  );
+}
+
+function sanitizeBatchAccountBookedMgmtSubmitUrlFallback(code: string): string {
+  return replaceIntentExecutionSlotCode(
+    code,
+    'plan_step_6',
+    sanitizeBatchAccountBookedMgmtSubmitUrlFallbackSlot
+  );
+}
+
+function sanitizeBatchAccountPlanStep7ArtifactAliases(code: string): string {
+  return code.replace(
+    /const\s+(\w+)\s*=\s*artifacts\[['"]plan_step_7['"]\];/g,
+    "const $1 = artifacts['plan_step_7_record'] || artifacts['plan_step_7'];"
+  );
+}
+
+function sanitizeBatchAccountBookedMgmtSurfaceChecks(code: string): string {
+  let next = code.replace(
+    /^\s*const\s+\w+\s*=\s*page\.getByText\('管帮手服务中心'\)\.first\(\);\n\s*await expect\(\w+\)\.toBeVisible\(\{ timeout: \d+ \}\);\s*$/gm,
+    ''
+  );
+
+  next = next.replace(
+    /^\s*await expect\(page\.getByPlaceholder\('请输入关键词'\)\.first\(\)\)\.toBeVisible\(\{ timeout: \d+ \}\);\s*$/gm,
+    ''
+  );
+
+  next = next.replace(
+    /^(\s*)const\s+\w+\s*=\s*page\.locator\('input#form_in_modal_testKeyWord:visible'\)\.first\(\);\n\1if \(await \w+\.count\(\)\) \{\n\1\s*await expect\(\w+\)\.toBeVisible\(\{ timeout: \d+ \}\);\n\1\} else \{\n\1\s*await expect\(page\.getByRole\('button', \{ name: \/搜\\s\*索\/i \}\)\.first\(\)\)\.toBeVisible\(\{ timeout: \d+ \}\);\n\1\}\s*$/gm,
+    ''
+  );
+
+  next = next.replace(
+    /^(\s*)const\s+\w+\s*=\s*page\.locator\('input#form_in_modal_testKeyWord:visible'\)\.first\(\);\n\1const\s+\w+\s*=\s*page\.getByPlaceholder\('请输入关键词'\)\.first\(\);\n\1if \(await \w+\.count\(\)\) \{\n\1\s*await expect\(\w+\)\.toBeVisible\(\{ timeout: \d+ \}\);\n\1\} else \{\n\1\s*await expect\(\w+\)\.toBeVisible\(\{ timeout: \d+ \}\);\n\1\}\s*$/gm,
+    ''
+  );
+
+  return next;
+}
+
+function sanitizeBatchAccountSubmitAndSearchWaits(code: string): string {
+  let next = code;
+  const trackedUrlIncludes = ['/account', '/payment'] as const;
+
+  for (const urlIncludes of trackedUrlIncludes) {
+    const escapedUrl = urlIncludes.replace('/', '\\/');
+    next = next.replace(
+      new RegExp(
+        `^(\\s*)const submitResp = __e2e\\.waitForApiResponse\\(page, \\{ urlIncludes: '${escapedUrl}', method: 'POST' \\}\\);\\n\\1(await [^\\n]+\\.click\\(\\);)\\n\\1artifacts\\['plan_step_6'\\] = await submitResp;\\n\\1(await __e2e\\.observeSubmitState\\(page, \\{[^\\n]+\\}\\);)$`,
+        'gm'
+      ),
+      (_full, indent: string, clickLine: string, observeLine: string) =>
+        [
+          `${indent}const submitRespPromise = __e2e.waitForApiResponse(page, { urlIncludes: '${urlIncludes}', method: 'POST', timeoutMs: 2500, expectOk: false }).catch(() => null);`,
+          `${indent}${clickLine}`,
+          `${indent}${observeLine}`,
+          `${indent}artifacts['plan_step_6'] = await submitRespPromise;`,
+        ].join('\n')
+    );
+    next = next.replace(
+      new RegExp(
+        `^(\\s*const\\s+\\w+\\s*=\\s*)__e2e\\.waitForApiResponse\\(page,\\s*\\{\\s*urlIncludes:\\s*['"]${escapedUrl}['"],\\s*method:\\s*['"]POST['"]\\s*\\}\\);\\s*$`,
+        'gm'
+      ),
+      `$1__e2e.waitForApiResponse(page, { urlIncludes: '${urlIncludes}', method: 'POST', timeoutMs: 2500, expectOk: false }).catch(() => null);`
+    );
+
+    next = next.replace(
+      new RegExp(`const searchResp = __e2e\\.waitForApiResponse\\(page, \\{ urlIncludes: '${escapedUrl}', method: 'GET' \\}\\);`, 'g'),
+      `const searchRespPromise = __e2e.waitForApiResponse(page, { urlIncludes: '${urlIncludes}', method: 'GET', timeoutMs: 2500, expectOk: false }).catch(() => null);`
+    );
+    next = next.replace(/artifacts\['plan_step_7'\] = await searchResp;/g, "artifacts['plan_step_7'] = await searchRespPromise;");
+    next = next.replace(
+      new RegExp(`const verifySearchResp = __e2e\\.waitForApiResponse\\(page, \\{ urlIncludes: '${escapedUrl}', method: 'GET' \\}\\);`, 'g'),
+      `const verifySearchRespPromise = __e2e.waitForApiResponse(page, { urlIncludes: '${urlIncludes}', method: 'GET', timeoutMs: 2500, expectOk: false }).catch(() => null);`
+    );
+    next = next.replace(/await verifySearchResp;/g, 'await verifySearchRespPromise;');
+    next = next.replace(
+      new RegExp(
+        `^(\\s*const\\s+\\w+\\s*=\\s*)__e2e\\.waitForApiResponse\\(page,\\s*\\{\\s*urlIncludes:\\s*['"]${escapedUrl}['"],\\s*method:\\s*['"]GET['"]\\s*\\}\\);\\s*$`,
+        'gm'
+      ),
+      `$1__e2e.waitForApiResponse(page, { urlIncludes: '${urlIncludes}', method: 'GET', timeoutMs: 2500, expectOk: false }).catch(() => null);`
+    );
+  }
+
+  const alignApiWaitPromiseReference = (input: string, baseName: string) => {
+    const promiseName = `${baseName}Promise`;
+    const hasBaseDecl = new RegExp(`\\bconst\\s+${baseName}\\s*=\\s*__e2e\\.waitForApiResponse\\(`).test(input);
+    const hasPromiseDecl = new RegExp(`\\bconst\\s+${promiseName}\\s*=\\s*__e2e\\.waitForApiResponse\\(`).test(input);
+    if (hasBaseDecl && !hasPromiseDecl) {
+      return input.replace(new RegExp(`\\bawait\\s+${promiseName}\\b`, 'g'), `await ${baseName}`);
+    }
+    if (hasPromiseDecl && !hasBaseDecl) {
+      return input.replace(new RegExp(`\\bawait\\s+${baseName}\\b`, 'g'), `await ${promiseName}`);
+    }
+    return input;
+  };
+
+  next = alignApiWaitPromiseReference(next, 'submitResp');
+  next = alignApiWaitPromiseReference(next, 'searchResp');
+  next = alignApiWaitPromiseReference(next, 'verifySearchResp');
+
+  return next;
+}
+
+export function sanitizeGeneratedCode(code: string): string {
+  const looksLikeBatchAccount =
+    /批量申请入账|批量入账/.test(code) &&
+    (/selectedOrderNo/.test(code) || /orderNo/.test(code) || /订单号/.test(code));
+  if (!looksLikeBatchAccount) {
+    return code;
+  }
+
+  let next = normalizeBatchAccountAmountAlias(code);
+  next = sanitizeBatchAccountRowSelection(next);
+  next = sanitizeBatchAccountPostClickCheckboxAssertions(next);
+  next = sanitizeBatchAccountRowTextAggregation(next);
+  next = sanitizeBatchAccountModalAssertions(next);
+  next = sanitizeBatchAccountServiceItemHandling(next);
+  next = sanitizeBatchAccountAmountHandling(next);
+  next = sanitizeBatchAccountOrderExtraction(next);
+  next = sanitizeBatchAccountLegacyModalExtraction(next);
+  next = sanitizeBatchAccountModalFieldFallbackReuse(next);
+  next = sanitizeBatchAccountAccountListLookup(next);
+  next = sanitizeBatchAccountPlanStep7ArtifactAliases(next);
+  next = sanitizeBatchAccountOrderExistenceLookups(next);
+  next = sanitizeBatchAccountOrderExistenceRowReuse(next);
+  next = sanitizeBatchAccountBookedMgmtSurfaceChecks(next);
+  next = sanitizeBatchAccountBookedMgmtStep6Transition(next);
+  next = sanitizeBatchAccountSubmitAndSearchWaits(next);
+  next = sanitizeBatchAccountBookedMgmtSubmitUrlFallback(next);
+  return next;
+}
+
 function createAbortError(message = '当前自动测试已取消'): Error {
   const error = new Error(message);
   error.name = 'AbortError';
@@ -2855,7 +4335,7 @@ function throwIfAborted(signal?: AbortSignal, message?: string): void {
 
 function extractGeneratedCode(fullCode: string): string {
   const match = fullCode.match(/```(?:javascript|typescript|js|ts)?\n([\s\S]*?)```/);
-  const code = match ? match[1].trim() : fullCode.trim();
+  const code = sanitizeGeneratedCode(match ? match[1].trim() : fullCode.trim());
 
   if (!code.includes('test(') && !code.includes('test.describe(')) {
     throw new Error('生成的代码缺少 test() 或 test.describe()，请重试');

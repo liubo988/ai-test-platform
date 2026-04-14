@@ -39,6 +39,7 @@ import {
   type PlatformMaterializedQuery,
   type PlatformContractIdFilterType,
 } from '../test-platform-query-contract';
+import { INTENT_E2E_MAX_RUN_RETRY_LIMIT } from '../intent-e2e-run-limits';
 
 export type ProjectStatus = 'active' | 'archived';
 export type ModuleStatus = 'active' | 'archived';
@@ -656,6 +657,19 @@ export interface WorkspaceLLMSettingsRecord extends WorkspaceLLMSettingsInput {
   updatedAt: string;
 }
 
+export interface WorkspaceIntentRunSettingsInput {
+  maxConcurrentRuns: number;
+  defaultRetryLimit: number;
+}
+
+export interface WorkspaceIntentRunSettingsRecord extends WorkspaceIntentRunSettingsInput {
+  scopeUid: string;
+  updatedByUserUid: string;
+  updatedByLabel: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ProjectActivityLogInput {
   projectUid: string;
   entityType: ProjectActivityEntityType;
@@ -763,6 +777,7 @@ const STALE_EXECUTION_RECONCILE_INTERVAL_MS = 15_000;
 let projectActivityTableReady: Promise<void> | null = null;
 let projectCollaborationTablesReady: Promise<void> | null = null;
 let workspaceLlmSettingsTableReady: Promise<void> | null = null;
+let workspaceIntentRunSettingsTableReady: Promise<void> | null = null;
 let testConfigurationScenarioColumnsReady: Promise<void> | null = null;
 let projectKnowledgeTablesReady: Promise<void> | null = null;
 let projectIntentDraftTablesReady: Promise<void> | null = null;
@@ -771,6 +786,7 @@ const staleExecutionReconcileAt = new Map<string, number>();
 const staleExecutionReconcileInFlight = new Map<string, Promise<number>>();
 
 const DEFAULT_WORKSPACE_LLM_SCOPE_UID = 'workspace_default';
+const DEFAULT_WORKSPACE_INTENT_RUN_SCOPE_UID = 'workspace_default';
 
 type ExecutionReconcileScope = {
   executionUid?: string;
@@ -954,6 +970,36 @@ async function ensureWorkspaceLLMSettingsTable(): Promise<void> {
   }
 
   return workspaceLlmSettingsTableReady;
+}
+
+async function ensureWorkspaceIntentRunSettingsTable(): Promise<void> {
+  if (!workspaceIntentRunSettingsTableReady) {
+    workspaceIntentRunSettingsTableReady = (async () => {
+      await ensureProjectCollaborationTables();
+      const pool = getDbPool();
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS workspace_intent_run_settings (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          scope_uid VARCHAR(64) NOT NULL,
+          max_concurrent_runs INT NOT NULL DEFAULT 2,
+          default_retry_limit INT NOT NULL DEFAULT 0,
+          updated_by_user_uid VARCHAR(64) NULL,
+          updated_by_label VARCHAR(128) NOT NULL DEFAULT 'system',
+          created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+          updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+          PRIMARY KEY (id),
+          UNIQUE KEY uk_workspace_intent_run_settings_scope (scope_uid),
+          CONSTRAINT fk_workspace_intent_run_settings_updated_by_user_uid FOREIGN KEY (updated_by_user_uid) REFERENCES workspace_users (user_uid)
+            ON UPDATE CASCADE ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
+    })().catch((error) => {
+      workspaceIntentRunSettingsTableReady = null;
+      throw error;
+    });
+  }
+
+  return workspaceIntentRunSettingsTableReady;
 }
 
 async function ensureProjectKnowledgeTables(): Promise<void> {
@@ -1212,6 +1258,25 @@ function normalizeWorkspaceLLMSettingsInput(input: WorkspaceLLMSettingsInput): W
     visionEnabled: Boolean(input.visionEnabled),
     selfHealRetries: Math.max(0, Math.floor(Number(input.selfHealRetries) || 0)),
     maxPlanSteps: Math.max(1, Math.floor(Number(input.maxPlanSteps) || 1)),
+  };
+}
+
+function normalizeWorkspaceIntentRunSettingsRow(row: RowDataPacket): WorkspaceIntentRunSettingsRecord {
+  return {
+    scopeUid: String(row.scope_uid),
+    maxConcurrentRuns: Math.min(8, Math.max(1, Number(row.max_concurrent_runs || 1))),
+    defaultRetryLimit: Math.min(INTENT_E2E_MAX_RUN_RETRY_LIMIT, Math.max(0, Number(row.default_retry_limit || 0))),
+    updatedByUserUid: row.updated_by_user_uid ? String(row.updated_by_user_uid) : '',
+    updatedByLabel: row.updated_by_label ? String(row.updated_by_label) : 'system',
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+  };
+}
+
+function normalizeWorkspaceIntentRunSettingsInput(input: WorkspaceIntentRunSettingsInput): WorkspaceIntentRunSettingsInput {
+  return {
+    maxConcurrentRuns: Math.min(8, Math.max(1, Math.floor(Number(input.maxConcurrentRuns) || 1))),
+    defaultRetryLimit: Math.min(INTENT_E2E_MAX_RUN_RETRY_LIMIT, Math.max(0, Math.floor(Number(input.defaultRetryLimit) || 0))),
   };
 }
 
@@ -2100,6 +2165,76 @@ export async function deleteWorkspaceLLMSettings(scopeUid = DEFAULT_WORKSPACE_LL
   await ensureWorkspaceLLMSettingsTable();
   const pool = getDbPool();
   await pool.execute<ResultSetHeader>(`DELETE FROM workspace_llm_settings WHERE scope_uid = ?`, [scopeUid]);
+}
+
+export async function getWorkspaceIntentRunSettings(
+  scopeUid = DEFAULT_WORKSPACE_INTENT_RUN_SCOPE_UID
+): Promise<WorkspaceIntentRunSettingsRecord | null> {
+  await ensureWorkspaceIntentRunSettingsTable();
+  const pool = getDbPool();
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT
+      scope_uid,
+      max_concurrent_runs,
+      default_retry_limit,
+      updated_by_user_uid,
+      updated_by_label,
+      created_at,
+      updated_at
+     FROM workspace_intent_run_settings
+     WHERE scope_uid = ?
+     LIMIT 1`,
+    [scopeUid]
+  );
+
+  const row = rows[0];
+  return row ? normalizeWorkspaceIntentRunSettingsRow(row) : null;
+}
+
+export async function upsertWorkspaceIntentRunSettings(
+  input: WorkspaceIntentRunSettingsInput,
+  options?: { actorUserUid?: string; actorLabel?: string; scopeUid?: string }
+): Promise<WorkspaceIntentRunSettingsRecord> {
+  await ensureWorkspaceIntentRunSettingsTable();
+  const normalized = normalizeWorkspaceIntentRunSettingsInput(input);
+  const scopeUid = options?.scopeUid?.trim() || DEFAULT_WORKSPACE_INTENT_RUN_SCOPE_UID;
+  const pool = getDbPool();
+
+  await pool.execute<ResultSetHeader>(
+    `INSERT INTO workspace_intent_run_settings (
+       scope_uid,
+       max_concurrent_runs,
+       default_retry_limit,
+       updated_by_user_uid,
+       updated_by_label
+     ) VALUES (?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       max_concurrent_runs = VALUES(max_concurrent_runs),
+       default_retry_limit = VALUES(default_retry_limit),
+       updated_by_user_uid = VALUES(updated_by_user_uid),
+       updated_by_label = VALUES(updated_by_label)`,
+    [
+      scopeUid,
+      normalized.maxConcurrentRuns,
+      normalized.defaultRetryLimit,
+      options?.actorUserUid?.trim() || null,
+      options?.actorLabel?.trim() || 'system',
+    ]
+  );
+
+  const row = await getWorkspaceIntentRunSettings(scopeUid);
+  if (!row) {
+    throw new Error('读取共享 intent 全局配置失败');
+  }
+  return row;
+}
+
+export async function deleteWorkspaceIntentRunSettings(
+  scopeUid = DEFAULT_WORKSPACE_INTENT_RUN_SCOPE_UID
+): Promise<void> {
+  await ensureWorkspaceIntentRunSettingsTable();
+  const pool = getDbPool();
+  await pool.execute<ResultSetHeader>(`DELETE FROM workspace_intent_run_settings WHERE scope_uid = ?`, [scopeUid]);
 }
 
 export async function listProjectMembers(projectUid: string): Promise<ProjectMemberRecord[]> {

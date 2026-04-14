@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/ai/intent-e2e-service', () => ({
+  applyIntentE2EAnalyzeSupportDataCacheTerminalSnapshot: vi.fn(),
   runIntentDrivenE2EStream: vi.fn(),
 }));
 
@@ -16,9 +17,14 @@ vi.mock('@/lib/intent-e2e-cicd-report', () => ({
   normalizeIntentE2ECiCdReport: vi.fn((value: unknown) => (value && typeof value === 'object' ? value : undefined)),
 }));
 
-import { runIntentDrivenE2EStream, type IntentE2ERunResult } from '@/lib/ai/intent-e2e-service';
+import {
+  applyIntentE2EAnalyzeSupportDataCacheTerminalSnapshot,
+  runIntentDrivenE2EStream,
+  type IntentE2ERunResult,
+} from '@/lib/ai/intent-e2e-service';
 import { getIntentE2ERunSnapshotByRunId, listIntentE2ERunSnapshots, upsertIntentE2ERunSnapshot } from '@/lib/db/repository';
 import { buildIntentE2ECiCdReport } from '@/lib/intent-e2e-cicd-report';
+import { primeWorkspaceIntentE2EGlobalRunConfig, resetWorkspaceIntentE2EGlobalRunConfigCache } from '@/lib/intent-e2e-global-config';
 import { buildBrowserE2EPlatformTestAssetBundle } from '@/lib/test-platform-asset-model';
 import {
   cancelIntentE2ERun,
@@ -521,6 +527,7 @@ describe('intent-e2e-run-registry', () => {
     vi.clearAllMocks();
     vi.useRealTimers();
     resetIntentE2ERunRegistry();
+    resetWorkspaceIntentE2EGlobalRunConfigCache();
     vi.mocked(getIntentE2ERunSnapshotByRunId).mockResolvedValue(null as never);
     vi.mocked(listIntentE2ERunSnapshots).mockResolvedValue([] as never);
     vi.mocked(upsertIntentE2ERunSnapshot).mockResolvedValue(undefined as never);
@@ -835,6 +842,34 @@ describe('intent-e2e-run-registry', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('feeds terminal snapshots back into analyze support cache after terminal persistence', async () => {
+    const finalResult = createFinalResult(true);
+    vi.mocked(runIntentDrivenE2EStream).mockResolvedValue(finalResult as never);
+
+    const created = createIntentE2ERun({
+      input: '访问结算页并提交，最终看到成功页面',
+      projectUid: 'proj_1',
+      moduleUid: 'mod_1',
+    });
+    startIntentE2ERun(created.runId, {
+      input: '访问结算页并提交，最终看到成功页面',
+      projectUid: 'proj_1',
+      moduleUid: 'mod_1',
+    });
+
+    await waitForIntentE2ERunCompletion(created.runId);
+    await waitForIntentE2ERunPersistence(created.runId);
+
+    expect(vi.mocked(applyIntentE2EAnalyzeSupportDataCacheTerminalSnapshot)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: created.runId,
+        projectUid: 'proj_1',
+        moduleUid: 'mod_1',
+        status: 'passed',
+      })
+    );
   });
 
   it('stores failed final_result from precheck-style failures without promoting them to runtime errors', async () => {
@@ -1591,79 +1626,178 @@ describe('intent-e2e-run-registry', () => {
     expect(upsertIntentE2ERunSnapshot).toHaveBeenCalledWith(expect.objectContaining({ runId: 'intent-run-stale', status: 'failed' }));
   });
 
-  it('queues later runs when concurrency quota is full and auto-starts them after the slot is released', async () => {
-    const previousGlobalLimit = process.env.INTENT_E2E_MAX_CONCURRENT_RUNS;
-    const previousProjectLimit = process.env.INTENT_E2E_PROJECT_MAX_CONCURRENT_RUNS;
-    process.env.INTENT_E2E_MAX_CONCURRENT_RUNS = '1';
-    process.env.INTENT_E2E_PROJECT_MAX_CONCURRENT_RUNS = '1';
+  it('queues later runs when workspace global concurrency quota is full and auto-starts them after the slot is released', async () => {
+    primeWorkspaceIntentE2EGlobalRunConfig({
+      scopeUid: 'workspace_default',
+      maxConcurrentRuns: 1,
+      defaultRetryLimit: 0,
+      updatedByUserUid: 'usr_1',
+      updatedByLabel: 'Owner',
+      createdAt: '2026-04-10T01:00:00.000Z',
+      updatedAt: '2026-04-10T01:00:00.000Z',
+    });
 
-    try {
-      let releaseFirstRun!: () => void;
-      const passedResult = createFinalResult(true);
+    let releaseFirstRun!: () => void;
+    const passedResult = createFinalResult(true);
 
-      vi.mocked(runIntentDrivenE2EStream).mockImplementation(async (_request, listener) => {
-        if (!releaseFirstRun) {
-          await new Promise<void>((resolve) => {
-            releaseFirstRun = resolve;
-          });
-        }
-        await listener?.({
-          type: 'stage',
-          stage: 'planning',
-          message: '正在规划场景…',
+    vi.mocked(runIntentDrivenE2EStream).mockImplementation(async (_request, listener) => {
+      if (!releaseFirstRun) {
+        await new Promise<void>((resolve) => {
+          releaseFirstRun = resolve;
         });
-        await listener?.({
-          type: 'stage',
-          stage: 'completed',
-          message: '自动测试已完成，最终结果：通过。',
-        });
-        await listener?.({
-          type: 'final_result',
-          result: passedResult,
-        });
-        return passedResult as never;
+      }
+      await listener?.({
+        type: 'stage',
+        stage: 'planning',
+        message: '正在规划场景…',
       });
-
-      const firstCreated = createIntentE2ERun({ input: '任务一', projectUid: 'proj_queue' });
-      startIntentE2ERun(firstCreated.runId, { input: '任务一', projectUid: 'proj_queue' });
-
-      const secondCreated = createIntentE2ERun({
-        input: '任务二',
-        projectUid: 'proj_queue',
-        runControl: { priority: 'high' },
+      await listener?.({
+        type: 'stage',
+        stage: 'completed',
+        message: '自动测试已完成，最终结果：通过。',
       });
-      const secondStarted = startIntentE2ERun(secondCreated.runId, {
-        input: '任务二',
-        projectUid: 'proj_queue',
-        runControl: { priority: 'high' },
+      await listener?.({
+        type: 'final_result',
+        result: passedResult,
       });
+      return passedResult as never;
+    });
 
-      expect(secondStarted.status).toBe('created');
-      expect(secondStarted.stage).toBe('queued');
-      expect(secondStarted.taskPlatform.priority).toBe('high');
-      expect(secondStarted.taskPlatform.queuePosition).toBe(1);
+    const firstCreated = createIntentE2ERun({ input: '任务一', projectUid: 'proj_queue' });
+    startIntentE2ERun(firstCreated.runId, { input: '任务一', projectUid: 'proj_queue' });
 
-      expect(typeof releaseFirstRun).toBe('function');
-      releaseFirstRun();
+    const secondCreated = createIntentE2ERun({
+      input: '任务二',
+      projectUid: 'proj_queue',
+      runControl: { priority: 'high' },
+    });
+    const secondStarted = startIntentE2ERun(secondCreated.runId, {
+      input: '任务二',
+      projectUid: 'proj_queue',
+      runControl: { priority: 'high' },
+    });
 
-      await waitForIntentE2ERunCompletion(firstCreated.runId);
-      await waitForIntentE2ERunCompletion(secondCreated.runId);
+    expect(secondStarted.status).toBe('created');
+    expect(secondStarted.stage).toBe('queued');
+    expect(secondStarted.taskPlatform.priority).toBe('high');
+    expect(secondStarted.taskPlatform.queuePosition).toBe(1);
 
-      const queuedRun = getIntentE2ERun(secondCreated.runId);
-      expect(queuedRun?.status).toBe('passed');
-      expect(queuedRun?.taskPlatform.queueWaitMs).toBeGreaterThanOrEqual(0);
-      expect(vi.mocked(runIntentDrivenE2EStream).mock.calls[1]?.[2]).toMatchObject({
-        runId: secondCreated.runId,
+    expect(typeof releaseFirstRun).toBe('function');
+    releaseFirstRun();
+
+    await waitForIntentE2ERunCompletion(firstCreated.runId);
+    await waitForIntentE2ERunCompletion(secondCreated.runId);
+
+    const queuedRun = getIntentE2ERun(secondCreated.runId);
+    expect(queuedRun?.status).toBe('passed');
+    expect(queuedRun?.taskPlatform.queueWaitMs).toBeGreaterThanOrEqual(0);
+    expect(vi.mocked(runIntentDrivenE2EStream).mock.calls[1]?.[2]).toMatchObject({
+      runId: secondCreated.runId,
+    });
+  });
+
+  it('uses workspace global retry limit when the request does not provide one', async () => {
+    primeWorkspaceIntentE2EGlobalRunConfig({
+      scopeUid: 'workspace_default',
+      maxConcurrentRuns: 2,
+      defaultRetryLimit: 1,
+      updatedByUserUid: 'usr_1',
+      updatedByLabel: 'Owner',
+      createdAt: '2026-04-10T01:00:00.000Z',
+      updatedAt: '2026-04-10T01:00:00.000Z',
+    });
+
+    const retryableFailure = createRetryableFailureResult();
+    const passedResult = createFinalResult(true);
+    let invocation = 0;
+
+    vi.mocked(runIntentDrivenE2EStream).mockImplementation(async (_request, listener) => {
+      invocation += 1;
+      const result = invocation === 1 ? retryableFailure : passedResult;
+      await listener?.({
+        type: 'stage',
+        stage: 'completed',
+        message: invocation === 1 ? '自动测试已结束，但暂未完全通过。' : '自动测试已完成，最终结果：通过。',
       });
-    } finally {
-      if (previousGlobalLimit === undefined) delete process.env.INTENT_E2E_MAX_CONCURRENT_RUNS;
-      else process.env.INTENT_E2E_MAX_CONCURRENT_RUNS = previousGlobalLimit;
-      if (previousProjectLimit === undefined) delete process.env.INTENT_E2E_PROJECT_MAX_CONCURRENT_RUNS;
-      else process.env.INTENT_E2E_PROJECT_MAX_CONCURRENT_RUNS = previousProjectLimit;
-    }
+      await listener?.({
+        type: 'final_result',
+        result,
+      });
+      return result as never;
+    });
+
+    const created = createIntentE2ERun({
+      input: '访问结算页并提交，最终看到成功页面',
+    });
+    startIntentE2ERun(created.runId, {
+      input: '访问结算页并提交，最终看到成功页面',
+    });
+
+    await waitForIntentE2ERunCompletion(created.runId);
+
+    const finished = getIntentE2ERun(created.runId);
+    expect(invocation).toBe(2);
+    expect(finished?.taskPlatform.retryLimit).toBe(1);
+    expect(finished?.taskPlatform.retryCount).toBe(1);
+    expect(finished?.status).toBe('passed');
+  });
+
+  it('forces workspace global retry limit even when the request provides retryLimit', async () => {
+    primeWorkspaceIntentE2EGlobalRunConfig({
+      scopeUid: 'workspace_default',
+      maxConcurrentRuns: 2,
+      defaultRetryLimit: 0,
+      updatedByUserUid: 'usr_1',
+      updatedByLabel: 'Owner',
+      createdAt: '2026-04-10T01:00:00.000Z',
+      updatedAt: '2026-04-10T01:00:00.000Z',
+    });
+
+    const retryableFailure = createRetryableFailureResult();
+
+    vi.mocked(runIntentDrivenE2EStream).mockImplementation(async (_request, listener) => {
+      await listener?.({
+        type: 'stage',
+        stage: 'completed',
+        message: '自动测试已结束，但暂未完全通过。',
+      });
+      await listener?.({
+        type: 'final_result',
+        result: retryableFailure,
+      });
+      return retryableFailure as never;
+    });
+
+    const created = createIntentE2ERun({
+      input: '访问结算页并提交，最终看到成功页面',
+      runControl: { retryLimit: 5 },
+    });
+    startIntentE2ERun(created.runId, {
+      input: '访问结算页并提交，最终看到成功页面',
+      runControl: { retryLimit: 5 },
+    });
+
+    await waitForIntentE2ERunCompletion(created.runId);
+
+    const finished = getIntentE2ERun(created.runId);
+    expect(vi.mocked(runIntentDrivenE2EStream)).toHaveBeenCalledTimes(1);
+    expect(finished?.taskPlatform.retryLimit).toBe(0);
+    expect(finished?.taskPlatform.retryCount).toBe(0);
+    expect(finished?.status).toBe('failed');
+    expect(finished?.request.runControl?.retryLimit).toBe(0);
   });
 
   it('buffers terminal events when a retryable run is retried and only persists the final terminal result', async () => {
+    primeWorkspaceIntentE2EGlobalRunConfig({
+      scopeUid: 'workspace_default',
+      maxConcurrentRuns: 2,
+      defaultRetryLimit: 1,
+      updatedByUserUid: 'usr_1',
+      updatedByLabel: 'Owner',
+      createdAt: '2026-04-10T01:00:00.000Z',
+      updatedAt: '2026-04-10T01:00:00.000Z',
+    });
+
     const retryableFailure = createRetryableFailureResult();
     const passedResult = createFinalResult(true);
     let invocation = 0;

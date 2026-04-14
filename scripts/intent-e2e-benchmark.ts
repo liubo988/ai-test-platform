@@ -1,12 +1,19 @@
+import fsPromises from 'node:fs/promises';
+import path from 'node:path';
 import { parseArgs } from 'node:util';
+import { NextRequest } from 'next/server';
 import {
   compareIntentE2EBenchmark,
   freezeIntentE2EBenchmark,
+  getIntentE2EBenchmarkReportDir,
+  normalizeIntentE2EBenchmarkRequestCorpus,
+  preflightIntentE2EBenchmarkRequestCorpus,
   readIntentE2EBenchmark,
   replayIntentE2EBenchmark,
   type CompareIntentE2EBenchmarkOptions,
   type FreezeIntentE2EBenchmarkOptions,
   type IntentE2EBenchmarkCompareReport,
+  type IntentE2EBenchmarkRequestCorpusPreflightItem,
   type IntentE2EBenchmarkReplayResult,
   type IntentE2EBenchmarkSuite,
   type ReplayIntentE2EBenchmarkOptions,
@@ -16,9 +23,29 @@ import {
   normalizeIntentE2ETerminalRunSnapshot,
   type IntentE2EInsightRunRecord,
 } from '@/lib/ai/intent-e2e-insights';
+import {
+  cancelIntentE2ERun,
+  createIntentE2ERun,
+  startIntentE2ERun,
+  waitForIntentE2ERunCompletion,
+} from '@/lib/ai/intent-e2e-run-registry';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { closeDbPool } from '@/lib/db/client';
-import { listIntentE2ERunSnapshots } from '@/lib/db/repository';
+import { getIntentE2ERunSnapshotByRunId, listIntentE2ERunSnapshots } from '@/lib/db/repository';
+import { isIntentPlaybookRecipeSlug } from '@/lib/intent-e2e-playbook';
+import {
+  exportIntentProjectRecipeProfile,
+  getIntentProjectRecipeBackupDir,
+  getIntentProjectRecipeRegistryPath,
+  importIntentProjectRecipeProfile,
+  type ExportIntentProjectRecipeProfileResult,
+  type ImportIntentProjectRecipeProfileResult,
+} from '@/lib/intent-project-recipe-registry';
+import {
+  normalizeIntentE2EPriorityScenarioFamily,
+  type IntentE2EPriorityScenarioFamily,
+} from '@/lib/intent-e2e-priority-scenario-family';
+import { prepareIntentE2ERequest } from '@/lib/server/intent-e2e-request-preparation';
 import {
   normalizePlatformRunnerType,
   normalizePlatformTestType,
@@ -26,10 +53,12 @@ import {
   type PlatformTestType,
 } from '@/lib/test-platform-asset-model';
 
-type Command = 'candidates' | 'freeze' | 'replay' | 'compare';
+type Command = 'candidates' | 'freeze' | 'replay' | 'compare' | 'rerun';
 
 const DEFAULT_RUN_LIMIT = 200;
 const DEFAULT_CANDIDATE_LIMIT = 12;
+const DEFAULT_WAIT_TIMEOUT_MS = 15 * 60 * 1000;
+const MAX_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
 
 const parsed = parseArgs({
   args: process.argv.slice(2),
@@ -42,15 +71,23 @@ const parsed = parseArgs({
     'module-uid': { type: 'string' },
     'test-type': { type: 'string', multiple: true },
     'runner-type': { type: 'string', multiple: true },
+    'priority-scenario-family': { type: 'string' },
     'eval-case-id': { type: 'string', multiple: true },
     'max-cases': { type: 'string' },
     'run-limit': { type: 'string' },
+    'recipe-asset-input': { type: 'string' },
+    'recipe-asset-output': { type: 'string' },
     label: { type: 'string' },
     'release-candidate': { type: 'string' },
     'frozen-at': { type: 'string' },
     'replayed-at': { type: 'string' },
     'compared-at': { type: 'string' },
     'compared-label': { type: 'string' },
+    'request-corpus': { type: 'string' },
+    'actor-user-uid': { type: 'string' },
+    'wait-timeout-ms': { type: 'string' },
+    'rerun-output': { type: 'string' },
+    'max-requests': { type: 'string' },
   },
 });
 
@@ -62,15 +99,19 @@ function printHelp() {
   npm run intent:benchmark:freeze -- --project-uid <project> [options]
   npm run intent:benchmark:replay -- --project-uid <project> [options]
   npm run intent:benchmark:compare -- --project-uid <project> [options]
+  npm run intent:benchmark:rerun -- --project-uid <project> --request-corpus <path> [options]
 
 通用选项：
   --project-uid <uid>         项目 UID
   --module-uid <uid>          模块 UID
   --test-type <type>          多次传入或逗号分隔；如 browser_e2e
   --runner-type <type>        多次传入或逗号分隔；如 playwright_runner
+  --priority-scenario-family  仅保留指定 priorityScenarioFamily，如 list_search_detail
   --run-limit <n>             读取最近多少条 terminal runs，默认 ${DEFAULT_RUN_LIMIT}
   --max-cases <n>             candidates / freeze 的 case 数上限
   --eval-case-id <id>         freeze 时显式选择 case，可重复传入或逗号分隔
+  --recipe-asset-input <path> 先把显式 recipe asset 导入当前项目 registry，再执行 benchmark 命令
+  --recipe-asset-output <path> 执行结束后把当前项目 recipe asset 导出到显式路径
   --json                      输出完整 JSON
   --help                      打印帮助
 
@@ -86,10 +127,18 @@ compare 额外选项：
   --compared-at <iso>
   --compared-label <text>
 
+rerun 额外选项：
+  --request-corpus <path>     tracked request corpus JSON 路径
+  --actor-user-uid <uid>      可选 actor user uid，默认取 corpus.actorUserUid 或 usr_default_owner
+  --wait-timeout-ms <ms>      等待单条 run 终态的超时时间，默认 ${DEFAULT_WAIT_TIMEOUT_MS}
+  --rerun-output <path>       显式 rerun summary 输出路径
+  --max-requests <n>          只执行 corpus 前 n 条请求
+
 示例：
-  npm run intent:benchmark:candidates -- --project-uid proj_default --module-uid mod_xxx --test-type browser_e2e
-  npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_xxx --test-type browser_e2e --max-cases 12 --release-candidate ai-holdout-2026-04-09
-  npm run intent:benchmark:compare -- --project-uid proj_default --compared-label post-e1e2e3
+  npm run intent:benchmark:candidates -- --project-uid proj_default --module-uid mod_xxx --test-type browser_e2e --priority-scenario-family list_search_detail
+  npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_xxx --test-type browser_e2e --priority-scenario-family modal_or_drawer_save --max-cases 12 --release-candidate ai-holdout-2026-04-09
+  npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family business_create_list_verify --compared-label post-e1e2e3
+  npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_xxx --priority-scenario-family list_search_detail --request-corpus artifacts/intent-e2e-family-evidence/proj_default.list-search-detail.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json
 `);
 }
 
@@ -105,6 +154,12 @@ function normalizeInteger(value: string | undefined, fallback: number, max = DEF
   const parsedValue = Number(value);
   if (!Number.isFinite(parsedValue) || parsedValue <= 0) return fallback;
   return Math.max(1, Math.min(max, Math.floor(parsedValue)));
+}
+
+function normalizeMs(value: string | undefined, fallback: number): number {
+  const parsedValue = Number(value);
+  if (!Number.isFinite(parsedValue) || parsedValue <= 0) return fallback;
+  return Math.max(5_000, Math.min(MAX_WAIT_TIMEOUT_MS, Math.floor(parsedValue)));
 }
 
 function normalizeStringList(value: string | string[] | undefined): string[] {
@@ -145,6 +200,12 @@ function normalizeRunnerTypes(value: string | string[] | undefined): PlatformRun
     .filter((item): item is PlatformRunnerType => Boolean(item));
 }
 
+function normalizePriorityScenarioFamily(
+  value: string | undefined
+): IntentE2EPriorityScenarioFamily | '' {
+  return normalizeIntentE2EPriorityScenarioFamily(value);
+}
+
 function formatPercent(value: number): string {
   return `${Number.isFinite(value) ? value.toFixed(1) : '0.0'}%`;
 }
@@ -155,6 +216,7 @@ function buildScopeFromFlags() {
     moduleUid: readOptionalString(parsed.values['module-uid']),
     testTypes: normalizeTestTypes(readOptionalStringList(parsed.values['test-type'])),
     runnerTypes: normalizeRunnerTypes(readOptionalStringList(parsed.values['runner-type'])),
+    priorityScenarioFamily: normalizePriorityScenarioFamily(readOptionalString(parsed.values['priority-scenario-family'])),
     runLimit: normalizeInteger(readOptionalString(parsed.values['run-limit']), DEFAULT_RUN_LIMIT),
     maxCases: normalizeInteger(readOptionalString(parsed.values['max-cases']), DEFAULT_CANDIDATE_LIMIT, 200),
     evalCaseIds: readOptionalStringList(parsed.values['eval-case-id']),
@@ -166,12 +228,52 @@ function matchesScope(run: IntentE2EInsightRunRecord, scope: ReturnType<typeof b
   if (scope.moduleUid && run.moduleUid !== scope.moduleUid) return false;
   if (scope.testTypes.length > 0 && !scope.testTypes.includes(run.testType)) return false;
   if (scope.runnerTypes.length > 0 && !scope.runnerTypes.includes(run.runnerType)) return false;
+  if (scope.priorityScenarioFamily && run.priorityScenarioFamily !== scope.priorityScenarioFamily) return false;
   return true;
+}
+
+async function maybeImportRecipeAsset(projectUid: string): Promise<ImportIntentProjectRecipeProfileResult | null> {
+  const inputPath = readOptionalString(parsed.values['recipe-asset-input']);
+  if (!inputPath) return null;
+  const outputPath = getIntentProjectRecipeRegistryPath({
+    projectUid,
+    mode: 'write',
+    legacyFallback: false,
+  });
+  return importIntentProjectRecipeProfile(inputPath, outputPath, getIntentProjectRecipeBackupDir(projectUid), outputPath);
+}
+
+async function maybeExportRecipeAsset(projectUid: string): Promise<ExportIntentProjectRecipeProfileResult | null> {
+  const outputPath = readOptionalString(parsed.values['recipe-asset-output']);
+  if (!outputPath) return null;
+  return exportIntentProjectRecipeProfile(outputPath, projectUid || '');
+}
+
+function printRecipeAssetOperations(
+  imported: ImportIntentProjectRecipeProfileResult | null,
+  exported: ExportIntentProjectRecipeProfileResult | null
+) {
+  if (imported) {
+    console.log(
+      `recipe-asset-import: ${imported.sourcePath} -> ${imported.writtenTo} | recipes=${imported.recipeCount} | backup=${
+        imported.backupPath || '-'
+      }`
+    );
+  }
+  if (exported) {
+    console.log(`recipe-asset-export: ${exported.sourcePath} -> ${exported.writtenTo} | recipes=${exported.recipeCount}`);
+  }
 }
 
 function printSuiteSummary(benchmark: IntentE2EBenchmarkSuite) {
   console.log(`benchmark: ${benchmark.label} (${benchmark.benchmarkUid})`);
-  console.log(`scope: project=${benchmark.scope.projectUid || 'global'} module=${benchmark.scope.moduleUid || '-'} testTypes=${benchmark.scope.testTypes.join(',') || '-'} runnerTypes=${benchmark.scope.runnerTypes.join(',') || '-'}`);
+  console.log(
+    `scope: project=${benchmark.scope.projectUid || 'global'} module=${benchmark.scope.moduleUid || '-'} testTypes=${
+      benchmark.scope.testTypes.join(',') || '-'
+    } runnerTypes=${benchmark.scope.runnerTypes.join(',') || '-'} priorityFamily=${
+      benchmark.scope.priorityScenarioFamily || '-'
+    }`
+  );
   console.log(`frozenAt: ${benchmark.frozenAt}`);
   console.log(`cases: ${benchmark.cases.length} | runs=${benchmark.summary.runCount}`);
   console.log(
@@ -201,6 +303,11 @@ function printSuiteSummary(benchmark: IntentE2EBenchmarkSuite) {
 
 function printReplaySummary(replay: IntentE2EBenchmarkReplayResult) {
   console.log(`replay: ${replay.label} (${replay.benchmarkUid}) @ ${replay.replayedAt}`);
+  console.log(
+    `scope: project=${replay.scope.projectUid || 'global'} module=${replay.scope.moduleUid || '-'} testTypes=${
+      replay.scope.testTypes.join(',') || '-'
+    } runnerTypes=${replay.scope.runnerTypes.join(',') || '-'} priorityFamily=${replay.scope.priorityScenarioFamily || '-'}`
+  );
   console.log(`cases: matched=${replay.summary.matchedCases} missing=${replay.summary.missingCases} total=${replay.summary.caseCount}`);
   console.log(
     `metrics: terminal=${formatPercent(replay.summary.terminalPassRate)} first-pass=${formatPercent(
@@ -223,6 +330,11 @@ function printReplaySummary(replay: IntentE2EBenchmarkReplayResult) {
 function printCompareSummary(report: IntentE2EBenchmarkCompareReport, writtenTo: string) {
   console.log(`compare report: ${writtenTo}`);
   console.log(`benchmark: ${report.label} (${report.benchmarkUid})`);
+  console.log(
+    `scope: project=${report.scope.projectUid || 'global'} module=${report.scope.moduleUid || '-'} testTypes=${
+      report.scope.testTypes.join(',') || '-'
+    } runnerTypes=${report.scope.runnerTypes.join(',') || '-'} priorityFamily=${report.scope.priorityScenarioFamily || '-'}`
+  );
   console.log(
     `cases: improved=${report.summary.improvedCases} regressed=${report.summary.regressedCases} unchanged=${report.summary.unchangedCases} missing=${report.summary.missingCases}`
   );
@@ -252,10 +364,128 @@ function printCompareSummary(report: IntentE2EBenchmarkCompareReport, writtenTo:
       console.log(`- ${item.evalCaseId} ${item.comparisonStatus}: ${item.comparisonNote}`);
     }
   }
+
+  if (report.priorityScenarioFamilies.length > 0) {
+    console.log('priority-families:');
+    for (const item of report.priorityScenarioFamilies) {
+      console.log(
+        `- ${item.priorityScenarioFamily}: ${item.conclusion} | cases=${item.totalCases} matched=${item.matchedCases} frozenRuns=${item.frozenRunCount} currentRuns=${item.currentRunCount}`
+      );
+    }
+  }
+}
+
+interface IntentE2EBenchmarkRerunEntryResult {
+  requestId: string;
+  input: string;
+  targetUrl: string;
+  expectedPriorityScenarioFamily: IntentE2EPriorityScenarioFamily;
+  preflight: IntentE2EBenchmarkRequestCorpusPreflightItem['route'];
+  runId: string;
+  status: 'passed' | 'failed' | 'canceled' | 'unknown';
+  finishedAt: string;
+  priorityScenarioFamily: IntentE2EPriorityScenarioFamily | '';
+  targetPath: string;
+  matchedRecipeSlugs: string[];
+  recipeHit: boolean;
+  playbookHit: boolean;
+  reviewWritten: boolean;
+  experienceHit: boolean;
+  failureClass: string;
+  actorUserUid: string;
+  errorMessage: string;
+}
+
+interface IntentE2EBenchmarkRerunReport {
+  version: 1;
+  generatedAt: string;
+  requestCorpusPath: string;
+  recipeAssetInput: string;
+  reportPath: string;
+  scope: {
+    projectUid: string;
+    moduleUid: string;
+    testType: PlatformTestType;
+    priorityScenarioFamily: IntentE2EPriorityScenarioFamily;
+  };
+  actorUserUid: string;
+  preflight: IntentE2EBenchmarkRequestCorpusPreflightItem[];
+  summary: {
+    requestCount: number;
+    terminalCount: number;
+    passedRuns: number;
+    failedRuns: number;
+    canceledRuns: number;
+    recipeHitRuns: number;
+    playbookHitRuns: number;
+  };
+  runs: IntentE2EBenchmarkRerunEntryResult[];
+}
+
+async function waitForTerminalRun(runId: string, timeoutMs: number): Promise<void> {
+  const timer = new Promise<never>((_, reject) => {
+    const handle = setTimeout(() => {
+      reject(new Error(`等待 run 终态超时：${runId}`));
+    }, timeoutMs);
+    handle.unref?.();
+  });
+
+  await Promise.race([waitForIntentE2ERunCompletion(runId), timer]);
+}
+
+function resolveDefaultRerunReportPath(projectUid: string, priorityScenarioFamily: IntentE2EPriorityScenarioFamily): string {
+  const reportDir = getIntentE2EBenchmarkReportDir(projectUid);
+  return path.join(reportDir, `${new Date().toISOString().replace(/[:.]/g, '-')}-family-${priorityScenarioFamily}-fresh-rerun.json`);
+}
+
+function sanitizeRequestBodyForTransport(record: Record<string, unknown>): Record<string, unknown> {
+  const {
+    requestId: _requestId,
+    expectedPriorityScenarioFamily: _expectedPriorityScenarioFamily,
+    ...requestBody
+  } = record;
+  return requestBody;
+}
+
+function buildRerunSummaryPayload(
+  scope: {
+    projectUid: string;
+    moduleUid: string;
+    testType: PlatformTestType;
+    priorityScenarioFamily: IntentE2EPriorityScenarioFamily;
+  },
+  reportPath: string,
+  requestCorpusPath: string,
+  recipeAssetInput: string,
+  actorUserUid: string,
+  preflight: IntentE2EBenchmarkRequestCorpusPreflightItem[],
+  runs: IntentE2EBenchmarkRerunEntryResult[]
+): IntentE2EBenchmarkRerunReport {
+  return {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    requestCorpusPath,
+    recipeAssetInput,
+    reportPath,
+    scope,
+    actorUserUid,
+    preflight,
+    summary: {
+      requestCount: runs.length,
+      terminalCount: runs.filter((item) => item.status !== 'unknown').length,
+      passedRuns: runs.filter((item) => item.status === 'passed').length,
+      failedRuns: runs.filter((item) => item.status === 'failed').length,
+      canceledRuns: runs.filter((item) => item.status === 'canceled').length,
+      recipeHitRuns: runs.filter((item) => item.recipeHit).length,
+      playbookHitRuns: runs.filter((item) => item.playbookHit).length,
+    },
+    runs,
+  };
 }
 
 async function listCandidates() {
   const scope = buildScopeFromFlags();
+  const importedRecipeAsset = await maybeImportRecipeAsset(scope.projectUid);
   await ensureDbBootstrap();
   const runSnapshots = await listIntentE2ERunSnapshots({
     projectUid: scope.projectUid,
@@ -280,6 +510,7 @@ async function listCandidates() {
       moduleUid: scope.moduleUid,
       testTypes: scope.testTypes,
       runnerTypes: scope.runnerTypes,
+      priorityScenarioFamily: scope.priorityScenarioFamily,
     },
     generatedFromRuns: baseline.generatedFromRuns,
     candidateClusters: baseline.candidateClusters,
@@ -288,17 +519,35 @@ async function listCandidates() {
     selectionNote: baseline.selectionNote,
     candidates,
   };
+  const exportedRecipeAsset = await maybeExportRecipeAsset(scope.projectUid);
 
   if (parsed.values.json) {
-    console.log(JSON.stringify(payload, null, 2));
+    console.log(
+      JSON.stringify(
+        importedRecipeAsset || exportedRecipeAsset
+          ? {
+              ...payload,
+              recipeAssetImport: importedRecipeAsset,
+              recipeAssetExport: exportedRecipeAsset,
+            }
+          : payload,
+        null,
+        2
+      )
+    );
     return;
   }
 
+  printRecipeAssetOperations(importedRecipeAsset, exportedRecipeAsset);
   console.log(`candidates: generatedFromRuns=${baseline.generatedFromRuns} clusters=${baseline.candidateClusters} recommended=${baseline.recommendedCount}`);
   console.log(`selection-note: ${baseline.selectionNote}`);
   for (const item of candidates) {
     console.log('');
-    console.log(`[${item.evalCaseId}] ${item.priority.toUpperCase()} ${item.scenarioFamilyLabel} ${item.targetPath || '-'}`);
+    console.log(
+      `[${item.evalCaseId}] ${item.priority.toUpperCase()} ${item.scenarioFamilyLabel} / ${item.priorityScenarioFamily} ${
+        item.targetPath || '-'
+      }`
+    );
     console.log(`  title: ${item.representativeScenarioTitle}`);
     console.log(`  runs: total=${item.runCount} terminal=${formatPercent(item.terminalPassRate)} first-pass=${formatPercent(item.firstPassPassRate)} repair=${formatPercent(item.repairedPassRate)} knowledge=${formatPercent(item.knowledgeHitRate)}`);
     console.log(`  recipes: ${item.matchedRecipeSlugs.join(', ') || '-'}`);
@@ -309,12 +558,14 @@ async function listCandidates() {
 
 async function freezeBenchmark() {
   const scope = buildScopeFromFlags();
+  const importedRecipeAsset = await maybeImportRecipeAsset(scope.projectUid);
   await ensureDbBootstrap();
   const options: FreezeIntentE2EBenchmarkOptions = {
     projectUid: scope.projectUid,
     moduleUid: scope.moduleUid,
     testTypes: scope.testTypes,
     runnerTypes: scope.runnerTypes,
+    priorityScenarioFamily: scope.priorityScenarioFamily,
     evalCaseIds: scope.evalCaseIds,
     maxCases: scope.maxCases,
     runLimit: scope.runLimit,
@@ -323,12 +574,26 @@ async function freezeBenchmark() {
     frozenAt: readOptionalString(parsed.values['frozen-at']),
   };
   const result = await freezeIntentE2EBenchmark(options);
+  const exportedRecipeAsset = await maybeExportRecipeAsset(scope.projectUid);
 
   if (parsed.values.json) {
-    console.log(JSON.stringify(result, null, 2));
+    console.log(
+      JSON.stringify(
+        importedRecipeAsset || exportedRecipeAsset
+          ? {
+              ...result,
+              recipeAssetImport: importedRecipeAsset,
+              recipeAssetExport: exportedRecipeAsset,
+            }
+          : result,
+        null,
+        2
+      )
+    );
     return;
   }
 
+  printRecipeAssetOperations(importedRecipeAsset, exportedRecipeAsset);
   console.log(`writtenTo: ${result.writtenTo}`);
   console.log(`archivePath: ${result.archivePath}`);
   printSuiteSummary(result.benchmark);
@@ -336,39 +601,231 @@ async function freezeBenchmark() {
 
 async function replayBenchmark() {
   const scope = buildScopeFromFlags();
+  const importedRecipeAsset = await maybeImportRecipeAsset(scope.projectUid);
   await ensureDbBootstrap();
   const options: ReplayIntentE2EBenchmarkOptions = {
     projectUid: scope.projectUid,
     runLimit: scope.runLimit,
     replayedAt: readOptionalString(parsed.values['replayed-at']),
+    priorityScenarioFamily: scope.priorityScenarioFamily,
   };
   const result = await replayIntentE2EBenchmark(options);
+  const exportedRecipeAsset = await maybeExportRecipeAsset(scope.projectUid);
 
   if (parsed.values.json) {
-    console.log(JSON.stringify(result, null, 2));
+    console.log(
+      JSON.stringify(
+        importedRecipeAsset || exportedRecipeAsset
+          ? {
+              ...result,
+              recipeAssetImport: importedRecipeAsset,
+              recipeAssetExport: exportedRecipeAsset,
+            }
+          : result,
+        null,
+        2
+      )
+    );
     return;
   }
 
+  printRecipeAssetOperations(importedRecipeAsset, exportedRecipeAsset);
   printReplaySummary(result);
 }
 
 async function compareBenchmark() {
   const scope = buildScopeFromFlags();
+  const importedRecipeAsset = await maybeImportRecipeAsset(scope.projectUid);
   await ensureDbBootstrap();
   const options: CompareIntentE2EBenchmarkOptions = {
     projectUid: scope.projectUid,
     runLimit: scope.runLimit,
     comparedAt: readOptionalString(parsed.values['compared-at']),
     comparedLabel: readOptionalString(parsed.values['compared-label']),
+    priorityScenarioFamily: scope.priorityScenarioFamily,
   };
   const result = await compareIntentE2EBenchmark(options);
+  const exportedRecipeAsset = await maybeExportRecipeAsset(scope.projectUid);
 
   if (parsed.values.json) {
-    console.log(JSON.stringify(result, null, 2));
+    console.log(
+      JSON.stringify(
+        importedRecipeAsset || exportedRecipeAsset
+          ? {
+              ...result,
+              recipeAssetImport: importedRecipeAsset,
+              recipeAssetExport: exportedRecipeAsset,
+            }
+          : result,
+        null,
+        2
+      )
+    );
     return;
   }
 
+  printRecipeAssetOperations(importedRecipeAsset, exportedRecipeAsset);
   printCompareSummary(result.report, result.writtenTo);
+}
+
+async function rerunRequestCorpus() {
+  const scope = buildScopeFromFlags();
+  const requestCorpusPath = readOptionalString(parsed.values['request-corpus']);
+  if (!requestCorpusPath) {
+    throw new Error('rerun 命令缺少 --request-corpus');
+  }
+
+  const rawCorpus = JSON.parse(await fsPromises.readFile(requestCorpusPath, 'utf8'));
+  const corpus = normalizeIntentE2EBenchmarkRequestCorpus(rawCorpus, {
+    projectUid: scope.projectUid,
+    moduleUid: scope.moduleUid,
+    priorityScenarioFamily: scope.priorityScenarioFamily,
+  });
+  if (corpus.testType !== 'browser_e2e') {
+    throw new Error(`当前 rerun 只支持 browser_e2e corpus，收到 ${corpus.testType}`);
+  }
+
+  const preflight = preflightIntentE2EBenchmarkRequestCorpus(corpus);
+  const preflightMismatch = preflight.filter((item) => !item.matchesExpectedFamily);
+  if (preflightMismatch.length > 0) {
+    const mismatchSummary = preflightMismatch
+      .map((item) => `${item.requestId}:${item.route.family}->${item.expectedPriorityScenarioFamily}`)
+      .join(', ');
+    throw new Error(`request corpus family preflight 不匹配：${mismatchSummary}`);
+  }
+
+  const waitTimeoutMs = normalizeMs(readOptionalString(parsed.values['wait-timeout-ms']), DEFAULT_WAIT_TIMEOUT_MS);
+  const maxRequestsRaw = readOptionalString(parsed.values['max-requests']);
+  const parsedMaxRequests = Number(maxRequestsRaw);
+  const maxRequests =
+    Number.isFinite(parsedMaxRequests) && parsedMaxRequests > 0
+      ? Math.max(1, Math.min(corpus.requests.length, Math.floor(parsedMaxRequests)))
+      : corpus.requests.length;
+  const actorUserUid = readOptionalString(parsed.values['actor-user-uid']) || corpus.actorUserUid || 'usr_default_owner';
+  const importedRecipeAsset = await maybeImportRecipeAsset(corpus.projectUid);
+  const recipeAssetInput = readOptionalString(parsed.values['recipe-asset-input']);
+
+  await ensureDbBootstrap();
+
+  const runs: IntentE2EBenchmarkRerunEntryResult[] = [];
+  for (const request of corpus.requests.slice(0, maxRequests)) {
+    const preflightItem = preflight.find((item) => item.requestId === request.requestId);
+    if (!preflightItem) {
+      throw new Error(`缺少 request preflight：${request.requestId}`);
+    }
+
+    const headers = new Headers({ 'content-type': 'application/json' });
+    if (actorUserUid) {
+      headers.set('x-e2e-actor-uid', actorUserUid);
+    }
+
+    const requestBody = sanitizeRequestBodyForTransport(request as unknown as Record<string, unknown>);
+    const nextRequest = new NextRequest('http://localhost/api/intent-e2e/runs', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(requestBody),
+    });
+
+    let runId = '';
+    let resolvedActorUserUid = actorUserUid;
+    let errorMessage = '';
+
+    try {
+      const prepared = await prepareIntentE2ERequest(nextRequest);
+      resolvedActorUserUid = prepared.actorUserUid || resolvedActorUserUid;
+      const createdRun = createIntentE2ERun(prepared.request);
+      runId = createdRun.runId;
+      startIntentE2ERun(createdRun.runId, prepared.request);
+      await waitForTerminalRun(createdRun.runId, waitTimeoutMs);
+    } catch (error: unknown) {
+      errorMessage = error instanceof Error ? error.message : '未知 rerun 错误';
+      if (runId) {
+        cancelIntentE2ERun(runId);
+      }
+    }
+
+    const snapshot = runId ? await getIntentE2ERunSnapshotByRunId(runId) : null;
+    const normalizedRun = snapshot ? normalizeIntentE2ETerminalRunSnapshot(snapshot) : null;
+
+    runs.push({
+      requestId: request.requestId,
+      input: request.input,
+      targetUrl: request.targetUrl || '',
+      expectedPriorityScenarioFamily: request.expectedPriorityScenarioFamily,
+      preflight: preflightItem.route,
+      runId,
+      status: normalizedRun?.status || (snapshot?.status as 'passed' | 'failed' | 'canceled' | undefined) || 'unknown',
+      finishedAt: normalizedRun?.finishedAt || snapshot?.endedAt || snapshot?.updatedAt || '',
+      priorityScenarioFamily: normalizedRun?.priorityScenarioFamily || preflightItem.route.family || '',
+      targetPath: normalizedRun?.targetPath || '',
+      matchedRecipeSlugs: normalizedRun?.matchedRecipeSlugs || [],
+      recipeHit: (normalizedRun?.matchedRecipeSlugs.length || 0) > 0,
+      playbookHit: (normalizedRun?.matchedRecipeSlugs || []).some((slug) => isIntentPlaybookRecipeSlug(slug)),
+      reviewWritten: normalizedRun?.reviewWritten || false,
+      experienceHit: normalizedRun?.experienceHit || false,
+      failureClass: normalizedRun?.failureClass || '',
+      actorUserUid: resolvedActorUserUid,
+      errorMessage,
+    });
+  }
+
+  const reportPath = readOptionalString(parsed.values['rerun-output']) || resolveDefaultRerunReportPath(
+    corpus.projectUid,
+    corpus.priorityScenarioFamily
+  );
+  const report = buildRerunSummaryPayload(
+    {
+      projectUid: corpus.projectUid,
+      moduleUid: corpus.moduleUid,
+      testType: corpus.testType,
+      priorityScenarioFamily: corpus.priorityScenarioFamily,
+    },
+    reportPath,
+    requestCorpusPath,
+    recipeAssetInput,
+    actorUserUid,
+    preflight.slice(0, maxRequests),
+    runs
+  );
+  const reportAbsPath = path.isAbsolute(reportPath) ? reportPath : path.join(process.cwd(), reportPath);
+  await fsPromises.mkdir(path.dirname(reportAbsPath), { recursive: true });
+  await fsPromises.writeFile(reportAbsPath, JSON.stringify(report, null, 2), 'utf8');
+  const exportedRecipeAsset = await maybeExportRecipeAsset(corpus.projectUid);
+
+  if (parsed.values.json) {
+    console.log(
+      JSON.stringify(
+        importedRecipeAsset || exportedRecipeAsset
+          ? {
+              ...report,
+              recipeAssetImport: importedRecipeAsset,
+              recipeAssetExport: exportedRecipeAsset,
+            }
+          : report,
+        null,
+        2
+      )
+    );
+    return;
+  }
+
+  printRecipeAssetOperations(importedRecipeAsset, exportedRecipeAsset);
+  console.log(`rerun report: ${reportPath}`);
+  console.log(
+    `scope: project=${corpus.projectUid} module=${corpus.moduleUid} testType=${corpus.testType} priorityFamily=${corpus.priorityScenarioFamily}`
+  );
+  console.log(
+    `summary: requests=${report.summary.requestCount} terminal=${report.summary.terminalCount} passed=${report.summary.passedRuns} failed=${report.summary.failedRuns} canceled=${report.summary.canceledRuns} recipe-hit=${report.summary.recipeHitRuns} playbook-hit=${report.summary.playbookHitRuns}`
+  );
+  for (const item of runs) {
+    console.log(
+      `- ${item.requestId}: runId=${item.runId || '-'} status=${item.status} family=${item.priorityScenarioFamily || '-'} targetPath=${
+        item.targetPath || '-'
+      } recipeHit=${item.recipeHit ? 'yes' : 'no'} playbookHit=${item.playbookHit ? 'yes' : 'no'}${
+        item.errorMessage ? ` error=${item.errorMessage}` : ''
+      }`
+    );
+  }
 }
 
 async function main() {
@@ -391,6 +848,9 @@ async function main() {
       return;
     case 'compare':
       await compareBenchmark();
+      return;
+    case 'rerun':
+      await rerunRequestCorpus();
       return;
     default:
       throw new Error(`未知命令: ${command}`);

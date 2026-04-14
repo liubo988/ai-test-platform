@@ -1247,6 +1247,92 @@ describe('intent-execution-compiler', () => {
     expect(template.code).toContain('expect(shared.orderId).toBe(verify_order_variableExpected);');
   });
 
+  it('adds order-number extraction and modal-scoped hints for batch-account flows', () => {
+    const template = compileIntentExecutionTemplate({
+      description: '在订单列表勾选目标订单并批量申请入账',
+      executionPlan: {
+        version: 1,
+        compiler: 'deterministic_dsl_v1',
+        mode: 'scenario',
+        entryUrl: 'https://example.com/#/order/list',
+        summary: '批量申请入账',
+        expectedOutcome: '批量申请入账弹窗展示正确订单信息',
+        sharedVariables: ['selectedOrderNo', 'selectedServiceItem', 'selectedAmount'],
+        globalRules: [],
+        preferredPrimitives: [],
+        outputContract: [],
+        steps: [
+          {
+            planStepUid: 'plan_step_1',
+            scenarioStepUid: 'step_batch_account',
+            stepType: 'ui',
+            title: '批量申请入账',
+            target: 'https://example.com/#/order/list',
+            goal: '在订单列表提取 selectedOrderNo 并打开批量申请入账弹窗',
+            allowedActions: ['find_table_row', 'click', 'assert_text'],
+            preferredHelpers: ['__e2e.findAntdTableRow', '__e2e.clickAntdRowCheckbox'],
+            requiredAssertions: ['批量申请入账弹窗展示订单号、服务项、入账金额'],
+            extractVariable: 'selectedOrderNo',
+            sharedVariables: ['selectedOrderNo', 'selectedServiceItem', 'selectedAmount'],
+            dependsOnPlanStepUids: [],
+          },
+        ],
+      },
+    });
+
+    expect(template.code).toContain("不要写 `const orderNoMatch = rowText.match(/\\b[A-Za-z0-9_-]{6,}\\b/)`");
+    expect(template.code).toContain('至少排除 `/^1\\d{10}$/` 手机号和纯金额 token');
+    expect(template.code).toContain('批量入账/入账管理这类弹窗验收优先按 `订单号 / 服务项 / 入账金额` 三类字段做 scoped 校验');
+  });
+
+  it('does not emit merged shared variable keys when one step extracts multiple variables', () => {
+    const template = compileIntentExecutionTemplate({
+      description: '提取订单号、服务项、入账金额并校验',
+      executionPlan: {
+        version: 1,
+        compiler: 'deterministic_dsl_v1',
+        mode: 'scenario',
+        entryUrl: 'https://example.com/#/order/list',
+        summary: '提取订单对账字段',
+        expectedOutcome: '订单号、服务项、入账金额都被提取',
+        sharedVariables: ['selectedOrderNo'],
+        globalRules: [],
+        preferredPrimitives: [],
+        outputContract: [],
+        steps: [
+          {
+            planStepUid: 'plan_step_1',
+            scenarioStepUid: 'step_extract_order_fields',
+            stepType: 'extract',
+            title: '提取订单对账字段',
+            target: '订单列表结果表格',
+            goal: '从目标订单行提取订单号、服务项、入账金额',
+            allowedActions: ['extract_text', 'store_variable'],
+            preferredHelpers: ['__e2e.readJsonResponse', '__e2e.pickJsonValue'],
+            requiredAssertions: ['订单字段提取成功'],
+            extractVariable: 'selectedOrderNo,selectedServiceItem,selectedAmount',
+            sharedVariables: ['selectedOrderNo', 'selectedServiceItem', 'selectedAmount'],
+            dependsOnPlanStepUids: [],
+          },
+        ],
+      },
+      verificationPlan: {
+        version: 1,
+        strategy: 'deterministic_verification_v1',
+        expectedOutcome: '订单号、服务项、入账金额都被提取',
+        cleanupNotes: '',
+        checks: [],
+      },
+    });
+
+    expect(template.sharedVariables).toEqual(['selectedOrderNo', 'selectedServiceItem', 'selectedAmount']);
+    expect(template.code).toContain('"selectedOrderNo":');
+    expect(template.code).toContain('"selectedServiceItem":');
+    expect(template.code).toContain('"selectedAmount":');
+    expect(template.code).not.toContain('"selectedOrderNo,selectedServiceItem,selectedAmount":');
+    expect(template.code).not.toContain("shared['selectedOrderNo,selectedServiceItem,selectedAmount']");
+  });
+
   it('compiles modal_state close checks into explicit drawer absence assertions', () => {
     const template = compileIntentExecutionTemplate({
       executionPlan: {

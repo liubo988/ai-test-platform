@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  applyIntentE2EAnalyzeSupportDataCacheTerminalSnapshot,
   runIntentDrivenE2EStream,
   type IntentE2ERunRequest,
   type IntentE2ERunResult,
@@ -42,6 +43,7 @@ import {
   cloneIntentE2ERunControl,
   compareIntentE2ERunPriority,
   resolveIntentE2ERunControl,
+  type IntentE2ERunControl,
   type IntentE2ERunPriority,
   type ResolvedIntentE2ERunControl,
 } from '@/lib/intent-e2e-run-control';
@@ -56,6 +58,7 @@ import {
   type IntentE2ECiCdProfile,
   type IntentE2ESystemOnboardingManifestSummary,
 } from '@/lib/intent-e2e-system-onboarding';
+import { getWorkspaceIntentE2EGlobalRunConfigSnapshot } from '@/lib/intent-e2e-global-config';
 import type { RepairObservationReport } from '@/lib/test-generator';
 
 export type IntentE2ERunStatus = 'created' | 'running' | 'passed' | 'failed' | 'canceled';
@@ -274,18 +277,21 @@ function createAbortError(message = '当前自动测试已取消'): Error {
   return error;
 }
 
-function resolveConcurrentLimit(envName: string, defaultValue: number, maxValue: number): number {
-  const raw = Number(process.env[envName]);
-  if (!Number.isFinite(raw) || raw <= 0) return defaultValue;
-  return Math.min(maxValue, Math.max(1, Math.floor(raw)));
-}
-
 function resolveGlobalConcurrentLimit(): number {
-  return resolveConcurrentLimit('INTENT_E2E_MAX_CONCURRENT_RUNS', 2, 8);
+  return getWorkspaceIntentE2EGlobalRunConfigSnapshot().maxConcurrentRuns;
 }
 
 function resolveProjectConcurrentLimit(): number {
-  return resolveConcurrentLimit('INTENT_E2E_PROJECT_MAX_CONCURRENT_RUNS', 1, 4);
+  return getWorkspaceIntentE2EGlobalRunConfigSnapshot().projectConcurrentRuns;
+}
+
+function resolveTaskPlatformRunControl(value?: IntentE2ERunControl | null): ResolvedIntentE2ERunControl {
+  const resolved = resolveIntentE2ERunControl(value);
+
+  return {
+    ...resolved,
+    retryLimit: getWorkspaceIntentE2EGlobalRunConfigSnapshot().defaultRetryLimit,
+  };
 }
 
 function cloneTaskPlatformState(state: IntentE2ERunTaskPlatformState): IntentE2ERunTaskPlatformState {
@@ -310,7 +316,7 @@ function cloneTaskPlatformState(state: IntentE2ERunTaskPlatformState): IntentE2E
 }
 
 function buildTaskPlatformState(request: IntentE2ERunRequest): IntentE2ERunTaskPlatformState {
-  const runControl = resolveIntentE2ERunControl(request.runControl);
+  const runControl = resolveTaskPlatformRunControl(request.runControl);
 
   return {
     requestFingerprint: buildIntentE2ERunRequestFingerprint({
@@ -346,7 +352,7 @@ function buildRequestSummary(request: IntentE2ERunRequest): IntentE2ERunRequestS
     ...(request.intentDraftUid?.trim() ? { intentDraftUid: request.intentDraftUid.trim() } : {}),
     systemOnboarding: cloneIntentE2ESystemOnboardingSummary(request.systemOnboarding),
     cicdProfile: resolveIntentE2ECiCdProfile(request.cicdProfile),
-    ...(runControl ? { runControl: resolveIntentE2ERunControl(runControl) } : {}),
+    ...(runControl ? { runControl: resolveTaskPlatformRunControl(runControl) } : {}),
     runtimeGovernance: cloneIntentE2ERuntimeGovernance(request.runtimeGovernance),
     llm: {
       provider: request.llmConfig?.provider || 'openai',
@@ -636,6 +642,11 @@ function cloneRunState(state: IntentE2ERunRecord): IntentE2ERunRecord {
             structuredPatch: cloneIntentExecutionStructuredPatch(attempt.structuredPatch),
             repairOutput: cloneIntentExecutionStructuredRepairOutput(attempt.repairOutput),
             repairObservationReport: cloneRepairObservationReport(attempt.repairObservationReport),
+            fallbackTelemetry: attempt.fallbackTelemetry
+              ? {
+                  ...attempt.fallbackTelemetry,
+                }
+              : undefined,
             result: {
               ...attempt.result,
               steps: attempt.result.steps.map((step) => ({ ...step })),
@@ -738,7 +749,7 @@ function normalizeLoadedRunState(snapshot: IntentE2ERunSnapshotRecord): IntentE2
     normalizedResult?.runnerType ||
     DEFAULT_INTENT_E2E_RUNNER_TYPE;
   const normalizedRuntimeGovernance = normalizeIntentE2ERuntimeGovernance(requestCandidate?.runtimeGovernance);
-  const normalizedRunControl = requestRunControlCandidate ? resolveIntentE2ERunControl(requestRunControlCandidate) : undefined;
+  const normalizedRunControl = requestRunControlCandidate ? resolveTaskPlatformRunControl(requestRunControlCandidate) : undefined;
   const normalizedSystemOnboarding = cloneIntentE2ESystemOnboardingSummary(
     requestCandidate?.systemOnboarding as IntentE2ESystemOnboardingManifestSummary | undefined
   );
@@ -902,12 +913,19 @@ function buildRunSnapshot(state: IntentE2ERunRecord, projectUid = '', moduleUid 
   } as const;
 }
 
+async function persistRunSnapshot(snapshot: ReturnType<typeof buildRunSnapshot>): Promise<void> {
+  await upsertIntentE2ERunSnapshot(snapshot);
+  if (isTerminalStatus(snapshot.status)) {
+    applyIntentE2EAnalyzeSupportDataCacheTerminalSnapshot(snapshot as IntentE2ERunSnapshotRecord);
+  }
+}
+
 function queueRunPersistence(record: IntentE2ERunInternalRecord): Promise<void> {
   const snapshot = buildRunSnapshot(record.state, record.projectUid, record.moduleUid);
   const task = record.persistenceQueue
     .catch(() => {})
     .then(async () => {
-      await upsertIntentE2ERunSnapshot(snapshot);
+      await persistRunSnapshot(snapshot);
     });
 
   record.persistenceQueue = task.catch((error: unknown) => {
@@ -1145,7 +1163,7 @@ function resolveRetryReason(result?: IntentE2ERunResult | null, runtimeErrorMess
 async function persistExternalRunState(runId: string, state: IntentE2ERunRecord): Promise<void> {
   const snapshot = await getIntentE2ERunSnapshotByRunId(runId);
   if (!snapshot) return;
-  await upsertIntentE2ERunSnapshot(buildRunSnapshot(state, snapshot.projectUid, snapshot.moduleUid || ''));
+  await persistRunSnapshot(buildRunSnapshot(state, snapshot.projectUid, snapshot.moduleUid || ''));
 }
 
 async function markRunReplayPeerFlaky(record: IntentE2ERunInternalRecord): Promise<void> {
@@ -1454,7 +1472,7 @@ export async function loadIntentE2ERun(runId: string): Promise<IntentE2ERunRecor
   }
 
   const interrupted = markRunAsInterrupted(loaded);
-  await upsertIntentE2ERunSnapshot(buildRunSnapshot(interrupted, snapshot.projectUid, snapshot.moduleUid || ''));
+  await persistRunSnapshot(buildRunSnapshot(interrupted, snapshot.projectUid, snapshot.moduleUid || ''));
   return cloneRunState(interrupted);
 }
 

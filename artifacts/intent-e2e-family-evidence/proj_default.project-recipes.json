@@ -1,0 +1,262 @@
+{
+  "version": 1,
+  "recipes": [
+    {
+      "version": 1,
+      "slug": "intent.ui-antd-modal-drawer-save",
+      "title": "登录后台后在商机列表页发起新建商机并保存，随后切换到“我创建的”Tab，等待列表加载完成，校验新建商机记录出现在列表中且“商机进展”为“新入库”。",
+      "description": "从通过 run 自动沉淀的 playbook 候选，优先沿既有执行骨架和验收路径复用。 目标路径：/business/businesslist 进入商机列表页：打开目标URL并等待页面主表格区域渲染完成。；成功标准 1：页面URL为 https://uat-service.yikaiye.com/#/business/businesslist 且商机列表页主表格可见",
+      "family": "business_create_list_verify",
+      "matchers": {
+        "requiresAuth": false,
+        "requiresStableIdentifier": false,
+        "targetUrlIncludes": [
+          "/business/businesslist"
+        ],
+        "titleIncludes": [
+          "登录后台后在商机列表页发起新建商机并保存",
+          "随后切换到“我创建的”Tab"
+        ],
+        "summaryIncludes": [
+          "登录后台后在商机列表页发起新建商机并保存",
+          "随后切换到“我创建的”Tab",
+          "等待列表加载完成",
+          "进入商机列表页"
+        ],
+        "requiredActions": [
+          "find_table_row"
+        ],
+        "preferredHelpers": [
+          "__e2e.ensureLoggedIn",
+          "__e2e.findAntdTableRow",
+          "__e2e.switchBusinessListOwnershipView",
+          "__e2e.waitForVisibleAntdModal",
+          "__e2e.readDetailField",
+          "__e2e.clickAntdRowAction",
+          "__e2e.waitForApiResponse",
+          "__e2e.observeSubmitState",
+          "__e2e.readJsonResponse",
+          "__e2e.pickJsonValue"
+        ],
+        "capabilitySlugs": []
+      },
+      "requiredContext": [
+        "严格按 DSL 步骤顺序实现，不删减业务步骤，也不要私自新增与目标无关的大绕路。",
+        "优先使用页面快照里已经暴露的 id / label / placeholder / role / iframe selector / visible container。",
+        "所有等待都要绑定到可观察条件：元素可见、URL 变化、接口响应、loading 消失、Drawer/Modal 状态变化。",
+        "共享变量只能来自真实页面/API 提取：createdBusinessKey",
+        "最终业务结果必须显式校验：在“我创建的”列表中定位到新建商机，且其“商机进展”为“新入库”。",
+        "如果进入 cleanup，必须执行并保留清理意图：如环境要求清理数据，可在用例后通过UI删除该商机；当前流程不强制清理。"
+      ],
+      "executorPlan": [
+        "进入商机列表页：打开目标URL并等待页面主表格区域渲染完成。",
+        "打开新建商机入口：点击右上角“+ 新建商机”按钮，进入新建商机表单。",
+        "填写并保存商机：按最小必填项填写商机信息并点击“保存”。",
+        "提取新建记录唯一标识：从成功反馈、详情回显或列表首行提取本次新建商机的唯一标识（优先商机ID，其次唯一名称）并保存。",
+        "切换到我创建的Tab：点击“我创建的”Tab，并等待列表请求完成与表格行稳定渲染。",
+        "校验新建记录及进展状态：优先使用 businessId 在列表中检索并定位对应记录；若未提取到 businessId，则使用真实填写的联系人/手机号定位对应记录，再单独校验状态为“新…"
+      ],
+      "verifierPlan": [
+        "成功标准 1：页面URL为 https://uat-service.yikaiye.com/#/business/businesslist 且商机列表页主表格可见",
+        "成功标准 2：点击“新建商机”后出现新建商机表单（Drawer/Modal或新建页）并可提交保存",
+        "成功标准 3：保存后出现成功反馈（如“保存成功”提示）且返回/停留在商机列表上下文",
+        "成功标准 4：切换到“我创建的”Tab后列表加载完成（表格行渲染完成）",
+        "成功标准 5：“我创建的”列表中出现本次新建商机记录",
+        "成功标准 6：该记录所在行“商机进展”列文本为“新入库”",
+        "进入商机列表页 验收：URL包含#/business/businesslist，且商机列表表头（含“商机进展”列）可见。",
+        "打开新建商机入口 验收：出现新建商机表单容器（Drawer/Modal或新页面）且存在可填写的必填字段。"
+      ],
+      "knownPitfalls": [],
+      "successRate": 100,
+      "lastVerifiedAt": "2026-04-09T05:17:28.749Z"
+    },
+    {
+      "version": 1,
+      "slug": "intent.list-search-detail.primary-record",
+      "title": "在列表页按稳定标识或 fallback identity 检索目标记录，进入对应详情后按字段标签核对联系人、手机号与状态。",
+      "description": "用于 `list_search_detail` family 的项目级 deterministic recipe。主路径固定为：列表检索 -> 目标记录命中 -> 进入对应详情 -> 用字段标签读取核心字段；不再把“列表里有结果”当成最终通过。",
+      "family": "list_search_detail",
+      "matchers": {
+        "requiresAuth": false,
+        "requiresStableIdentifier": false,
+        "targetUrlIncludes": [],
+        "titleIncludes": [
+          "搜索并进入详情",
+          "列表搜索"
+        ],
+        "summaryIncludes": [
+          "搜索",
+          "检索",
+          "详情",
+          "联系人",
+          "手机号",
+          "状态"
+        ],
+        "requiredActions": [
+          "find_table_row",
+          "resolve_primary_record",
+          "read_detail_field"
+        ],
+        "preferredHelpers": [
+          "__e2e.findAntdTableRow",
+          "__e2e.resolvePrimaryRecord",
+          "__e2e.readDetailField",
+          "__e2e.clickAntdRowAction"
+        ],
+        "capabilitySlugs": [
+          "assert.resolve-primary-record",
+          "assert.read-detail-field"
+        ]
+      },
+      "requiredContext": [
+        "列表页存在可见搜索面，或 helper 可自动探测到搜索入口。",
+        "目标记录至少具备稳定标识或联系人/手机号这类 fallback identity。",
+        "详情入口或详情 surface ready 信号可被观察到；若环境里没有可命中的真实记录，应显式暴露 data gap。"
+      ],
+      "executorPlan": [
+        "优先以稳定标识作为主键检索；主值为空时才退回联系人/手机号 fallback identity。",
+        "搜索后先等待列表刷新，再命中目标行；不要直接点击第一条结果。",
+        "进入对应详情 surface 后，按字段标签逐项读取联系人、手机号与状态。"
+      ],
+      "verifierPlan": [
+        "成功标准 1：目标记录在列表中被稳定命中，而不是模糊文本碰巧命中。",
+        "成功标准 2：已进入该记录对应的详情页 / 详情抽屉 / 详情弹层。",
+        "成功标准 3：通过字段标签读取联系人、手机号、状态完成最终验收。"
+      ],
+      "knownPitfalls": [
+        "不要把“列表里有结果”或“第一条记录可点击”直接当成功。",
+        "不要在没有详情入口时自由猜测第二套详情路径。"
+      ],
+      "successRate": 0,
+      "lastVerifiedAt": ""
+    },
+    {
+      "version": 1,
+      "slug": "intent.modal-or-drawer-save.visible-container",
+      "title": "在当前可见 modal / drawer 内完成编辑保存，并以提交收敛和容器关闭/页面稳定态作为最终成功证据。",
+      "description": "用于 `modal_or_drawer_save` family 的项目级 deterministic recipe。主路径固定为：定位当前可见 modal/drawer -> scoped 填写 -> 保存 -> 观察提交收敛 -> 必要时继续详情/列表验收。",
+      "family": "modal_or_drawer_save",
+      "matchers": {
+        "requiresAuth": false,
+        "requiresStableIdentifier": false,
+        "targetUrlIncludes": [],
+        "titleIncludes": [
+          "保存弹窗配置",
+          "保存详情抽屉"
+        ],
+        "summaryIncludes": [
+          "弹框",
+          "抽屉",
+          "modal",
+          "drawer",
+          "保存",
+          "提交"
+        ],
+        "requiredActions": [
+          "wait_for_visible_modal",
+          "observe_submit_state",
+          "wait_for_response"
+        ],
+        "preferredHelpers": [
+          "__e2e.waitForVisibleAntdModal",
+          "__e2e.waitForApiResponse",
+          "__e2e.observeSubmitState",
+          "__e2e.readDetailField"
+        ],
+        "capabilitySlugs": [
+          "ui.wait-for-visible-antd-modal",
+          "assert.watch-submit-state"
+        ]
+      },
+      "requiredContext": [
+        "页面存在当前可见的 modal / drawer / 等价详情容器。",
+        "保存后存在可观测的提交收敛路径，例如接口成功、容器关闭或页面回到稳定态。",
+        "如果保存后还要求业务验收，需要可读取的详情字段或回列表路径。"
+      ],
+      "executorPlan": [
+        "先定位当前可见 modal / drawer，再在容器范围内填写和保存。",
+        "点击保存前并行准备 waitForApiResponse，点击后观察 submit-state 收敛。",
+        "容器关闭或页面回到稳定态后，若仍要求业务验收，再继续读取详情字段或回列表定位目标记录。"
+      ],
+      "verifierPlan": [
+        "成功标准 1：保存接口或等价提交响应成功。",
+        "成功标准 2：当前 modal / drawer 已关闭，或页面已回到稳定态。",
+        "成功标准 3：若任务要求业务验收，继续读取详情字段或回列表定位目标记录完成最终校验。"
+      ],
+      "knownPitfalls": [
+        "不要在 page 顶层对“保存 / 提交 / 确定”做模糊点击。",
+        "不要只看 toast 就结束。"
+      ],
+      "successRate": 0,
+      "lastVerifiedAt": ""
+    },
+    {
+      "version": 1,
+      "slug": "intent.intent-modal-or-drawer-save-visible-container",
+      "title": "在订单列表通过“展开”筛选入账状态为“待申请”，勾选结果行后使用表头“批量入账”提交“批量申请入账”弹窗，并跳转到入账管理页按订单号检索验证记录存在。",
+      "description": "从通过 run 自动沉淀的 playbook 候选，优先沿既有执行骨架和验收路径复用。 目标路径：/order/list 打开订单列表并确认页面就绪：打开URL并设置较高分辨率；等待页面加载完成。；成功标准 1：进入订单列表页后可见“订单列表”及检索区锚点（展开/搜 索/重 置）。",
+      "matchers": {
+        "requiresAuth": false,
+        "requiresStableIdentifier": false,
+        "targetUrlIncludes": [
+          "/order/list"
+        ],
+        "titleIncludes": [
+          "在订单列表通过“展开”筛选入账状态为“待申请”",
+          "并跳转到入账管理页按订单号检索验证记录存在"
+        ],
+        "summaryIncludes": [
+          "在订单列表通过“展开”筛选入账状态为“待申请”",
+          "并跳转到入账管理页按订单号检索验证记录存在",
+          "打开订单列表并确认页面就绪",
+          "打开URL并设置较高分辨率"
+        ],
+        "requiredActions": [],
+        "preferredHelpers": [
+          "__e2e.waitForVisibleAntdModal",
+          "__e2e.waitForApiResponse",
+          "__e2e.observeSubmitState",
+          "__e2e.readDetailField",
+          "__e2e.findAntdTableRow",
+          "__e2e.ensureLoggedIn",
+          "__e2e.resolvePrimaryRecord",
+          "__e2e.clickAntdRowAction",
+          "__e2e.openAntdDropdown",
+          "__e2e.selectAntdOption"
+        ],
+        "capabilitySlugs": []
+      },
+      "requiredContext": [
+        "严格按 DSL 步骤顺序实现，不删减业务步骤，也不要私自新增与目标无关的大绕路。",
+        "优先使用页面快照里已经暴露的 id / label / placeholder / role / iframe selector / visible container。",
+        "所有等待都要绑定到可观察条件：元素可见、URL 变化、接口响应、loading 消失、Drawer/Modal 状态变化。",
+        "共享变量只能来自真实页面/API 提取：selectedOrderNo",
+        "最终业务结果必须显式校验：成功提交批量入账并在入账管理页检索到对应订单号记录。",
+        "如果进入 cleanup，必须执行并保留清理意图：如环境要求回滚，可在入账管理中对新增记录执行后续人工处理；本场景不做自动清理。"
+      ],
+      "executorPlan": [
+        "打开订单列表并确认页面就绪：打开URL并设置较高分辨率；等待页面加载完成。",
+        "按入账状态筛选待申请：点击“展开”，在“请选择入账状态”下拉中选择“待申请”，点击“搜 索”。",
+        "提取待入账订单号：从首条“待申请入账”记录读取订单号文本并保存。",
+        "勾选记录并发起批量入账：勾选已筛选结果中至少一条记录前的多选框，点击表头“批量入账”。后续填写和保存都先 scope 到当前可见的弹层/抽屉容器内。填写和点击保存前先 scope 到…",
+        "校验批量申请入账弹窗关键元素：校验弹窗标题、提醒文案、订单号区域、以及底部“取 消”“确 定”按钮可见。",
+        "确认提交批量入账：不修改默认服务项与入账金额，直接点击“确 定”。填写和点击保存前先 scope 到当前可见的弹层/抽屉容器内。",
+        "在入账管理按订单号搜索：等待URL为#/payment/bookedMgmt；在placeholder为“请输入关键词”的输入框填写${selectedOrderNo}并点击“搜 索…",
+        "验证入账记录存在：在结果表格中查找订单号为${selectedOrderNo}的行。"
+      ],
+      "verifierPlan": [
+        "成功标准 1：进入订单列表页后可见“订单列表”及检索区锚点（展开/搜 索/重 置）。",
+        "成功标准 2：通过“请选择入账状态”选择“待申请”并搜索后，结果列表出现至少一条“待申请入账”状态记录。",
+        "成功标准 3：勾选列表行后点击表头“批量入账”，成功打开标题为“批量申请入账”的弹窗。并确认当前弹层/抽屉关闭或页面回到稳定态",
+        "成功标准 4：弹窗内可见“提醒：批量入账仅支持‘一笔款项’对应‘多个订单’”及底部按钮“取 消”“确 定”。",
+        "成功标准 5：点击“确 定”后页面跳转到 https://uat-service.yikaiye.com/#/payment/bookedMgmt，且可见“入账确认”Tab…",
+        "成功标准 6：在入账管理页用提交前提取的订单号搜索后，表格中存在该订单号记录。并确认当前弹层/抽屉关闭或页面回到稳定态",
+        "打开订单列表并确认页面就绪 验收：URL包含#/order/list，页面可见“订单列表”与“展开/搜 索/重 置”检索区锚点。",
+        "按入账状态筛选待申请 验收：列表刷新后可见至少一条包含“待申请入账”的记录。"
+      ],
+      "knownPitfalls": [],
+      "successRate": 100,
+      "lastVerifiedAt": "2026-04-14T04:26:00.880Z"
+    }
+  ]
+}

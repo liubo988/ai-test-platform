@@ -26,6 +26,7 @@ npm run test:all
 - `npm run edge:report`
 - `npm run intent:benchmark:candidates -- --project-uid <projectUid>`
 - `npm run intent:benchmark:freeze -- --project-uid <projectUid>`
+- `npm run intent:benchmark:replay -- --project-uid <projectUid>`
 - `npm run intent:benchmark:compare -- --project-uid <projectUid>`
 
 ## 部署入口
@@ -66,6 +67,8 @@ npm run edge:generate
 同时可读取当前服务端默认配置：
 - `GET /api/llm/config`
 - `POST /api/llm/config/test`
+- `GET /api/intent-e2e/global-config`
+- `PUT /api/intent-e2e/global-config`
 
 ### Intent E2E 开发主线
 - `R0-R7` 的历史主线与高成功率能力收口，统一以 [docs/intent-e2e-high-success-roadmap-2026-03-20.md](docs/intent-e2e-high-success-roadmap-2026-03-20.md) 为准。
@@ -103,6 +106,7 @@ npm run edge:generate
 - 项目工作台里的任务列表和单任务执行历史现在也会给 `intent-e2e` 导入结果展示 `testType / runnerType` pill，并支持按平台类型 / 执行器 / `artifactKind` 下拉筛选，以及通过单字段选择器按 `platformContractIdType + platformContractId` 做服务端查询；legacy 的 `platformTestCaseId / platformTestSpecId / platformVerificationContractId` 仍兼容；这些筛选会直接走服务端 query contract，而不只是本地文本搜索；当前任务区和执行历史头部还会展示 `platformSummary` 聚合 pills，方便快速看当前查询范围里的 intent 导入数、平台标签数、平台分布与 `artifactKinds` 分布；列表项本身也会直接透出 `testCaseId / testSpecId / verificationContractId / artifactKinds`，并新增稳定的 `platformQuery` item contract，显式标注 query source 是 `latest_plan_prompt` 还是 `execution_artifact_meta`；两条 query response 顶层还会返回 `platformIndex`，给工作台当前范围的 contract-id suggestions 和 source index pills 提供统一物化视图
 - 异步运行入口现在会在并发配额命中时进入 `queued` 阶段；同项目同签名 run 会被串行化隔离，终态 run 还会保留 `taskPlatform` 元数据（`priority / timeoutMs / retryCount / replayOfRunId / flaky`）
 - 终态 run result 现在会额外保留 `artifactIndex`，把 `trace / log / screenshot / response_summary / runner_artifact` 统一归档到 `reports/intent-e2e/runs/<runId>/`
+- 首页 `LLM 配置` 旁新增了 `全局配置`，可直接保存 workspace 级意图任务默认值：`最大并发任务数` 与 `失败任务默认重试次数`
 
 ### 请求体示例
 ```json
@@ -194,11 +198,19 @@ npm run edge:generate
 - `POST /api/intent-e2e/runs` 的 `runControl` 当前支持：
   - `priority`：`low / normal / high`
   - `timeoutMs`：run-level timeout，当前会限制在 `30s ~ 30min`
-  - `retryLimit`：仅对 `env_blocked` 或暂态 timeout / network error 触发整轮重试，当前上限 `2`
+  - `retryLimit`：仅对 `env_blocked` 或暂态 timeout / network error 触发整轮重试，当前上限 `5`
   - `replayOfRunId`：显式把本次 rerun 关联到上一条 run，便于 flaky 跟踪
+- workspace 级共享全局配置入口：
+  - `GET /api/intent-e2e/global-config`
+  - `PUT /api/intent-e2e/global-config`
+  - 当前支持保存：
+    - `maxConcurrentRuns`：异步 intent 任务平台的全局并发上限
+    - `defaultRetryLimit`：异步 intent run 的整轮失败重试次数；当前支持 `0 ~ 5`，并会直接覆盖请求里的 `runControl.retryLimit`
 - 当前默认并发配额：
   - 全局 `INTENT_E2E_MAX_CONCURRENT_RUNS=2`
   - 单项目 `INTENT_E2E_PROJECT_MAX_CONCURRENT_RUNS=1`
+- 若保存了 workspace 级 `maxConcurrentRuns`，异步任务平台会优先使用这份共享配置；若宿主机没有额外设置 `INTENT_E2E_PROJECT_MAX_CONCURRENT_RUNS`，同项目并发会跟随这份 workspace 级并发配置
+- 默认失败重试次数可通过 `INTENT_E2E_DEFAULT_RETRY_LIMIT` 提供环境默认值；若保存了 workspace 级 `defaultRetryLimit`，异步任务平台会优先使用共享配置
 - 工件归档默认路径：`reports/intent-e2e/runs/<runId>/`
 - 可通过环境变量 `INTENT_E2E_RUN_ARTIFACT_ROOT` 覆盖归档根目录
 
@@ -210,6 +222,13 @@ npm run edge:generate
   - `npm run intent:benchmark:compare -- --project-uid proj_default --compared-label post-e1e2e3`
 - 命令默认读取最近 `200` 条 terminal runs，可用 `--run-limit` 覆盖。
 - 如果需要手工挑选 holdout，可先跑 `candidates`，再把 `evalCaseId` 用 `--eval-case-id` 传给 `freeze`。
+- family-scoped evidence 复用同一套 CLI，不额外新开 harness：
+  - `--priority-scenario-family business_create_list_verify|list_search_detail|modal_or_drawer_save|...`
+  - `freeze / replay / compare` 都会把该 family 写入 benchmark `scope.priorityScenarioFamily`，并在 case / report 里显式保留 `priorityScenarioFamily`。
+- 显式 recipe asset 链路也复用这套 CLI：
+  - `--recipe-asset-output <path>`：把当前项目 recipe profile 导出到显式路径，便于后续 family replay / compare 复核。
+  - `--recipe-asset-input <path>`：先把显式 recipe profile 导回当前项目 registry，再执行 benchmark 命令。
+- `compare` 报告现在会额外输出 `priorityScenarioFamilies` 维度；若某个 family 在冻结窗口或当前窗口的 terminal 样本少于 3，会明确标记为 `insufficient_evidence`，不要把这种窗口误写成 improved / regressed。
 
 ### System Onboarding & CI/CD
 - repo-owned onboarding manifest registry：`intent-e2e.system-onboarding-manifests.json`

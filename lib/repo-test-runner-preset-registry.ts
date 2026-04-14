@@ -1,4 +1,4 @@
-import rawManifest from '@/intent-e2e.repo-test-runner-presets.json';
+import rawManifest from '@/intent-e2e.repo-test-runner-presets.json' with { type: 'json' };
 import path from 'node:path';
 
 export type RepoTestRunnerPresetId = 'vitest_unit' | 'tsc_build' | 'doc_links';

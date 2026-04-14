@@ -59,12 +59,12 @@ function toRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function normalizeSharedVariables(value: unknown): string[] {
+export function collectFlowVariableNames(value: unknown): string[] {
   if (Array.isArray(value)) {
     return Array.from(
       new Set(
         value
-          .map((item) => toTrimmedString(item))
+          .flatMap((item) => collectFlowVariableNames(item))
           .filter(Boolean)
       )
     );
@@ -74,7 +74,7 @@ function normalizeSharedVariables(value: unknown): string[] {
     return Array.from(
       new Set(
         value
-          .split(/[,\n]/)
+          .split(/[,\n，、；;]/)
           .map((item) => item.trim())
           .filter(Boolean)
       )
@@ -82,6 +82,10 @@ function normalizeSharedVariables(value: unknown): string[] {
   }
 
   return [];
+}
+
+function normalizeSharedVariables(value: unknown): string[] {
+  return collectFlowVariableNames(value);
 }
 
 export function normalizeTaskMode(value: unknown): TaskMode {

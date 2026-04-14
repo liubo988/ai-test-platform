@@ -3,14 +3,20 @@ import type { PageSnapshot } from '@/lib/page-analyzer';
 
 export type IntentE2EFailureClass =
   | 'env_transient'
+  | 'auth_state_invalid'
   | 'auth_failed'
   | 'permission_blocked'
+  | 'fixture_contract_missing'
   | 'data_missing'
+  | 'response_missing'
+  | 'record_lookup_miss'
   | 'target_row_not_found'
   | 'ui_anchor_missing'
   | 'selector_drift'
   | 'assertion_too_strict'
   | 'workflow_gap'
+  | 'runtime_syntax_damage'
+  | 'repair_non_progress'
   | 'repair_stagnated'
   | 'unknown';
 
@@ -104,6 +110,15 @@ function looksLikeBusinessListContext(context: IntentE2EFailureContext): boolean
     context.snapshot?.title || '',
   ].join('\n');
   return /businesslist|商机列表/i.test(haystack);
+}
+
+function looksLikeOrderListContext(context: IntentE2EFailureContext): boolean {
+  const haystack = [
+    context.pageUrl || '',
+    context.snapshot?.url || '',
+    context.snapshot?.title || '',
+  ].join('\n');
+  return /order\/list|订单列表/i.test(haystack);
 }
 
 export function extractIntentE2EFailureAnchorLabel(errorMessage: string): string {
@@ -272,12 +287,40 @@ function buildFailureNextActions(input: {
       ], 3);
     case 'data_missing':
       return ['先确认测试账号、筛选条件和种子数据是否满足前置条件，不要继续把空数据误修成脚本问题。'];
+    case 'response_missing':
+      return uniqueStrings([
+        '优先补列表响应、详情响应或详情字段这条结构化证据链，不要继续用裸 rowText / 空串兜底断言。',
+        '如果目标行已经命中但 response 为空，先补一跳只为拿结构化列表响应，再读状态或详情字段。',
+        candidateText,
+      ], 3);
+    case 'record_lookup_miss':
+      return uniqueStrings([
+        '优先把 businessId、orderId、手机号等稳定标识提到 shared 变量，再统一走 `__e2e.resolvePrimaryRecord(...)`。',
+        '不要在 helper 已经返回 `not_found` 后继续混用模糊 rowText / 详情猜测；先补主键、detailUrl 或 detailEntry contract。',
+        candidateText,
+      ], 3);
+    case 'fixture_contract_missing':
+      return [
+        '先为当前写数据 / 有状态流程补齐 fixture.strategy、owner、idempotencyKey，以及 setup/cleanup 引用，再重新运行。',
+      ];
+    case 'auth_state_invalid':
+      return ['先刷新共享登录态或重新落一份 storageState，确认目标页复访不再跳回登录。'];
     case 'auth_failed':
       return ['先核对统一登录地址、账号凭证和登录方式说明；认证问题不应继续消耗脚本修复次数。'];
     case 'permission_blocked':
       return ['先核对当前账号是否具备目标页面和目标动作权限；权限阻塞不应继续消耗脚本修复次数。'];
     case 'env_transient':
       return ['先确认环境健康度、接口状态和网络波动；环境阻塞不应继续消耗脚本修复次数。'];
+    case 'runtime_syntax_damage':
+      return [
+        '当前脚本在执行前已经被语法损坏，先定位是 TypeScript fallback、legacy free generate 还是 sanitizer 抢救导致的问题，再决定是否继续改生成链。',
+      ];
+    case 'repair_non_progress':
+      return uniqueStrings([
+        '当前 repair 没有产生有效代码变化，继续重跑同一条修复 prompt 收益很低。',
+        '优先把这次失败提升成结构化 slot patch、family recipe、verifier contract 或 runtime helper 缺口，而不是继续盲修。',
+        candidateText,
+      ], 3);
     default:
       return uniqueStrings([
         '先核对失败步骤、失败定位器和候选锚点，再决定是补页面契约还是调整脚本。',
@@ -347,6 +390,16 @@ export function buildIntentE2EFailureDiagnosis(
 
 const TRIAGE_RULES: TriageRule[] = [
   {
+    failureClass: 'auth_state_invalid',
+    repairable: false,
+    summary: '判定为登录态失效：当前会话未落稳或已经失效，本次不继续自动修复脚本。',
+    signals: [
+      { signal: '需要重新登录', pattern: /未登录|请先登录|登录已失效|需要重新登录/i },
+      { signal: 'session expired', pattern: /session expired|session invalid|token expired|token invalid/i },
+      { signal: 'cookie 已失效', pattern: /cookie expired|storage state invalid/i },
+    ],
+  },
+  {
     failureClass: 'auth_failed',
     repairable: false,
     summary: '判定为认证阻塞：登录流程或会话状态异常，本次不继续自动修复脚本。',
@@ -356,7 +409,6 @@ const TRIAGE_RULES: TriageRule[] = [
       { signal: '缺少统一登录账号', pattern: /缺少\s*e2e_username/i },
       { signal: '缺少统一登录密码', pattern: /缺少\s*e2e_password/i },
       { signal: '登录说明或凭证异常', pattern: /请检查登录说明或凭证/i },
-      { signal: '需要重新登录', pattern: /未登录|请先登录|登录已失效|session expired/i },
       { signal: '跳回登录页', pattern: /login page|sign in/i },
     ],
   },
@@ -465,14 +517,64 @@ export function classifyIntentE2EFailure(
 
   const source = collectFailureText(result, logs);
 
-  if (/状态证据缺失/i.test(source)) {
+  if (
+    /测试脚本预处理失败（runtime_syntax_damage）|runtime_syntax_damage|TypeScript 兼容降级后仍存在语法错误|脚本不是合法 JavaScript|compatible fallback 未产生变化/i.test(
+      source
+    )
+  ) {
     const triage: IntentE2EFailureTriage = {
-      failureClass: 'assertion_too_strict',
+      failureClass: 'runtime_syntax_damage',
+      repairable: false,
+      summary: '判定为运行时代码损坏：当前脚本在执行前已被生成/兼容链损坏，本次不继续自动修复脚本。',
+      matchedSignals: uniqueStrings([
+        /runtime_syntax_damage/i.test(source) ? 'runtime_syntax_damage' : '',
+        /TypeScript 兼容降级后仍存在语法错误/i.test(source) ? 'TS fallback 仍语法错误' : '',
+        /脚本不是合法 JavaScript/i.test(source) ? '原始脚本非合法 JavaScript' : '',
+      ]),
+      diagnosis: null,
+    };
+    return {
+      ...triage,
+      diagnosis: buildIntentE2EFailureDiagnosis(triage, result, context),
+    };
+  }
+
+  if (/fixture contract missing|未提供 fixture contract|fixture setup failed|fixture cleanup failed/i.test(source)) {
+    const triage: IntentE2EFailureTriage = {
+      failureClass: 'fixture_contract_missing',
+      repairable: false,
+      summary: '判定为 fixture 契约缺口：当前流程缺少可执行的前置/回收契约，本次不继续自动修复脚本。',
+      matchedSignals: uniqueStrings([
+        /fixture setup failed/i.test(source) ? 'fixture setup failed' : '',
+        /fixture cleanup failed/i.test(source) ? 'fixture cleanup failed' : '',
+        /未提供 fixture contract/i.test(source) ? 'fixture contract missing' : '',
+      ]),
+      diagnosis: null,
+    };
+    return {
+      ...triage,
+      diagnosis: buildIntentE2EFailureDiagnosis(triage, result, context),
+    };
+  }
+
+  if (
+    /状态证据缺失|未读取到详情字段|详情字段缺失：|列表响应未返回状态|列表响应未命中状态|列表响应、详情抽屉与详情页都未返回状态|列表响应和详情字段都未返回状态|列表响应未命中记录且未提供详情入口|无法从列表响应或详情获取状态|未出现可用详情弹层或详情页/i.test(
+      source
+    )
+  ) {
+    const triage: IntentE2EFailureTriage = {
+      failureClass: 'response_missing',
       repairable: true,
-      summary: '判定为状态证据缺失：目标记录可能已经命中，但状态校验链尚未闭环，继续自动修复脚本。',
+      summary: '判定为结构化响应/详情证据缺失：目标记录可能已经命中，但状态或详情证据链尚未闭环，继续自动修复脚本。',
       matchedSignals: uniqueStrings([
         '状态证据缺失',
         /fallback 行已命中/i.test(source) ? 'fallback 行已命中' : '',
+        /未读取到详情字段|详情字段缺失/i.test(source) ? '详情字段缺失' : '',
+        /未出现可用详情弹层或详情页/i.test(source) ? '详情入口缺失' : '',
+        /列表响应未返回状态|列表响应未命中状态|列表响应和详情字段都未返回状态|列表响应、详情抽屉与详情页都未返回状态/i.test(source)
+          ? '列表响应未返回状态'
+          : '',
+        /列表响应未命中记录且未提供详情入口/i.test(source) ? '列表响应未命中记录且未提供详情入口' : '',
         /列表响应和详情字段都未返回状态/i.test(source) ? '列表响应和详情字段都未返回状态' : '',
       ]),
       diagnosis: null,
@@ -483,7 +585,30 @@ export function classifyIntentE2EFailure(
     };
   }
 
-  if (/未找到表格目标行/i.test(source) && looksLikeBusinessListContext(context)) {
+  if (
+    /resolvePrimaryRecord[\s\S]*not_found|recordCheck\.mode\s*===?\s*['"]not_found['"]|列表响应未命中记录|未命中目标记录|record lookup/i.test(
+      source
+    )
+  ) {
+    const triage: IntentE2EFailureTriage = {
+      failureClass: 'record_lookup_miss',
+      repairable: true,
+      summary: '判定为结构化记录回查未命中：当前脚本没有稳定拿到目标记录，继续自动修复脚本。',
+      matchedSignals: uniqueStrings([
+        /resolvePrimaryRecord/i.test(source) ? 'resolvePrimaryRecord 未命中' : '',
+        /not_found/i.test(source) ? 'record lookup not_found' : '',
+        /列表响应未命中记录/i.test(source) ? '列表响应未命中记录' : '',
+        /未命中目标记录/i.test(source) ? '未命中目标记录' : '',
+      ]),
+      diagnosis: null,
+    };
+    return {
+      ...triage,
+      diagnosis: buildIntentE2EFailureDiagnosis(triage, result, context),
+    };
+  }
+
+  if (/未找到表格目标行/i.test(source) && (looksLikeBusinessListContext(context) || looksLikeOrderListContext(context))) {
     const triage: IntentE2EFailureTriage = {
       failureClass: 'target_row_not_found',
       repairable: true,

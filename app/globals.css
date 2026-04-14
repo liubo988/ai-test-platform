@@ -116,47 +116,41 @@ body {
     0 14px 34px rgba(44, 37, 28, 0.06);
 }
 
-/* Live log feed entry animation */
-@keyframes intent-feed-slide-in {
-  from {
-    opacity: 0;
-    transform: translateY(-8px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
+/* Feed item entrance */
+@keyframes intent-feed-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
-.intent-feed-item {
-  animation: intent-feed-slide-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+.intent-feed-bubble {
+  animation: intent-feed-in 0.3s ease-out both;
 }
 
-/* Stagger delay for feed items */
-.intent-feed-item:nth-child(1) { animation-delay: 0ms; }
-.intent-feed-item:nth-child(2) { animation-delay: 40ms; }
-.intent-feed-item:nth-child(3) { animation-delay: 80ms; }
-.intent-feed-item:nth-child(4) { animation-delay: 120ms; }
-.intent-feed-item:nth-child(5) { animation-delay: 160ms; }
-
-/* Running status breathing glow */
-@keyframes intent-status-breathe {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0); }
-  50% { box-shadow: 0 0 12px 2px rgba(56, 189, 248, 0.15); }
+/* Typewriter cursor */
+@keyframes intent-cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
 }
 
+.intent-typewriter-cursor {
+  display: inline-block;
+  width: 1.5px;
+  height: 0.9em;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  background: rgba(120, 113, 108, 0.5);
+  border-radius: 1px;
+  animation: intent-cursor-blink 1s step-end infinite;
+}
+
+/* Running status pulse */
 .intent-status-running {
   animation: intent-status-breathe 2.4s ease-in-out infinite;
 }
 
-/* Latest badge pulse */
-@keyframes intent-latest-glow {
+@keyframes intent-status-breathe {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
-}
-
-.intent-latest-badge {
-  animation: intent-latest-glow 2s ease-in-out infinite;
+  50% { opacity: 0.7; }
 }
 
 .intent-e2e-modal-surface {

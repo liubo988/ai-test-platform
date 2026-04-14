@@ -1,5 +1,6 @@
 import type { IntentActionDSL } from './intent-action-dsl';
-import type { IntentE2EPriorityScenarioFamily, IntentTrackedE2EPriorityScenarioFamily } from './intent-e2e-priority-scenario-family';
+import type { IntentE2EPriorityScenarioFamily } from './intent-e2e-priority-scenario-family';
+import { getIntentE2EPriorityScenarioFamilyAssetProfile } from './intent-e2e-priority-scenario-family';
 import type { AuthConfig, PageSnapshot } from './page-analyzer';
 import { buildIntentSharedVariableJsonPaths } from './intent-shared-variable-utils';
 import { intentStarterAssetScopeLabel, type IntentResolvedStarterAsset } from './intent-starter-assets';
@@ -27,24 +28,6 @@ export interface SelectIntentActionLibraryInput {
   preferredCapabilitySlugs?: string[];
   starterHelpers?: IntentResolvedStarterAsset[];
 }
-
-interface IntentActionFamilyCapabilityProfile {
-  preferredCapabilitySlugs: string[];
-}
-
-const FAMILY_CAPABILITY_PROFILES: Partial<
-  Record<IntentTrackedE2EPriorityScenarioFamily, IntentActionFamilyCapabilityProfile>
-> = {
-  business_create_list_verify: {
-    preferredCapabilitySlugs: ['assert.wait-for-api-response', 'assert.watch-submit-state', 'assert.resolve-primary-record'],
-  },
-  modal_or_drawer_save: {
-    preferredCapabilitySlugs: ['ui.wait-for-visible-antd-modal', 'assert.wait-for-api-response', 'assert.watch-submit-state'],
-  },
-  list_search_detail: {
-    preferredCapabilitySlugs: ['ui.find-antd-table-row', 'assert.resolve-primary-record', 'assert.read-detail-field'],
-  },
-};
 
 function uniqueBySlug(items: IntentActionCapability[]): IntentActionCapability[] {
   const bySlug = new Map<string, IntentActionCapability>();
@@ -80,7 +63,8 @@ function renderJsStringArray(items: string[]): string {
 
 function listFamilyPreferredCapabilitySlugs(family?: IntentE2EPriorityScenarioFamily): string[] {
   if (!family || family === 'untracked') return [];
-  return FAMILY_CAPABILITY_PROFILES[family]?.preferredCapabilitySlugs || [];
+  const profile = getIntentE2EPriorityScenarioFamilyAssetProfile(family);
+  return profile?.preferredCapabilitySlugs || [];
 }
 
 const BUSINESS_STATUS_JSON_PATHS = ['status', 'statusName', 'statusText', 'state', 'stateName', 'stateText', 'displayStatus', 'progress.displayStatus'];

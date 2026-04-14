@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "projectUid": "proj_default",
+  "moduleUid": "mod_1773303139537_c84d8476",
+  "testType": "browser_e2e",
+  "priorityScenarioFamily": "list_search_detail",
+  "actorUserUid": "usr_default_owner",
+  "requests": [
+    {
+      "requestId": "order-list-search-detail-pending-record",
+      "expectedPriorityScenarioFamily": "list_search_detail",
+      "input": "打开订单列表，先搜索一条待申请入账的订单记录，再进入该记录详情页或详情抽屉，按字段标签核对联系人、手机号和入账状态。",
+      "targetUrl": "https://uat-service.yikaiye.com/#/order/list",
+      "runControl": {
+        "priority": "normal",
+        "timeoutMs": 720000,
+        "retryLimit": 0
+      }
+    },
+    {
+      "requestId": "business-list-search-detail-by-phone",
+      "expectedPriorityScenarioFamily": "list_search_detail",
+      "input": "在商机列表按手机号检索目标商机，命中记录后进入详情页，按字段标签读取联系人、手机号和商机进展状态。",
+      "targetUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+      "runControl": {
+        "priority": "normal",
+        "timeoutMs": 720000,
+        "retryLimit": 0
+      }
+    },
+    {
+      "requestId": "business-list-search-detail-fallback-identity",
+      "expectedPriorityScenarioFamily": "list_search_detail",
+      "input": "在商机列表搜索一条已有记录并打开详情抽屉，按字段标签核对联系人、手机号和状态，不要只看列表里有结果。",
+      "targetUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+      "runControl": {
+        "priority": "normal",
+        "timeoutMs": 720000,
+        "retryLimit": 0
+      }
+    }
+  ]
+}

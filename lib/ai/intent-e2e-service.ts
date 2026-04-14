@@ -8,12 +8,17 @@ import {
   type PageAccessPrecheckReadyResult,
   type PageSnapshot,
 } from '@/lib/page-analyzer';
-import { getIntentE2ERecipePerformanceMap, getIntentE2ERulePerformanceMap, getIntentE2EStarterHelpers } from '@/lib/ai/intent-e2e-insights';
+import {
+  buildIntentE2ERecipePerformanceMapFromData,
+  buildIntentE2ERulePerformanceMapFromData,
+  buildIntentE2EStarterHelpersFromData,
+} from '@/lib/ai/intent-e2e-insights';
 import { getTestCodeSyntaxError, type TestResult } from '@/lib/test-executor';
 import {
   generateTest,
   repairTest,
   resolveIntentPromptPlanningContext,
+  sanitizeGeneratedCode,
   type GenerateEvent,
   type RepairObservationReport,
   type ResolvedPromptPlanningContext,
@@ -87,11 +92,15 @@ import {
   type IntentE2ERunArtifactIndex,
 } from '@/lib/intent-e2e-run-artifacts';
 import type { IntentResolvedStarterAsset } from '@/lib/intent-starter-assets';
-import { type IntentProjectKnowledgeRule } from '@/lib/intent-project-knowledge';
+import {
+  listIntentProjectKnowledgeAuditEntries,
+  type IntentProjectKnowledgeAuditEntry,
+  type IntentProjectKnowledgeRule,
+} from '@/lib/intent-project-knowledge';
 import type { IntentE2ECiCdReport } from '@/lib/intent-e2e-cicd-report';
 import type { IntentE2ECiCdProfile, IntentE2ESystemOnboardingManifestSummary } from '@/lib/intent-e2e-system-onboarding';
 import { resolveIntentRunnerAdapter, type IntentRunnerGeneratedArtifact } from '@/lib/intent-runner-adapter';
-import { listIntentE2ERunSnapshots } from '@/lib/db/repository';
+import { listIntentE2ERunSnapshots, type IntentE2ERunSnapshotRecord } from '@/lib/db/repository';
 import { searchIntentE2EExperienceHints, type IntentE2EExperienceSummary } from '@/lib/intent-e2e-experience-search';
 import { buildIntentE2ERunReview, type IntentE2ERunReview } from '@/lib/intent-e2e-run-review';
 import { resolveIntentE2EPriorityScenarioFamilyRoute } from '@/lib/intent-e2e-priority-scenario-family';
@@ -119,6 +128,40 @@ export interface IntentE2EAttemptLog {
   message: string;
   at?: string;
   meta?: unknown;
+}
+
+type IntentE2EPrefilledPlanReuseSource = 'recent_successful_run' | 'recent_progressed_run' | 'draft_first_pass';
+type IntentE2ERepairBaselineReuseSource = 'recent_progressed_run';
+
+export type IntentE2EAttemptFallbackPath =
+  | 'prefilled_plan_reuse'
+  | 'legacy_free_generate'
+  | 'legacy_free_repair';
+
+export type IntentE2EAttemptLegacyFallbackReasonCode =
+  | 'execution_plan_missing'
+  | 'structured_slot_patch_failed'
+  | 'structured_repair_patch_failed';
+
+export type IntentE2EAttemptSanitizerRescueSource =
+  | IntentE2EPrefilledPlanReuseSource
+  | 'legacy_free_generate'
+  | 'legacy_free_repair';
+
+export interface IntentE2EAttemptFallbackTelemetry {
+  path: IntentE2EAttemptFallbackPath;
+  priorityScenarioFamily: ReturnType<typeof resolveIntentE2EPriorityScenarioFamilyRoute>['family'];
+  priorityScenarioFamilySource: ReturnType<typeof resolveIntentE2EPriorityScenarioFamilyRoute>['source'] | '';
+  highConfidenceFamily: boolean;
+  legacyFallbackReasonCode?: IntentE2EAttemptLegacyFallbackReasonCode;
+  legacyFallbackReason?: string;
+  prefilledPlanReuseSource?: IntentE2EPrefilledPlanReuseSource;
+  reusedRunId?: string;
+  prefilledPlanSkipReason?: string;
+  sanitizerRescueSource?: IntentE2EAttemptSanitizerRescueSource;
+  repairBaselineReuseSource?: IntentE2ERepairBaselineReuseSource;
+  repairBaselineReusedRunId?: string;
+  repairBaselineSkipReason?: string;
 }
 
 export interface IntentE2ESuccessKnowledgeCandidate {
@@ -166,6 +209,7 @@ export interface IntentE2EAttempt {
   structuredPatch?: IntentExecutionStructuredPatch;
   repairOutput?: IntentExecutionStructuredRepairOutput;
   repairObservationReport?: RepairObservationReport;
+  fallbackTelemetry?: IntentE2EAttemptFallbackTelemetry;
   triage?: IntentE2EFailureTriage | null;
 }
 
@@ -441,7 +485,7 @@ async function collectGeneratedCode(
   stream: AsyncGenerator<GenerateEvent>,
   onEvent?: (event: GenerateEvent) => void | Promise<void>,
   signal?: AbortSignal
-): Promise<{ code: string; events: GenerateEvent[] }> {
+): Promise<{ code: string; events: GenerateEvent[]; rawGeneratedCode: string }> {
   const events: GenerateEvent[] = [];
   let generatedCode = '';
   let completedCode = '';
@@ -480,7 +524,11 @@ async function collectGeneratedCode(
     throw new Error(lastError || 'AI 未生成可执行脚本');
   }
 
-  return { code, events };
+  return {
+    code,
+    events,
+    rawGeneratedCode: generatedCode,
+  };
 }
 
 function buildPrefilledScenarioCardOutput(
@@ -519,6 +567,8 @@ async function* streamPrefilledCodeReuse(
     content:
       options?.source === 'recent_successful_run'
         ? `已复用最近一次成功运行脚本${reuseRunId ? `（${reuseRunId}）` : ''}，跳过重新生成。`
+        : options?.source === 'recent_progressed_run'
+        ? `已复用最近一次推进更远的修复脚本${reuseRunId ? `（${reuseRunId}）` : ''}，优先沿用前序成功步骤。`
         : '已复用意图草稿首版脚本，跳过重新生成。',
   };
   throwIfAborted(signal);
@@ -528,22 +578,50 @@ async function* streamPrefilledCodeReuse(
   };
 }
 
-type IntentE2EPrefilledPlanReuseSource = 'recent_successful_run' | 'draft_first_pass';
-
 interface IntentE2EPrefilledPlanReuseDecision {
   code?: string;
+  rawCode?: string;
   source?: IntentE2EPrefilledPlanReuseSource;
   reusedRunId?: string;
   skipReason?: string;
 }
 
+type IntentE2ESuccessfulRunRequestMatchLevel = 'exact_request' | 'compatible_request';
+
 interface IntentE2ESuccessfulRunCodeReuseCandidate {
   runId: string;
   code: string;
+  requestMatchLevel: IntentE2ESuccessfulRunRequestMatchLevel;
+  attachmentCountMatches: boolean;
+  requiresSanitizerRescue: boolean;
+  createdAtMs: number;
+  attemptCount: number;
+}
+
+interface IntentE2EProgressedRunCodeReuseCandidate {
+  runId: string;
+  code: string;
+  failedStepTitle: string;
+  progressedStepCount: number;
+  attempt: number;
+}
+
+interface IntentE2ERepairBaselineDecision {
+  previousCode: string;
+  comparisonCode: string;
+  source: 'previous_attempt' | IntentE2ERepairBaselineReuseSource;
+  reusedRunId?: string;
+  skipReason?: string;
+  previousAttemptProgressedStepCount: number;
+  baselineProgressedStepCount: number;
 }
 
 function normalizeIntentE2EReuseText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeIntentE2EReuseComparableText(value: unknown): string {
+  return normalizeIntentE2EReuseText(value).replace(/\s+/g, ' ').trim();
 }
 
 function normalizeIntentE2EReuseCount(value: unknown): number {
@@ -559,6 +637,34 @@ function normalizeIntentE2EReuseCount(value: unknown): number {
   return 0;
 }
 
+function resolveIntentE2EReuseTimestamp(value: unknown): number {
+  const normalizedValue = normalizeIntentE2EReuseText(value);
+  if (!normalizedValue) return 0;
+  const parsed = Date.parse(normalizedValue);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function resolveIntentE2ESuccessfulRunRequestMatchLevel(input: {
+  expectedRequestInput: string;
+  candidateRequestInput: string;
+}): IntentE2ESuccessfulRunRequestMatchLevel | null {
+  const expectedRequestInput = normalizeIntentE2EReuseComparableText(input.expectedRequestInput);
+  const candidateRequestInput = normalizeIntentE2EReuseComparableText(input.candidateRequestInput);
+  if (!expectedRequestInput || !candidateRequestInput) {
+    return null;
+  }
+  if (expectedRequestInput === candidateRequestInput) {
+    return 'exact_request';
+  }
+  if (
+    expectedRequestInput.includes(candidateRequestInput) ||
+    candidateRequestInput.includes(expectedRequestInput)
+  ) {
+    return 'compatible_request';
+  }
+  return null;
+}
+
 function resolveIntentE2ELastAttemptCode(value: unknown): string {
   if (!Array.isArray(value)) return '';
   for (let index = value.length - 1; index >= 0; index -= 1) {
@@ -566,6 +672,155 @@ function resolveIntentE2ELastAttemptCode(value: unknown): string {
     if (code) return code;
   }
   return '';
+}
+
+function resolveIntentE2ELastAttemptSanitizerRescueSource(value: unknown): string {
+  if (!Array.isArray(value)) return '';
+  for (let index = value.length - 1; index >= 0; index -= 1) {
+    const rescueSource = normalizeIntentE2EReuseText(
+      (
+        value[index] as {
+          fallbackTelemetry?: {
+            sanitizerRescueSource?: unknown;
+          };
+        } | null
+      )?.fallbackTelemetry?.sanitizerRescueSource
+    );
+    if (rescueSource) return rescueSource;
+  }
+  return '';
+}
+
+function resolveIntentE2EAttemptFailedStepTitle(value: unknown): string {
+  const attempt =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as {
+          triage?: {
+            diagnosis?: {
+              failedStepTitle?: unknown;
+            };
+          };
+          result?: {
+            steps?: unknown;
+          };
+        })
+      : null;
+  const triageFailedStepTitle = normalizeIntentE2EReuseText(attempt?.triage?.diagnosis?.failedStepTitle);
+  if (triageFailedStepTitle) return triageFailedStepTitle;
+
+  const steps = Array.isArray(attempt?.result?.steps) ? attempt.result.steps : [];
+  for (const rawStep of steps) {
+    const step =
+      rawStep && typeof rawStep === 'object' && !Array.isArray(rawStep)
+        ? (rawStep as { status?: unknown; title?: unknown })
+        : null;
+    if (step?.status !== 'failed') continue;
+    const title = normalizeIntentE2EReuseText(step.title);
+    if (title) return title;
+  }
+
+  return '';
+}
+
+function parseIntentE2EStepNumber(title: string): number {
+  const match = normalizeIntentE2EReuseText(title).match(/\bstep\s*(\d+)\b/i);
+  if (!match?.[1]) return 0;
+  const value = Number(match[1]);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
+function resolveIntentE2EAttemptProgressedStepCount(value: unknown): number {
+  const attempt =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as {
+          result?: {
+            steps?: unknown;
+          };
+        })
+      : null;
+  const failedStepNumber = parseIntentE2EStepNumber(resolveIntentE2EAttemptFailedStepTitle(attempt));
+  if (failedStepNumber > 0) {
+    return Math.max(0, failedStepNumber - 1);
+  }
+
+  const steps = Array.isArray(attempt?.result?.steps) ? attempt.result.steps : [];
+  let maxPassedStepNumber = 0;
+  for (const rawStep of steps) {
+    const step =
+      rawStep && typeof rawStep === 'object' && !Array.isArray(rawStep)
+        ? (rawStep as { status?: unknown; title?: unknown })
+        : null;
+    if (step?.status !== 'passed') continue;
+    maxPassedStepNumber = Math.max(maxPassedStepNumber, parseIntentE2EStepNumber(normalizeIntentE2EReuseText(step.title)));
+  }
+  return maxPassedStepNumber;
+}
+
+function resolveIntentE2EProgressedAttemptCandidate(value: unknown): Omit<
+  IntentE2EProgressedRunCodeReuseCandidate,
+  'runId'
+> | null {
+  if (!Array.isArray(value)) return null;
+
+  let bestCandidate: Omit<IntentE2EProgressedRunCodeReuseCandidate, 'runId'> | null = null;
+
+  for (const rawAttempt of value) {
+    const attempt =
+      rawAttempt && typeof rawAttempt === 'object' && !Array.isArray(rawAttempt)
+        ? (rawAttempt as { attempt?: unknown; code?: unknown })
+        : null;
+    const code = normalizeIntentE2EReuseText(attempt?.code);
+    if (!code) continue;
+
+    const progressedStepCount = resolveIntentE2EAttemptProgressedStepCount(rawAttempt);
+    if (progressedStepCount <= 0) continue;
+
+    const attemptNumber = normalizeIntentE2EReuseCount(attempt?.attempt);
+    const failedStepTitle = resolveIntentE2EAttemptFailedStepTitle(rawAttempt);
+    if (
+      !bestCandidate ||
+      progressedStepCount > bestCandidate.progressedStepCount ||
+      (progressedStepCount === bestCandidate.progressedStepCount && attemptNumber > bestCandidate.attempt)
+    ) {
+      bestCandidate = {
+        code,
+        failedStepTitle,
+        progressedStepCount,
+        attempt: attemptNumber,
+      };
+    }
+  }
+
+  return bestCandidate;
+}
+
+function successfulRunRequestMatchLevelScore(level: IntentE2ESuccessfulRunRequestMatchLevel): number {
+  return level === 'exact_request' ? 2 : 1;
+}
+
+function isBetterIntentE2ESuccessfulRunCodeReuseCandidate(
+  candidate: IntentE2ESuccessfulRunCodeReuseCandidate,
+  currentBest: IntentE2ESuccessfulRunCodeReuseCandidate | null
+): boolean {
+  if (!currentBest) return true;
+  if (candidate.requiresSanitizerRescue !== currentBest.requiresSanitizerRescue) {
+    return !candidate.requiresSanitizerRescue;
+  }
+  const candidateRequestMatchScore = successfulRunRequestMatchLevelScore(candidate.requestMatchLevel);
+  const currentBestRequestMatchScore = successfulRunRequestMatchLevelScore(currentBest.requestMatchLevel);
+  if (candidateRequestMatchScore !== currentBestRequestMatchScore) {
+    return candidateRequestMatchScore > currentBestRequestMatchScore;
+  }
+  if (candidate.createdAtMs !== currentBest.createdAtMs) {
+    return candidate.createdAtMs > currentBest.createdAtMs;
+  }
+  if (candidate.attachmentCountMatches !== currentBest.attachmentCountMatches) {
+    return candidate.attachmentCountMatches;
+  }
+  if (candidate.attemptCount !== currentBest.attemptCount) {
+    return candidate.attemptCount > currentBest.attemptCount;
+  }
+  return candidate.runId > currentBest.runId;
 }
 
 function resolveIntentE2ESuccessfulRunCodeReuseCandidateFromSnapshot(
@@ -586,6 +841,7 @@ function resolveIntentE2ESuccessfulRunCodeReuseCandidateFromSnapshot(
             attachmentCount?: unknown;
             intentDraftUid?: unknown;
           };
+          createdAt?: unknown;
           result?: {
             attempts?: unknown;
           };
@@ -598,20 +854,33 @@ function resolveIntentE2ESuccessfulRunCodeReuseCandidateFromSnapshot(
   if (!draftUid || draftUid !== input.intentDraftUid) return null;
 
   const requestInput = normalizeIntentE2EReuseText(request?.input) || normalizeIntentE2EReuseText(snapshot.requestInput);
-  if (!requestInput || requestInput !== input.requestInput) return null;
+  const requestMatchLevel = resolveIntentE2ESuccessfulRunRequestMatchLevel({
+    expectedRequestInput: input.requestInput,
+    candidateRequestInput: requestInput,
+  });
+  if (!requestMatchLevel) return null;
 
   const targetUrl = normalizeIntentE2EReuseText(request?.targetUrl) || normalizeIntentE2EReuseText(snapshot.targetUrl);
   if (!targetUrl || targetUrl !== input.targetUrl) return null;
 
   const attachmentCount = normalizeIntentE2EReuseCount(request?.attachmentCount);
-  if (attachmentCount !== input.attachmentCount) return null;
-
-  const code = resolveIntentE2ELastAttemptCode(state.result?.attempts);
+  const attempts = Array.isArray(state.result?.attempts) ? state.result.attempts : [];
+  const code = resolveIntentE2ELastAttemptCode(attempts);
   if (!code) return null;
+  const sanitizedCode = sanitizeGeneratedCode(code);
+  const attemptSanitizerRescueSource = resolveIntentE2ELastAttemptSanitizerRescueSource(attempts);
+  const requiresSanitizerRescue =
+    Boolean(attemptSanitizerRescueSource) ||
+    normalizeIntentE2EAttemptComparableCode(sanitizedCode) !== normalizeIntentE2EAttemptComparableCode(code);
 
   return {
     runId: snapshot.runId,
     code,
+    requestMatchLevel,
+    attachmentCountMatches: attachmentCount === input.attachmentCount,
+    requiresSanitizerRescue,
+    createdAtMs: Math.max(resolveIntentE2EReuseTimestamp(state.createdAt), resolveIntentE2EReuseTimestamp(snapshot.createdAt)),
+    attemptCount: attempts.length,
   };
 }
 
@@ -641,6 +910,7 @@ async function resolveIntentE2ESuccessfulRunCodeReuseCandidate(input: {
       limit: 12,
     });
 
+    let bestCandidate: IntentE2ESuccessfulRunCodeReuseCandidate | null = null;
     for (const snapshot of snapshots) {
       const candidate = resolveIntentE2ESuccessfulRunCodeReuseCandidateFromSnapshot(snapshot, {
         intentDraftUid,
@@ -648,10 +918,11 @@ async function resolveIntentE2ESuccessfulRunCodeReuseCandidate(input: {
         targetUrl,
         attachmentCount: input.attachmentCount,
       });
-      if (candidate) {
-        return candidate;
+      if (candidate && isBetterIntentE2ESuccessfulRunCodeReuseCandidate(candidate, bestCandidate)) {
+        bestCandidate = candidate;
       }
     }
+    return bestCandidate;
   } catch {
     return null;
   }
@@ -659,12 +930,112 @@ async function resolveIntentE2ESuccessfulRunCodeReuseCandidate(input: {
   return null;
 }
 
+function resolveIntentE2EProgressedRunCodeReuseCandidateFromSnapshot(
+  snapshot: Awaited<ReturnType<typeof listIntentE2ERunSnapshots>>[number],
+  input: {
+    intentDraftUid: string;
+    requestInput: string;
+    targetUrl: string;
+    attachmentCount: number;
+  }
+): IntentE2EProgressedRunCodeReuseCandidate | null {
+  const state =
+    snapshot?.state && typeof snapshot.state === 'object' && !Array.isArray(snapshot.state)
+      ? (snapshot.state as {
+          request?: {
+            input?: unknown;
+            targetUrl?: unknown;
+            attachmentCount?: unknown;
+            intentDraftUid?: unknown;
+          };
+          result?: {
+            attempts?: unknown;
+          };
+        })
+      : null;
+  if (!state) return null;
+
+  const request = state.request;
+  const draftUid = normalizeIntentE2EReuseText(request?.intentDraftUid);
+  if (!draftUid || draftUid !== input.intentDraftUid) return null;
+
+  const requestInput = normalizeIntentE2EReuseText(request?.input) || normalizeIntentE2EReuseText(snapshot.requestInput);
+  if (!requestInput || requestInput !== input.requestInput) return null;
+
+  const targetUrl = normalizeIntentE2EReuseText(request?.targetUrl) || normalizeIntentE2EReuseText(snapshot.targetUrl);
+  if (!targetUrl || targetUrl !== input.targetUrl) return null;
+
+  const attachmentCount = normalizeIntentE2EReuseCount(request?.attachmentCount);
+  if (attachmentCount !== input.attachmentCount) return null;
+
+  const candidate = resolveIntentE2EProgressedAttemptCandidate(state.result?.attempts);
+  if (!candidate) return null;
+
+  return {
+    runId: snapshot.runId,
+    ...candidate,
+  };
+}
+
+async function resolveIntentE2EProgressedRunCodeReuseCandidate(input: {
+  projectUid?: string;
+  moduleUid?: string;
+  intentDraftUid?: string;
+  requestInput: string;
+  targetUrl: string;
+  attachmentCount: number;
+}): Promise<IntentE2EProgressedRunCodeReuseCandidate | null> {
+  const projectUid = normalizeIntentE2EReuseText(input.projectUid);
+  const moduleUid = normalizeIntentE2EReuseText(input.moduleUid);
+  const intentDraftUid = normalizeIntentE2EReuseText(input.intentDraftUid);
+  const requestInput = normalizeIntentE2EReuseText(input.requestInput);
+  const targetUrl = normalizeIntentE2EReuseText(input.targetUrl);
+
+  if (!intentDraftUid || !requestInput || !targetUrl || (!projectUid && !moduleUid)) {
+    return null;
+  }
+
+  try {
+    const snapshots = await listIntentE2ERunSnapshots({
+      ...(projectUid ? { projectUid } : {}),
+      ...(moduleUid ? { moduleUid } : {}),
+      status: 'failed',
+      limit: 12,
+    });
+
+    let bestCandidate: IntentE2EProgressedRunCodeReuseCandidate | null = null;
+    for (const snapshot of snapshots) {
+      const candidate = resolveIntentE2EProgressedRunCodeReuseCandidateFromSnapshot(snapshot, {
+        intentDraftUid,
+        requestInput,
+        targetUrl,
+        attachmentCount: input.attachmentCount,
+      });
+      if (!candidate) continue;
+      if (
+        !bestCandidate ||
+        candidate.progressedStepCount > bestCandidate.progressedStepCount ||
+        (candidate.progressedStepCount === bestCandidate.progressedStepCount && candidate.attempt > bestCandidate.attempt)
+      ) {
+        bestCandidate = candidate;
+      }
+    }
+
+    return bestCandidate;
+  } catch {
+    return null;
+  }
+}
+
 function resolveIntentE2EPrefilledPlanReuseDecision(input: {
   prefilledPlanCode?: string;
   successfulRunCodeCandidate?: IntentE2ESuccessfulRunCodeReuseCandidate | null;
+  progressedRunCodeCandidate?: IntentE2EProgressedRunCodeReuseCandidate | null;
 }): IntentE2EPrefilledPlanReuseDecision {
   if (input.successfulRunCodeCandidate?.code) {
-    const successfulRunCodeSyntaxError = getTestCodeSyntaxError(input.successfulRunCodeCandidate.code, 'recent_successful_run');
+    const rawSuccessfulRunCode = input.successfulRunCodeCandidate.code;
+    const sanitizedSuccessfulRunCode = sanitizeGeneratedCode(rawSuccessfulRunCode);
+    const successfulRunCodeSyntaxError = getTestCodeSyntaxError(sanitizedSuccessfulRunCode, 'recent_successful_run');
     if (successfulRunCodeSyntaxError) {
       return {
         skipReason: `最近一次成功运行脚本存在语法错误（${successfulRunCodeSyntaxError}），已回退到当前生成链路。`,
@@ -672,22 +1043,41 @@ function resolveIntentE2EPrefilledPlanReuseDecision(input: {
     }
 
     return {
-      code: input.successfulRunCodeCandidate.code,
+      code: sanitizedSuccessfulRunCode,
+      rawCode: rawSuccessfulRunCode,
       source: 'recent_successful_run',
       reusedRunId: input.successfulRunCodeCandidate.runId,
     };
   }
 
-  const code = input.prefilledPlanCode?.trim() || '';
-  if (!code) {
+  if (input.progressedRunCodeCandidate?.code) {
+    const rawProgressedRunCode = input.progressedRunCodeCandidate.code;
+    const sanitizedProgressedRunCode = sanitizeGeneratedCode(rawProgressedRunCode);
+    const progressedRunCodeSyntaxError = getTestCodeSyntaxError(sanitizedProgressedRunCode, 'recent_progressed_run');
+    if (progressedRunCodeSyntaxError) {
+      return {
+        skipReason: `最近一次推进更远的修复脚本存在语法错误（${progressedRunCodeSyntaxError}），已回退到当前生成链路。`,
+      };
+    }
+
+    return {
+      code: sanitizedProgressedRunCode,
+      rawCode: rawProgressedRunCode,
+      source: 'recent_progressed_run',
+      reusedRunId: input.progressedRunCodeCandidate.runId,
+    };
+  }
+
+  const rawCode = input.prefilledPlanCode?.trim() || '';
+  if (!rawCode) {
     return {};
   }
 
   const hitsLegacyBusinessCreateFinalSubmitFamily =
-    /未找到最终提交按钮（已排除“保存并继续\/上一步”）/.test(code) &&
-    /const candidateContainers = \[/.test(code) &&
+    /未找到最终提交按钮（已排除“保存并继续\/上一步”）/.test(rawCode) &&
+    /const candidateContainers = \[/.test(rawCode) &&
     /attachmentAnchor\.locator\('xpath=ancestor::\*\[contains\(@class,"ant-card"\) or contains\(@class,"ant-tabs-tabpane"\) or self::form]\[1\]'\)/.test(
-      code
+      rawCode
     );
 
   if (hitsLegacyBusinessCreateFinalSubmitFamily) {
@@ -696,7 +1086,8 @@ function resolveIntentE2EPrefilledPlanReuseDecision(input: {
     };
   }
 
-  const draftFirstPassSyntaxError = getTestCodeSyntaxError(code, 'draft_first_pass');
+  const sanitizedDraftCode = sanitizeGeneratedCode(rawCode);
+  const draftFirstPassSyntaxError = getTestCodeSyntaxError(sanitizedDraftCode, 'draft_first_pass');
   if (draftFirstPassSyntaxError) {
     return {
       skipReason: `草稿首版脚本存在语法错误（${draftFirstPassSyntaxError}），已回退到当前生成链路。`,
@@ -704,8 +1095,61 @@ function resolveIntentE2EPrefilledPlanReuseDecision(input: {
   }
 
   return {
-    code,
+    code: sanitizedDraftCode,
+    rawCode,
     source: 'draft_first_pass',
+  };
+}
+
+function resolveIntentE2ERepairBaselineDecision(input: {
+  previousCode: string;
+  previousAttempt?: IntentE2EAttempt | null;
+  progressedRunCodeCandidate?: IntentE2EProgressedRunCodeReuseCandidate | null;
+}): IntentE2ERepairBaselineDecision {
+  const comparisonCode = String(input.previousCode || '');
+  const previousCodeComparable = normalizeIntentE2EAttemptComparableCode(comparisonCode);
+  const previousAttemptProgressedStepCount = input.previousAttempt
+    ? resolveIntentE2EAttemptProgressedStepCount(input.previousAttempt)
+    : 0;
+  const fallbackDecision: IntentE2ERepairBaselineDecision = {
+    previousCode: comparisonCode,
+    comparisonCode,
+    source: 'previous_attempt',
+    previousAttemptProgressedStepCount,
+    baselineProgressedStepCount: previousAttemptProgressedStepCount,
+  };
+
+  const candidate = input.progressedRunCodeCandidate;
+  if (!previousCodeComparable || !candidate?.code) {
+    return fallbackDecision;
+  }
+
+  const candidateCode = sanitizeGeneratedCode(candidate.code);
+  const candidateCodeSyntaxError = getTestCodeSyntaxError(candidateCode, 'recent_progressed_run');
+  if (candidateCodeSyntaxError) {
+    return {
+      ...fallbackDecision,
+      skipReason: `最近一次推进更远的历史脚本存在语法错误（${candidateCodeSyntaxError}），repair 继续沿用上一轮脚本。`,
+    };
+  }
+
+  const candidateCodeComparable = normalizeIntentE2EAttemptComparableCode(candidateCode);
+  const candidateProgressedStepCount = Math.max(0, candidate.progressedStepCount);
+  if (
+    !candidateCodeComparable ||
+    candidateCodeComparable === previousCodeComparable ||
+    candidateProgressedStepCount <= previousAttemptProgressedStepCount
+  ) {
+    return fallbackDecision;
+  }
+
+  return {
+    previousCode: candidateCode,
+    comparisonCode,
+    source: 'recent_progressed_run',
+    reusedRunId: candidate.runId,
+    previousAttemptProgressedStepCount,
+    baselineProgressedStepCount: candidateProgressedStepCount,
   };
 }
 
@@ -814,12 +1258,12 @@ function buildIntentE2EFixtureFailureTriage(input: {
   pageUrl: string;
 }): IntentE2EFailureTriage {
   const triage: IntentE2EFailureTriage = {
-    failureClass: 'data_missing',
+    failureClass: 'fixture_contract_missing',
     repairable: false,
     summary:
       input.phase === 'setup'
-        ? '判定为 fixture setup 失败：运行前置数据准备未完成，继续自动修复脚本收益很低。'
-        : '判定为 fixture cleanup 失败：运行后置数据回收未完成，优先补 fixture 或前置条件。',
+        ? '判定为 fixture setup 失败：运行前置数据契约未完成，继续自动修复脚本收益很低。'
+        : '判定为 fixture cleanup 失败：运行后置数据回收契约未完成，优先补 fixture 或前置条件。',
     matchedSignals: uniqueStrings([
       input.phase === 'setup' ? 'fixture setup failed' : 'fixture cleanup failed',
       firstNonEmptyLine(input.errorMessage),
@@ -1133,7 +1577,7 @@ function resolveIntentE2EExperienceSearchMatchedRecipeSlugs(input: {
   promptContext: ReturnType<typeof buildGenerateInputFromScenarioCard>['context'];
   auth?: AuthConfig;
   priorityScenarioFamily: ReturnType<typeof resolveIntentE2EPriorityScenarioFamilyRoute>['family'];
-  recipePerformanceBySlug: Awaited<ReturnType<typeof loadIntentE2ERecipePerformanceFeedback>>;
+  recipePerformanceBySlug: ReturnType<typeof buildIntentE2ERecipePerformanceMapFromData>;
 }): string[] {
   if (!input.promptContext.actionDsl) {
     return [];
@@ -1189,13 +1633,19 @@ function buildIntentE2EFailureCta(input: {
       repairBudget?.summary,
     ]);
   } else if (
+    triage?.failureClass === 'auth_state_invalid' ||
     triage?.failureClass === 'auth_failed' ||
     triage?.failureClass === 'permission_blocked' ||
     triage?.failureClass === 'env_transient' ||
-    triage?.failureClass === 'data_missing'
+    triage?.failureClass === 'data_missing' ||
+    triage?.failureClass === 'fixture_contract_missing'
   ) {
     primaryAction = 'prepare_prerequisites';
     headline = '先补前置条件，再重新运行';
+    summary = buildFailureCtaSummary([triage.summary, repairBudget?.summary]);
+  } else if (triage?.failureClass === 'runtime_syntax_damage' || triage?.failureClass === 'repair_non_progress') {
+    primaryAction = 'handoff_manual';
+    headline = '先收口主链缺口，再继续运行';
     summary = buildFailureCtaSummary([triage.summary, repairBudget?.summary]);
   } else if (assetReadiness?.status === 'no_hit') {
     primaryAction = hasProjectScope ? 'preview_knowledge_draft' : 'edit_description';
@@ -2182,45 +2632,257 @@ function buildIntentE2ESuccessKnowledgeCandidates(
   return candidates;
 }
 
-async function loadIntentE2ERulePerformanceFeedback(projectUid = ''): Promise<Record<string, {
-  runCount: number;
-  passedRuns: number;
-  failedRuns: number;
-  canceledRuns: number;
-  passRate: number;
-  rollbackCandidateCount: number;
-}>> {
-  try {
-    return await getIntentE2ERulePerformanceMap({
+interface IntentE2EAnalyzeSupportData {
+  feedbackRunSnapshots: IntentE2ERunSnapshotRecord[];
+  experienceRunSnapshots: IntentE2ERunSnapshotRecord[];
+  rulePerformanceById: Record<string, {
+    runCount: number;
+    passedRuns: number;
+    failedRuns: number;
+    canceledRuns: number;
+    passRate: number;
+    rollbackCandidateCount: number;
+  }>;
+  starterHelpers: ReturnType<typeof buildIntentE2EStarterHelpersFromData>;
+  recipePerformanceBySlug: ReturnType<typeof buildIntentE2ERecipePerformanceMapFromData>;
+  loadSource: 'fresh' | 'memory_cache';
+}
+
+interface IntentE2EAnalyzeSupportDataPayload extends Omit<IntentE2EAnalyzeSupportData, 'loadSource'> {
+  auditEntries: IntentProjectKnowledgeAuditEntry[];
+}
+
+interface IntentE2EAnalyzeSupportDataCacheEntry {
+  projectUid: string;
+  moduleUid: string;
+  feedbackRunLimit: number;
+  experienceRunLimit: number;
+  auditLimit: number;
+  expiresAtMs: number;
+  value?: IntentE2EAnalyzeSupportDataPayload;
+  promise?: Promise<IntentE2EAnalyzeSupportDataPayload>;
+}
+
+const intentE2EAnalyzeSupportDataCache = new Map<string, IntentE2EAnalyzeSupportDataCacheEntry>();
+
+function resolveIntentE2EAnalyzeSupportDataCacheTtlMs(): number {
+  const configuredValue = normalizeIntentE2EReuseText(process.env.INTENT_E2E_ANALYZE_SUPPORT_CACHE_TTL_MS);
+  if (configuredValue) {
+    const parsed = Number(configuredValue);
+    return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
+  }
+
+  return process.env.NODE_ENV === 'test' ? 0 : 900_000;
+}
+
+function normalizeIntentE2EAnalyzeSupportDataCacheScope(input: {
+  projectUid?: string;
+  moduleUid?: string;
+  feedbackRunLimit?: number;
+  experienceRunLimit?: number;
+  auditLimit?: number;
+}) {
+  const feedbackRunLimit = Math.max(1, Math.min(200, Math.floor(input.feedbackRunLimit || 50)));
+  return {
+    projectUid: normalizeIntentE2EReuseText(input.projectUid),
+    moduleUid: normalizeIntentE2EReuseText(input.moduleUid),
+    feedbackRunLimit,
+    experienceRunLimit: Math.max(8, Math.min(feedbackRunLimit, Math.floor(input.experienceRunLimit || 36))),
+    auditLimit: Math.max(1, Math.min(50, Math.floor(input.auditLimit || 20))),
+  };
+}
+
+function buildIntentE2EAnalyzeSupportDataCacheKey(input: {
+  projectUid?: string;
+  moduleUid?: string;
+  feedbackRunLimit?: number;
+  experienceRunLimit?: number;
+  auditLimit?: number;
+}): string {
+  const scope = normalizeIntentE2EAnalyzeSupportDataCacheScope(input);
+  return JSON.stringify({
+    projectUid: scope.projectUid || '__global__',
+    moduleUid: scope.moduleUid || '__all__',
+    feedbackRunLimit: scope.feedbackRunLimit,
+    experienceRunLimit: scope.experienceRunLimit,
+    auditLimit: scope.auditLimit,
+  });
+}
+
+function buildIntentE2EAnalyzeSupportDataPayload(input: {
+  feedbackRunSnapshots: IntentE2ERunSnapshotRecord[];
+  experienceRunSnapshots: IntentE2ERunSnapshotRecord[];
+  auditEntries: IntentProjectKnowledgeAuditEntry[];
+}): IntentE2EAnalyzeSupportDataPayload {
+  return {
+    feedbackRunSnapshots: input.feedbackRunSnapshots,
+    experienceRunSnapshots: input.experienceRunSnapshots,
+    auditEntries: input.auditEntries,
+    rulePerformanceById: buildIntentE2ERulePerformanceMapFromData(input.feedbackRunSnapshots, input.auditEntries),
+    starterHelpers: buildIntentE2EStarterHelpersFromData(input.feedbackRunSnapshots, input.auditEntries),
+    recipePerformanceBySlug: buildIntentE2ERecipePerformanceMapFromData(input.feedbackRunSnapshots),
+  };
+}
+
+async function fetchIntentE2EAnalyzeSupportData(input: {
+  projectUid?: string;
+  moduleUid?: string;
+  feedbackRunLimit?: number;
+  experienceRunLimit?: number;
+  auditLimit?: number;
+}): Promise<IntentE2EAnalyzeSupportDataPayload> {
+  const projectUid = input.projectUid?.trim() || '';
+  const moduleUid = input.moduleUid?.trim() || '';
+  const feedbackRunLimit = Math.max(1, Math.min(200, Math.floor(input.feedbackRunLimit || 50)));
+  const experienceRunLimit = Math.max(8, Math.min(feedbackRunLimit, Math.floor(input.experienceRunLimit || 36)));
+  const auditLimit = Math.max(1, Math.min(50, Math.floor(input.auditLimit || 20)));
+
+  const [feedbackRunResult, auditsResult, moduleExperienceRunResult] = await Promise.allSettled([
+    listIntentE2ERunSnapshots({
       projectUid,
-      runLimit: 50,
-      auditLimit: 20,
+      status: 'terminal',
+      limit: feedbackRunLimit,
+    }),
+    listIntentProjectKnowledgeAuditEntries(auditLimit, projectUid),
+    moduleUid
+      ? listIntentE2ERunSnapshots({
+          projectUid,
+          moduleUid,
+          status: 'terminal',
+          limit: experienceRunLimit,
+        })
+      : Promise.resolve(null),
+  ]);
+
+  const feedbackRunSnapshots = feedbackRunResult.status === 'fulfilled' ? feedbackRunResult.value : [];
+  const auditEntries =
+    auditsResult.status === 'fulfilled' && Array.isArray(auditsResult.value.items) ? auditsResult.value.items : [];
+  const experienceRunSnapshots =
+    moduleUid && moduleExperienceRunResult.status === 'fulfilled' && Array.isArray(moduleExperienceRunResult.value)
+      ? moduleExperienceRunResult.value
+      : feedbackRunSnapshots.slice(0, experienceRunLimit);
+
+  return buildIntentE2EAnalyzeSupportDataPayload({
+    feedbackRunSnapshots,
+    experienceRunSnapshots,
+    auditEntries,
+  });
+}
+
+function sortIntentE2ERunSnapshotsByRecency(
+  left: IntentE2ERunSnapshotRecord,
+  right: IntentE2ERunSnapshotRecord
+): number {
+  const timestampDiff =
+    resolveIntentE2EReuseTimestamp(right.updatedAt || right.endedAt || right.createdAt) -
+    resolveIntentE2EReuseTimestamp(left.updatedAt || left.endedAt || left.createdAt);
+  if (timestampDiff !== 0) return timestampDiff;
+  return right.runId.localeCompare(left.runId);
+}
+
+function upsertIntentE2ERunSnapshotByRunId(
+  snapshots: IntentE2ERunSnapshotRecord[],
+  snapshot: IntentE2ERunSnapshotRecord,
+  limit: number
+): IntentE2ERunSnapshotRecord[] {
+  const deduped = snapshots.filter((item) => item.runId !== snapshot.runId);
+  deduped.unshift(snapshot);
+  deduped.sort(sortIntentE2ERunSnapshotsByRecency);
+  return deduped.slice(0, Math.max(1, limit));
+}
+
+export function applyIntentE2EAnalyzeSupportDataCacheTerminalSnapshot(snapshot: IntentE2ERunSnapshotRecord): void {
+  if (snapshot.status !== 'passed' && snapshot.status !== 'failed' && snapshot.status !== 'canceled') {
+    return;
+  }
+
+  const cacheTtlMs = resolveIntentE2EAnalyzeSupportDataCacheTtlMs();
+  if (cacheTtlMs <= 0) return;
+
+  for (const [cacheKey, entry] of intentE2EAnalyzeSupportDataCache.entries()) {
+    if (!entry.value || entry.promise) continue;
+    if (entry.projectUid !== (snapshot.projectUid || '')) continue;
+
+    const nextFeedbackRunSnapshots = upsertIntentE2ERunSnapshotByRunId(
+      entry.value.feedbackRunSnapshots,
+      snapshot,
+      entry.feedbackRunLimit
+    );
+    const nextExperienceRunSnapshots =
+      entry.moduleUid && entry.moduleUid === (snapshot.moduleUid || '')
+        ? upsertIntentE2ERunSnapshotByRunId(entry.value.experienceRunSnapshots, snapshot, entry.experienceRunLimit)
+        : entry.moduleUid
+        ? entry.value.experienceRunSnapshots
+        : nextFeedbackRunSnapshots.slice(0, entry.experienceRunLimit);
+
+    intentE2EAnalyzeSupportDataCache.set(cacheKey, {
+      ...entry,
+      expiresAtMs: Date.now() + cacheTtlMs,
+      value: buildIntentE2EAnalyzeSupportDataPayload({
+        feedbackRunSnapshots: nextFeedbackRunSnapshots,
+        experienceRunSnapshots: nextExperienceRunSnapshots,
+        auditEntries: entry.value.auditEntries,
+      }),
     });
-  } catch {
-    return {};
   }
 }
 
-async function loadIntentE2EStarterHelperFeedback(projectUid = '') {
-  try {
-    return await getIntentE2EStarterHelpers({
-      projectUid,
-      runLimit: 50,
-      auditLimit: 20,
-    });
-  } catch {
-    return [];
+async function loadIntentE2EAnalyzeSupportData(input: {
+  projectUid?: string;
+  moduleUid?: string;
+  feedbackRunLimit?: number;
+  experienceRunLimit?: number;
+  auditLimit?: number;
+}): Promise<IntentE2EAnalyzeSupportData> {
+  const cacheTtlMs = resolveIntentE2EAnalyzeSupportDataCacheTtlMs();
+  if (cacheTtlMs <= 0) {
+    return {
+      ...(await fetchIntentE2EAnalyzeSupportData(input)),
+      loadSource: 'fresh',
+    };
   }
-}
 
-async function loadIntentE2ERecipePerformanceFeedback(projectUid = '') {
+  const cacheScope = normalizeIntentE2EAnalyzeSupportDataCacheScope(input);
+  const cacheKey = buildIntentE2EAnalyzeSupportDataCacheKey(cacheScope);
+  const nowMs = Date.now();
+  const cachedEntry = intentE2EAnalyzeSupportDataCache.get(cacheKey);
+  if (cachedEntry && cachedEntry.expiresAtMs > nowMs) {
+    if (cachedEntry.value) {
+      return {
+        ...cachedEntry.value,
+        loadSource: 'memory_cache',
+      };
+    }
+
+    if (cachedEntry.promise) {
+      return {
+        ...(await cachedEntry.promise),
+        loadSource: 'memory_cache',
+      };
+    }
+  }
+
+  const promise = fetchIntentE2EAnalyzeSupportData(input);
+  intentE2EAnalyzeSupportDataCache.set(cacheKey, {
+    ...cacheScope,
+    expiresAtMs: nowMs + cacheTtlMs,
+    promise,
+  });
+
   try {
-    return await getIntentE2ERecipePerformanceMap({
-      projectUid,
-      runLimit: 50,
+    const value = await promise;
+    intentE2EAnalyzeSupportDataCache.set(cacheKey, {
+      ...cacheScope,
+      expiresAtMs: Date.now() + cacheTtlMs,
+      value,
     });
-  } catch {
-    return {};
+    return {
+      ...value,
+      loadSource: 'fresh',
+    };
+  } catch (error) {
+    intentE2EAnalyzeSupportDataCache.delete(cacheKey);
+    throw error;
   }
 }
 
@@ -2254,6 +2916,169 @@ function extractIntentExecutionStructuredRepairOutput(
   const structuredEvent = [...events].reverse().find((event) => event.type === 'structured_patch');
   if (!structuredEvent || structuredEvent.type !== 'structured_patch') return undefined;
   return cloneIntentExecutionStructuredRepairOutput(structuredEvent.repairOutput);
+}
+
+function extractIntentE2EThinkingMessages(events: GenerateEvent[]): string[] {
+  return events
+    .filter((event) => event.type === 'thinking')
+    .map((event) => event.content.trim())
+    .filter(Boolean);
+}
+
+function extractIntentE2ERawGeneratedCodeBody(value: string): string {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+
+  const fencedMatch = raw.match(/```(?:javascript|typescript|js|ts)?\n([\s\S]*?)```/i);
+  return (fencedMatch ? fencedMatch[1] : raw).trim();
+}
+
+function isHighConfidencePriorityScenarioFamilyRoute(
+  route: ReturnType<typeof resolveIntentE2EPriorityScenarioFamilyRoute>
+): boolean {
+  return (
+    route.family !== 'untracked' &&
+    !(route.textFamily !== 'untracked' && route.visualFamily !== 'untracked' && route.textFamily !== route.visualFamily)
+  );
+}
+
+function resolveIntentE2ELegacyFallbackReason(
+  kind: IntentE2EAttempt['kind'],
+  events: GenerateEvent[]
+): {
+  path?: Exclude<IntentE2EAttemptFallbackPath, 'prefilled_plan_reuse'>;
+  reasonCode?: IntentE2EAttemptLegacyFallbackReasonCode;
+  reason?: string;
+} {
+  const thinkingMessages = extractIntentE2EThinkingMessages(events);
+  const reasonMessage = thinkingMessages.find((message) => message.includes('legacy fallback')) || '';
+  if (!reasonMessage) {
+    return {};
+  }
+
+  if (/结构化 slot patch 失败/i.test(reasonMessage)) {
+    return {
+      path: 'legacy_free_generate',
+      reasonCode: 'structured_slot_patch_failed',
+      reason: reasonMessage,
+    };
+  }
+
+  if (/结构化 repair patch 失败/i.test(reasonMessage)) {
+    return {
+      path: 'legacy_free_repair',
+      reasonCode: 'structured_repair_patch_failed',
+      reason: reasonMessage,
+    };
+  }
+
+  return {
+    path: kind === 'repair' ? 'legacy_free_repair' : 'legacy_free_generate',
+    reasonCode: 'execution_plan_missing',
+    reason: reasonMessage,
+  };
+}
+
+function buildIntentE2EAttemptFallbackTelemetry(input: {
+  kind: IntentE2EAttempt['kind'];
+  events: GenerateEvent[];
+  currentCode: string;
+  rawGeneratedCode: string;
+  prefilledPlanReuseDecision: IntentE2EPrefilledPlanReuseDecision;
+  priorityScenarioFamilyRoute: ReturnType<typeof resolveIntentE2EPriorityScenarioFamilyRoute>;
+  repairBaselineDecision?: IntentE2ERepairBaselineDecision | null;
+}): IntentE2EAttemptFallbackTelemetry | undefined {
+  const legacyFallback = resolveIntentE2ELegacyFallbackReason(input.kind, input.events);
+  const prefilledPlanReuseSource = input.kind === 'generate' ? input.prefilledPlanReuseDecision.source : undefined;
+  const prefilledPlanSkipReason = input.kind === 'generate' ? input.prefilledPlanReuseDecision.skipReason : undefined;
+  const repairBaselineReuseSource =
+    input.kind === 'repair' && input.repairBaselineDecision?.source === 'recent_progressed_run'
+      ? input.repairBaselineDecision.source
+      : undefined;
+  const repairBaselineSkipReason = input.kind === 'repair' ? input.repairBaselineDecision?.skipReason : undefined;
+  const rawCodeCandidate =
+    prefilledPlanReuseSource && input.prefilledPlanReuseDecision.rawCode
+      ? input.prefilledPlanReuseDecision.rawCode
+      : legacyFallback.path
+      ? extractIntentE2ERawGeneratedCodeBody(input.rawGeneratedCode)
+      : '';
+  const sanitizedRawCandidate = rawCodeCandidate ? sanitizeGeneratedCode(rawCodeCandidate) : '';
+  const rawCodeCandidateComparable = normalizeIntentE2EAttemptComparableCode(rawCodeCandidate);
+  const sanitizedRawCandidateComparable = normalizeIntentE2EAttemptComparableCode(sanitizedRawCandidate);
+  const currentCodeComparable = normalizeIntentE2EAttemptComparableCode(input.currentCode);
+  const sanitizerRescueSource =
+    rawCodeCandidateComparable &&
+    sanitizedRawCandidateComparable &&
+    sanitizedRawCandidateComparable !== rawCodeCandidateComparable &&
+    sanitizedRawCandidateComparable === currentCodeComparable
+      ? (prefilledPlanReuseSource || legacyFallback.path) || undefined
+      : undefined;
+  const fallbackPath =
+    prefilledPlanReuseSource
+      ? 'prefilled_plan_reuse'
+      : legacyFallback.path;
+
+  if (!fallbackPath && !prefilledPlanSkipReason && !sanitizerRescueSource && !repairBaselineReuseSource && !repairBaselineSkipReason) {
+    return undefined;
+  }
+
+  return {
+    path: fallbackPath || 'prefilled_plan_reuse',
+    priorityScenarioFamily: input.priorityScenarioFamilyRoute.family,
+    priorityScenarioFamilySource: input.priorityScenarioFamilyRoute.source || '',
+    highConfidenceFamily: isHighConfidencePriorityScenarioFamilyRoute(input.priorityScenarioFamilyRoute),
+    ...(legacyFallback.reasonCode ? { legacyFallbackReasonCode: legacyFallback.reasonCode } : {}),
+    ...(legacyFallback.reason ? { legacyFallbackReason: legacyFallback.reason } : {}),
+    ...(prefilledPlanReuseSource ? { prefilledPlanReuseSource } : {}),
+    ...(input.prefilledPlanReuseDecision.reusedRunId ? { reusedRunId: input.prefilledPlanReuseDecision.reusedRunId } : {}),
+    ...(prefilledPlanSkipReason ? { prefilledPlanSkipReason } : {}),
+    ...(sanitizerRescueSource ? { sanitizerRescueSource } : {}),
+    ...(repairBaselineReuseSource ? { repairBaselineReuseSource } : {}),
+    ...(repairBaselineReuseSource && input.repairBaselineDecision?.reusedRunId
+      ? { repairBaselineReusedRunId: input.repairBaselineDecision.reusedRunId }
+      : {}),
+    ...(repairBaselineSkipReason ? { repairBaselineSkipReason } : {}),
+  };
+}
+
+function normalizeIntentE2EAttemptComparableCode(value: string): string {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function buildRepairNonProgressTriage(input: {
+  previousCode: string;
+  currentCode: string;
+  previousTriage?: IntentE2EFailureTriage | null;
+  currentResult: TestResult;
+  pageUrl: string;
+  snapshot: PageSnapshot;
+}): IntentE2EFailureTriage | null {
+  const previousCode = normalizeIntentE2EAttemptComparableCode(input.previousCode);
+  const currentCode = normalizeIntentE2EAttemptComparableCode(input.currentCode);
+  if (!previousCode || !currentCode || previousCode !== currentCode) {
+    return null;
+  }
+
+  const triage: IntentE2EFailureTriage = {
+    failureClass: 'repair_non_progress',
+    repairable: false,
+    summary: '判定为 repair 无明显进展：本次 repair 输出与上一轮脚本等价，继续自动修复收益很低。',
+    matchedSignals: uniqueStrings([
+      'repair_code_unchanged',
+      input.previousTriage?.failureClass ? `上一轮失败类=${input.previousTriage.failureClass}` : '',
+      firstNonEmptyLine(input.currentResult.error || ''),
+    ]),
+    diagnosis: null,
+  };
+
+  return {
+    ...triage,
+    diagnosis: buildIntentE2EFailureDiagnosis(triage, input.currentResult, {
+      pageUrl: input.pageUrl,
+      snapshot: input.snapshot,
+      repeatedCount: 2,
+    }),
+  };
 }
 
 async function emitFinalRunState(listener: IntentE2EStreamListener | undefined, output: IntentE2ERunResult): Promise<void> {
@@ -2320,6 +3145,18 @@ function formatIntentE2EDuration(durationMs: number): string {
 
   const seconds = normalizedDuration / 1000;
   return `${seconds.toFixed(seconds >= 10 ? 0 : 1)}s`;
+}
+
+function buildIntentE2EProgressTimingMessage(input: {
+  label: string;
+  stepDurationMs: number;
+  totalDurationMs: number;
+  details?: Array<string | null | undefined>;
+}): string {
+  const detailText = uniqueStrings(input.details || [], 5).join('；');
+  return `${input.label}（耗时 ${formatIntentE2EDuration(input.stepDurationMs)}，累计 ${formatIntentE2EDuration(input.totalDurationMs)}${
+    detailText ? `；${detailText}` : ''
+  }）`;
 }
 
 function describeIntentE2EPrecheckReuseMode(
@@ -2571,6 +3408,7 @@ export async function runIntentDrivenE2EStream(
   if (!targetUrl) {
     throw new Error('AI 已生成 ScenarioCard，但未能确定目标 URL；请在请求中补充 targetUrl');
   }
+  const successfulRunCodeReuseCandidatePromiseStartedAtMs = Date.now();
   const successfulRunCodeReuseCandidatePromise = resolveIntentE2ESuccessfulRunCodeReuseCandidate({
     projectUid,
     moduleUid: input.moduleUid?.trim() || '',
@@ -2651,6 +3489,24 @@ export async function runIntentDrivenE2EStream(
   }
   const fixtureExecutionState = fixtureSetup.state;
   const reusePrecheckSnapshot = !fixtureExecutionState?.setupRef && Boolean(precheck.precheck.snapshot);
+  const analyzeStageStartedAtMs = Date.now();
+  const emitAnalyzeProgress = async (
+    label: string,
+    stepStartedAtMs: number,
+    details?: Array<string | null | undefined>
+  ): Promise<void> => {
+    const nowMs = Date.now();
+    await emit(listener, {
+      type: 'stage',
+      stage: 'analyzing',
+      message: buildIntentE2EProgressTimingMessage({
+        label,
+        stepDurationMs: nowMs - stepStartedAtMs,
+        totalDurationMs: nowMs - analyzeStageStartedAtMs,
+        details,
+      }),
+    });
+  };
 
   await emit(listener, {
     type: 'stage',
@@ -2660,6 +3516,7 @@ export async function runIntentDrivenE2EStream(
       : `前置检查通过（${describeIntentE2EPrecheckReuseMode(precheck.meta.reuseMode, input.auth)}，耗时 ${formatIntentE2EDuration(precheck.meta.durationMs)}），正在整理页面结构并收集执行上下文…`,
   });
 
+  const snapshotStepStartedAtMs = Date.now();
   const snapshot = reusePrecheckSnapshot
     ? (precheck.precheck.snapshot as PageSnapshot)
     : await withTimeout(
@@ -2673,6 +3530,11 @@ export async function runIntentDrivenE2EStream(
         }
       );
   throwIfAborted(signal);
+  await emitAnalyzeProgress(
+    reusePrecheckSnapshot ? '页面快照已就绪（复用预检查快照）' : '页面快照已就绪（实时分析）',
+    snapshotStepStartedAtMs,
+    [snapshot.title ? `title=${snapshot.title}` : '', `url=${snapshot.url || scenarioEntryUrl}`]
+  );
   const priorityScenarioFamilyRoute = resolveIntentE2EPriorityScenarioFamilyRoute({
     requestInput: trimmedInput,
     targetUrl,
@@ -2684,10 +3546,19 @@ export async function runIntentDrivenE2EStream(
     ]).join('\n'),
     visualAnchors: scenarioCardOutput.card.visualAnchors,
   });
-  const [rulePerformanceById, starterHelpers, recipePerformanceBySlug] = await Promise.all([
-    loadIntentE2ERulePerformanceFeedback(projectUid),
-    loadIntentE2EStarterHelperFeedback(projectUid),
-    loadIntentE2ERecipePerformanceFeedback(projectUid),
+  const planningFeedbackStepStartedAtMs = Date.now();
+  const analyzeSupportData = await loadIntentE2EAnalyzeSupportData({
+    projectUid,
+    moduleUid: input.moduleUid?.trim() || '',
+    feedbackRunLimit: 50,
+    experienceRunLimit: 36,
+    auditLimit: 20,
+  });
+  const { rulePerformanceById, starterHelpers, recipePerformanceBySlug } = analyzeSupportData;
+  await emitAnalyzeProgress('规则 / Starter / recipe 反馈已加载', planningFeedbackStepStartedAtMs, [
+    `feedbackRuns=${analyzeSupportData.feedbackRunSnapshots.length}`,
+    `starterHelpers=${starterHelpers.length}`,
+    `source=${analyzeSupportData.loadSource}`,
   ]);
   const experienceSearchMatchedRecipeSlugs = resolveIntentE2EExperienceSearchMatchedRecipeSlugs({
     projectUid,
@@ -2697,6 +3568,7 @@ export async function runIntentDrivenE2EStream(
     priorityScenarioFamily: priorityScenarioFamilyRoute.family,
     recipePerformanceBySlug,
   });
+  const experienceSearchStepStartedAtMs = Date.now();
   const experienceSummary = await searchIntentE2EExperienceHints({
     projectUid,
     moduleUid: input.moduleUid?.trim() || '',
@@ -2709,8 +3581,14 @@ export async function runIntentDrivenE2EStream(
     stepTypes: scenarioCardOutput.card.flowDefinition.steps.map((step) => step.stepType),
     matchedRecipeSlugs: experienceSearchMatchedRecipeSlugs,
     includeFailures: true,
+    runSnapshots: analyzeSupportData.experienceRunSnapshots,
   });
   const experience = experienceSummary;
+  await emitAnalyzeProgress('历史经验检索已完成', experienceSearchStepStartedAtMs, [
+    `hints=${experienceSummary.hints.length}`,
+    experienceSearchMatchedRecipeSlugs.length > 0 ? `matchedRecipes=${experienceSearchMatchedRecipeSlugs.length}` : '',
+  ]);
+  const planningStepStartedAtMs = Date.now();
   const planning = resolveIntentPromptPlanningContext(snapshot, description, promptContext, {
     auth: input.auth,
     projectUid,
@@ -2746,6 +3624,11 @@ export async function runIntentDrivenE2EStream(
     precheckPolicyNotes: precheckPolicy.policyNotes,
     compiledTemplate,
   });
+  await emitAnalyzeProgress('执行上下文已整理完成', planningStepStartedAtMs, [
+    planning.executionPlan ? `planSteps=${planning.executionPlan.steps.length}` : 'planSteps=0',
+    planning.verificationPlan ? `checks=${planning.verificationPlan.checks.length}` : 'checks=0',
+    `knowledgeMatches=${knowledge.matchCount}`,
+  ]);
 
   const attempts: IntentE2EAttempt[] = [];
   const archivedAttempts: IntentE2ERunArtifactArchiveAttempt[] = [];
@@ -2756,11 +3639,52 @@ export async function runIntentDrivenE2EStream(
   }> = [];
   const observedRepairClusterIds = new Set<string>();
   const runnerAdapter = resolveIntentRunnerAdapter(platformAssets.testType, platformAssets.runnerType);
+  const historyCandidateStepStartedAtMs = Date.now();
   const successfulRunCodeReuseCandidate = await successfulRunCodeReuseCandidatePromise;
+  const successfulRunCodeReuseCandidateResidualWaitMs = Date.now() - historyCandidateStepStartedAtMs;
+  let progressedRunCodeReuseCandidateLoaded = !successfulRunCodeReuseCandidate;
+  const progressedRunCodeReuseCandidateStepStartedAtMs = Date.now();
+  let progressedRunCodeReuseCandidate = successfulRunCodeReuseCandidate
+    ? null
+    : await resolveIntentE2EProgressedRunCodeReuseCandidate({
+        projectUid,
+        moduleUid: input.moduleUid?.trim() || '',
+        intentDraftUid: input.intentDraftUid,
+        requestInput: trimmedInput,
+        targetUrl,
+        attachmentCount: input.attachments?.length || 0,
+      });
+  const progressedRunCodeReuseCandidateWaitMs = successfulRunCodeReuseCandidate
+    ? 0
+    : Date.now() - progressedRunCodeReuseCandidateStepStartedAtMs;
+  const loadProgressedRunCodeReuseCandidate = async (): Promise<IntentE2EProgressedRunCodeReuseCandidate | null> => {
+    if (progressedRunCodeReuseCandidateLoaded) {
+      return progressedRunCodeReuseCandidate;
+    }
+    progressedRunCodeReuseCandidateLoaded = true;
+    progressedRunCodeReuseCandidate = await resolveIntentE2EProgressedRunCodeReuseCandidate({
+      projectUid,
+      moduleUid: input.moduleUid?.trim() || '',
+      intentDraftUid: input.intentDraftUid,
+      requestInput: trimmedInput,
+      targetUrl,
+      attachmentCount: input.attachments?.length || 0,
+    });
+    return progressedRunCodeReuseCandidate;
+  };
   const prefilledPlanReuseDecision = resolveIntentE2EPrefilledPlanReuseDecision({
     prefilledPlanCode: input.prefilledPlanCode,
     successfulRunCodeCandidate: successfulRunCodeReuseCandidate,
+    progressedRunCodeCandidate: progressedRunCodeReuseCandidate,
   });
+  await emitAnalyzeProgress('历史脚本候选已完成', historyCandidateStepStartedAtMs, [
+    successfulRunCodeReuseCandidate ? `successful=${successfulRunCodeReuseCandidate.runId}` : 'successful=miss',
+    successfulRunCodeReuseCandidate ? 'progressed=skip' : progressedRunCodeReuseCandidate ? `progressed=${progressedRunCodeReuseCandidate.runId}` : 'progressed=miss',
+    `successfulWait=${formatIntentE2EDuration(successfulRunCodeReuseCandidateResidualWaitMs)}`,
+    `successfulLookupAge=${formatIntentE2EDuration(Date.now() - successfulRunCodeReuseCandidatePromiseStartedAtMs)}`,
+    !successfulRunCodeReuseCandidate ? `progressedWait=${formatIntentE2EDuration(progressedRunCodeReuseCandidateWaitMs)}` : '',
+    prefilledPlanReuseDecision.source ? `reuse=${prefilledPlanReuseDecision.source}` : 'reuse=none',
+  ]);
 
   let currentCode = '';
   let finalResult: TestResult | null = null;
@@ -2788,13 +3712,26 @@ export async function runIntentDrivenE2EStream(
           ? prefilledPlanReuseDecision.code
             ? prefilledPlanReuseDecision.source === 'recent_successful_run'
               ? '已复用最近一次成功运行脚本，跳过重新生成并直接进入执行…'
+              : prefilledPlanReuseDecision.source === 'recent_progressed_run'
+              ? '已复用最近一次推进更远的修复脚本，跳过重新生成并直接进入执行…'
               : '已复用草稿首版脚本，跳过重新生成并直接进入执行…'
             : prefilledPlanReuseDecision.skipReason
-            ? '草稿首版脚本命中已知旧骨架，已回退到当前生成链路…'
+            ? '候选复用脚本不可用，已回退到当前生成链路…'
             : '正在生成更稳定的 Playwright 测试脚本…'
           : `第 ${attempt} 次尝试：根据失败信息修复脚本…`,
     });
 
+    const previousAttempt = kind === 'repair' ? attempts[attempts.length - 1] || null : null;
+    const repairProgressedRunCodeReuseCandidate =
+      kind === 'repair' ? await loadProgressedRunCodeReuseCandidate() : null;
+    const repairBaselineDecision =
+      kind === 'repair'
+        ? resolveIntentE2ERepairBaselineDecision({
+            previousCode: currentCode,
+            previousAttempt,
+            progressedRunCodeCandidate: repairProgressedRunCodeReuseCandidate,
+          })
+        : null;
     const repairInput =
       kind === 'repair'
         ? {
@@ -2802,7 +3739,8 @@ export async function runIntentDrivenE2EStream(
             pageTitle: snapshot.title,
             description,
             executionError: finalResult?.error || '未知执行失败',
-            previousCode: currentCode,
+            previousCode: repairBaselineDecision?.previousCode || currentCode,
+            comparisonCode: currentCode,
             recentEvents: buildRepairEvents(
               finalResult as TestResult,
               attempts[attempts.length - 1]?.logs || [],
@@ -2900,6 +3838,39 @@ export async function runIntentDrivenE2EStream(
         },
       });
     }
+    if (kind === 'generate' && prefilledPlanReuseDecision.source === 'recent_progressed_run') {
+      await emit(listener, {
+        type: 'attempt_log',
+        attempt,
+        kind,
+        log: {
+          level: 'info',
+          message: `已命中最近一次推进更远的修复脚本${prefilledPlanReuseDecision.reusedRunId ? `（${prefilledPlanReuseDecision.reusedRunId}）` : ''}，优先沿用已验证通过的前序步骤。`,
+        },
+      });
+    }
+    if (kind === 'repair' && repairBaselineDecision?.skipReason) {
+      await emit(listener, {
+        type: 'attempt_log',
+        attempt,
+        kind,
+        log: {
+          level: 'info',
+          message: repairBaselineDecision.skipReason,
+        },
+      });
+    }
+    if (kind === 'repair' && repairBaselineDecision?.source === 'recent_progressed_run') {
+      await emit(listener, {
+        type: 'attempt_log',
+        attempt,
+        kind,
+        log: {
+          level: 'info',
+          message: `repair 基线已切回最近一次推进更远的历史脚本${repairBaselineDecision.reusedRunId ? `（${repairBaselineDecision.reusedRunId}）` : ''}；上一轮推进 ${repairBaselineDecision.previousAttemptProgressedStepCount} 步，历史脚本推进 ${repairBaselineDecision.baselineProgressedStepCount} 步。`,
+        },
+      });
+    }
 
     const generation =
       kind === 'generate'
@@ -2964,6 +3935,39 @@ export async function runIntentDrivenE2EStream(
 
     throwIfAborted(signal);
     currentCode = generation.code;
+    const fallbackTelemetry = buildIntentE2EAttemptFallbackTelemetry({
+      kind,
+      events: generation.events,
+      currentCode,
+      rawGeneratedCode: generation.rawGeneratedCode,
+      prefilledPlanReuseDecision,
+      priorityScenarioFamilyRoute,
+      repairBaselineDecision,
+    });
+    if (fallbackTelemetry?.legacyFallbackReason && fallbackTelemetry.highConfidenceFamily) {
+      await emit(listener, {
+        type: 'attempt_log',
+        attempt,
+        kind,
+        log: {
+          level: 'warn',
+          message: `命中高置信 family=${fallbackTelemetry.priorityScenarioFamily}，但当前仍回退到 ${
+            fallbackTelemetry.path === 'legacy_free_repair' ? '自由 repair' : '自由 generate'
+          }：${fallbackTelemetry.legacyFallbackReason}`,
+        },
+      });
+    }
+    if (fallbackTelemetry?.sanitizerRescueSource) {
+      await emit(listener, {
+        type: 'attempt_log',
+        attempt,
+        kind,
+        log: {
+          level: 'info',
+          message: `当前脚本命中 sanitizer rescue（source=${fallbackTelemetry.sanitizerRescueSource}）。`,
+        },
+      });
+    }
     const sessionId = createSessionId();
 
     await emit(listener, {
@@ -3037,12 +4041,25 @@ export async function runIntentDrivenE2EStream(
       content: artifact.content,
       ...(artifact.meta !== undefined ? { meta: artifact.meta } : {}),
     }));
-    const triage = result.success
+    let triage = result.success
       ? null
       : classifyIntentE2EFailure(result, logs, {
           pageUrl: snapshot.url,
           snapshot,
         });
+    if (!result.success && kind === 'repair') {
+      const repairNonProgressTriage = buildRepairNonProgressTriage({
+        previousCode: repairInput?.comparisonCode || '',
+        currentCode,
+        previousTriage,
+        currentResult: result,
+        pageUrl: snapshot.url,
+        snapshot,
+      });
+      if (repairNonProgressTriage) {
+        triage = repairNonProgressTriage;
+      }
+    }
 
     const rawRepairOutput = extractIntentExecutionStructuredRepairOutput(generation.events);
     const attemptResult: IntentE2EAttempt = {
@@ -3057,6 +4074,7 @@ export async function runIntentDrivenE2EStream(
       structuredPatch: extractIntentExecutionStructuredPatch(generation.events),
       repairOutput: attachRepairLearningObservationArtifact(rawRepairOutput, repairObservationArtifact),
       repairObservationReport: repairObservationReport || undefined,
+      fallbackTelemetry,
       triage,
     };
 
@@ -3084,6 +4102,7 @@ export async function runIntentDrivenE2EStream(
         })),
       },
       triage,
+      ...(fallbackTelemetry ? { fallbackTelemetry } : {}),
       ...(runnerArtifacts.length > 0 ? { runnerArtifacts } : {}),
     });
     if (attemptResult.triage && !result.success) {

@@ -1,4 +1,9 @@
 import type { IntentActionDSL, IntentActionStepInput, IntentActionStepType } from './intent-action-dsl';
+import {
+  getIntentE2EPriorityScenarioFamilyAssetProfile,
+  type IntentE2EPriorityScenarioFamily,
+  type IntentE2EPriorityScenarioFamilyAssetProfile,
+} from './intent-e2e-priority-scenario-family';
 import type { IntentMatchedRecipe } from './intent-recipe-registry';
 import type {
   IntentProjectKnowledgeDetailSurfaceHint,
@@ -8,6 +13,7 @@ import type {
   IntentProjectKnowledgeResolution,
 } from './intent-project-knowledge';
 import { buildIntentSharedVariableJsonPaths, looksLikeIntentStableIdentifierVariable } from './intent-shared-variable-utils';
+import { collectFlowVariableNames } from './task-flow';
 import { parseCapabilityVerificationIntent, type CapabilityVerificationIntent } from './capability-verification';
 
 export type IntentExecutionPlanMode = 'page' | 'scenario';
@@ -139,6 +145,7 @@ export interface BuildIntentExecutionPlanInput {
   scenarioSteps?: IntentActionStepInput[];
   knowledge?: IntentProjectKnowledgeResolution;
   recipes?: IntentMatchedRecipe[];
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily;
   dsl: IntentActionDSL;
 }
 
@@ -178,6 +185,58 @@ function buildRecipeVerificationNotes(recipes?: IntentMatchedRecipe[]): string[]
       ...item.recipe.knownPitfalls.map((step) => `Recipe 避坑：${step}`),
     ])
   );
+}
+
+function listPriorityScenarioFamilyExecutionRules(
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily
+): string[] {
+  const profile = getIntentE2EPriorityScenarioFamilyAssetProfile(priorityScenarioFamily);
+  if (!profile) return [];
+  return uniqueStrings([
+    ...profile.executionRules.map((item) => `Family 执行骨架：${item}`),
+    ...profile.readiness.requirements.map((item) => `Family readiness：${item}`),
+    ...profile.readiness.notes.map((item) => `Family readiness note：${item}`),
+  ]);
+}
+
+function listPriorityScenarioFamilyPreferredPrimitives(
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily
+): string[] {
+  const profile = getIntentE2EPriorityScenarioFamilyAssetProfile(priorityScenarioFamily);
+  return profile ? uniqueStrings(profile.preferredPrimitives) : [];
+}
+
+function listPriorityScenarioFamilyOutputContract(
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily
+): string[] {
+  const profile = getIntentE2EPriorityScenarioFamilyAssetProfile(priorityScenarioFamily);
+  if (!profile) return [];
+
+  return uniqueStrings([
+    ...profile.outputContract,
+    `Family stable identifier primary: ${profile.stableIdentifier.primaryVariables.join(' / ') || '未定义'}`,
+    profile.stableIdentifier.fallbackVariables.length > 0
+      ? `Family stable identifier fallback: ${profile.stableIdentifier.fallbackVariables.join(' / ')}`
+      : '',
+    profile.stableIdentifier.responsePathHints.length > 0
+      ? `Family response path hints: ${profile.stableIdentifier.responsePathHints.join(' / ')}`
+      : '',
+  ]);
+}
+
+function listPriorityScenarioFamilyVerificationPolicyNotes(
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily
+): string[] {
+  const profile = getIntentE2EPriorityScenarioFamilyAssetProfile(priorityScenarioFamily);
+  if (!profile) return [];
+
+  return uniqueStrings([
+    ...profile.verifier.policyNotes,
+    `Family verifier evidence: ${profile.verifier.requiredEvidence.join(' / ')}`,
+    `Family fixture contract: ${profile.readiness.fixtureContract}`,
+    ...profile.readiness.requirements.map((item) => `Family readiness：${item}`),
+    ...profile.readiness.notes.map((item) => `Family readiness note：${item}`),
+  ]);
 }
 
 function normalizeIntentToken(value: string): string {
@@ -231,7 +290,7 @@ function buildGenericFieldJsonPaths(label: string, stableIdentifiers: string[]):
     /(手机号|手机号码|电话|mobile|phone)/i.test(normalizedLabel)
       ? ['mobile', 'phone', 'telephone', 'tel', 'contactPhone', 'contactMobile', 'mobilePhone']
       : null,
-    /(状态|status|state)/i.test(normalizedLabel) ? buildGenericStatusJsonPaths() : null,
+    /(状态|status|state|商机进展)/i.test(normalizedLabel) ? buildGenericStatusJsonPaths() : null,
     /(创建时间|创建日期|createdat|createtime|createdtime)/i.test(normalizedLabel)
       ? ['createdAt', 'createTime', 'createdTime', 'createDate', 'createdDate', 'gmtCreate']
       : null,
@@ -274,7 +333,13 @@ function inferFieldExpectedSource(
   return 'unknown';
 }
 
-function inferVerificationKind(text: string, helpers: string[], actions: string[], extractVariable = ''): IntentVerificationPlanCheckKind {
+function inferVerificationKind(
+  text: string,
+  helpers: string[],
+  actions: string[],
+  extractVariable = '',
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily
+): IntentVerificationPlanCheckKind {
   const normalizedText = String(text || '').trim();
   const haystack = [normalizedText, extractVariable, ...helpers, ...actions].join('\n').toLowerCase();
   const textLooksLikeResponse =
@@ -283,6 +348,24 @@ function inferVerificationKind(text: string, helpers: string[], actions: string[
   const textLooksLikeTableRow = /(列表|表格|记录|目标行|row|table)/i.test(normalizedText);
   const textLooksLikeUrlState = /(url|路由|跳转|详情页|列表页|回到|进入)/i.test(normalizedText);
 
+  if (
+    priorityScenarioFamily === 'business_create_list_verify' &&
+    /(列表|回列表|目标记录|商机进展|状态|businessid|联系人|手机号)/i.test(normalizedText)
+  ) {
+    return 'table_row';
+  }
+  if (
+    priorityScenarioFamily === 'list_search_detail' &&
+    /(搜索|检索|目标行|详情|联系人|手机号|状态)/i.test(normalizedText)
+  ) {
+    return 'table_row';
+  }
+  if (
+    priorityScenarioFamily === 'modal_or_drawer_save' &&
+    /(modal|drawer|弹框|弹窗|抽屉|关闭|保存成功|页面稳定)/i.test(normalizedText)
+  ) {
+    return 'modal_state';
+  }
   if (extractVariable || /(变量|提取|读取|extract|保存变量)/i.test(haystack)) {
     return 'variable';
   }
@@ -427,6 +510,23 @@ function inferExpectedFieldsFromTexts(kind: IntentVerificationPlanCheckKind, tex
     /(编号|单号|流水号|uid|serial|serialno|serialnumber|recordcode|recorduid|customercode|businessid|orderid)/i.test(haystack)
       ? stableIdentifiers[0] || null
       : null,
+    ...(kind === 'table_row' ? stableIdentifiers : []),
+  ]);
+}
+
+function inferExpectedFieldsFromPriorityScenarioFamily(
+  kind: IntentVerificationPlanCheckKind,
+  profile: IntentE2EPriorityScenarioFamilyAssetProfile | null,
+  stableIdentifiers: string[]
+): string[] {
+  if (!profile) return [];
+  if (kind !== 'table_row' && kind !== 'ui_state' && kind !== 'modal_state') {
+    return [];
+  }
+
+  return uniqueStrings([
+    ...profile.verifier.expectedFieldLabels,
+    ...profile.stableIdentifier.detailFieldLabels,
     ...(kind === 'table_row' ? stableIdentifiers : []),
   ]);
 }
@@ -816,6 +916,163 @@ function buildVerificationDetailSurfaceSpec(
   };
 }
 
+function mergeVerificationResponseSpec(
+  base?: IntentVerificationResponseSpec,
+  overlay?: IntentVerificationResponseSpec
+): IntentVerificationResponseSpec | undefined {
+  if (!base && !overlay) return undefined;
+  return {
+    urlIncludes: base?.urlIncludes || overlay?.urlIncludes,
+    method: base?.method || overlay?.method,
+  };
+}
+
+function mergeVerificationLocatorHintSpec(
+  base?: IntentVerificationLocatorHintSpec,
+  overlay?: IntentVerificationLocatorHintSpec
+): IntentVerificationLocatorHintSpec | undefined {
+  if (!base && !overlay) return undefined;
+
+  return {
+    selector: base?.selector || overlay?.selector,
+    placeholderIncludes: base?.placeholderIncludes || overlay?.placeholderIncludes,
+    textIncludes: base?.textIncludes || overlay?.textIncludes,
+  };
+}
+
+function mergeVerificationRecordLookupSpec(
+  base?: IntentVerificationRecordLookupSpec,
+  overlay?: IntentVerificationRecordLookupSpec
+): IntentVerificationRecordLookupSpec | undefined {
+  if (!base && !overlay) return undefined;
+
+  const searchSurface =
+    base?.searchSurface || overlay?.searchSurface
+      ? {
+          keywordInput: mergeVerificationLocatorHintSpec(base?.searchSurface?.keywordInput, overlay?.searchSurface?.keywordInput),
+          searchButton: mergeVerificationLocatorHintSpec(base?.searchSurface?.searchButton, overlay?.searchSurface?.searchButton),
+        }
+      : undefined;
+  const detailEntry =
+    base?.detailEntry || overlay?.detailEntry
+      ? {
+          trigger: base?.detailEntry?.trigger || overlay?.detailEntry?.trigger,
+          actionLabel: base?.detailEntry?.actionLabel || overlay?.detailEntry?.actionLabel,
+          target: base?.detailEntry?.target || overlay?.detailEntry?.target,
+          urlIncludes: base?.detailEntry?.urlIncludes || overlay?.detailEntry?.urlIncludes,
+        }
+      : undefined;
+
+  return {
+    listResponse: mergeVerificationResponseSpec(base?.listResponse, overlay?.listResponse),
+    detailUrl: base?.detailUrl || overlay?.detailUrl,
+    rowHasTexts: uniqueStrings([...(base?.rowHasTexts || []), ...(overlay?.rowHasTexts || [])]),
+    searchSurface:
+      searchSurface?.keywordInput || searchSurface?.searchButton
+        ? searchSurface
+        : undefined,
+    tableScope: mergeVerificationLocatorHintSpec(base?.tableScope, overlay?.tableScope),
+    detailReadyLocator: mergeVerificationLocatorHintSpec(base?.detailReadyLocator, overlay?.detailReadyLocator),
+    detailEntry:
+      detailEntry?.trigger || detailEntry?.actionLabel || detailEntry?.target || detailEntry?.urlIncludes
+        ? detailEntry
+        : undefined,
+  };
+}
+
+function mergeVerificationDetailSurfaceSpec(
+  base?: IntentVerificationDetailSurfaceSpec,
+  overlay?: IntentVerificationDetailSurfaceSpec
+): IntentVerificationDetailSurfaceSpec | undefined {
+  if (!base && !overlay) return undefined;
+
+  return {
+    titleIncludes: base?.titleIncludes || overlay?.titleIncludes,
+    scopeHints: uniqueStrings([...(base?.scopeHints || []), ...(overlay?.scopeHints || [])]),
+  };
+}
+
+function buildPriorityScenarioFamilyRecordLookupSpec(
+  kind: IntentVerificationPlanCheckKind,
+  profile: IntentE2EPriorityScenarioFamilyAssetProfile | null,
+  stableIdentifiers: string[]
+): IntentVerificationRecordLookupSpec | undefined {
+  if (!profile || kind !== 'table_row') return undefined;
+
+  const primaryVariable = stableIdentifiers.find((item) => profile.stableIdentifier.primaryVariables.includes(item)) || stableIdentifiers[0] || '';
+  const primaryOrFallback =
+    primaryVariable ||
+    profile.stableIdentifier.primaryVariables[0] ||
+    profile.stableIdentifier.fallbackVariables[0] ||
+    '';
+
+  const rowHasTexts = uniqueStrings([
+    primaryOrFallback,
+    ...profile.stableIdentifier.fallbackVariables.slice(0, 2),
+  ]);
+
+  const searchSurface =
+    profile.family === 'business_create_list_verify'
+      ? {
+          keywordInput: { placeholderIncludes: '商机' },
+          searchButton: { textIncludes: '搜索' },
+        }
+      : undefined;
+
+  return {
+    listResponse: profile.stableIdentifier.listResponseUrlIncludes
+      ? {
+          urlIncludes: profile.stableIdentifier.listResponseUrlIncludes,
+          method: 'GET',
+        }
+      : undefined,
+    detailUrl:
+      primaryOrFallback && profile.stableIdentifier.detailUrlTemplate
+        ? profile.stableIdentifier.detailUrlTemplate
+        : undefined,
+    rowHasTexts,
+    searchSurface,
+    ...(profile.verifier.detailEntry
+      ? {
+          detailEntry: {
+            ...(profile.verifier.detailEntry.trigger ? { trigger: profile.verifier.detailEntry.trigger } : {}),
+            ...(profile.verifier.detailEntry.actionLabel ? { actionLabel: profile.verifier.detailEntry.actionLabel } : {}),
+            ...(profile.verifier.detailEntry.target ? { target: profile.verifier.detailEntry.target } : {}),
+            ...(profile.verifier.detailEntry.urlIncludes ? { urlIncludes: profile.verifier.detailEntry.urlIncludes } : {}),
+          },
+        }
+      : {}),
+  };
+}
+
+function buildPriorityScenarioFamilyDetailSurfaceSpec(
+  kind: IntentVerificationPlanCheckKind,
+  profile: IntentE2EPriorityScenarioFamilyAssetProfile | null
+): IntentVerificationDetailSurfaceSpec | undefined {
+  if (!profile) return undefined;
+  if (kind !== 'table_row' && kind !== 'ui_state' && kind !== 'modal_state') {
+    return undefined;
+  }
+
+  const scopeHints = uniqueStrings([
+    profile.family === 'modal_or_drawer_save' ? '详情弹层' : '',
+    profile.family === 'modal_or_drawer_save' ? '详情抽屉' : '',
+    profile.family === 'business_create_list_verify' ? '详情抽屉' : '',
+    profile.family === 'business_create_list_verify' ? '详情页' : '',
+    profile.family === 'list_search_detail' ? '详情抽屉' : '',
+    profile.family === 'list_search_detail' ? '详情页' : '',
+  ]);
+
+  if (!profile.stableIdentifier.detailTitleIncludes && scopeHints.length === 0) {
+    return undefined;
+  }
+
+  return {
+    ...(profile.stableIdentifier.detailTitleIncludes ? { titleIncludes: profile.stableIdentifier.detailTitleIncludes } : {}),
+    ...(scopeHints.length > 0 ? { scopeHints } : {}),
+  };
+}
+
 function buildVerificationRecordLookupSpec(
   kind: IntentVerificationPlanCheckKind,
   stableIdentifiers: string[],
@@ -863,11 +1120,13 @@ function buildVerificationCheckMetadata(
   instruction: string,
   relatedSteps: IntentExecutionPlanStep[],
   explicitStableIdentifiers: string[] = [],
-  knowledge?: IntentProjectKnowledgeResolution
+  knowledge?: IntentProjectKnowledgeResolution,
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily
 ): Pick<
   IntentVerificationPlanCheck,
   'stableIdentifiers' | 'expectedFields' | 'fieldPathHints' | 'fieldSpecs' | 'recordLookup' | 'detailSurface'
 > {
+  const familyProfile = getIntentE2EPriorityScenarioFamilyAssetProfile(priorityScenarioFamily);
   const stableIdentifiers = uniqueStrings([...explicitStableIdentifiers, ...collectStableIdentifiersFromSteps(relatedSteps)]);
   const texts = collectRelatedTexts(instruction, relatedSteps);
   const expectedFields = inferExpectedFieldsFromTexts(
@@ -875,14 +1134,29 @@ function buildVerificationCheckMetadata(
     texts,
     stableIdentifiers
   );
-  const fieldPathHints = buildVerificationFieldPathHints(expectedFields, stableIdentifiers, relatedSteps, knowledge);
-  const fieldSpecs = buildVerificationFieldSpecs(kind, expectedFields, stableIdentifiers, relatedSteps, instruction, knowledge);
-  const recordLookup = buildVerificationRecordLookupSpec(kind, stableIdentifiers, expectedFields, relatedSteps, knowledge);
-  const detailSurface = buildVerificationDetailSurfaceSpec(kind, fieldSpecs, instruction, relatedSteps, stableIdentifiers, knowledge);
+  const familyExpectedFields = inferExpectedFieldsFromPriorityScenarioFamily(kind, familyProfile, stableIdentifiers);
+  const resolvedExpectedFields = uniqueStrings([...expectedFields, ...familyExpectedFields]);
+  const fieldPathHints = buildVerificationFieldPathHints(resolvedExpectedFields, stableIdentifiers, relatedSteps, knowledge);
+  const fieldSpecs = buildVerificationFieldSpecs(
+    kind,
+    resolvedExpectedFields,
+    stableIdentifiers,
+    relatedSteps,
+    instruction,
+    knowledge
+  );
+  const recordLookup = mergeVerificationRecordLookupSpec(
+    buildVerificationRecordLookupSpec(kind, stableIdentifiers, resolvedExpectedFields, relatedSteps, knowledge),
+    buildPriorityScenarioFamilyRecordLookupSpec(kind, familyProfile, stableIdentifiers)
+  );
+  const detailSurface = mergeVerificationDetailSurfaceSpec(
+    buildVerificationDetailSurfaceSpec(kind, fieldSpecs, instruction, relatedSteps, stableIdentifiers, knowledge),
+    buildPriorityScenarioFamilyDetailSurfaceSpec(kind, familyProfile)
+  );
 
   return {
     stableIdentifiers,
-    expectedFields,
+    expectedFields: resolvedExpectedFields,
     fieldPathHints,
     fieldSpecs,
     recordLookup,
@@ -896,6 +1170,7 @@ function buildExecutionPlanSteps(dsl: IntentActionDSL, scenarioSteps: IntentActi
   return dsl.steps.map((step, index) => {
     const sourceStep = scenarioStepByUid.get(step.stepUid);
     const previousStep = index > 0 ? dsl.steps[index - 1] : null;
+    const stepExtractVariables = collectFlowVariableNames(sourceStep?.extractVariable || '');
 
     return {
       planStepUid: `plan_step_${index + 1}`,
@@ -908,14 +1183,14 @@ function buildExecutionPlanSteps(dsl: IntentActionDSL, scenarioSteps: IntentActi
       preferredHelpers: [...step.preferredHelpers],
       requiredAssertions: [...step.requiredAssertions],
       extractVariable: sourceStep?.extractVariable?.trim() || '',
-      sharedVariables: uniqueStrings([...(sourceStep?.extractVariable ? [sourceStep.extractVariable] : []), ...step.sharedVariables, ...sharedVariables]),
+      sharedVariables: uniqueStrings([...stepExtractVariables, ...step.sharedVariables, ...sharedVariables]),
       dependsOnPlanStepUids: previousStep ? [`plan_step_${index}`] : [],
     };
   });
 }
 
 export function buildIntentExecutionPlan(input: BuildIntentExecutionPlanInput): IntentExecutionPlan {
-  const sharedVariables = uniqueStrings(input.sharedVariables || []);
+  const sharedVariables = collectFlowVariableNames(input.sharedVariables || []);
   const scenarioSteps = input.scenarioSteps || [];
   const steps = buildExecutionPlanSteps(input.dsl, scenarioSteps, sharedVariables);
   const matchedRecipeSlugs = collectMatchedRecipeSlugs(input.recipes);
@@ -929,9 +1204,19 @@ export function buildIntentExecutionPlan(input: BuildIntentExecutionPlanInput): 
     expectedOutcome: input.expectedOutcome?.trim() || (input.successCriteria || []).join('；'),
     sharedVariables,
     matchedRecipeSlugs,
-    globalRules: uniqueStrings([...input.dsl.globalRules, ...buildRecipeExecutionRules(input.recipes)]),
-    preferredPrimitives: [...input.dsl.preferredPrimitives],
-    outputContract: [...input.dsl.outputContract],
+    globalRules: uniqueStrings([
+      ...input.dsl.globalRules,
+      ...buildRecipeExecutionRules(input.recipes),
+      ...listPriorityScenarioFamilyExecutionRules(input.priorityScenarioFamily),
+    ]),
+    preferredPrimitives: uniqueStrings([
+      ...input.dsl.preferredPrimitives,
+      ...listPriorityScenarioFamilyPreferredPrimitives(input.priorityScenarioFamily),
+    ]),
+    outputContract: uniqueStrings([
+      ...input.dsl.outputContract,
+      ...listPriorityScenarioFamilyOutputContract(input.priorityScenarioFamily),
+    ]),
     steps,
   };
 }
@@ -947,6 +1232,7 @@ export function buildIntentVerificationPlan(input: BuildIntentExecutionPlanInput
         ]
       : [],
     ...buildRecipeVerificationNotes(input.recipes),
+    ...listPriorityScenarioFamilyVerificationPolicyNotes(input.priorityScenarioFamily),
   ].flat());
   const matchedRecipeSlugs = collectMatchedRecipeSlugs(input.recipes);
   const checks: IntentVerificationPlanCheck[] = [];
@@ -963,9 +1249,11 @@ export function buildIntentVerificationPlan(input: BuildIntentExecutionPlanInput
     const kind = inferVerificationKind(
       normalized,
       executionPlan.steps.flatMap((step) => step.preferredHelpers),
-      executionPlan.steps.flatMap((step) => step.allowedActions)
+      executionPlan.steps.flatMap((step) => step.allowedActions),
+      '',
+      input.priorityScenarioFamily
     );
-    const metadata = buildVerificationCheckMetadata(kind, normalized, relatedSteps, [], input.knowledge);
+    const metadata = buildVerificationCheckMetadata(kind, normalized, relatedSteps, [], input.knowledge, input.priorityScenarioFamily);
 
     checks.push({
       checkUid: `verify_success_${index + 1}`,
@@ -992,8 +1280,8 @@ export function buildIntentVerificationPlan(input: BuildIntentExecutionPlanInput
       const normalized = assertion.trim();
       if (!normalized || seen.has(`step_assertion:${step.planStepUid}:${normalized}`)) continue;
       seen.add(`step_assertion:${step.planStepUid}:${normalized}`);
-      const kind = inferVerificationKind(normalized, step.preferredHelpers, step.allowedActions);
-      const metadata = buildVerificationCheckMetadata(kind, normalized, [step], [], input.knowledge);
+      const kind = inferVerificationKind(normalized, step.preferredHelpers, step.allowedActions, '', input.priorityScenarioFamily);
+      const metadata = buildVerificationCheckMetadata(kind, normalized, [step], [], input.knowledge, input.priorityScenarioFamily);
 
       checks.push({
         checkUid: `verify_step_${step.planStepUid}_${checks.length + 1}`,
@@ -1014,36 +1302,36 @@ export function buildIntentVerificationPlan(input: BuildIntentExecutionPlanInput
     }
 
     const sourceStep = scenarioStepByUid.get(step.scenarioStepUid);
-    const extractVariable = step.extractVariable || sourceStep?.extractVariable || '';
-    if (!extractVariable) continue;
+    const extractVariables = collectFlowVariableNames(step.extractVariable || sourceStep?.extractVariable || '');
+    for (const normalized of extractVariables) {
+      if (!normalized || seen.has(`step_variable:${step.planStepUid}:${normalized}`)) continue;
+      seen.add(`step_variable:${step.planStepUid}:${normalized}`);
+      const metadata = buildVerificationCheckMetadata(
+        'variable',
+        `必须成功提取并保存变量 ${normalized}`,
+        [step],
+        looksLikeIntentStableIdentifierVariable(normalized) ? [normalized] : [],
+        input.knowledge,
+        input.priorityScenarioFamily
+      );
 
-    const normalized = extractVariable.trim();
-    if (!normalized || seen.has(`step_variable:${step.planStepUid}:${normalized}`)) continue;
-    seen.add(`step_variable:${step.planStepUid}:${normalized}`);
-    const metadata = buildVerificationCheckMetadata(
-      'variable',
-      `必须成功提取并保存变量 ${normalized}`,
-      [step],
-      looksLikeIntentStableIdentifierVariable(normalized) ? [normalized] : [],
-      input.knowledge
-    );
-
-    checks.push({
-      checkUid: `verify_variable_${step.planStepUid}`,
-      kind: 'variable',
-      source: 'step_extract_variable',
-      title: `${step.title} 提取变量`,
-      instruction: `必须成功提取并保存变量 ${normalized}`,
-      stableIdentifiers: metadata.stableIdentifiers,
-      expectedFields: metadata.expectedFields,
-      fieldPathHints: metadata.fieldPathHints,
-      fieldSpecs: metadata.fieldSpecs,
-      recordLookup: metadata.recordLookup,
-      detailSurface: metadata.detailSurface,
-      preferredHelpers: [...step.preferredHelpers],
-      relatedPlanStepUids: [step.planStepUid],
-      required: true,
-    });
+      checks.push({
+        checkUid: `verify_variable_${step.planStepUid}_${normalized}`,
+        kind: 'variable',
+        source: 'step_extract_variable',
+        title: `${step.title} 提取变量`,
+        instruction: `必须成功提取并保存变量 ${normalized}`,
+        stableIdentifiers: metadata.stableIdentifiers,
+        expectedFields: metadata.expectedFields,
+        fieldPathHints: metadata.fieldPathHints,
+        fieldSpecs: metadata.fieldSpecs,
+        recordLookup: metadata.recordLookup,
+        detailSurface: metadata.detailSurface,
+        preferredHelpers: [...step.preferredHelpers],
+        relatedPlanStepUids: [step.planStepUid],
+        required: true,
+      });
+    }
   }
 
   return {
@@ -1083,6 +1371,7 @@ export function renderIntentExecutionPlan(plan: IntentExecutionPlan): string {
 - matchedRecipes: ${renderLineList(plan.matchedRecipeSlugs || [])}
 - globalRules: ${renderLineList(plan.globalRules)}
 - preferredPrimitives: ${renderLineList(plan.preferredPrimitives)}
+- outputContract: ${renderLineList(plan.outputContract)}
 
 步骤：
 ${steps || '- 无显式步骤'}`;

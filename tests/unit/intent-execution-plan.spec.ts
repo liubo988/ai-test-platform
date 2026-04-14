@@ -1184,6 +1184,123 @@ describe('intent-execution-plan', () => {
     );
   });
 
+  it('splits comma-separated extract variables into independent shared variables and verification checks', () => {
+    const executionPlan = buildIntentExecutionPlan({
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/order/list',
+      featureDescription: '批量申请入账并校验订单号、服务项、入账金额',
+      expectedOutcome: '提取订单号、服务项、入账金额并完成后续校验',
+      successCriteria: ['批量申请入账成功'],
+      sharedVariables: ['selectedOrderNo'],
+      scenarioSteps: [
+        {
+          stepUid: 'step_extract_order_fields',
+          stepType: 'extract',
+          title: '提取订单对账字段',
+          target: '订单列表结果表格',
+          instruction: '从目标订单行提取订单号、服务项、入账金额',
+          expectedResult: '成功提取目标字段',
+          extractVariable: 'selectedOrderNo,selectedServiceItem,selectedAmount',
+        },
+      ],
+      dsl: {
+        version: 1,
+        mode: 'scenario',
+        targetUrl: 'https://example.com/order/list',
+        summary: '提取订单对账字段',
+        globalRules: [],
+        preferredPrimitives: [],
+        outputContract: [],
+        steps: [
+          {
+            stepUid: 'step_extract_order_fields',
+            stepType: 'extract',
+            title: '提取订单对账字段',
+            target: '订单列表结果表格',
+            goal: '从目标订单行提取订单号、服务项、入账金额',
+            allowedActions: ['extract_text', 'store_variable'],
+            preferredHelpers: [],
+            requiredAssertions: ['批量申请入账成功'],
+            sharedVariables: ['selectedOrderNo'],
+            forbiddenPatterns: [],
+          },
+        ],
+      },
+    });
+
+    expect(executionPlan.sharedVariables).toEqual(['selectedOrderNo']);
+    expect(executionPlan.steps[0]?.extractVariable).toBe('selectedOrderNo,selectedServiceItem,selectedAmount');
+    expect(executionPlan.steps[0]?.sharedVariables).toEqual([
+      'selectedOrderNo',
+      'selectedServiceItem',
+      'selectedAmount',
+    ]);
+
+    const verificationPlan = buildIntentVerificationPlan(
+      {
+        taskMode: 'scenario',
+        targetUrl: 'https://example.com/order/list',
+        featureDescription: '批量申请入账并校验订单号、服务项、入账金额',
+        expectedOutcome: '提取订单号、服务项、入账金额并完成后续校验',
+        successCriteria: ['批量申请入账成功'],
+        sharedVariables: ['selectedOrderNo'],
+        scenarioSteps: [
+          {
+            stepUid: 'step_extract_order_fields',
+            stepType: 'extract',
+            title: '提取订单对账字段',
+            target: '订单列表结果表格',
+            instruction: '从目标订单行提取订单号、服务项、入账金额',
+            expectedResult: '成功提取目标字段',
+            extractVariable: 'selectedOrderNo,selectedServiceItem,selectedAmount',
+          },
+        ],
+        dsl: {
+          version: 1,
+          mode: 'scenario',
+          targetUrl: 'https://example.com/order/list',
+          summary: '提取订单对账字段',
+          globalRules: [],
+          preferredPrimitives: [],
+          outputContract: [],
+          steps: [
+            {
+              stepUid: 'step_extract_order_fields',
+              stepType: 'extract',
+              title: '提取订单对账字段',
+              target: '订单列表结果表格',
+              goal: '从目标订单行提取订单号、服务项、入账金额',
+              allowedActions: ['extract_text', 'store_variable'],
+              preferredHelpers: [],
+              requiredAssertions: ['批量申请入账成功'],
+              sharedVariables: ['selectedOrderNo'],
+              forbiddenPatterns: [],
+            },
+          ],
+        },
+      },
+      executionPlan
+    );
+
+    expect(verificationPlan.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'variable',
+          instruction: '必须成功提取并保存变量 selectedOrderNo',
+        }),
+        expect.objectContaining({
+          kind: 'variable',
+          instruction: '必须成功提取并保存变量 selectedServiceItem',
+        }),
+        expect.objectContaining({
+          kind: 'variable',
+          instruction: '必须成功提取并保存变量 selectedAmount',
+        }),
+      ])
+    );
+    expect(verificationPlan.checks.some((item) => item.instruction.includes('selectedOrderNo,selectedServiceItem,selectedAmount'))).toBe(false);
+  });
+
   it('marks review verification plans with conservative policy notes', () => {
     const featureDescription = [
       '能力验证UID：cap_review',

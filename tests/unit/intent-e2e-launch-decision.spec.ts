@@ -8,6 +8,14 @@ const readyProjectAssets = {
   reasons: [],
 };
 
+const stableListSearchDetailRoute = {
+  family: 'list_search_detail' as const,
+  textFamily: 'list_search_detail' as const,
+  visualFamily: 'untracked' as const,
+  source: 'text_only' as const,
+  clarifySignals: [],
+};
+
 const highFailurePressureSummary: IntentVerificationFailurePressureSummary = {
   recentFailedReviewCapabilityCount: 0,
   recentFailedVerifyCapabilityCount: 3,
@@ -29,6 +37,7 @@ describe('resolveIntentE2ELaunchDecision', () => {
       targetUrl: 'https://example.com/business/list',
       projectUid: 'proj_checkout',
       assetAvailability: readyProjectAssets,
+      priorityScenarioFamilyRoute: stableListSearchDetailRoute,
     });
 
     expect(decision).toEqual({
@@ -42,6 +51,14 @@ describe('resolveIntentE2ELaunchDecision', () => {
         assetStatus: 'ready',
         requiresFixture: false,
         hasFixtureContract: false,
+        priorityScenarioFamily: 'list_search_detail',
+        priorityScenarioFamilySource: 'text_only',
+        priorityScenarioTextFamily: 'list_search_detail',
+        priorityScenarioVisualFamily: 'untracked',
+        hasTrackedPriorityScenarioFamily: true,
+        hasPriorityScenarioFamilyConflict: false,
+        hasStablePriorityScenarioPath: true,
+        hasExplicitVerifierSignal: true,
         hasHighFailurePressure: false,
         hasRepeatedFailureSuppression: false,
         repeatedFailureDecision: '',
@@ -93,6 +110,13 @@ describe('resolveIntentE2ELaunchDecision', () => {
       targetUrl: 'https://example.com/business/create',
       projectUid: 'proj_checkout',
       assetAvailability: readyProjectAssets,
+      priorityScenarioFamilyRoute: {
+        family: 'business_create_list_verify',
+        textFamily: 'business_create_list_verify',
+        visualFamily: 'untracked',
+        source: 'text_only',
+        clarifySignals: [],
+      },
     });
 
     expect(decision.decision).toBe('auto_run');
@@ -113,6 +137,21 @@ describe('resolveIntentE2ELaunchDecision', () => {
     expect(decision.reasons).toEqual(['insufficient_request_context']);
   });
 
+  it('returns draft_only when the request still lacks an explicit verifier path', () => {
+    const decision = resolveIntentE2ELaunchDecision({
+      input: '登录后进入商机列表',
+      targetUrl: 'https://example.com/business/list',
+      projectUid: 'proj_checkout',
+      assetAvailability: readyProjectAssets,
+      requiresFixture: false,
+    });
+
+    expect(decision.decision).toBe('draft_only');
+    expect(decision.reasons).toEqual(['missing_stable_verifier_path', 'missing_stable_family_path', 'untracked_family_requires_draft']);
+    expect(decision.signals.hasExplicitVerifierSignal).toBe(false);
+    expect(decision.signals.hasStablePriorityScenarioPath).toBe(false);
+  });
+
   it('keeps image-led generic requests blocked until the user adds real task context', () => {
     const decision = resolveIntentE2ELaunchDecision({
       input: '如图，帮我测一下',
@@ -124,7 +163,7 @@ describe('resolveIntentE2ELaunchDecision', () => {
     });
 
     expect(decision.decision).toBe('needs_clarify');
-    expect(decision.reasons).toEqual(['insufficient_request_context']);
+    expect(decision.reasons).toEqual(['insufficient_request_context', 'image_led_request_needs_task_details']);
     expect(decision.signals.hasTargetUrl).toBe(true);
     expect(decision.signals.attachmentCount).toBe(1);
   });
@@ -145,6 +184,27 @@ describe('resolveIntentE2ELaunchDecision', () => {
     expect(decision.signals.attachmentCount).toBe(1);
   });
 
+  it('returns needs_clarify when text and visual family signals conflict', () => {
+    const decision = resolveIntentE2ELaunchDecision({
+      input: '新建商机并提交后回列表校验',
+      targetUrl: 'https://example.com/business/list',
+      projectUid: 'proj_checkout',
+      assetAvailability: readyProjectAssets,
+      requiresFixture: false,
+      priorityScenarioFamilyRoute: {
+        family: 'business_create_list_verify',
+        textFamily: 'business_create_list_verify',
+        visualFamily: 'list_search_detail',
+        source: 'text_only',
+        clarifySignals: ['视觉与文本 family 冲突'],
+      },
+    });
+
+    expect(decision.decision).toBe('needs_clarify');
+    expect(decision.reasons).toEqual(['family_route_conflict']);
+    expect(decision.signals.hasPriorityScenarioFamilyConflict).toBe(true);
+  });
+
   it('returns draft_only when failure pressure is high and no higher-priority blocker exists', () => {
     const decision = resolveIntentE2ELaunchDecision({
       input: '登录后搜索商机并进入详情页校验字段',
@@ -153,6 +213,7 @@ describe('resolveIntentE2ELaunchDecision', () => {
       assetAvailability: readyProjectAssets,
       requiresFixture: false,
       failurePressureSummary: highFailurePressureSummary,
+      priorityScenarioFamilyRoute: stableListSearchDetailRoute,
     });
 
     expect(decision.decision).toBe('draft_only');
@@ -185,6 +246,7 @@ describe('resolveIntentE2ELaunchDecision', () => {
       assetAvailability: readyProjectAssets,
       requiresFixture: false,
       failurePressureSummary: highFailurePressureSummary,
+      priorityScenarioFamilyRoute: stableListSearchDetailRoute,
       repeatedFailureSuppression: {
         recommendedDecision: 'draft_only',
         reason: 'recent_repeated_model_failure',
@@ -202,6 +264,14 @@ describe('resolveIntentE2ELaunchDecision', () => {
         assetStatus: 'ready',
         requiresFixture: false,
         hasFixtureContract: false,
+        priorityScenarioFamily: 'list_search_detail',
+        priorityScenarioFamilySource: 'text_only',
+        priorityScenarioTextFamily: 'list_search_detail',
+        priorityScenarioVisualFamily: 'untracked',
+        hasTrackedPriorityScenarioFamily: true,
+        hasPriorityScenarioFamilyConflict: false,
+        hasStablePriorityScenarioPath: true,
+        hasExplicitVerifierSignal: true,
         hasHighFailurePressure: true,
         hasRepeatedFailureSuppression: true,
         repeatedFailureDecision: 'draft_only',

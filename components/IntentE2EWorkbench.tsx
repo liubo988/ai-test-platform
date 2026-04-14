@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import BrowserView from '@/components/BrowserView';
+import { buildIntentE2ELaunchDecisionRequestBody } from '@/lib/ai/intent-e2e-request';
 import { readExecutionEntryNavigationTargets } from '@/lib/execution-entry-navigation';
 import type {
   IntentProjectKnowledgeMergeCandidateSource as IntentProjectKnowledgeDraftCandidateSource,
@@ -72,6 +73,8 @@ type TestResult = {
   steps: StepResult[];
   error: string | null;
 };
+
+const INTENT_LAUNCH_DECISION_REQUEST_TIMEOUT_MS = 10_000;
 
 type IntentFailureTriage = {
   failureClass:
@@ -2104,56 +2107,79 @@ function feedToneClass(tone: FeedItem['tone']): string {
   }
 }
 
-function feedToneConsoleDotClass(tone: FeedItem['tone']): string {
+function feedToneDotClass(tone: FeedItem['tone']): string {
   switch (tone) {
     case 'success':
-      return 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.45)]';
+      return 'bg-emerald-500';
     case 'warning':
-      return 'bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.45)]';
+      return 'bg-amber-500';
     case 'error':
-      return 'bg-rose-500 shadow-[0_0_6px_rgba(244,63,94,0.45)]';
+      return 'bg-rose-500';
     default:
-      return 'bg-sky-500 shadow-[0_0_6px_rgba(14,165,233,0.4)]';
+      return 'bg-stone-300';
   }
 }
 
-function feedToneConsoleSurfaceClass(tone: FeedItem['tone']): string {
+function feedToneAccentClass(tone: FeedItem['tone']): string {
   switch (tone) {
     case 'success':
-      return 'border-emerald-200/80 bg-gradient-to-br from-emerald-50/90 to-white/80';
+      return 'text-emerald-600';
     case 'warning':
-      return 'border-amber-200/80 bg-gradient-to-br from-amber-50/90 to-white/80';
+      return 'text-amber-600';
     case 'error':
-      return 'border-rose-200/80 bg-gradient-to-br from-rose-50/90 to-white/80';
+      return 'text-rose-600';
     default:
-      return 'border-stone-200/70 bg-gradient-to-br from-white/95 to-stone-50/80';
+      return 'text-stone-400';
   }
 }
 
-function feedToneConsoleLabelClass(tone: FeedItem['tone']): string {
-  switch (tone) {
-    case 'success':
-      return 'border-emerald-300/60 bg-emerald-100/80 text-emerald-700';
-    case 'warning':
-      return 'border-amber-300/60 bg-amber-100/80 text-amber-700';
-    case 'error':
-      return 'border-rose-300/60 bg-rose-100/80 text-rose-700';
-    default:
-      return 'border-stone-300/50 bg-stone-100/80 text-stone-600';
+/** Parse structured feed text: `#N STATUS Step M: title` → structured parts */
+function parseFeedText(text: string): {
+  attempt: string | null;
+  status: string | null;
+  stepNum: string | null;
+  body: string;
+} {
+  const m = text.match(/^#(\d+)\s+(PASSED|FAILED|RUNNING)\s+(.+)$/);
+  if (m) {
+    const stepMatch = m[3].match(/^Step\s+(\d+)\s*[:：]\s*(.+)$/i);
+    if (stepMatch) return { attempt: m[1], status: m[2], stepNum: stepMatch[1], body: stepMatch[2] };
+    return { attempt: m[1], status: m[2], stepNum: null, body: m[3] };
   }
+  const m2 = text.match(/^#(\d+)\s+(.+)$/);
+  if (m2) return { attempt: m2[1], status: null, stepNum: null, body: m2[2] };
+  return { attempt: null, status: null, stepNum: null, body: text };
 }
 
-function feedToneConsoleLabel(tone: FeedItem['tone']): string {
-  switch (tone) {
-    case 'success':
-      return 'SUCCESS';
-    case 'warning':
-      return 'WARN';
-    case 'error':
-      return 'ERROR';
-    default:
-      return 'INFO';
-  }
+/** Typewriter text — reveals characters progressively, only used for latest feed bubble */
+function TypewriterText({ text, speed = 22 }: { text: string; speed?: number }) {
+  const [displayed, setDisplayed] = useState('');
+  const textRef = useRef(text);
+
+  useEffect(() => {
+    // If text changed, reset and start typing the new text
+    textRef.current = text;
+    setDisplayed('');
+    let i = 0;
+    const timer = setInterval(() => {
+      i++;
+      if (i > textRef.current.length) {
+        clearInterval(timer);
+        return;
+      }
+      setDisplayed(textRef.current.slice(0, i));
+    }, speed);
+    return () => clearInterval(timer);
+  }, [text, speed]);
+
+  const done = displayed.length >= text.length;
+
+  return (
+    <>
+      {displayed}
+      {!done && <span className="intent-typewriter-cursor" />}
+    </>
+  );
 }
 
 function attemptTone(kind: IntentAttempt['kind']): string {
@@ -4154,23 +4180,38 @@ async function createIntentRun(payload: Record<string, unknown>): Promise<Intent
 }
 
 async function requestIntentLaunchDecision(payload: Record<string, unknown>): Promise<IntentLaunchDecisionResponse> {
-  const res = await fetch('/api/intent-e2e/launch-decision', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, INTENT_LAUNCH_DECISION_REQUEST_TIMEOUT_MS);
 
-  const json = (await res.json().catch(() => null)) as IntentLaunchDecisionResponse | null;
-  if (!res.ok || !json?.decision) {
-    throw new Error(json?.error || '计算自动测试启动决策失败');
+  try {
+    const res = await fetch('/api/intent-e2e/launch-decision', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildIntentE2ELaunchDecisionRequestBody(payload)),
+      signal: controller.signal,
+    });
+
+    const json = (await res.json().catch(() => null)) as IntentLaunchDecisionResponse | null;
+    if (!res.ok || !json?.decision) {
+      throw new Error(json?.error || '计算自动测试启动决策失败');
+    }
+
+    return {
+      decision: json.decision,
+      reasons: Array.isArray(json.reasons) ? json.reasons : [],
+      signals: json.signals,
+      assetAvailability: json.assetAvailability || null,
+    };
+  } catch (error: unknown) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error(`评估启动条件超时（${Math.round(INTENT_LAUNCH_DECISION_REQUEST_TIMEOUT_MS / 1000)}s）`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  return {
-    decision: json.decision,
-    reasons: Array.isArray(json.reasons) ? json.reasons : [],
-    signals: json.signals,
-    assetAvailability: json.assetAvailability || null,
-  };
 }
 
 async function fetchIntentRunRecord(runId: string): Promise<IntentRunRecord> {
@@ -4655,6 +4696,9 @@ export default function IntentE2EWorkbench({
   const launchLlmOverrideRef = useRef<IntentLaunchLlmOverride | null>(null);
   const draftLaunchDetailRef = useRef<IntentDraftLaunchDetail | null>(null);
   const draftAutoLaunchHandledKeyRef = useRef('');
+  const draftAutoLaunchPendingKeyRef = useRef('');
+  const draftAutoLaunchRequestSeqRef = useRef(0);
+  const workbenchMountedRef = useRef(true);
   const inputHelpPopoverRef = useRef<HTMLDivElement | null>(null);
   const collapseContextRef = useRef('');
   const workspaceSaveNavigation = useMemo(
@@ -6198,13 +6242,18 @@ export default function IntentE2EWorkbench({
             {displayScenarioCard.flowDefinition.steps.length > 0 ? (
               displayScenarioCard.flowDefinition.steps.map((step, index) => (
                 <article key={step.stepUid || index} className="rounded-2xl border border-slate-200 bg-white p-3.5">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">
-                      {step.stepType}
+                  <div className="flex items-center gap-2.5">
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-[12px] font-bold text-slate-700">
+                      {index + 1}
                     </span>
-                    <p className="text-sm font-medium text-slate-900">
-                      {index + 1}. {step.title || '未命名步骤'}
-                    </p>
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <p className="text-[14px] font-semibold leading-tight text-slate-900">
+                        {step.title || '未命名步骤'}
+                      </p>
+                      <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                        {step.stepType}
+                      </span>
+                    </div>
                   </div>
                   {(step.target || step.instruction || step.expectedResult || step.extractVariable) && (
                     <div className="mt-2.5 space-y-1.5 text-xs leading-6 text-slate-600">
@@ -6301,12 +6350,26 @@ export default function IntentE2EWorkbench({
         {attempt.result?.steps.length ? (
           <div className="grid gap-3 md:grid-cols-3">
             {attempt.result.steps.map((step, index) => (
-              <div key={`${attempt.attempt}-${index}`} className={`rounded-2xl border px-3 py-3 text-xs ${stepTone(step.status)}`}>
-                <p className="font-medium">{step.title}</p>
-                <p className="mt-1 opacity-80">
-                  {step.status} · {formatDuration(step.duration)}
-                </p>
-                {step.error && <p className="mt-2 whitespace-pre-wrap opacity-90">{step.error}</p>}
+              <div key={`${attempt.attempt}-${index}`} className={`rounded-2xl border px-3 py-3 ${stepTone(step.status)}`}>
+                <div className="flex items-center gap-2">
+                  <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-[11px] font-bold ${
+                    step.status === 'passed' ? 'bg-emerald-200/60 text-emerald-800'
+                    : step.status === 'failed' ? 'bg-rose-200/60 text-rose-800'
+                    : step.status === 'skipped' ? 'bg-amber-200/60 text-amber-800'
+                    : 'bg-slate-200/60 text-slate-700'
+                  }`}>
+                    {index + 1}
+                  </span>
+                  <p className="min-w-0 text-[13px] font-semibold leading-tight">{step.title}</p>
+                </div>
+                <div className="mt-2 flex items-center gap-1.5 text-[11px] opacity-80">
+                  <span className={`inline-block h-1.5 w-1.5 rounded-full ${
+                    step.status === 'passed' ? 'bg-emerald-500' : step.status === 'failed' ? 'bg-rose-500' : step.status === 'skipped' ? 'bg-amber-500' : 'bg-slate-400'
+                  }`} />
+                  <span className="font-medium uppercase tracking-wide">{step.status}</span>
+                  <span className="text-current/60">{formatDuration(step.duration)}</span>
+                </div>
+                {step.error && <p className="mt-2 whitespace-pre-wrap text-xs leading-5 opacity-90">{step.error}</p>}
               </div>
             ))}
           </div>
@@ -6443,13 +6506,18 @@ export default function IntentE2EWorkbench({
                 <div className="mt-3 space-y-3">
                   {displayExecutionPlan.steps.map((step, index) => (
                     <div key={step.planStepUid} className="rounded-2xl border border-slate-200 bg-slate-50/80 px-3 py-3">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">
-                          {step.stepType}
+                      <div className="flex items-center gap-2.5">
+                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white text-[12px] font-bold text-slate-700 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+                          {index + 1}
                         </span>
-                        <p className="text-sm font-medium text-slate-900">
-                          {index + 1}. {step.title || '未命名步骤'}
-                        </p>
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                          <p className="text-[14px] font-semibold leading-tight text-slate-900">
+                            {step.title || '未命名步骤'}
+                          </p>
+                          <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                            {step.stepType}
+                          </span>
+                        </div>
                       </div>
                       <div className="mt-2 space-y-1 text-[11px] leading-5 text-slate-600">
                         <p>目标：{step.target || '—'}</p>
@@ -7492,15 +7560,17 @@ export default function IntentE2EWorkbench({
       draftUid,
       hydratedKey: draftLaunchHydratedKey,
       handledKey: draftAutoLaunchHandledKeyRef.current,
+      pendingKey: draftAutoLaunchPendingKeyRef.current,
       draftDetailReady: Boolean(draftDetail),
       payloadReady: Boolean(payload),
     });
 
-    if (autoLaunchGate.status === 'wait') {
+    if (autoLaunchGate.status === 'wait' || autoLaunchGate.status === 'pending') {
       return;
     }
 
     if (autoLaunchGate.status === 'invalid_payload' || !payload) {
+      draftAutoLaunchPendingKeyRef.current = '';
       draftAutoLaunchHandledKeyRef.current = autoLaunchGate.draftKey;
       setRunning(false);
       setCanceling(false);
@@ -7513,12 +7583,16 @@ export default function IntentE2EWorkbench({
       return;
     }
 
-    draftAutoLaunchHandledKeyRef.current = autoLaunchGate.draftKey;
+    draftAutoLaunchPendingKeyRef.current = autoLaunchGate.draftKey;
     const launchPayload = payload;
-
-    let active = true;
+    const launchDraftKey = autoLaunchGate.draftKey;
+    const launchRequestSeq = draftAutoLaunchRequestSeqRef.current + 1;
+    draftAutoLaunchRequestSeqRef.current = launchRequestSeq;
 
     async function autoLaunchDraftFlow() {
+      const isStaleRequest = () =>
+        !workbenchMountedRef.current || draftAutoLaunchRequestSeqRef.current !== launchRequestSeq;
+
       clearExecutionState();
       setRunning(true);
       setCanceling(false);
@@ -7533,7 +7607,9 @@ export default function IntentE2EWorkbench({
       try {
         const launchDecision = await requestIntentLaunchDecision(launchPayload);
         if (launchDecision.decision !== 'auto_run' && !shouldOverrideDraftAutoRunLaunchDecision(launchDecision.decision)) {
-          if (!active) return;
+          if (isStaleRequest()) return;
+          draftAutoLaunchPendingKeyRef.current = '';
+          draftAutoLaunchHandledKeyRef.current = launchDraftKey;
           applyBlockedLaunchDecision(launchDecision, {
             source: 'route',
             syncQuery: true,
@@ -7541,7 +7617,7 @@ export default function IntentE2EWorkbench({
           return;
         }
 
-        if (!active) return;
+        if (isStaleRequest()) return;
         if (launchDecision.decision === 'draft_only') {
           setRestoreNotice('检测到最近相似任务失败压力偏高；这次来自草稿页的显式“测试流程”启动，已继续开跑。');
         }
@@ -7555,7 +7631,9 @@ export default function IntentE2EWorkbench({
         });
 
         const run = await createIntentRun(launchPayload);
-        if (!active) return;
+        if (isStaleRequest()) return;
+        draftAutoLaunchPendingKeyRef.current = '';
+        draftAutoLaunchHandledKeyRef.current = launchDraftKey;
         applyRunRecord(run);
         if (typeof window !== 'undefined') {
           window.sessionStorage.setItem(RUN_ID_STORAGE_KEY, run.runId);
@@ -7568,7 +7646,9 @@ export default function IntentE2EWorkbench({
         });
         await startRunStream(run.runId, run.events.length);
       } catch (error: unknown) {
-        if (!active) return;
+        if (isStaleRequest()) return;
+        draftAutoLaunchPendingKeyRef.current = '';
+        draftAutoLaunchHandledKeyRef.current = launchDraftKey;
         setRunning(false);
         setCanceling(false);
         setRunError(error instanceof Error ? error.message : 'AI 意图驱动 E2E 执行失败');
@@ -7579,9 +7659,6 @@ export default function IntentE2EWorkbench({
     }
 
     void autoLaunchDraftFlow();
-    return () => {
-      active = false;
-    };
   }, [
     activeRunId,
     applyBlockedLaunchDecision,
@@ -7601,7 +7678,9 @@ export default function IntentE2EWorkbench({
   ]);
 
   useEffect(() => {
+    workbenchMountedRef.current = true;
     return () => {
+      workbenchMountedRef.current = false;
       streamAbortRef.current?.abort();
     };
   }, []);
@@ -8667,55 +8746,54 @@ export default function IntentE2EWorkbench({
                       </div>
                     </div>
 
-                    {/* Feed items with timeline */}
+                    {/* Feed items */}
                     {liveFeedItems.length > 0 ? (
                       <div
                         aria-live="polite"
-                        className="intent-e2e-scroll relative min-h-0 flex-1 overflow-y-auto px-3 py-3 xl:overscroll-contain"
+                        className="intent-e2e-scroll min-h-0 flex-1 divide-y divide-stone-100 overflow-y-auto xl:overscroll-contain"
                       >
-                        {/* Vertical timeline connector */}
-                        <div aria-hidden="true" className="pointer-events-none absolute left-[22px] top-3 bottom-3 w-px bg-gradient-to-b from-stone-200 via-stone-200/60 to-transparent" />
-
-                        {liveFeedItems.map((item, index) => (
-                          <div
-                            key={item.id}
-                            className={`intent-feed-item relative mb-2.5 grid grid-cols-[auto_1fr] gap-x-3 rounded-[16px] border px-3 py-3 shadow-[0_2px_8px_rgba(44,37,28,0.04)] backdrop-blur-sm transition-all duration-300 last:mb-0 ${
-                              feedToneConsoleSurfaceClass(item.tone)
-                            } ${index === 0 ? 'ring-1 ring-sky-300/40 shadow-[0_4px_16px_rgba(14,165,233,0.08)]' : ''}`}
-                          >
-                            <div className="relative z-10 flex flex-col items-center pt-1.5">
-                              <span className={`h-2.5 w-2.5 rounded-full ring-2 ring-white/80 ${feedToneConsoleDotClass(item.tone)}`} />
-                            </div>
-                            <div className="min-w-0">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span
-                                  className={`rounded-full border px-2 py-0.5 font-mono text-[10px] font-semibold tracking-[0.14em] ${feedToneConsoleLabelClass(
-                                    item.tone
-                                  )}`}
-                                >
-                                  {feedToneConsoleLabel(item.tone)}
-                                </span>
-                                {index === 0 && (
-                                  <span className="intent-latest-badge rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-semibold text-sky-600">
-                                    LATEST
+                        {liveFeedItems.map((item, index) => {
+                          const parsed = parseFeedText(item.text);
+                          const isLatest = index === 0;
+                          const isStep = !!parsed.stepNum;
+                          return (
+                            <div
+                              key={item.id}
+                              className={`intent-feed-bubble px-4 py-2.5 ${isLatest ? 'bg-stone-50/50' : ''}`}
+                            >
+                              {isStep ? (
+                                <div className="flex items-start gap-3">
+                                  <span className={`mt-px flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full text-[11px] font-semibold ${feedToneAccentClass(item.tone)} bg-current/[0.08]`}>
+                                    <span className="relative text-current">{parsed.stepNum}</span>
                                   </span>
-                                )}
-                              </div>
-                              <p className="mt-1.5 text-[13px] leading-[1.55] text-stone-700">{item.text}</p>
+                                  <div className="min-w-0 pt-px">
+                                    <p className="text-[13px] font-medium leading-snug text-stone-900">
+                                      {isLatest ? <TypewriterText text={parsed.body} /> : parsed.body}
+                                    </p>
+                                    {parsed.status && (
+                                      <p className={`mt-0.5 text-[11px] ${feedToneAccentClass(item.tone)}`}>
+                                        {parsed.status === 'PASSED' ? '通过' : parsed.status === 'FAILED' ? '失败' : '执行中'}
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="flex items-start gap-2.5">
+                                  <span className={`mt-[6px] h-[5px] w-[5px] shrink-0 rounded-full ${isLatest ? 'animate-pulse' : ''} ${feedToneDotClass(item.tone)}`} />
+                                  <p className="min-w-0 text-[13px] leading-[1.55] text-stone-500">
+                                    {isLatest ? <TypewriterText text={parsed.body} /> : parsed.body}
+                                  </p>
+                                </div>
+                              )}
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     ) : (
-                      <div className="intent-e2e-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4 xl:overscroll-contain">
-                        <div className="rounded-[22px] border border-dashed border-stone-300/80 bg-white/70 px-4 py-5 shadow-[0_4px_16px_rgba(44,37,28,0.03)]">
-                          <div className="flex h-12 w-12 items-center justify-center rounded-[18px] border border-stone-200 bg-white shadow-[0_4px_14px_rgba(44,37,28,0.05)]">
-                            <span className="h-2.5 w-2.5 rounded-full bg-sky-400 animate-pulse shadow-[0_0_8px_rgba(14,165,233,0.35)]" />
-                          </div>
-                          <p className="mt-4 text-left text-[15px] font-medium text-stone-700">日志流准备中</p>
-                          <p className="mt-2 text-left text-[14px] leading-6 text-stone-500">
-                            执行开始后，这里会持续显示最新阶段、修复动作和诊断信息。
-                          </p>
+                      <div className="intent-e2e-scroll flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-4 py-4 xl:overscroll-contain">
+                        <div className="text-center">
+                          <span className="mx-auto block h-2 w-2 rounded-full bg-stone-300 animate-pulse" />
+                          <p className="mt-3 text-[13px] text-stone-400">等待执行</p>
                         </div>
                       </div>
                     )}

@@ -434,6 +434,16 @@ export interface IntentE2EInsightRecentTraceAttempt {
   patchedRecipeSlugs: string[];
   patchedVerifierCheckUids: string[];
   repairObservationSummary: string;
+  fallback?: {
+    path: string;
+    priorityScenarioFamily: string;
+    priorityScenarioFamilySource: string;
+    highConfidenceFamily: boolean;
+    legacyFallbackReasonCode: string;
+    prefilledPlanReuseSource: string;
+    prefilledPlanSkipReason: string;
+    sanitizerRescueSource: string;
+  };
 }
 
 export interface IntentE2EInsightRecentTraceResponseEvent {
@@ -541,6 +551,7 @@ export interface IntentE2EEvaluationBaselineCandidate extends IntentE2EInsightPa
   snapshotSignature: string;
   scenarioFamily: IntentE2EScenarioFamily;
   scenarioFamilyLabel: string;
+  priorityScenarioFamily: IntentE2EPriorityScenarioFamily;
   taskMode: 'page' | 'scenario' | 'unknown';
   targetPath: string;
   stepTypes: string[];
@@ -2241,6 +2252,16 @@ function normalizeTerminalRun(snapshot: IntentE2ERunSnapshotRecord): InsightRunR
                 recipeSlugs?: unknown;
               } | null;
             } | null;
+            fallbackTelemetry?: {
+              path?: unknown;
+              priorityScenarioFamily?: unknown;
+              priorityScenarioFamilySource?: unknown;
+              highConfidenceFamily?: unknown;
+              legacyFallbackReasonCode?: unknown;
+              prefilledPlanReuseSource?: unknown;
+              prefilledPlanSkipReason?: unknown;
+              sanitizerRescueSource?: unknown;
+            } | null;
             triage?: {
               failureClass?: unknown;
             } | null;
@@ -2379,6 +2400,10 @@ function normalizeTerminalRun(snapshot: IntentE2ERunSnapshotRecord): InsightRunR
       attempt?.repairOutput && typeof attempt.repairOutput === 'object' && !Array.isArray(attempt.repairOutput)
         ? attempt.repairOutput
         : null;
+    const fallbackTelemetry =
+      attempt?.fallbackTelemetry && typeof attempt.fallbackTelemetry === 'object' && !Array.isArray(attempt.fallbackTelemetry)
+        ? attempt.fallbackTelemetry
+        : null;
     const baseCodeSource: IntentE2EInsightRecentTraceAttempt['baseCodeSource'] =
       typeof structuredPatch?.baseCodeSource === 'string' &&
       (structuredPatch.baseCodeSource === 'compiled_template' || structuredPatch.baseCodeSource === 'previous_code')
@@ -2430,6 +2455,38 @@ function normalizeTerminalRun(snapshot: IntentE2ERunSnapshotRecord): InsightRunR
       patchedRecipeSlugs,
       patchedVerifierCheckUids,
       repairObservationSummary,
+      ...(fallbackTelemetry
+        ? {
+            fallback: {
+              path: typeof fallbackTelemetry.path === 'string' ? fallbackTelemetry.path.trim() : '',
+              priorityScenarioFamily:
+                typeof fallbackTelemetry.priorityScenarioFamily === 'string'
+                  ? fallbackTelemetry.priorityScenarioFamily.trim()
+                  : '',
+              priorityScenarioFamilySource:
+                typeof fallbackTelemetry.priorityScenarioFamilySource === 'string'
+                  ? fallbackTelemetry.priorityScenarioFamilySource.trim()
+                  : '',
+              highConfidenceFamily: fallbackTelemetry.highConfidenceFamily === true,
+              legacyFallbackReasonCode:
+                typeof fallbackTelemetry.legacyFallbackReasonCode === 'string'
+                  ? fallbackTelemetry.legacyFallbackReasonCode.trim()
+                  : '',
+              prefilledPlanReuseSource:
+                typeof fallbackTelemetry.prefilledPlanReuseSource === 'string'
+                  ? fallbackTelemetry.prefilledPlanReuseSource.trim()
+                  : '',
+              prefilledPlanSkipReason:
+                typeof fallbackTelemetry.prefilledPlanSkipReason === 'string'
+                  ? fallbackTelemetry.prefilledPlanSkipReason.trim()
+                  : '',
+              sanitizerRescueSource:
+                typeof fallbackTelemetry.sanitizerRescueSource === 'string'
+                  ? fallbackTelemetry.sanitizerRescueSource.trim()
+                  : '',
+            },
+          }
+        : {}),
     };
   });
   const responseEvents = normalizedAttempts.flatMap((attemptRecord, index) =>
@@ -4029,6 +4086,17 @@ function buildEvaluationBaseline(runs: InsightRunRecord[]): IntentE2EEvaluationB
     .map(([snapshotSignature, clusterRuns]) => {
       const orderedRuns = [...clusterRuns].sort((a, b) => b.finishedAtMs - a.finishedAtMs || b.runId.localeCompare(a.runId));
       const representative = orderedRuns[0];
+      const priorityScenarioFamily =
+        [...clusterRuns.reduce((stats, run) => {
+          stats.set(run.priorityScenarioFamily, (stats.get(run.priorityScenarioFamily) || 0) + 1);
+          return stats;
+        }, new Map<IntentE2EPriorityScenarioFamily, number>()).entries()].sort((a, b) => {
+          return (
+            b[1] - a[1] ||
+            priorityScenarioFamilyRank(a[0]) - priorityScenarioFamilyRank(b[0]) ||
+            a[0].localeCompare(b[0])
+          );
+        })[0]?.[0] || representative.priorityScenarioFamily;
       const passedRuns = clusterRuns.filter((run) => run.status === 'passed').length;
       const failedRuns = clusterRuns.filter((run) => run.status === 'failed').length;
       const canceledRuns = clusterRuns.filter((run) => run.status === 'canceled').length;
@@ -4058,6 +4126,7 @@ function buildEvaluationBaseline(runs: InsightRunRecord[]): IntentE2EEvaluationB
         snapshotSignature,
         scenarioFamily: representative.scenarioFamily,
         scenarioFamilyLabel: SCENARIO_FAMILY_LABELS[representative.scenarioFamily] || representative.scenarioFamily,
+        priorityScenarioFamily,
         taskMode: representative.taskMode,
         targetPath: representative.targetPath,
         stepTypes: [...representative.stepTypes],

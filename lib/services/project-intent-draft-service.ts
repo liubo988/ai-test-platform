@@ -27,6 +27,7 @@ import { getWorkspaceLLMRuntimeOverrides, mergeLLMRuntimeOverrides } from '@/lib
 import { buildCoverageCasesFromTask } from '@/lib/plan-cases';
 import { generatePlanDraftFromTaskSpec } from '@/lib/services/test-plan-service';
 import { validateTaskConfigInput } from '@/lib/task-flow';
+import { sanitizeGeneratedCode } from '@/lib/test-generator';
 
 export interface CreateProjectIntentDraftInput {
   projectUid: string;
@@ -319,7 +320,7 @@ async function resolveIntentDraftImportedPlanDecision(input: {
   });
   if (successfulRunCodeCandidate?.code) {
     return {
-      code: successfulRunCodeCandidate.code,
+      code: sanitizeGeneratedCode(successfulRunCodeCandidate.code),
       source: 'recent_successful_run',
       reusedRunId: successfulRunCodeCandidate.runId,
     };
@@ -329,7 +330,7 @@ async function resolveIntentDraftImportedPlanDecision(input: {
   if (!draftCode) return null;
 
   return {
-    code: draftCode,
+    code: sanitizeGeneratedCode(draftCode),
     source: 'draft_first_pass',
   };
 }

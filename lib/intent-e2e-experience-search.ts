@@ -43,6 +43,7 @@ export interface SearchIntentE2EExperienceHintsInput {
   includeFailures?: boolean;
   maxHints?: number;
   runLimit?: number;
+  runSnapshots?: IntentE2ERunSnapshotRecord[];
 }
 
 export interface IntentE2EExperienceSummary {
@@ -408,6 +409,7 @@ export async function searchIntentE2EExperienceHints(
   input: SearchIntentE2EExperienceHintsInput
 ): Promise<IntentE2EExperienceSummary> {
   const projectUid = input.projectUid?.trim() || '';
+  const moduleUid = input.moduleUid?.trim() || '';
   if (!projectUid) {
     return {
       source: 'project_terminal_runs',
@@ -420,12 +422,20 @@ export async function searchIntentE2EExperienceHints(
   const runLimit = Math.max(8, Math.min(80, Math.floor(input.runLimit || 36)));
   const maxHints = Math.max(1, Math.min(6, Math.floor(input.maxHints || 4)));
   const includeFailures = input.includeFailures !== false;
-  const snapshots = await listIntentE2ERunSnapshots({
-    projectUid,
-    ...(input.moduleUid?.trim() ? { moduleUid: input.moduleUid.trim() } : {}),
-    status: 'terminal',
-    limit: runLimit,
-  });
+  const snapshots = Array.isArray(input.runSnapshots)
+    ? input.runSnapshots
+        .filter((snapshot) => {
+          if (!snapshot || snapshot.projectUid !== projectUid) return false;
+          if (moduleUid && snapshot.moduleUid !== moduleUid) return false;
+          return true;
+        })
+        .slice(0, runLimit)
+    : await listIntentE2ERunSnapshots({
+        projectUid,
+        ...(moduleUid ? { moduleUid } : {}),
+        status: 'terminal',
+        limit: runLimit,
+      });
   const ranked = snapshots
     .map((snapshot) => {
       const normalized = normalizeIntentE2ETerminalRunSnapshot(snapshot);

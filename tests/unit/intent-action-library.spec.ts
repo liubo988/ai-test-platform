@@ -126,6 +126,53 @@ describe('intent-action-library', () => {
     expect(familySlugs).toEqual(expect.arrayContaining(baseSlugs));
   });
 
+  it('front-loads business-create family capabilities for deterministic create/list/verify flows', () => {
+    const dsl = buildIntentActionDSL({
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/businesslist',
+      featureDescription: '创建商机后切到我创建的，并按 businessId 回查目标记录',
+      expectedOutcome: '提交成功并完成列表/详情验收',
+      sharedVariables: ['businessId'],
+      steps: [
+        {
+          stepUid: 'step_1',
+          stepType: 'ui',
+          title: '创建商机并提交',
+          target: 'https://example.com/#/business/createbusiness',
+          instruction: '填写商机表单并点击提交保存',
+          expectedResult: '提交成功',
+          extractVariable: 'businessId',
+        },
+        {
+          stepUid: 'step_2',
+          stepType: 'assert',
+          title: '回列表校验',
+          target: 'https://example.com/#/business/businesslist',
+          instruction: '切到我创建的后按 businessId 回查目标记录并读取状态',
+          expectedResult: '命中目标记录并完成状态验收',
+          extractVariable: '',
+        },
+      ],
+    });
+
+    const library = selectIntentActionLibrary({
+      dsl,
+      snapshot: { url: 'https://example.com/#/business/businesslist', title: '商机列表', frames: [] },
+      priorityScenarioFamily: 'business_create_list_verify',
+    });
+
+    const slugs = library.capabilities.map((item) => item.slug);
+
+    expect(slugs.slice(0, 5)).toEqual([
+      'assert.wait-for-api-response',
+      'assert.watch-submit-state',
+      'ui.switch-business-list-ownership-view',
+      'assert.resolve-primary-record',
+      'assert.read-detail-field',
+    ]);
+    expect(slugs).toEqual(expect.arrayContaining(['ui.find-antd-table-row']));
+  });
+
   it('renders helper examples for prompt injection', () => {
     const rendered = renderIntentActionLibrary(
       selectIntentActionLibrary({

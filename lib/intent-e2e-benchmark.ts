@@ -14,12 +14,20 @@ import {
   type IntentE2EInsightRunRecord,
   type IntentE2EScenarioFamily,
 } from '@/lib/ai/intent-e2e-insights';
+import { normalizeIntentE2ERequestBody } from '@/lib/ai/intent-e2e-request';
 import { listIntentE2ERunSnapshots, type IntentE2ERunSnapshotRecord } from '@/lib/db/repository';
+import {
+  resolveIntentE2EPriorityScenarioFamilyRoute,
+  normalizeIntentE2EPriorityScenarioFamily,
+  type IntentE2EPriorityScenarioFamilyRoute,
+  type IntentE2EPriorityScenarioFamily,
+} from '@/lib/intent-e2e-priority-scenario-family';
 import {
   normalizeIntentProjectUid,
   resolveProjectScopedIntentAssetPath,
   resolveProjectScopedIntentAssetStorage,
 } from '@/lib/intent-project-knowledge';
+import type { IntentE2ERunRequest } from '@/lib/ai/intent-e2e-service';
 import {
   normalizePlatformRunnerType,
   normalizePlatformTestType,
@@ -32,12 +40,14 @@ const DEFAULT_BENCHMARK_PATH = path.join(process.cwd(), 'reports', 'intent-e2e.b
 const DEFAULT_BENCHMARK_ARCHIVE_DIR = path.join(process.cwd(), 'reports', 'intent-e2e.benchmarks');
 const DEFAULT_BENCHMARK_REPORT_DIR = path.join(process.cwd(), 'reports', 'intent-e2e.benchmark-reports');
 const DEFAULT_RUN_LIMIT = 200;
+const MIN_EVIDENCE_RUN_COUNT = 3;
 
 export interface IntentE2EBenchmarkScope {
   projectUid: string;
   moduleUid: string;
   testTypes: PlatformTestType[];
   runnerTypes: PlatformRunnerType[];
+  priorityScenarioFamily: IntentE2EPriorityScenarioFamily | '';
 }
 
 export interface IntentE2EBenchmarkCaseMetrics extends IntentE2EInsightPassMetrics {
@@ -76,6 +86,7 @@ export interface IntentE2EBenchmarkSuiteCase {
   snapshotSignature: string;
   scenarioFamily: IntentE2EScenarioFamily;
   scenarioFamilyLabel: string;
+  priorityScenarioFamily: IntentE2EPriorityScenarioFamily;
   taskMode: IntentE2EEvaluationBaselineCandidate['taskMode'];
   targetPath: string;
   stepTypes: string[];
@@ -126,6 +137,7 @@ export interface FreezeIntentE2EBenchmarkOptions {
   moduleUid?: string;
   testTypes?: PlatformTestType[];
   runnerTypes?: PlatformRunnerType[];
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily | '';
   evalCaseIds?: string[];
   maxCases?: number;
   runLimit?: number;
@@ -148,6 +160,7 @@ export interface ReadIntentE2EBenchmarkResult {
 export interface IntentE2EBenchmarkReplayCase {
   evalCaseId: string;
   snapshotSignature: string;
+  priorityScenarioFamily: IntentE2EPriorityScenarioFamily;
   currentMetrics: IntentE2EBenchmarkCaseMetrics | null;
   latestRunIds: string[];
   status: 'matched' | 'missing';
@@ -171,6 +184,11 @@ export interface IntentE2EBenchmarkReplayResult {
 }
 
 export type IntentE2EBenchmarkCompareStatus = 'improved' | 'unchanged' | 'regressed' | 'missing';
+export type IntentE2EBenchmarkEvidenceConclusion =
+  | 'improved'
+  | 'unchanged'
+  | 'regressed'
+  | 'insufficient_evidence';
 
 export interface IntentE2EBenchmarkCompareCase extends IntentE2EBenchmarkReplayCase {
   comparisonStatus: IntentE2EBenchmarkCompareStatus;
@@ -192,6 +210,23 @@ export interface IntentE2EBenchmarkCompareCase extends IntentE2EBenchmarkReplayC
   comparisonNote: string;
 }
 
+export interface IntentE2EBenchmarkPriorityScenarioFamilySummary {
+  priorityScenarioFamily: IntentE2EPriorityScenarioFamily;
+  totalCases: number;
+  matchedCases: number;
+  missingCases: number;
+  frozenRunCount: number;
+  currentRunCount: number;
+  frozenTerminalPassRate: number;
+  currentTerminalPassRate: number;
+  frozenFirstPassPassRate: number;
+  currentFirstPassPassRate: number;
+  frozenBlockedRate: number;
+  currentBlockedRate: number;
+  conclusion: IntentE2EBenchmarkEvidenceConclusion;
+  note: string;
+}
+
 export interface IntentE2EBenchmarkCompareReport {
   version: 1;
   benchmarkUid: string;
@@ -202,6 +237,7 @@ export interface IntentE2EBenchmarkCompareReport {
   comparedAt: string;
   scope: IntentE2EBenchmarkScope;
   benchmarkPath: string;
+  priorityScenarioFamilies: IntentE2EBenchmarkPriorityScenarioFamilySummary[];
   summary: {
     totalCases: number;
     matchedCases: number;
@@ -245,6 +281,7 @@ export interface ReplayIntentE2EBenchmarkOptions {
   projectUid?: string;
   runLimit?: number;
   replayedAt?: string;
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily | '';
   benchmark?: IntentE2EBenchmarkSuite;
 }
 
@@ -253,7 +290,32 @@ export interface CompareIntentE2EBenchmarkOptions {
   runLimit?: number;
   comparedAt?: string;
   comparedLabel?: string;
+  priorityScenarioFamily?: IntentE2EPriorityScenarioFamily | '';
   benchmark?: IntentE2EBenchmarkSuite;
+}
+
+export interface IntentE2EBenchmarkRequestCorpusEntry extends IntentE2ERunRequest {
+  requestId: string;
+  expectedPriorityScenarioFamily: IntentE2EPriorityScenarioFamily;
+}
+
+export interface IntentE2EBenchmarkRequestCorpus {
+  version: 1;
+  projectUid: string;
+  moduleUid: string;
+  testType: PlatformTestType;
+  priorityScenarioFamily: IntentE2EPriorityScenarioFamily;
+  actorUserUid: string;
+  requests: IntentE2EBenchmarkRequestCorpusEntry[];
+}
+
+export interface IntentE2EBenchmarkRequestCorpusPreflightItem {
+  requestId: string;
+  input: string;
+  targetUrl: string;
+  expectedPriorityScenarioFamily: IntentE2EPriorityScenarioFamily;
+  route: IntentE2EPriorityScenarioFamilyRoute;
+  matchesExpectedFamily: boolean;
 }
 
 interface NormalizedBenchmarkScope {
@@ -261,6 +323,7 @@ interface NormalizedBenchmarkScope {
   moduleUid: string;
   testTypes: PlatformTestType[];
   runnerTypes: PlatformRunnerType[];
+  priorityScenarioFamily: IntentE2EPriorityScenarioFamily | '';
 }
 
 interface IntentE2EBenchmarkStorage {
@@ -275,6 +338,10 @@ function normalizeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
   const seen = new Set<string>();
   const items: string[] = [];
@@ -287,6 +354,110 @@ function uniqueStrings(values: Array<string | null | undefined>): string[] {
   }
 
   return items;
+}
+
+function normalizeBenchmarkRequestCorpusTestType(value: unknown): PlatformTestType {
+  return normalizePlatformTestType(value) || 'browser_e2e';
+}
+
+function normalizeBenchmarkRequestCorpusPriorityScenarioFamily(
+  value: unknown
+): IntentE2EPriorityScenarioFamily {
+  const normalized = normalizeIntentE2EPriorityScenarioFamily(value);
+  if (!normalized || normalized === 'untracked') {
+    throw new Error('request corpus 缺少有效的 tracked priorityScenarioFamily');
+  }
+  return normalized;
+}
+
+export function normalizeIntentE2EBenchmarkRequestCorpus(
+  raw: unknown,
+  overrides: {
+    projectUid?: string;
+    moduleUid?: string;
+    priorityScenarioFamily?: IntentE2EPriorityScenarioFamily | '';
+  } = {}
+): IntentE2EBenchmarkRequestCorpus {
+  const record = asRecord(raw);
+  if (!record) {
+    throw new Error('request corpus 必须是对象');
+  }
+
+  const projectUid = normalizeIntentProjectUid(overrides.projectUid || record.projectUid);
+  const moduleUid = normalizeString(overrides.moduleUid || record.moduleUid);
+  const priorityScenarioFamily = normalizeBenchmarkRequestCorpusPriorityScenarioFamily(
+    overrides.priorityScenarioFamily || record.priorityScenarioFamily
+  );
+  const testType = normalizeBenchmarkRequestCorpusTestType(record.testType);
+  const actorUserUid = normalizeString(record.actorUserUid) || 'usr_default_owner';
+  const requestItems = Array.isArray(record.requests) ? record.requests : [];
+
+  if (!projectUid) {
+    throw new Error('request corpus 缺少 projectUid');
+  }
+  if (!moduleUid) {
+    throw new Error('request corpus 缺少 moduleUid');
+  }
+  if (requestItems.length === 0) {
+    throw new Error('request corpus 至少需要 1 条请求');
+  }
+
+  const requests = requestItems.map((item, index) => {
+    const itemRecord = asRecord(item);
+    if (!itemRecord) {
+      throw new Error(`request corpus 第 ${index + 1} 条请求必须是对象`);
+    }
+
+    const normalizedRequest = normalizeIntentE2ERequestBody(itemRecord);
+    const requestId = normalizeString(itemRecord.requestId) || `request_${index + 1}`;
+    const expectedPriorityScenarioFamily =
+      normalizeIntentE2EPriorityScenarioFamily(itemRecord.expectedPriorityScenarioFamily) || priorityScenarioFamily;
+
+    if (!normalizedRequest.input) {
+      throw new Error(`request corpus 请求 ${requestId} 缺少 input`);
+    }
+
+    return {
+      ...normalizedRequest,
+      requestId,
+      projectUid: normalizedRequest.projectUid || projectUid,
+      moduleUid: normalizedRequest.moduleUid || moduleUid,
+      expectedPriorityScenarioFamily,
+    } satisfies IntentE2EBenchmarkRequestCorpusEntry;
+  });
+
+  return {
+    version: 1,
+    projectUid,
+    moduleUid,
+    testType,
+    priorityScenarioFamily,
+    actorUserUid,
+    requests,
+  };
+}
+
+export function preflightIntentE2EBenchmarkRequestCorpus(
+  corpus: IntentE2EBenchmarkRequestCorpus
+): IntentE2EBenchmarkRequestCorpusPreflightItem[] {
+  return corpus.requests.map((request) => {
+    const route = resolveIntentE2EPriorityScenarioFamilyRoute({
+      requestInput: request.input,
+      targetUrl: request.targetUrl || '',
+      scenarioCard: request.prefilledScenarioCard || null,
+      description: '',
+      visualAnchors: request.prefilledScenarioCard?.visualAnchors,
+    });
+
+    return {
+      requestId: request.requestId,
+      input: request.input,
+      targetUrl: request.targetUrl || '',
+      expectedPriorityScenarioFamily: request.expectedPriorityScenarioFamily,
+      route,
+      matchesExpectedFamily: route.family === request.expectedPriorityScenarioFamily,
+    };
+  });
 }
 
 function uniqueTestTypes(values: Array<PlatformTestType | string | null | undefined>): PlatformTestType[] {
@@ -425,6 +596,7 @@ function normalizeScope(options: FreezeIntentE2EBenchmarkOptions | IntentE2EBenc
     moduleUid: normalizeString(options.moduleUid),
     testTypes: uniqueTestTypes(options.testTypes || []),
     runnerTypes: uniqueRunnerTypes(options.runnerTypes || []),
+    priorityScenarioFamily: normalizeIntentE2EPriorityScenarioFamily(options.priorityScenarioFamily),
   };
 }
 
@@ -441,7 +613,17 @@ function normalizeMaxCases(value: unknown, fallback: number): number {
 
 function buildBenchmarkUid(scope: IntentE2EBenchmarkScope, frozenAt: string, evalCaseIds: string[]): string {
   const digest = createHash('sha1')
-    .update([scope.projectUid, scope.moduleUid, scope.testTypes.join(','), scope.runnerTypes.join(','), frozenAt, evalCaseIds.join(',')].join('|'))
+    .update(
+      [
+        scope.projectUid,
+        scope.moduleUid,
+        scope.testTypes.join(','),
+        scope.runnerTypes.join(','),
+        scope.priorityScenarioFamily,
+        frozenAt,
+        evalCaseIds.join(','),
+      ].join('|')
+    )
     .digest('hex')
     .slice(0, 12);
   return `bench_${digest}`;
@@ -457,6 +639,7 @@ function buildDefaultBenchmarkLabel(scope: IntentE2EBenchmarkScope, frozenAt: st
     scope.moduleUid,
     scope.testTypes.join('+'),
     scope.runnerTypes.join('+'),
+    scope.priorityScenarioFamily,
   ]);
   const datePart = frozenAt.slice(0, 10) || 'benchmark';
   return scopeParts.length > 0 ? `${scopeParts.join(' / ')} @ ${datePart}` : `benchmark @ ${datePart}`;
@@ -467,6 +650,7 @@ function matchesScope(run: IntentE2EInsightRunRecord, scope: NormalizedBenchmark
   if (scope.moduleUid && run.moduleUid !== scope.moduleUid) return false;
   if (scope.testTypes.length > 0 && !scope.testTypes.includes(run.testType)) return false;
   if (scope.runnerTypes.length > 0 && !scope.runnerTypes.includes(run.runnerType)) return false;
+  if (scope.priorityScenarioFamily && run.priorityScenarioFamily !== scope.priorityScenarioFamily) return false;
   return true;
 }
 
@@ -620,18 +804,43 @@ function selectBenchmarkCandidates(
     .slice(0, limit);
 }
 
+function buildClusterLookupKey(
+  snapshotSignature: string,
+  priorityScenarioFamily: IntentE2EPriorityScenarioFamily | '' = ''
+): string {
+  const normalizedSignature = snapshotSignature.trim();
+  const normalizedFamily = normalizeIntentE2EPriorityScenarioFamily(priorityScenarioFamily);
+  return normalizedFamily ? `${normalizedFamily}::${normalizedSignature}` : normalizedSignature;
+}
+
 function buildClusterMap(runs: IntentE2EInsightRunRecord[]): Map<string, IntentE2EInsightRunRecord[]> {
   const clusters = new Map<string, IntentE2EInsightRunRecord[]>();
 
   for (const run of runs) {
     const key = run.snapshotSignature.trim();
     if (!key) continue;
-    const current = clusters.get(key) || [];
-    current.push(run);
-    clusters.set(key, current);
+    for (const clusterKey of uniqueStrings([key, buildClusterLookupKey(key, run.priorityScenarioFamily)])) {
+      const current = clusters.get(clusterKey) || [];
+      current.push(run);
+      clusters.set(clusterKey, current);
+    }
   }
 
   return clusters;
+}
+
+function resolveClusterRuns(
+  clusters: Map<string, IntentE2EInsightRunRecord[]>,
+  snapshotSignature: string,
+  priorityScenarioFamily: IntentE2EPriorityScenarioFamily | ''
+): IntentE2EInsightRunRecord[] {
+  const normalizedSignature = snapshotSignature.trim();
+  if (!normalizedSignature) return [];
+  return (
+    clusters.get(buildClusterLookupKey(normalizedSignature, priorityScenarioFamily)) ||
+    clusters.get(normalizedSignature) ||
+    []
+  );
 }
 
 function buildSuiteCase(
@@ -644,6 +853,7 @@ function buildSuiteCase(
     snapshotSignature: candidate.snapshotSignature,
     scenarioFamily: candidate.scenarioFamily,
     scenarioFamilyLabel: candidate.scenarioFamilyLabel,
+    priorityScenarioFamily: candidate.priorityScenarioFamily,
     taskMode: candidate.taskMode,
     targetPath: candidate.targetPath,
     stepTypes: [...candidate.stepTypes],
@@ -732,6 +942,7 @@ function normalizeBenchmarkCase(raw: unknown): IntentE2EBenchmarkSuiteCase | nul
         ? source.scenarioFamily
         : 'unknown',
     scenarioFamilyLabel: normalizeString(source.scenarioFamilyLabel),
+    priorityScenarioFamily: normalizeIntentE2EPriorityScenarioFamily(source.priorityScenarioFamily) || 'untracked',
     taskMode: source.taskMode === 'page' || source.taskMode === 'scenario' ? source.taskMode : 'unknown',
     targetPath: normalizeString(source.targetPath),
     stepTypes: uniqueStrings(Array.isArray(source.stepTypes) ? (source.stepTypes as string[]) : []),
@@ -829,6 +1040,7 @@ function buildBenchmarkScopeFromOptions(options: FreezeIntentE2EBenchmarkOptions
     moduleUid: scope.moduleUid,
     testTypes: [...scope.testTypes],
     runnerTypes: [...scope.runnerTypes],
+    priorityScenarioFamily: scope.priorityScenarioFamily,
   };
 }
 
@@ -842,6 +1054,60 @@ export function getIntentE2EBenchmarkArchiveDir(projectUid = ''): string {
 
 export function getIntentE2EBenchmarkReportDir(projectUid = ''): string {
   return toDisplayPath(resolveBenchmarkStorage(projectUid).reportDir);
+}
+
+function matchesBenchmarkCaseScope(
+  item: Pick<IntentE2EBenchmarkSuiteCase, 'priorityScenarioFamily'>,
+  scope: NormalizedBenchmarkScope
+): boolean {
+  if (scope.priorityScenarioFamily && item.priorityScenarioFamily !== scope.priorityScenarioFamily) return false;
+  return true;
+}
+
+function buildScopedBenchmarkSuite(
+  benchmark: IntentE2EBenchmarkSuite,
+  options: Pick<ReplayIntentE2EBenchmarkOptions, 'priorityScenarioFamily'> = {}
+): IntentE2EBenchmarkSuite {
+  const scope = normalizeScope({
+    ...benchmark.scope,
+    ...(typeof options.priorityScenarioFamily === 'string'
+      ? {
+          priorityScenarioFamily: options.priorityScenarioFamily,
+        }
+      : {}),
+  });
+  const cases = benchmark.cases.filter((item) => matchesBenchmarkCaseScope(item, scope));
+
+  return {
+    ...benchmark,
+    scope: {
+      ...benchmark.scope,
+      priorityScenarioFamily: scope.priorityScenarioFamily,
+    },
+    source: {
+      ...benchmark.source,
+      selectedEvalCaseIds: cases.map((item) => item.evalCaseId),
+    },
+    summary: {
+      ...summarizeSuiteMetrics(cases.map((item) => item.frozenMetrics)),
+      topFailureReasons: aggregateFailureClassStatsFromBenchmarkCases(cases),
+    },
+    cases: cases.map((item) => ({
+      ...item,
+      moduleUids: [...item.moduleUids],
+      testTypes: [...item.testTypes],
+      runnerTypes: [...item.runnerTypes],
+      stepTypes: [...item.stepTypes],
+      representativeRunIds: [...item.representativeRunIds],
+      matchedRecipeSlugs: [...item.matchedRecipeSlugs],
+      matchedRuleIds: [...item.matchedRuleIds],
+      matchedRuleTitles: [...item.matchedRuleTitles],
+      usedHelpers: [...item.usedHelpers],
+      keySignals: [...item.keySignals],
+      failureClasses: item.failureClasses.map((failure) => ({ ...failure })),
+      frozenMetrics: { ...item.frozenMetrics },
+    })),
+  };
 }
 
 export function buildIntentE2EBenchmarkSuiteFromData(
@@ -866,8 +1132,12 @@ export function buildIntentE2EBenchmarkSuiteFromData(
   }
 
   const clusterMap = buildClusterMap(normalizedRuns);
-  const cases = selectedCandidates.map((candidate) => buildSuiteCase(candidate, clusterMap.get(candidate.snapshotSignature) || []));
-  const selectedRuns = selectedCandidates.flatMap((candidate) => clusterMap.get(candidate.snapshotSignature) || []);
+  const cases = selectedCandidates.map((candidate) =>
+    buildSuiteCase(candidate, resolveClusterRuns(clusterMap, candidate.snapshotSignature, candidate.priorityScenarioFamily))
+  );
+  const selectedRuns = selectedCandidates.flatMap((candidate) =>
+    resolveClusterRuns(clusterMap, candidate.snapshotSignature, candidate.priorityScenarioFamily)
+  );
   const frozenAt = normalizeFrozenAt(options.frozenAt);
   const benchmarkScope = buildBenchmarkScopeFromOptions(options);
   const benchmarkUid = buildBenchmarkUid(
@@ -965,11 +1235,12 @@ export function buildIntentE2EBenchmarkReplayFromData(
   const clusterMap = buildClusterMap(normalizedRuns);
 
   const cases = benchmark.cases.map((item) => {
-    const clusterRuns = clusterMap.get(item.snapshotSignature) || [];
+    const clusterRuns = resolveClusterRuns(clusterMap, item.snapshotSignature, item.priorityScenarioFamily);
     const orderedRuns = [...clusterRuns].sort((a, b) => b.finishedAtMs - a.finishedAtMs || b.runId.localeCompare(a.runId));
     return {
       evalCaseId: item.evalCaseId,
       snapshotSignature: item.snapshotSignature,
+      priorityScenarioFamily: item.priorityScenarioFamily,
       currentMetrics: clusterRuns.length > 0 ? summarizeCaseMetrics(clusterRuns) : null,
       latestRunIds: orderedRuns.slice(0, 3).map((run) => run.runId),
       status: clusterRuns.length > 0 ? 'matched' : 'missing',
@@ -979,7 +1250,9 @@ export function buildIntentE2EBenchmarkReplayFromData(
   const matchedMetrics = cases
     .map((item) => item.currentMetrics)
     .filter((item): item is IntentE2EBenchmarkCaseMetrics => Boolean(item));
-  const matchedRuns = benchmark.cases.flatMap((item) => clusterMap.get(item.snapshotSignature) || []);
+  const matchedRuns = benchmark.cases.flatMap((item) =>
+    resolveClusterRuns(clusterMap, item.snapshotSignature, item.priorityScenarioFamily)
+  );
   const summaryMetrics = summarizeSuiteMetrics(matchedMetrics);
 
   return {
@@ -1093,6 +1366,97 @@ function buildComparisonNote(
   }。`;
 }
 
+function buildEvidenceConclusion(input: {
+  totalCases: number;
+  matchedCases: number;
+  missingCases: number;
+  frozenMetrics: IntentE2EBenchmarkCaseMetrics;
+  currentMetrics: IntentE2EBenchmarkCaseMetrics | null;
+}): {
+  conclusion: IntentE2EBenchmarkEvidenceConclusion;
+  note: string;
+} {
+  if (input.totalCases === 0 || input.matchedCases === 0 || !input.currentMetrics) {
+    return {
+      conclusion: 'insufficient_evidence',
+      note:
+        input.totalCases === 0
+          ? '证据不足：当前 benchmark scope 下没有可用 case。'
+          : '证据不足：当前 family 在当前窗口没有可匹配的 terminal runs。',
+    };
+  }
+
+  if (
+    input.frozenMetrics.runCount < MIN_EVIDENCE_RUN_COUNT ||
+    input.currentMetrics.runCount < MIN_EVIDENCE_RUN_COUNT
+  ) {
+    return {
+      conclusion: 'insufficient_evidence',
+      note: `证据不足：冻结窗口 ${input.frozenMetrics.runCount} 次、当前窗口 ${input.currentMetrics.runCount} 次 terminal 样本，低于最小门槛 ${MIN_EVIDENCE_RUN_COUNT}。`,
+    };
+  }
+
+  const comparisonStatus = buildComparisonStatus(input.frozenMetrics, input.currentMetrics);
+  const conclusion: IntentE2EBenchmarkEvidenceConclusion =
+    comparisonStatus === 'missing' ? 'insufficient_evidence' : comparisonStatus;
+  return {
+    conclusion,
+    note: buildComparisonNote(comparisonStatus, input.frozenMetrics, input.currentMetrics),
+  };
+}
+
+function summarizePriorityScenarioFamilyComparisons(
+  benchmark: IntentE2EBenchmarkSuite,
+  cases: IntentE2EBenchmarkCompareCase[]
+): IntentE2EBenchmarkPriorityScenarioFamilySummary[] {
+  const familyOrder = Array.from(
+    new Set(
+      benchmark.cases
+        .map((item) => normalizeIntentE2EPriorityScenarioFamily(item.priorityScenarioFamily))
+        .filter((item): item is IntentE2EPriorityScenarioFamily => Boolean(item))
+    )
+  );
+  const compareCaseByEvalCaseId = new Map(cases.map((item) => [item.evalCaseId, item]));
+
+  return familyOrder.map((priorityScenarioFamily) => {
+    const familyBenchmarkCases = benchmark.cases.filter((item) => item.priorityScenarioFamily === priorityScenarioFamily);
+    const familyCompareCases = familyBenchmarkCases
+      .map((item) => compareCaseByEvalCaseId.get(item.evalCaseId) || null)
+      .filter((item): item is IntentE2EBenchmarkCompareCase => Boolean(item));
+    const frozenMetrics = summarizeSuiteMetrics(familyBenchmarkCases.map((item) => item.frozenMetrics));
+    const matchedCurrentMetrics = familyCompareCases
+      .map((item) => item.currentMetrics)
+      .filter((item): item is IntentE2EBenchmarkCaseMetrics => Boolean(item));
+    const currentMetrics = matchedCurrentMetrics.length > 0 ? summarizeSuiteMetrics(matchedCurrentMetrics) : null;
+    const matchedCases = familyCompareCases.filter((item) => item.status === 'matched').length;
+    const missingCases = familyCompareCases.filter((item) => item.status === 'missing').length;
+    const evidence = buildEvidenceConclusion({
+      totalCases: familyBenchmarkCases.length,
+      matchedCases,
+      missingCases,
+      frozenMetrics,
+      currentMetrics,
+    });
+
+    return {
+      priorityScenarioFamily,
+      totalCases: familyBenchmarkCases.length,
+      matchedCases,
+      missingCases,
+      frozenRunCount: frozenMetrics.runCount,
+      currentRunCount: currentMetrics?.runCount || 0,
+      frozenTerminalPassRate: frozenMetrics.terminalPassRate,
+      currentTerminalPassRate: currentMetrics?.terminalPassRate || 0,
+      frozenFirstPassPassRate: frozenMetrics.firstPassPassRate,
+      currentFirstPassPassRate: currentMetrics?.firstPassPassRate || 0,
+      frozenBlockedRate: frozenMetrics.blockedRate,
+      currentBlockedRate: currentMetrics?.blockedRate || 0,
+      conclusion: evidence.conclusion,
+      note: evidence.note,
+    } satisfies IntentE2EBenchmarkPriorityScenarioFamilySummary;
+  });
+}
+
 export function buildIntentE2EBenchmarkCompareReport(
   benchmark: IntentE2EBenchmarkSuite,
   replay: IntentE2EBenchmarkReplayResult,
@@ -1108,6 +1472,7 @@ export function buildIntentE2EBenchmarkCompareReport(
     return {
       evalCaseId: item.evalCaseId,
       snapshotSignature: item.snapshotSignature,
+      priorityScenarioFamily: item.priorityScenarioFamily,
       currentMetrics,
       latestRunIds: replayCase?.latestRunIds || [],
       status: replayCase?.status || 'missing',
@@ -1143,6 +1508,7 @@ export function buildIntentE2EBenchmarkCompareReport(
     comparedAt,
     scope: { ...benchmark.scope },
     benchmarkPath: normalizeString(options.benchmarkPath) || getIntentE2EBenchmarkPath(benchmark.scope.projectUid),
+    priorityScenarioFamilies: summarizePriorityScenarioFamilyComparisons(benchmark, cases),
     summary: {
       totalCases: cases.length,
       matchedCases: cases.filter((item) => item.status === 'matched').length,
@@ -1197,15 +1563,18 @@ export async function replayIntentE2EBenchmark(
     throw new Error('当前项目还没有冻结 benchmark');
   }
 
+  const benchmark = buildScopedBenchmarkSuite(readResult.benchmark, {
+    priorityScenarioFamily: options.priorityScenarioFamily,
+  });
   const runLimit = normalizeRunLimit(options.runLimit);
   const runSnapshots = await listIntentE2ERunSnapshots({
-    projectUid: readResult.benchmark.scope.projectUid,
-    moduleUid: readResult.benchmark.scope.moduleUid,
+    projectUid: benchmark.scope.projectUid,
+    moduleUid: benchmark.scope.moduleUid,
     status: 'terminal',
     limit: runLimit,
   });
 
-  return buildIntentE2EBenchmarkReplayFromData(readResult.benchmark, runSnapshots, options.replayedAt || nowIso());
+  return buildIntentE2EBenchmarkReplayFromData(benchmark, runSnapshots, options.replayedAt || nowIso());
 }
 
 export async function compareIntentE2EBenchmark(
@@ -1222,20 +1591,23 @@ export async function compareIntentE2EBenchmark(
     throw new Error('当前项目还没有冻结 benchmark');
   }
 
+  const benchmark = buildScopedBenchmarkSuite(readResult.benchmark, {
+    priorityScenarioFamily: options.priorityScenarioFamily,
+  });
   const runLimit = normalizeRunLimit(options.runLimit);
   const runSnapshots = await listIntentE2ERunSnapshots({
-    projectUid: readResult.benchmark.scope.projectUid,
-    moduleUid: readResult.benchmark.scope.moduleUid,
+    projectUid: benchmark.scope.projectUid,
+    moduleUid: benchmark.scope.moduleUid,
     status: 'terminal',
     limit: runLimit,
   });
-  const replay = buildIntentE2EBenchmarkReplayFromData(readResult.benchmark, runSnapshots, options.comparedAt || nowIso());
-  const report = buildIntentE2EBenchmarkCompareReport(readResult.benchmark, replay, {
+  const replay = buildIntentE2EBenchmarkReplayFromData(benchmark, runSnapshots, options.comparedAt || nowIso());
+  const report = buildIntentE2EBenchmarkCompareReport(benchmark, replay, {
     benchmarkPath: readResult.path,
     comparedAt: options.comparedAt,
     comparedLabel: options.comparedLabel,
   });
-  const storage = resolveBenchmarkStorage(readResult.benchmark.scope.projectUid);
+  const storage = resolveBenchmarkStorage(benchmark.scope.projectUid);
   const reportPath = path.join(
     storage.reportDir,
     `${buildArchiveStamp(report.comparedAt)}-${sanitizeFileSegment(report.benchmarkUid)}-${sanitizeFileSegment(report.comparedLabel)}.json`

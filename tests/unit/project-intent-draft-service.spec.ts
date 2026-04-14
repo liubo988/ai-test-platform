@@ -35,6 +35,10 @@ vi.mock('@/lib/services/test-plan-service', () => ({
   generatePlanDraftFromTaskSpec: vi.fn(),
 }));
 
+vi.mock('@/lib/test-generator', () => ({
+  sanitizeGeneratedCode: vi.fn((code: string) => code),
+}));
+
 vi.mock('@/lib/task-flow', () => ({
   validateTaskConfigInput: vi.fn(),
 }));

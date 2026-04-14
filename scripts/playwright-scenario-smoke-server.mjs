@@ -20,11 +20,20 @@ function restoreWorkspaceFiles() {
   }
 }
 
-// This distDir is dedicated to the scenario smoke server. Clear stale Next locks
-// left behind by interrupted runs before rebuilding it.
-for (const lockPath of [path.join(ROOT, distDir, 'lock'), path.join(ROOT, distDir, 'dev', 'lock')]) {
+globalThis.__restoreWorkspaceFiles = restoreWorkspaceFiles;
+
+// This distDir is dedicated to the scenario smoke server. Clear stale lock/type
+// artifacts left behind by interrupted runs before rebuilding it so smoke runs
+// do not depend on a previous .next-e2e state.
+for (const artifactPath of [
+  path.join(ROOT, distDir, 'lock'),
+  path.join(ROOT, distDir, 'dev', 'lock'),
+  path.join(ROOT, distDir, 'types'),
+  path.join(ROOT, distDir, 'dev', 'types'),
+  path.join(ROOT, distDir, 'cache', '.tsbuildinfo'),
+]) {
   try {
-    fs.rmSync(lockPath, { force: true });
+    fs.rmSync(artifactPath, { force: true, recursive: true });
   } catch {}
 }
 

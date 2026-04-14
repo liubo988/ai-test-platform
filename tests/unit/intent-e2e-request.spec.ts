@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeIntentE2ERequestBody } from '@/lib/ai/intent-e2e-request';
+import { buildIntentE2ELaunchDecisionRequestBody, normalizeIntentE2ERequestBody } from '@/lib/ai/intent-e2e-request';
 
 describe('intent-e2e-request', () => {
   it('normalizes runtime governance fields with supported enums and trims references', () => {
@@ -67,7 +67,7 @@ describe('intent-e2e-request', () => {
       runControl: {
         priority: ' HIGH ',
         timeoutMs: 12_345.9,
-        retryLimit: 3.8,
+        retryLimit: 8.8,
         replayOfRunId: ' intent-run-prev ',
       },
     });
@@ -75,7 +75,7 @@ describe('intent-e2e-request', () => {
     expect(request.runControl).toEqual({
       priority: 'high',
       timeoutMs: 30_000,
-      retryLimit: 2,
+      retryLimit: 5,
       replayOfRunId: 'intent-run-prev',
     });
   });
@@ -137,5 +137,65 @@ describe('intent-e2e-request', () => {
     });
     expect(request.intentDraftUid).toBe('idraft_1');
     expect(request.prefilledPlanCode).toContain("test('draft-prefill'");
+  });
+
+  it('builds a slim launch-decision request body without shipping full draft assets', () => {
+    const requestBody = buildIntentE2ELaunchDecisionRequestBody({
+      input: '  创建商机并验证新入库状态  ',
+      projectUid: ' proj_default ',
+      moduleUid: ' mod_business ',
+      intentDraftUid: ' idraft_1 ',
+      prefilledScenarioCard: {
+        title: '创建商机并验证新入库状态',
+        taskMode: 'scenario',
+        targetUrl: 'https://example.com/#/business/list',
+        featureDescription: '复用草稿资产',
+        flowDefinition: {
+          version: 1,
+          entryUrl: 'https://example.com/#/business/list',
+          sharedVariables: [],
+          expectedOutcome: '列表出现新记录',
+          cleanupNotes: '',
+          steps: [],
+        },
+        successCriteria: ['列表出现新记录'],
+        visualAnchors: ['新建商机按钮'],
+        notes: [],
+      },
+      prefilledPlanCode: "test('draft-prefill')",
+      attachments: [
+        {
+          name: 'screenshot.png',
+          purpose: 'context',
+          dataUrl: 'data:image/png;base64,AAAABBBBCCCC',
+        },
+      ],
+      llmConfig: {
+        provider: 'openai',
+        model: 'gpt-5.4',
+        apiStyle: 'responses',
+      },
+    });
+
+    expect(requestBody).toEqual({
+      input: '创建商机并验证新入库状态',
+      projectUid: 'proj_default',
+      moduleUid: 'mod_business',
+      intentDraftUid: 'idraft_1',
+      attachments: [
+        {
+          name: 'screenshot.png',
+          purpose: 'context',
+          dataUrl: 'data:,intent-launch-decision',
+        },
+      ],
+      llmConfig: {
+        provider: 'openai',
+        model: 'gpt-5.4',
+        apiStyle: 'responses',
+      },
+    });
+    expect(requestBody).not.toHaveProperty('prefilledScenarioCard');
+    expect(requestBody).not.toHaveProperty('prefilledPlanCode');
   });
 });

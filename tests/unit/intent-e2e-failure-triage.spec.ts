@@ -49,7 +49,7 @@ describe('intent-e2e-failure-triage', () => {
     });
   });
 
-  it('classifies explicit 状态证据缺失 failures as repairable assertion issues', () => {
+  it('classifies explicit 状态证据缺失 failures as response_missing issues', () => {
     const triage = classifyIntentE2EFailure({
       success: false,
       duration: 900,
@@ -65,11 +65,33 @@ describe('intent-e2e-failure-triage', () => {
     });
 
     expect(triage).toMatchObject({
-      failureClass: 'assertion_too_strict',
+      failureClass: 'response_missing',
       repairable: true,
     });
     expect(triage?.matchedSignals).toContain('状态证据缺失');
     expect(triage?.matchedSignals).toContain('fallback 行已命中');
+  });
+
+  it('classifies expired session errors as non-repairable auth_state_invalid', () => {
+    const triage = classifyIntentE2EFailure({
+      success: false,
+      duration: 800,
+      steps: [
+        {
+          title: '进入目标页',
+          status: 'failed',
+          duration: 800,
+          error: 'session expired，访问目标页前需要重新登录',
+        },
+      ],
+      error: 'session expired，访问目标页前需要重新登录',
+    });
+
+    expect(triage).toMatchObject({
+      failureClass: 'auth_state_invalid',
+      repairable: false,
+    });
+    expect(triage?.matchedSignals).toContain('session expired');
   });
 
   it('classifies locator drift as repairable selector issues', () => {
@@ -198,6 +220,66 @@ describe('intent-e2e-failure-triage', () => {
     expect(triage?.diagnosis?.nextActions.join('\n')).toContain('详情页或详情抽屉');
   });
 
+  it('classifies structured record lookup misses separately from visible-row misses', () => {
+    const triage = classifyIntentE2EFailure({
+      success: false,
+      duration: 900,
+      steps: [
+        {
+          title: '按 businessId 回查记录',
+          status: 'failed',
+          duration: 900,
+          error: "recordCheck.mode === 'not_found'；列表响应未命中记录",
+        },
+      ],
+      error: "recordCheck.mode === 'not_found'；列表响应未命中记录",
+    });
+
+    expect(triage).toMatchObject({
+      failureClass: 'record_lookup_miss',
+      repairable: true,
+    });
+    expect(triage?.matchedSignals).toContain('record lookup not_found');
+  });
+
+  it('classifies order-list findAntdTableRow misses as repairable target-row failures', () => {
+    const triage = classifyIntentE2EFailure(
+      {
+        success: false,
+        duration: 1000,
+        steps: [
+          {
+            title: '按入账状态待申请筛选订单',
+            status: 'failed',
+            duration: 1000,
+            error: '未找到表格目标行：hasTexts=服务中 | 已完款',
+          },
+        ],
+        error: '未找到表格目标行：hasTexts=服务中 | 已完款',
+      },
+      [],
+      {
+        pageUrl: 'https://uat.example.com/#/order/list',
+        snapshot: {
+          url: 'https://uat.example.com/#/order/list',
+          title: '订单列表',
+          forms: [],
+          buttons: [],
+          tooltipElements: [],
+          headings: [],
+          frames: [],
+        },
+      }
+    );
+
+    expect(triage).toMatchObject({
+      failureClass: 'target_row_not_found',
+      repairable: true,
+    });
+    expect(triage?.matchedSignals).toContain('findAntdTableRow 未命中目标行');
+    expect(triage?.diagnosis?.nextActions.join('\n')).toContain('orderId');
+  });
+
   it('prefers the innermost failed step title over the outer test title', () => {
     const triage = classifyIntentE2EFailure({
       success: false,
@@ -243,5 +325,27 @@ describe('intent-e2e-failure-triage', () => {
       repairable: false,
     });
     expect(triage?.matchedSignals).toContain('未返回服务数据');
+  });
+
+  it('classifies runtime syntax damage as non-repairable', () => {
+    const triage = classifyIntentE2EFailure({
+      success: false,
+      duration: 0,
+      steps: [
+        {
+          title: '准备测试脚本',
+          status: 'failed',
+          duration: 0,
+          error: '测试脚本预处理失败（runtime_syntax_damage）：TypeScript 兼容降级后仍存在语法错误：Unexpected token',
+        },
+      ],
+      error: '测试脚本预处理失败（runtime_syntax_damage）：TypeScript 兼容降级后仍存在语法错误：Unexpected token',
+    });
+
+    expect(triage).toMatchObject({
+      failureClass: 'runtime_syntax_damage',
+      repairable: false,
+    });
+    expect(triage?.matchedSignals).toContain('runtime_syntax_damage');
   });
 });

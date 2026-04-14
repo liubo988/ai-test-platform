@@ -1,10 +1,12 @@
 import { normalizeScenarioCard, type ScenarioAttachment, type ScenarioCard } from '@/lib/ai/scenario-card';
 import type { IntentE2ERunRequest } from '@/lib/ai/intent-e2e-service';
-import { normalizeIntentE2ERunControl } from '@/lib/intent-e2e-run-control';
+import { normalizeIntentE2ERunControl } from '@/lib/intent-e2e-run-control-shared';
 import { normalizeIntentE2ERuntimeGovernance } from '@/lib/intent-e2e-runtime-governance';
-import { normalizeIntentE2ECiCdProfile } from '@/lib/intent-e2e-system-onboarding';
+import { normalizeIntentE2ECiCdProfile } from '@/lib/intent-e2e-system-onboarding-shared';
 import type { LLMRuntimeOverrides } from '@/lib/llm/provider-config';
 import type { AuthConfig } from '@/lib/page-analyzer';
+
+const LAUNCH_DECISION_ATTACHMENT_PLACEHOLDER_DATA_URL = 'data:,intent-launch-decision';
 
 type AttachmentInput = {
   name?: string;
@@ -109,5 +111,26 @@ export function normalizeIntentE2ERequestBody(body: unknown): IntentE2ERunReques
     runtimeGovernance: normalizeIntentE2ERuntimeGovernance(record.runtimeGovernance),
     prefilledScenarioCard: normalizePrefilledScenarioCard(record.prefilledScenarioCard, targetUrl),
     prefilledPlanCode: typeof record.prefilledPlanCode === 'string' && record.prefilledPlanCode.trim() ? record.prefilledPlanCode : undefined,
+  };
+}
+
+export function buildIntentE2ELaunchDecisionRequestBody(body: unknown): Record<string, unknown> {
+  const request = normalizeIntentE2ERequestBody(body);
+  const attachments = request.attachments || [];
+
+  return {
+    input: request.input,
+    targetUrl: request.targetUrl || undefined,
+    projectUid: request.projectUid || undefined,
+    moduleUid: request.moduleUid || undefined,
+    intentDraftUid: request.intentDraftUid || undefined,
+    auth: request.auth || undefined,
+    llmConfig: request.llmConfig,
+    runtimeGovernance: request.runtimeGovernance,
+    attachments: attachments.map((item) => ({
+      name: item.name,
+      purpose: item.purpose,
+      dataUrl: LAUNCH_DECISION_ATTACHMENT_PLACEHOLDER_DATA_URL,
+    })),
   };
 }

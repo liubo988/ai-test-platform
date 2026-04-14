@@ -70,6 +70,55 @@ describe('intent-recipe-registry', () => {
     expect(registry.items.map((item) => item.recipe.slug)).toContain('ui.antd-modal-drawer-save');
   });
 
+  it('boosts top-family preferred deterministic skeleton recipes for industrialized routes', () => {
+    const dsl = buildIntentActionDSL({
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/businesslist',
+      featureDescription: '在商机列表创建商机后切到我创建的，按 businessId 回查目标记录并校验商机进展',
+      expectedOutcome: '提交成功后命中目标记录并完成状态验收',
+      sharedVariables: ['businessId', 'contactPhone'],
+      steps: [
+        {
+          stepUid: 'step_1',
+          stepType: 'ui',
+          title: '创建商机并提交',
+          target: 'https://example.com/#/business/createbusiness',
+          instruction: '填写创建商机表单并提交保存',
+          expectedResult: '提交成功并返回商机列表',
+          extractVariable: 'businessId',
+        },
+        {
+          stepUid: 'step_2',
+          stepType: 'assert',
+          title: '回列表校验',
+          target: 'https://example.com/#/business/businesslist',
+          instruction: '切到我创建的后按 businessId 或联系人手机号回查目标记录，并校验商机进展',
+          expectedResult: '命中目标记录且状态正确',
+          extractVariable: '',
+        },
+      ],
+    });
+
+    const registry = selectIntentRecipeRegistry({
+      dsl,
+      snapshot: {
+        url: 'https://example.com/#/business/businesslist',
+        title: '商机列表',
+        frames: [],
+      },
+      priorityScenarioFamily: 'business_create_list_verify',
+      preferredCapabilitySlugs: ['assert.wait-for-api-response', 'assert.resolve-primary-record'],
+    });
+
+    const createRecipe = registry.items.find((item) => item.recipe.slug === 'business.create');
+    const ownershipRecipe = registry.items.find((item) => item.recipe.slug === 'business.list-ownership-switch');
+    const lookupRecipe = registry.items.find((item) => item.recipe.slug === 'assert.antd-table-primary-key-search');
+
+    expect(createRecipe?.matchedSignals).toContain('family_skeleton=business_create_list_verify');
+    expect(ownershipRecipe?.matchedSignals).toContain('family_skeleton=business_create_list_verify');
+    expect(lookupRecipe?.matchedSignals).toContain('family_skeleton=business_create_list_verify');
+  });
+
   it('applies light family weighting only after a recipe already matches', () => {
     const dsl = buildIntentActionDSL({
       taskMode: 'scenario',

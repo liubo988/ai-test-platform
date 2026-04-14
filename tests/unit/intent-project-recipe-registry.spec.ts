@@ -5,9 +5,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildIntentActionDSL } from '@/lib/intent-action-dsl';
 import {
   createIntentProjectRecipeAuditEntry,
+  exportIntentProjectRecipeProfile,
   getIntentProjectRecipeBackupDir,
   getIntentProjectRecipeProfile,
   getIntentProjectRecipeRegistryPath,
+  importIntentProjectRecipeProfile,
   listIntentProjectRecipeAuditEntries,
   listIntentProjectRecipeBackups,
   mergeIntentProjectRecipes,
@@ -130,6 +132,137 @@ describe('intent-project-recipe-registry', () => {
     expect(getIntentProjectRecipeProfile('proj_beta').recipes).toHaveLength(0);
     expect(getIntentProjectRecipeProfile().recipes).toHaveLength(0);
     expect(fs.existsSync(projectRegistryPath)).toBe(true);
+  });
+
+  it('exports a project-scoped recipe asset to an explicit path', async () => {
+    const projectRegistryPath = getIntentProjectRecipeRegistryPath({
+      projectUid: 'proj_alpha',
+      mode: 'write',
+      legacyFallback: false,
+    });
+    await registerIntentProjectRecipes(
+      [
+        {
+          version: 1,
+          slug: 'custom.project-alpha',
+          title: '项目 Alpha 稳定链',
+          description: 'proj_alpha 专用 recipe。',
+          family: 'list_search_detail',
+          matchers: {
+            targetUrlIncludes: ['/alpha'],
+          },
+          requiredContext: ['仅在 Alpha 项目中使用'],
+          executorPlan: ['先走 Alpha 固定流程'],
+          verifierPlan: ['再做 Alpha 结果验收'],
+          knownPitfalls: [],
+          successRate: 100,
+          lastVerifiedAt: '2026-04-09T12:30:00.000Z',
+        },
+      ],
+      projectRegistryPath,
+      getIntentProjectRecipeBackupDir('proj_alpha'),
+      getIntentProjectRecipeRegistryPath('proj_alpha')
+    );
+
+    const exportedPath = path.join(tempDir, 'tracked-assets', 'proj_alpha.project-recipes.json');
+    const result = await exportIntentProjectRecipeProfile(exportedPath, 'proj_alpha');
+
+    expect(result.sourcePath).toBe(projectRegistryPath);
+    expect(result.writtenTo).toBe(exportedPath);
+    expect(result.recipeCount).toBe(1);
+    expect(JSON.parse(fs.readFileSync(exportedPath, 'utf8'))).toMatchObject({
+      recipes: [
+        {
+          slug: 'custom.project-alpha',
+          family: 'list_search_detail',
+        },
+      ],
+    });
+  });
+
+  it('imports an explicit recipe asset into the project-scoped registry with backup', async () => {
+    const projectRegistryPath = getIntentProjectRecipeRegistryPath({
+      projectUid: 'proj_alpha',
+      mode: 'write',
+      legacyFallback: false,
+    });
+    await registerIntentProjectRecipes(
+      [
+        {
+          version: 1,
+          slug: 'custom.project-alpha-old',
+          title: '旧 Alpha 稳定链',
+          description: '旧版本 recipe。',
+          family: 'business_create_list_verify',
+          matchers: {
+            targetUrlIncludes: ['/alpha-old'],
+          },
+          requiredContext: ['旧链路'],
+          executorPlan: ['旧执行'],
+          verifierPlan: ['旧验收'],
+          knownPitfalls: [],
+          successRate: 70,
+          lastVerifiedAt: '2026-04-08T12:30:00.000Z',
+        },
+      ],
+      projectRegistryPath,
+      getIntentProjectRecipeBackupDir('proj_alpha'),
+      getIntentProjectRecipeRegistryPath('proj_alpha')
+    );
+
+    const importPath = path.join(tempDir, 'tracked-assets', 'proj_alpha.import.json');
+    fs.mkdirSync(path.dirname(importPath), { recursive: true });
+    fs.writeFileSync(
+      importPath,
+      JSON.stringify(
+        {
+          version: 1,
+          recipes: [
+            {
+              version: 1,
+              slug: 'custom.project-alpha-new',
+              title: '新 Alpha 稳定链',
+              description: '导入后的项目 recipe。',
+              family: 'modal_or_drawer_save',
+              matchers: {
+                targetUrlIncludes: ['/alpha-new'],
+              },
+              requiredContext: ['导入链路'],
+              executorPlan: ['导入执行'],
+              verifierPlan: ['导入验收'],
+              knownPitfalls: [],
+              successRate: 88.8,
+              lastVerifiedAt: '2026-04-10T08:00:00.000Z',
+            },
+          ],
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const result = await importIntentProjectRecipeProfile(
+      importPath,
+      projectRegistryPath,
+      getIntentProjectRecipeBackupDir('proj_alpha'),
+      getIntentProjectRecipeRegistryPath('proj_alpha')
+    );
+
+    expect(result.sourcePath).toBe(importPath);
+    expect(result.writtenTo).toBe(projectRegistryPath);
+    expect(result.backupPath).toBeTruthy();
+    expect(result.comparison).toMatchObject({
+      beforeRecipeCount: 1,
+      afterRecipeCount: 1,
+      addedRecipeSlugs: ['custom.project-alpha-new'],
+      removedRecipeSlugs: ['custom.project-alpha-old'],
+    });
+    expect(getIntentProjectRecipeProfile('proj_alpha').recipes).toHaveLength(1);
+    expect(getIntentProjectRecipeProfile('proj_alpha').recipes[0]).toMatchObject({
+      slug: 'custom.project-alpha-new',
+      family: 'modal_or_drawer_save',
+    });
   });
 
   it('prefers project-persisted recipe overrides over builtin definitions', async () => {

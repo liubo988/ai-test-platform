@@ -69,6 +69,7 @@ export function resolveIntentE2EQualitySplit(input: ResolveIntentE2EQualitySplit
   }
 
   switch (failureClass) {
+    case 'auth_state_invalid':
     case 'auth_failed':
       return {
         bucket: 'auth_blocked',
@@ -90,6 +91,7 @@ export function resolveIntentE2EQualitySplit(input: ResolveIntentE2EQualitySplit
         qualityEligible: false,
         blockerKind: 'environment',
       };
+    case 'fixture_contract_missing':
     case 'data_missing':
       return {
         bucket: 'data_blocked',

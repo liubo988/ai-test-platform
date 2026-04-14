@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildIntentDraftTestFlowHref,
   buildIntentDraftWorkbenchHref,
   canRunIntentDraftTestFlowStatus,
   INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE,
   normalizeIntentDraftLaunchMode,
+  resolveIntentDraftTestFlowActionLabel,
   resolveIntentDraftAutoLaunchGate,
   shouldOverrideDraftAutoRunLaunchDecision,
   shouldTreatQueryLaunchDecisionAsHardBlock,
@@ -43,6 +45,30 @@ describe('intent-e2e draft launch helpers', () => {
     ).toBe('/intent-e2e?projectUid=proj_default&moduleUid=mod_checkout&draftUid=draft_1&runId=intent-run-1');
   });
 
+  it('prefers the refreshed active run when opening draft test flow', () => {
+    expect(
+      buildIntentDraftTestFlowHref({
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        draftUid: 'draft_1',
+        activeRunId: '',
+        latestActiveRunId: ' intent-run-2 ',
+      })
+    ).toBe('/intent-e2e?projectUid=proj_default&moduleUid=mod_checkout&draftUid=draft_1&runId=intent-run-2');
+  });
+
+  it('falls back to fresh launch mode when the draft still has no active run', () => {
+    expect(
+      buildIntentDraftTestFlowHref({
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        draftUid: 'draft_1',
+        activeRunId: '',
+        latestActiveRunId: '',
+      })
+    ).toBe('/intent-e2e?projectUid=proj_default&moduleUid=mod_checkout&draftUid=draft_1&draftLaunch=test_flow');
+  });
+
   it('normalizes the supported draft launch mode only', () => {
     expect(normalizeIntentDraftLaunchMode('test_flow')).toBe(INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE);
     expect(normalizeIntentDraftLaunchMode(' draft_only ')).toBe('');
@@ -69,6 +95,11 @@ describe('intent-e2e draft launch helpers', () => {
     expect(canRunIntentDraftTestFlowStatus('')).toBe(false);
   });
 
+  it('uses an explicit running label once the draft is already executing', () => {
+    expect(resolveIntentDraftTestFlowActionLabel(true)).toBe('继续测试');
+    expect(resolveIntentDraftTestFlowActionLabel(false)).toBe('测试流程');
+  });
+
   it('keeps waiting when draft hydration finished but launch detail is not ready yet', () => {
     expect(
       resolveIntentDraftAutoLaunchGate({
@@ -81,6 +112,23 @@ describe('intent-e2e draft launch helpers', () => {
       })
     ).toEqual({
       status: 'wait',
+      draftKey: 'proj_default:draft_1',
+    });
+  });
+
+  it('keeps the current auto launch pending while the same draft request is already in flight', () => {
+    expect(
+      resolveIntentDraftAutoLaunchGate({
+        projectUid: 'proj_default',
+        draftUid: 'draft_1',
+        hydratedKey: 'proj_default:draft_1',
+        handledKey: '',
+        pendingKey: 'proj_default:draft_1',
+        draftDetailReady: true,
+        payloadReady: true,
+      })
+    ).toEqual({
+      status: 'pending',
       draftKey: 'proj_default:draft_1',
     });
   });

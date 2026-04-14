@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import rawManifest from '@/intent-e2e.contract-runner-presets.json';
+import rawManifest from '@/intent-e2e.contract-runner-presets.json' with { type: 'json' };
 
 export type ContractRunnerPresetId = 'openapi_file';
 export type ContractRunnerPresetContractKind = 'openapi_document';

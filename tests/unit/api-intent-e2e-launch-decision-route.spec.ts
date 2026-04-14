@@ -13,6 +13,10 @@ vi.mock('@/lib/llm/workspace-config', () => ({
   })),
 }));
 
+vi.mock('@/lib/intent-e2e-global-config', () => ({
+  loadWorkspaceIntentE2EGlobalRunConfig: vi.fn(),
+}));
+
 vi.mock('@/lib/server/intent-e2e-project-auth', () => ({
   resolveIntentE2EProjectAuth: vi.fn(),
 }));
@@ -57,6 +61,7 @@ import { resolveIntentE2ERepeatedFailureSuppressionFromData } from '@/lib/ai/int
 import { listRecentIntentE2ETerminalRunSnapshots } from '@/lib/ai/intent-e2e-run-registry';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { buildIntentE2EProjectAssetAvailability } from '@/lib/intent-e2e-asset-readiness';
+import { loadWorkspaceIntentE2EGlobalRunConfig } from '@/lib/intent-e2e-global-config';
 import { resolveIntentE2ELaunchDecision } from '@/lib/intent-e2e-launch-decision';
 import { getWorkspaceLLMRuntimeOverrides, mergeLLMRuntimeOverrides } from '@/lib/llm/workspace-config';
 import { resolveIntentE2EProjectAuth } from '@/lib/server/intent-e2e-project-auth';
@@ -65,6 +70,13 @@ import { applyActorCookie } from '@/lib/server/project-actor';
 describe('POST /api/intent-e2e/launch-decision', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.INTENT_E2E_LAUNCH_DECISION_TIMEOUT_MS;
+    vi.mocked(loadWorkspaceIntentE2EGlobalRunConfig).mockResolvedValue({
+      maxConcurrentRuns: 2,
+      projectConcurrentRuns: 1,
+      defaultRetryLimit: 0,
+      sharedSettings: null,
+    } as never);
   });
 
   it('returns blocked launch decision together with project asset availability', async () => {
@@ -104,6 +116,14 @@ describe('POST /api/intent-e2e/launch-decision', () => {
         assetStatus: 'asset_missing',
         requiresFixture: false,
         hasFixtureContract: false,
+        priorityScenarioFamily: 'business_create_list_verify',
+        priorityScenarioFamilySource: 'text_only',
+        priorityScenarioTextFamily: 'business_create_list_verify',
+        priorityScenarioVisualFamily: 'untracked',
+        hasTrackedPriorityScenarioFamily: true,
+        hasPriorityScenarioFamilyConflict: false,
+        hasStablePriorityScenarioPath: true,
+        hasExplicitVerifierSignal: true,
         hasHighFailurePressure: false,
         hasRepeatedFailureSuppression: false,
         repeatedFailureDecision: '',
@@ -124,6 +144,7 @@ describe('POST /api/intent-e2e/launch-decision', () => {
     const json = await res.json();
 
     expect(ensureDbBootstrap).toHaveBeenCalledTimes(1);
+    expect(loadWorkspaceIntentE2EGlobalRunConfig).toHaveBeenCalledTimes(1);
     expect(mergeLLMRuntimeOverrides).toHaveBeenCalledWith(
       {
         model: 'shared-model',
@@ -145,6 +166,10 @@ describe('POST /api/intent-e2e/launch-decision', () => {
           projectUid: 'proj_1',
         }),
         failurePressureSummary: null,
+        priorityScenarioFamilyRoute: expect.objectContaining({
+          family: 'business_create_list_verify',
+          source: 'text_only',
+        }),
         repeatedFailureSuppression: null,
       })
     );
@@ -161,6 +186,14 @@ describe('POST /api/intent-e2e/launch-decision', () => {
         assetStatus: 'asset_missing',
         requiresFixture: false,
         hasFixtureContract: false,
+        priorityScenarioFamily: 'business_create_list_verify',
+        priorityScenarioFamilySource: 'text_only',
+        priorityScenarioTextFamily: 'business_create_list_verify',
+        priorityScenarioVisualFamily: 'untracked',
+        hasTrackedPriorityScenarioFamily: true,
+        hasPriorityScenarioFamilyConflict: false,
+        hasStablePriorityScenarioPath: true,
+        hasExplicitVerifierSignal: true,
         hasHighFailurePressure: false,
         hasRepeatedFailureSuppression: false,
         repeatedFailureDecision: '',
@@ -251,6 +284,14 @@ describe('POST /api/intent-e2e/launch-decision', () => {
           assetStatus: 'ready',
           requiresFixture: false,
           hasFixtureContract: false,
+          priorityScenarioFamily: 'list_search_detail',
+          priorityScenarioFamilySource: 'text_only',
+          priorityScenarioTextFamily: 'list_search_detail',
+          priorityScenarioVisualFamily: 'untracked',
+          hasTrackedPriorityScenarioFamily: true,
+          hasPriorityScenarioFamilyConflict: false,
+          hasStablePriorityScenarioPath: true,
+          hasExplicitVerifierSignal: true,
           hasHighFailurePressure: false,
           hasRepeatedFailureSuppression: false,
           repeatedFailureDecision: '',
@@ -268,6 +309,14 @@ describe('POST /api/intent-e2e/launch-decision', () => {
           assetStatus: 'ready',
           requiresFixture: false,
           hasFixtureContract: false,
+          priorityScenarioFamily: 'list_search_detail',
+          priorityScenarioFamilySource: 'text_only',
+          priorityScenarioTextFamily: 'list_search_detail',
+          priorityScenarioVisualFamily: 'untracked',
+          hasTrackedPriorityScenarioFamily: true,
+          hasPriorityScenarioFamilyConflict: false,
+          hasStablePriorityScenarioPath: true,
+          hasExplicitVerifierSignal: true,
           hasHighFailurePressure: true,
           hasRepeatedFailureSuppression: true,
           repeatedFailureDecision: 'draft_only',
@@ -296,6 +345,10 @@ describe('POST /api/intent-e2e/launch-decision', () => {
       1,
       expect.objectContaining({
         failurePressureSummary: null,
+        priorityScenarioFamilyRoute: expect.objectContaining({
+          family: 'list_search_detail',
+          source: 'text_only',
+        }),
         repeatedFailureSuppression: null,
       })
     );
@@ -305,6 +358,10 @@ describe('POST /api/intent-e2e/launch-decision', () => {
         failurePressureSummary: expect.objectContaining({
           recentFailedVerifyExecutionCount: 3,
           highFailureCandidateCount: 1,
+        }),
+        priorityScenarioFamilyRoute: expect.objectContaining({
+          family: 'list_search_detail',
+          source: 'text_only',
         }),
         repeatedFailureSuppression: {
           recommendedDecision: 'draft_only',
@@ -324,6 +381,14 @@ describe('POST /api/intent-e2e/launch-decision', () => {
         assetStatus: 'ready',
         requiresFixture: false,
         hasFixtureContract: false,
+        priorityScenarioFamily: 'list_search_detail',
+        priorityScenarioFamilySource: 'text_only',
+        priorityScenarioTextFamily: 'list_search_detail',
+        priorityScenarioVisualFamily: 'untracked',
+        hasTrackedPriorityScenarioFamily: true,
+        hasPriorityScenarioFamilyConflict: false,
+        hasStablePriorityScenarioPath: true,
+        hasExplicitVerifierSignal: true,
         hasHighFailurePressure: true,
         hasRepeatedFailureSuppression: true,
         repeatedFailureDecision: 'draft_only',
@@ -335,5 +400,107 @@ describe('POST /api/intent-e2e/launch-decision', () => {
         reasons: [],
       },
     });
+  });
+
+  it('falls back to the baseline decision when repeated-failure lookup exceeds the budget', async () => {
+    vi.useFakeTimers();
+    process.env.INTENT_E2E_LAUNCH_DECISION_TIMEOUT_MS = '50';
+    vi.mocked(getWorkspaceLLMRuntimeOverrides).mockResolvedValue({} as never);
+    vi.mocked(resolveIntentE2EProjectAuth).mockResolvedValue({
+      request: {
+        input: '创建商机后回列表校验新记录',
+        projectUid: 'proj_3',
+        moduleUid: 'mod_3',
+        targetUrl: 'https://example.com/business/list',
+      },
+    } as never);
+    vi.mocked(buildIntentE2EProjectAssetAvailability).mockReturnValue({
+      status: 'ready',
+      projectUid: 'proj_3',
+      reasons: [],
+    } as never);
+    vi.mocked(listRecentIntentE2ETerminalRunSnapshots).mockImplementation(
+      () => new Promise(() => undefined) as never
+    );
+    vi.mocked(resolveIntentE2ELaunchDecision).mockReturnValue({
+      decision: 'auto_run',
+      reasons: ['launch_ready'],
+      signals: {
+        projectUid: 'proj_3',
+        moduleUid: 'mod_3',
+        hasTargetUrl: true,
+        attachmentCount: 0,
+        assetStatus: 'ready',
+        requiresFixture: false,
+        hasFixtureContract: false,
+        priorityScenarioFamily: 'business_create_list_verify',
+        priorityScenarioFamilySource: 'text_only',
+        priorityScenarioTextFamily: 'business_create_list_verify',
+        priorityScenarioVisualFamily: 'untracked',
+        hasTrackedPriorityScenarioFamily: true,
+        hasPriorityScenarioFamilyConflict: false,
+        hasStablePriorityScenarioPath: true,
+        hasExplicitVerifierSignal: true,
+        hasHighFailurePressure: false,
+        hasRepeatedFailureSuppression: false,
+        repeatedFailureDecision: '',
+        repeatedFailureReason: '',
+      },
+    } as never);
+
+    const req = new NextRequest('http://localhost/api/intent-e2e/launch-decision', {
+      method: 'POST',
+      body: JSON.stringify({
+        input: '创建商机后回列表校验新记录',
+        projectUid: 'proj_3',
+        moduleUid: 'mod_3',
+        targetUrl: 'https://example.com/business/list',
+      }),
+    });
+
+    const responsePromise = POST(req);
+    await vi.advanceTimersByTimeAsync(60);
+    const res = await responsePromise;
+    const json = await res.json();
+
+    expect(listRecentIntentE2ETerminalRunSnapshots).toHaveBeenCalledWith({
+      projectUid: 'proj_3',
+      moduleUid: 'mod_3',
+      limit: 20,
+    });
+    expect(resolveIntentE2ERepeatedFailureSuppressionFromData).not.toHaveBeenCalled();
+    expect(resolveIntentE2ELaunchDecision).toHaveBeenCalledTimes(1);
+    expect(json).toEqual({
+      decision: 'auto_run',
+      reasons: ['launch_ready'],
+      signals: {
+        projectUid: 'proj_3',
+        moduleUid: 'mod_3',
+        hasTargetUrl: true,
+        attachmentCount: 0,
+        assetStatus: 'ready',
+        requiresFixture: false,
+        hasFixtureContract: false,
+        priorityScenarioFamily: 'business_create_list_verify',
+        priorityScenarioFamilySource: 'text_only',
+        priorityScenarioTextFamily: 'business_create_list_verify',
+        priorityScenarioVisualFamily: 'untracked',
+        hasTrackedPriorityScenarioFamily: true,
+        hasPriorityScenarioFamilyConflict: false,
+        hasStablePriorityScenarioPath: true,
+        hasExplicitVerifierSignal: true,
+        hasHighFailurePressure: false,
+        hasRepeatedFailureSuppression: false,
+        repeatedFailureDecision: '',
+        repeatedFailureReason: '',
+      },
+      assetAvailability: {
+        status: 'ready',
+        projectUid: 'proj_3',
+        reasons: [],
+      },
+    });
+
+    vi.useRealTimers();
   });
 });

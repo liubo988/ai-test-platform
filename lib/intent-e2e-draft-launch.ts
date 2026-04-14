@@ -2,7 +2,7 @@ export const INTENT_DRAFT_LAUNCH_QUERY_PARAM = 'draftLaunch';
 export const INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE = 'test_flow';
 
 export type IntentDraftLaunchMode = typeof INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE;
-export type IntentDraftAutoLaunchGateStatus = 'wait' | 'ready' | 'invalid_payload';
+export type IntentDraftAutoLaunchGateStatus = 'wait' | 'pending' | 'ready' | 'invalid_payload';
 
 export function normalizeIntentDraftLaunchMode(value: string | null | undefined): IntentDraftLaunchMode | '' {
   return (value || '').trim() === INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE ? INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE : '';
@@ -33,6 +33,24 @@ export function buildIntentDraftWorkbenchHref(options: {
   return `/intent-e2e?${params.toString()}`;
 }
 
+export function buildIntentDraftTestFlowHref(options: {
+  projectUid: string;
+  moduleUid?: string | null;
+  draftUid: string;
+  activeRunId?: string | null;
+  latestActiveRunId?: string | null;
+}): string {
+  const runId = (options.latestActiveRunId || '').trim() || (options.activeRunId || '').trim();
+
+  return buildIntentDraftWorkbenchHref({
+    projectUid: options.projectUid,
+    moduleUid: options.moduleUid || undefined,
+    draftUid: options.draftUid,
+    runId: runId || undefined,
+    launchMode: runId ? '' : INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE,
+  });
+}
+
 export function shouldTreatQueryLaunchDecisionAsHardBlock(decision: string | null | undefined): boolean {
   const normalized = (decision || '').trim();
   return normalized !== '' && normalized !== 'auto_run' && normalized !== 'draft_only';
@@ -47,11 +65,16 @@ export function canRunIntentDraftTestFlowStatus(status: string | null | undefine
   return normalized === 'active' || normalized === 'imported';
 }
 
+export function resolveIntentDraftTestFlowActionLabel(hasActiveRun: boolean): string {
+  return hasActiveRun ? '继续测试' : '测试流程';
+}
+
 export function resolveIntentDraftAutoLaunchGate(input: {
   projectUid?: string | null;
   draftUid?: string | null;
   hydratedKey?: string | null;
   handledKey?: string | null;
+  pendingKey?: string | null;
   draftDetailReady?: boolean;
   payloadReady?: boolean;
 }): {
@@ -72,6 +95,10 @@ export function resolveIntentDraftAutoLaunchGate(input: {
 
   if ((input.handledKey || '').trim() === draftKey) {
     return { status: 'wait', draftKey };
+  }
+
+  if ((input.pendingKey || '').trim() === draftKey) {
+    return { status: 'pending', draftKey };
   }
 
   if (!input.draftDetailReady) {

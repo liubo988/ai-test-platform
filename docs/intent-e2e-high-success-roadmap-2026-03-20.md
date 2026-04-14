@@ -15981,3 +15981,2228 @@
     - `experience_hit_rate`
     - `first_pass_pass_rate`
   - 若新 runs 仍看不到 recipe / OCR 收益，再继续收口 benchmark case 的历史 `/` targetPath 语义与图片任务专用指标。
+
+## 2026-04-10 第二百四十三次更新（订单批量入账首轮生成前移 guard + post-sanitize 已完成）
+
+- 本轮目标：
+  - 不再只补 repair prompt，而是把 `订单批量入账到入账管理核对` 这类场景的两类高频坏代码前移收口：
+    - 首轮生成把 `待申请入账 | 服务中 / 未确认` 这类重复状态文本当成订单行身份
+    - modal 已 ready 后仍把 `取消` 按钮当硬前提
+  - 在代码合并后补一层 deterministic sanitizer，避免这些已知坏模式直接进入执行。
+- 已完成：
+  - 新增 [docs/intent-e2e-batch-account-first-pass-guard-task-brief-2026-04-10.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-batch-account-first-pass-guard-task-brief-2026-04-10.md)，固定本轮目标、范围与验证命令。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 为 `looksLikeOrderBatchAccountTask(...)` 增加首轮生成专项规则：
+    - Step 2 只允许证明“筛选后存在至少一条可勾选真实订单行”
+    - 禁止把 `待申请入账 | 服务中`、`待申请入账 | 未确认` 当订单身份
+    - 禁止把 `phoneToken` 回填到 `selectedOrderNo`
+    - 禁止把 `await expect(modal.getByRole('button', { name: '取消' }).first()).toBeVisible()` 当 modal ready 硬前提
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 新增 `sanitizeGeneratedCode(...)` 与 batch-account 专项 sanitizer：
+    - 把重复状态文本的 `findAntdTableRow(...)` 改写为“扫描主表体可勾选真实行”
+    - 删除 `取消` 精确可见性断言，并把主动作按钮放宽为 `/确\s*定|提\s*交|保\s*存/i`
+    - 把 `selectedOrderNo = orderNoToken || phoneToken` 收口为只接受订单号
+    - 对 modal 注入 `订单号 / 服务项 / 入账金额` 字段级 fallback 提取，避免在 modal ready 前过早因 `selectedOrderNo` 为空而失败
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 补回归：
+    - 首轮 prompt guardrails
+    - modal footer drift
+    - 生成后 sanitizer
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - `npm run edge:generate`
+  - `npm run build`
+  - `npx playwright test tests/e2e/scenario-task-smoke.spec.ts --reporter=line`
+  - 结果：
+    - `tests/unit/test-generator.spec.ts` 通过，`96/96 passed`
+    - `edge:generate` 通过，生成 `1` 个 module
+    - `build` 通过
+    - smoke 未完成执行：在起服前被现有 `next build --webpack` 问题拦截，报错为 `node:crypto` scheme 未被 webpack 处理；import trace 为 `./lib/intent-e2e-run-control.ts -> ./lib/ai/intent-e2e-request.ts -> ./components/IntentE2EWorkbench.tsx`
+- 当前结果：
+  - 订单批量入账这条链的核心缺口已经从“只靠 repair hint”前移成“generate 约束 + post-sanitize”双层收口。
+  - 对真实 run 里已经反复出现的两类坏模式，系统现在即使再次生成出旧写法，也会在代码合并后被自动改写，不再原样执行。
+  - 这刀还没有新增真实 terminal run 对比，因此当前收益判断仍以失败根因收口为主，不以 pass rate 量化结论为主。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成（本轮）
+- 风险 / 未完成：
+  - 当前 sanitizer 仍是已知坏模式定向清洗，不等于订单批量入账场景已经完全模板化。
+  - smoke 暂时无法继续提供 UI 级回归信号，因为仓库当前还存在与本轮改动无关的 `next build --webpack` / `node:crypto` 构建阻塞。
+  - 还没有拿到新一轮真实 `intent-run-*` 数据来验证失败是否已从“行选择 / cancel drift”迁移到更后面的业务验收层。
+- 下一步：
+  - 先用这版继续观察新的订单批量入账真实 runs，重点看：
+    - 是否还出现 `findAntdTableRow(...待申请入账 + 服务中/未确认...)`
+    - 是否还出现 modal `取消` 精确断言
+    - 是否还把手机号误写进 `selectedOrderNo`
+  - 若真实 run 仍在订单号提取层失败，再把这条场景进一步收口成更强的 deterministic slot / recipe，而不是继续堆 prompt。
+
+## 2026-04-10 第二百四十四次更新（订单批量入账提交 / 回查硬等待与弹窗前变量收口已完成）
+
+- 本轮目标：
+  - 把订单批量入账链路的新头阻塞从 deterministic sanitizer 层直接收口，而不是继续等待 repair prompt 碰运气。
+  - 重点解决三类已被真实 run 证明的坏模式：
+    - Step 3 在弹窗前就硬要求 `selectedOrderNo / selectedServiceItem / selectedAmount` 全部 truthy
+    - Step 6 把 `/account` POST 当成必须命中的提交成功证据
+    - Step 7 / verification 把 `/account` GET 当成必须命中的额外回查证据
+- 已完成：
+  - 新增 [docs/intent-e2e-batch-account-submit-search-hardening-task-brief-2026-04-10.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-batch-account-submit-search-hardening-task-brief-2026-04-10.md)，固定本轮 run 证据、目标与验证命令。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 扩展 batch-account sanitizer：
+    - 对同一 `data-row-key` 的多份 Ant Table clone 行文本做合并，避免只读到 fixed-column / 主表体半行文本
+    - 把 Step 3 第一轮 `expect(shared.selectedOrderNo|selectedServiceItem|selectedAmount).toBeTruthy()` 收口成 modal 前缺失标记，不再提前阻断 modal fallback
+    - modal fallback 追加文本级 `订单号 / 服务项 / 入账金额` 兜底，并对 `selectedAmount` 做数字归一化，避免把服务项文案误写成金额
+    - `/account` POST / GET 等待统一降级为 `timeoutMs=2500 + catch(() => null)` 的弱依赖，不再把新请求是否出现当成唯一成功证据
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 补充回归：
+    - 弹窗前变量缺失不再直接失败
+    - modal 文本兜底与金额归一化
+    - `/account` POST / GET 硬等待降级
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - 结果：
+    - `tests/unit/test-generator.spec.ts` 通过，`97/97 passed`
+    - `build` 通过
+- 当前结果：
+  - `intent-run-cf83851c-aa8d-4bb8-b804-83fec96ac618` 暴露的“还没进 modal 就死在共享变量 truthy”问题，现在已被 deterministic sanitizer 前置处理。
+  - `intent-run-ffc3a9f2-c4f6-432d-82f8-9f4a62350d12` 暴露的 Step 6 `/account` POST 和 Step 7 `/account` GET 硬等待，现在都已降级为弱依赖，不再默认把“额外接口事件必须出现”当成功标准。
+  - 订单批量入账这条链的当前失败头阻塞，已经从“旧坏代码反复漏进执行”进一步收口为“只剩新的真实 run 需要验证是否进入更后面的业务验收层”。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成（本轮）
+- 风险 / 未完成：
+  - 这轮仍是 batch-account 专项 deterministic hardening，不等于该场景已经完全模板化或 recipe 化。
+  - 真实收益仍依赖下一批新的 `intent-run-*` 数据；当前还没有用新代码产出的真实 terminal run 来确认头阻塞是否继续后移。
+  - 仓库当前 smoke 仍受既有 `next build --webpack` / `node:crypto` 问题影响，暂时不能作为这轮的 UI 级回归信号。
+- 下一步：
+  - 先用这版继续观察新的订单批量入账真实 runs，重点看：
+    - 是否还会在 modal 前卡死 `selectedServiceItem / selectedAmount`
+    - Step 6 是否仍出现 `/account` POST 等待超时
+    - Step 7 / verification 是否仍出现 `/account` GET 额外等待超时
+  - 如果新的 run 已进入更后面的字段一致性校验层，再继续收口 `服务项 / 入账金额` 的业务 verifier，而不是回头再补 prompt。
+
+## 2026-04-10 第二百四十五次更新（订单批量入账金额断言守卫与多处 truthy 清洗已完成）
+
+- 本轮目标：
+  - 继续沿着最新真实 run `intent-run-97b6699c-607a-4377-9fe5-1f46167214f3` 的头阻塞往后收口，不回头再补旧问题。
+  - 重点解决四类已经被真实执行代码暴露出来的漏网模式：
+    - 宽泛 `selectedAmount` 提取把日期或长整型 ID 当金额
+    - modal / 列表直接拿 `shared.selectedAmount` 做硬断言
+    - regex 版 `取\\s*消` 按钮可见性仍会漏进执行
+    - `expect(shared.selectedAmount).toBeTruthy()` 只清掉第一处，最终验证里的同类硬断言仍保留
+- 已完成：
+  - 新增 [docs/intent-e2e-batch-account-amount-assertion-guard-task-brief-2026-04-10.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-batch-account-amount-assertion-guard-task-brief-2026-04-10.md)，固定最新 run 证据、目标与验证命令。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 继续扩展 batch-account sanitizer：
+    - `selectedAmount` 的 token / candidate 提取增加日期样式、长整型 ID 和非正数过滤，避免把日期、订单号或内部主键误写成金额
+    - modal fallback 的 `normalizedModalAmount` 也增加同样的过滤，避免 detail-field 误读后把异常数字回填到金额变量
+    - modal / 列表对 `shared.selectedAmount` 的断言统一改为“仅当看起来像真实金额时才断言”，否则写入 `artifacts['selectedAmount_assertion_skipped']`
+    - `取消` 按钮硬断言扩展为同时清理 `'取消'` 和 `/取\\s*消/` 两种形态；确认按钮匹配也统一放宽到 `/确\\s*定|提\\s*交|保\\s*存/i`
+    - `expect(shared.selectedOrderNo|selectedServiceItem|selectedAmount).toBeTruthy()` 改为全量替换，避免只清掉首处
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 补回归：
+    - regex 版 `取消` 可见性断言清理
+    - `selectedAmount` 的日期样式 / 长整型保护
+    - 金额断言守卫
+    - 多处 truthy 断言全量替换
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+  - 结果：
+    - `tests/unit/test-generator.spec.ts` 通过，`98/98 passed`
+    - `build` 通过
+    - `check-doc-links` 通过
+    - `check-roadmap-progress` 通过
+- 当前结果：
+  - `intent-run-97b6699c-607a-4377-9fe5-1f46167214f3` 暴露的头阻塞已经从“行选择 / modal ready / 网络等待”进一步收口到“金额字段识别与金额断言过宽”这一层，并已被 deterministic sanitizer 前置处理。
+  - 现在即使模型继续产出“宽泛金额提取 + modal 硬断言 + regex 取消 + 多处 truthy”的旧写法，代码合并后也会被自动改写，不再原样执行。
+  - 这刀仍属于 batch-account 专项 hardening；收益判断以真实新 run 是否继续后移为准，而不是仅凭 unit test 断言已经完全解决。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成
+    - `订单批量入账专项金额断言守卫`：已完成（本轮）
+- 风险 / 未完成：
+  - 这轮仍没有把订单批量入账完全收口成 recipe / verifier 模板，只是继续削掉最新已知坏模式。
+  - 真实收益仍依赖新的 `intent-run-*` 数据；目前还没有拿到带这版 sanitizer 的新 terminal run。
+  - 仓库当前 smoke 仍受既有 `next build --webpack` / `node:crypto` 问题影响，暂时不能提供 UI 级回归信号。
+- 下一步：
+  - 请基于这版代码再跑一次 `订单批量入账到入账管理核对`，优先观察：
+    - Step 5 是否还会出现 date-like `selectedAmount` modal 断言
+    - Step 8 / final verification 是否还会把非金额文本拿去对行文本做硬校验
+    - 是否还残留 regex 版 `取\\s*消` 或末尾 truthy 断言
+  - 如果新的 run 继续后移，再把这条场景的金额 / 服务项一致性收口成更强的业务 verifier，而不是继续堆 sanitizer。
+
+## 2026-04-10 第二百四十六次更新（订单批量入账服务项状态漂移与 wait 变体漏网收口已完成）
+
+- 本轮目标：
+  - 继续沿着最新真实 run `intent-run-f51958ee-db00-448e-bc61-521c759fbe46` 的失败点向后收口，不回头再补已经解决过的金额问题。
+  - 重点解决三类新暴露的坏模式：
+    - `selectedServiceItem` 把 `[服务中]` 这类状态 token 当成服务项
+    - Step 5 / Step 8 使用 `modalText / rowText` 直接断言 `shared.selectedServiceItem`
+    - `/account` POST / GET 的 wait softening 仍依赖固定变量名和单引号写法
+- 已完成：
+  - 新增 [docs/intent-e2e-batch-account-service-item-guard-task-brief-2026-04-10.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-batch-account-service-item-guard-task-brief-2026-04-10.md)，固定本轮 run 证据、目标与验证命令。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 继续扩展 batch-account sanitizer：
+    - 对 `shared.selectedServiceItem = ...` 的直接赋值统一增加状态词过滤；若命中 `服务中 / 待申请入账 / 未确认 / 已确认 / 已完款 / 待确认 / 状态 / 入账状态` 等 token，会先清空，等待 modal fallback 回填真实服务项
+    - 对 `modalText / rowText` 的 `selectedServiceItem` 断言统一改成守卫块：只有不像状态词时才执行断言，否则写入 `artifacts['selectedServiceItem_assertion_skipped']`
+    - `selectedAmount` 赋值继续扩展到 `amountToken / amountCandidate / amountCandidates.find(...)` 等变体，避免不同代码形态绕过金额守卫
+    - `/account` POST / GET 软等待扩展到更通用的行级替换，不再依赖固定变量名或单引号形式
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 补回归：
+    - `serviceToken -> [服务中]` 漂移
+    - `modalText` / `finalRowText` 的服务项守卫
+    - 双引号 `artifacts["plan_step_x"]` + 不同变量名的 wait softening 变体
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+  - 结果：
+    - `tests/unit/test-generator.spec.ts` 通过，`99/99 passed`
+    - `build` 通过
+    - `check-doc-links` 通过
+    - `check-roadmap-progress` 通过
+- 当前结果：
+  - `intent-run-f51958ee-db00-448e-bc61-521c759fbe46` 说明金额守卫已经开始生效，当前头阻塞已进一步后移到“服务项状态漂移 + 宽断言”这一层。
+  - 现在即使模型继续产出 `serviceToken` 命中 `[服务中]`、`if (shared.selectedServiceItem) expect(modalText)...` 或双引号 `/account` wait 的旧写法，代码合并后也会被 deterministic sanitizer 自动改写。
+  - 这轮仍属于 batch-account 专项 hardening；真实收益要看下一批新的 terminal run 是否继续后移到更纯粹的业务字段一致性 verifier。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成
+    - `订单批量入账专项金额断言守卫`：已完成
+    - `订单批量入账专项服务项状态守卫`：已完成（本轮）
+- 风险 / 未完成：
+  - 这轮仍没有把订单批量入账完整抽成独立 recipe / verifier 模板，当前依旧以 deterministic sanitizer 兜底为主。
+  - 真实收益仍依赖新的 `intent-run-*` 数据；还没有拿到带本轮 service-item guard 的 terminal run。
+  - smoke 仍受既有 `next build --webpack` / `node:crypto` 问题影响，暂时不能作为这轮 UI 级回归信号。
+- 下一步：
+  - 请基于这版再跑一条新的 `订单批量入账到入账管理核对`。
+  - 重点看：
+    - Step 5 是否还会把状态 token 当服务项去断言 modal
+    - Step 6 / Step 7 是否还会因为 `/account` POST / GET 变体再次卡死
+    - 新头阻塞是否继续后移到更后面的业务字段一致性 verifier
+
+## 2026-04-10 第二百四十七次更新（workspace 级意图任务全局配置已完成）
+
+- 本轮目标：
+  - 把控制台意图任务的全局并发控制和失败任务默认重试次数，从纯环境变量/请求参数收口成 workspace 级共享配置。
+  - 在首页补一个与 `LLM 配置` 同级的 `全局配置` 入口，让运维侧可以直接改异步 intent 任务平台默认值，而不是继续手改宿主机环境或让每个请求都传 `runControl.retryLimit`。
+- 已完成：
+  - 新增 [docs/intent-e2e-global-run-config-task-brief-2026-04-10.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-global-run-config-task-brief-2026-04-10.md)，固定本轮目标、范围与验证命令。
+  - 在 [lib/db/repository.ts](/Users/xiaolongbao/Workspace/ai-test/lib/db/repository.ts)、[scripts/e2e-platform-schema.sql](/Users/xiaolongbao/Workspace/ai-test/scripts/e2e-platform-schema.sql) 和 [scripts/init-e2e-db.mjs](/Users/xiaolongbao/Workspace/ai-test/scripts/init-e2e-db.mjs) 新增 `workspace_intent_run_settings` 持久化契约与 bootstrap。
+  - 新增 [app/api/intent-e2e/global-config/route.ts](/Users/xiaolongbao/Workspace/ai-test/app/api/intent-e2e/global-config/route.ts)、[lib/intent-e2e-global-config.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-global-config.ts) 和 [lib/intent-e2e-admin-config.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-admin-config.ts)：
+    - 支持读取/保存 workspace 级 `maxConcurrentRuns` 与 `defaultRetryLimit`
+    - 运行时缓存当前共享配置，供异步 intent run 主链路读取
+  - 在 [lib/server/intent-e2e-request-preparation.ts](/Users/xiaolongbao/Workspace/ai-test/lib/server/intent-e2e-request-preparation.ts) 增加全局配置预热，在 [lib/ai/intent-e2e-run-registry.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-run-registry.ts) 把：
+    - 全局并发配额切到 workspace global config snapshot
+    - 未显式传 `runControl.retryLimit` 的异步 run，切到 workspace 默认重试次数
+  - 新增 [components/GlobalConfigDialog.tsx](/Users/xiaolongbao/Workspace/ai-test/components/GlobalConfigDialog.tsx)，并在 [app/page.tsx](/Users/xiaolongbao/Workspace/ai-test/app/page.tsx) 的 `LLM 配置` 旁新增 `全局配置` 按钮。
+  - 新增/补充单测：
+    - [tests/unit/api-intent-e2e-global-config-route.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/api-intent-e2e-global-config-route.spec.ts)
+    - [tests/unit/api-intent-e2e-runs-route.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/api-intent-e2e-runs-route.spec.ts)
+    - [tests/unit/api-intent-e2e-launch-decision-route.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/api-intent-e2e-launch-decision-route.spec.ts)
+    - [tests/unit/intent-e2e-run-registry.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-run-registry.spec.ts)
+  - 在 [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md) 补充全局配置 API、首页入口和 Run Platform 语义说明。
+- 验证：
+  - `npx vitest run tests/unit/api-intent-e2e-global-config-route.spec.ts tests/unit/api-intent-e2e-runs-route.spec.ts tests/unit/api-intent-e2e-launch-decision-route.spec.ts tests/unit/intent-e2e-run-registry.spec.ts`
+  - `npm run build`
+  - `npm run build:web`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+  - 结果：
+    - 4 个受影响 unit test file 通过，`27/27 passed`
+    - `build` 通过
+    - `build:web` 仍被仓库既有 `node:crypto` / webpack 问题拦截；当前 import trace 仍是 `./lib/intent-e2e-run-control.ts -> ./lib/ai/intent-e2e-request.ts -> ./components/IntentE2EWorkbench.tsx`，不是本轮新引入的阻塞
+    - `check-doc-links` 与 `check-roadmap-progress` 待本轮文档落盘后执行
+- 当前结果：
+  - workspace 现在已有第二类共享配置，不再只有 `团队共享 LLM 配置`；运维侧可直接在首页改异步 intent 任务平台的并发和默认重试。
+  - 异步 `POST /api/intent-e2e/runs` 的并发配额与默认整轮失败重试，已经不再只能依赖环境默认或每次请求显式传参。
+  - `defaultRetryLimit` 当前已经按平台治理语义收口为强制值：异步 run 即使显式传了 `runControl.retryLimit`，最终也会被 workspace 全局配置覆盖，避免调用方继续绕过平台统一控制。
+  - 若宿主机没有显式设置 `INTENT_E2E_PROJECT_MAX_CONCURRENT_RUNS`，workspace 级全局并发提升后，同项目并发也会跟随放开；若宿主机显式设置了项目级上限，表单会继续显示实际生效值而不是误导成“完全全局并行”。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成
+    - `订单批量入账专项金额断言守卫`：已完成
+    - `订单批量入账专项服务项状态守卫`：已完成
+    - `workspace 级 intent 全局配置`：已完成（本轮）
+- 风险 / 未完成：
+  - 运行时缓存当前仍是单实例内存态；多实例部署场景下，别的实例感知到新配置仍依赖下一次读配置或异步运行入口预热。
+  - 这轮没有把 `INTENT_E2E_PROJECT_MAX_CONCURRENT_RUNS` 也做成表单字段，只是把实际生效的同项目并发值显式展示出来。
+  - `build:web` 仍被既有 webpack / `node:crypto` 问题阻塞，暂时不能提供这一轮 UI 级回归信号。
+- 下一步：
+  - 若后续确定多实例部署会成为常态，需要把 workspace global config cache 从“单实例预热”升级为更明确的失效/刷新策略。
+  - 若运维侧后续还需要精细控制“同项目并发”，再评估是否把 `INTENT_E2E_PROJECT_MAX_CONCURRENT_RUNS` 也外显成表单字段，而不是继续只保留只读提示。
+
+## 2026-04-10 第二百四十七次更新（订单批量入账订单号提取与入账列表回查硬编码收口已完成）
+
+- 本轮目标：
+  - 继续沿着最新真实 run `intent-run-43fc23b6-9890-4964-9b74-ab47ec592865` 与 `intent-run-8495e924-7f1f-4abb-a986-dae9fd1e7792` 的 terminal blocker 向后收口，不回头重修已经落地的金额 / 服务项 guard。
+  - 重点解决两类新暴露的坏模式：
+    - Step 3 的 `selectedOrderNo` 提取仍要求订单号不能是纯数字，导致 `202604011028194322` 这类长数字订单号被误判为空并直接失败
+    - Step 6 / Step 7 提交后回查仍硬编码 `input#form_in_modal_testKeyWord:visible`，导致 locator 漂移时直接卡死，而不是走现有 `resolvePrimaryRecord(...)` 列表收敛链
+- 已完成：
+  - 新增 [docs/intent-e2e-batch-account-orderno-and-account-list-lookup-hardening-task-brief-2026-04-10.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-batch-account-orderno-and-account-list-lookup-hardening-task-brief-2026-04-10.md)，固定本轮 run 证据、目标与验证命令。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 继续扩展 batch-account sanitizer：
+    - `rowText = (await targetRow.innerText().catch(() => '')).replace(/\s+/g, ' ').trim()` 这类新形态也统一改写成按同一 `data-row-key` 聚合 clone 文本，避免只读到半行信息
+    - `orderFromLink / orderFromTokens` 的订单号提取增加“合理纯数字长订单号”保护：允许 `12+` 位结构化数字 id，同时继续排除手机号、日期样式、短数值和明显金额
+    - `未能从已勾选订单行提取订单号` 这类 modal 前硬失败统一降级为 `artifacts['selectedOrderNo_missing_before_modal']`，让后续 modal fallback 还有机会补值
+    - 提交后回查不再保留 `#form_in_modal_testKeyWord` 的硬编码搜索链；识别到该坏模式后，统一改写成 `__e2e.resolvePrimaryRecord(page, { primaryValue: shared.selectedOrderNo, listResponse: { urlIncludes: '/account', method: 'GET' }, rowHasTexts: [shared.selectedOrderNo], maxLookupAttempts: 3, retryIntervalMs: 900 })`
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 补回归：
+    - 纯数字长订单号提取 + modal 前硬失败降级
+    - `input#form_in_modal_testKeyWord:visible` 硬编码回查被替换为 `resolvePrimaryRecord(...)`
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+  - 结果：
+    - `tests/unit/test-generator.spec.ts` 通过，`100/100 passed`
+    - `build` 通过
+    - `check-doc-links` 通过
+    - `check-roadmap-progress` 通过（回写前）
+- 当前结果：
+  - `intent-run-43fc23b6-9890-4964-9b74-ab47ec592865` 暴露的 Step 3 订单号误杀问题，已经被 deterministic sanitizer 收口到“允许合理纯数字长订单号 + 前置 throw 降级”的层面。
+  - `intent-run-8495e924-7f1f-4abb-a986-dae9fd1e7792` 暴露的 Step 6/7 搜索框硬编码问题，已经被 deterministic sanitizer 收口到“统一改走 `resolvePrimaryRecord(...)`”这一层。
+  - 这轮仍属于 batch-account 专项 hardening；收益判断仍以新的真实 run 是否把 terminal blocker 继续后移为准。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成
+    - `订单批量入账专项金额断言守卫`：已完成
+    - `订单批量入账专项服务项状态守卫`：已完成
+    - `订单批量入账专项订单号与回查定位收口`：已完成（本轮）
+- 风险 / 未完成：
+  - 这轮仍没有把订单批量入账完整抽成独立 recipe / verifier 模板，当前依旧以 deterministic sanitizer 兜底为主。
+  - 真实收益仍依赖新的 `intent-run-*` 数据；目前还没有拿到带这版 orderNo / resolvePrimaryRecord 收口的 terminal run。
+  - smoke 仍受既有 `next build --webpack` / `node:crypto` 问题影响，暂时不能作为这轮 UI 级回归信号。
+- 下一步：
+  - 请基于这版再跑一条新的 `订单批量入账到入账管理核对`。
+  - 优先观察：
+    - Step 3 是否还会报 `未能从已勾选订单行提取订单号`
+    - Step 6 / Step 7 是否还会出现 `input#form_in_modal_testKeyWord` 或等价的硬编码搜索框漂移
+    - terminal blocker 是否继续后移到更纯粹的业务字段一致性 verifier，而不是停在 locator / sanitizer 层
+
+## 2026-04-10 第二百四十八次更新（订单批量入账 repair-path 选行歧义与 account-list 检索候选补强已完成）
+
+- 本轮目标：
+  - 基于最新真实 run `intent-run-2a09d38a-bc4f-4684-b119-7c84a9fe4e80` 与 `intent-run-88c79b14-c8a6-486a-9884-870af3faa805`，继续把 batch-account 专项的 terminal blocker 往后推。
+  - 本轮只收口两个 deterministic 漏网点：
+    - repair 产出的 Step 2 又回退成 `findAntdTableRow(...['待申请入账','服务中'/'未确认'])`，导致多条真实订单同时命中
+    - repair 产出的 Step 7 仍保留“先手动 `fill + 搜索`，再把同一组 `keywordInput/searchButton` 传给 `resolvePrimaryRecord(...)`”的混合坏模式
+- 已完成：
+  - 新增 [docs/intent-e2e-batch-account-repair-path-and-account-lookup-helper-hardening-task-brief-2026-04-10.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-batch-account-repair-path-and-account-lookup-helper-hardening-task-brief-2026-04-10.md)，固定两条 run 证据、本轮目标与验证命令。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 继续扩展 batch-account sanitizer：
+    - `findAntdTableRow(...['待申请入账','服务中'/'未确认'])` 的 direct 形态之外，新增收口 repair 常见的 `.catch(async () => fallback findAntdTableRow(...))` 形态，统一改写成“扫描主表体可见真实行并逐条尝试 `__e2e.clickAntdRowCheckbox(...)`”
+    - `input#form_in_modal_testKeyWord:visible` 手动预搜索后再 `resolvePrimaryRecord(...)` 的混合坏模式，统一改写成单一 `resolvePrimaryRecord(...)`，并移除外层 `keywordInput/searchButton` 依赖
+    - 收口后统一补回 `artifacts['plan_step_7']`、`artifacts['plan_step_7_row']`，保留已有 `artifacts['plan_step_7_record']`
+  - 在 [lib/test-worker.mjs](/Users/xiaolongbao/Workspace/ai-test/lib/test-worker.mjs) 扩展 `buildPrimaryLookupInputCandidates()`：
+    - 新增 `#service-data-item_keyWord`
+    - 新增 `#form_in_modal_testKeyWord`
+    - 新增 `testKeyWord / keyWord` 变体
+    - 新增 `请输入关键词` placeholder 兜底
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 补两条真实回归：
+    - `88c79...` 对应的 Step 2 repair fallback 选行坏模式
+    - `2a09...` 对应的 Step 7 手动预搜索 + `resolvePrimaryRecord(...)` 混合坏模式
+  - 新增 [tests/unit/test-worker-source.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-worker-source.spec.ts)，卡住 account-list 检索框候选集合的关键 selector / placeholder。
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/test-worker-source.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/project-intent-task-service.spec.ts tests/unit/project-intent-draft-service.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+  - 结果：
+    - 5 个受影响 unit test file 通过，`147/147 passed`
+    - `build` 通过
+    - `check-doc-links` 与 `check-roadmap-progress` 待本轮文档落盘后执行
+- 当前结果：
+  - `intent-run-88c79b14-c8a6-486a-9884-870af3faa805` 暴露的 Step 2 多命中 repair，已经被 deterministic sanitizer 收口，不再允许把重复状态文本当作订单身份。
+  - `intent-run-2a09d38a-bc4f-4684-b119-7c84a9fe4e80` 暴露的 Step 7 双重搜索坏模式，已经被 deterministic sanitizer 收口到单一 `resolvePrimaryRecord(...)`。
+  - `resolvePrimaryRecord(...)` 在 `/account/list` 的输入框候选也已经扩大到 account-list 实际变体，不再只押注旧的 `keyword` 命名。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成
+    - `订单批量入账专项金额断言守卫`：已完成
+    - `订单批量入账专项服务项状态守卫`：已完成
+    - `订单批量入账专项订单号与回查定位收口`：已完成
+    - `订单批量入账专项 repair-path / account-list helper 收口`：已完成（本轮）
+- 风险 / 未完成：
+  - 这轮仍没有把 batch-account 场景完整抽成独立 recipe / verifier，当前依旧主要靠 deterministic sanitizer + helper 提高稳定性。
+  - `build:web` 这轮未跑；当前只验证了受影响 unit tests 和 TypeScript build。
+  - runtime helper 候选扩大后，真实收益仍要看下一批新 `intent-run-*` 是否把 terminal blocker 继续后移到更纯粹的业务字段一致性校验。
+- 下一步：
+  - 请基于这版再跑新的 `订单批量入账到入账管理核对`。
+  - 优先观察：
+    - 是否还会在 Step 2 报“表格目标行匹配到多条真实记录”
+    - 是否还会在 Step 7 报“未找到可见列表检索框”
+    - terminal blocker 是否继续后移到真正的字段一致性 verifier，而不是停在 repair / helper / sanitizer 层
+
+## 2026-04-10 第二百四十九次更新（订单批量入账 Step 7 live structured-slot 变体收口已完成）
+
+- 本轮目标：
+  - 复核真实 run `intent-run-3a423b6f-45cf-4902-94e7-0de232c9a44b` 的最终执行代码，确认 repair 是否真正走到最新 sanitize。
+  - 只修一个 live 漏网点：`plan_step_7` 里仍然存在 `input#form_in_modal_testKeyWord:visible` + `timeoutMs/expectOk` + `searchRespPromise` 这类手动搜索旧链，说明前一轮 Step 7 正则仍然过窄。
+- 已完成：
+  - 直接从 `intent_e2e_runs.state_json` 导出 `3a423...` 的 `attempt 2` 最终执行代码，确认：
+    - Step 4 的“服务项 -> 添加服务”修正已经进入最终执行代码
+    - Step 7 仍然保留旧的 account-list 手动搜索块，问题不是“整体没热更新”，而是 Step 7 sanitize 覆盖面不够
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 新增 slot 级收口：
+    - 增加 `replaceIntentExecutionSlotCode(...)`
+    - 增加 `sanitizeBatchAccountAccountListLookupSlot(...)`
+    - 只要 batch-account 的 `plan_step_7` slot 内出现 `form_in_modal_testKeyWord / service-data-item_keyWord` 旧搜索输入链，就整体替换成统一的 `resolvePrimaryRecord(...)` block，不再依赖具体 wait / promise 变量名
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 新增 live 回归：
+    - 复刻 `3a423...` 那种带 `timeoutMs/expectOk` 和 `searchRespPromise` 的 structured slot 产物，确保 sanitize 后旧 selector 消失，Step 7 改成 `resolvePrimaryRecord(...)`
+  - 用真实失败代码做离线复验：
+    - `tmp/debug/intent-run-3a423-attempt2-event-code.js` 重新过 `sanitizeGeneratedCode(...)` 后，旧 `form_in_modal_testKeyWord` 已消失，`artifacts['plan_step_7'] = recordCheck.response` 与 `resolvePrimaryRecord(...)` 已出现
+  - 当前 dev bundle 已包含新的 `sanitizeBatchAccountAccountListLookupSlot(...)`，说明运行态热更新已拿到这版逻辑。
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/test-worker-source.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/project-intent-task-service.spec.ts tests/unit/project-intent-draft-service.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+  - 结果：
+    - `tests/unit/test-generator.spec.ts` 通过，`103/103 passed`
+    - 5 个受影响 unit test file 通过，`148/148 passed`
+    - `build` 通过
+    - `check-doc-links` 与 `check-roadmap-progress` 通过
+- 当前结果：
+  - `intent-run-3a423...` 暴露的 Step 7 live structured-slot 漏网点已经被 deterministic slot rewrite 收口，不再依赖旧正则恰好匹配完整文本。
+  - 当前代码路径已经从“猜具体几行长什么样”升级到“识别旧 slot 语义并整体替换为统一 helper 链”。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成
+    - `订单批量入账专项金额断言守卫`：已完成
+    - `订单批量入账专项服务项状态守卫`：已完成
+    - `订单批量入账专项订单号与回查定位收口`：已完成
+    - `订单批量入账专项 repair-path / account-list helper 收口`：已完成
+    - `订单批量入账专项 Step 7 live structured-slot 收口`：已完成（本轮）
+- 风险 / 未完成：
+  - 这轮修的是 Step 7 live 变体收口，不代表 batch-account 场景已经完全 recipe / verifier 化。
+  - 真实收益仍要看下一条新 run 是否把 terminal blocker 继续后移到更纯粹的业务字段一致性校验。
+- 下一步：
+  - 基于这版再跑新的 `订单批量入账到入账管理核对`。
+  - 优先观察：
+    - Step 7 是否还会出现任何 `form_in_modal_testKeyWord / service-data-item_keyWord` 旧手动搜索链
+    - terminal blocker 是否继续后移到字段一致性，而不是停在搜索框 / 回查 helper 层
+
+## 2026-04-10 第二百五十次更新（订单批量入账 service-item guard TDZ 与 placeholder 检索变体收口已完成）
+
+- 本轮目标：
+  - 复核真实 run `intent-run-dd329997-f2e3-4bce-a306-05d48e953330`，确认上一轮 batch-account 主修复是否已经进入最终执行代码。
+  - 收口新的 terminal blocker：Step 4 service-item guard 自引用导致的 `Cannot access 'selectedServiceItemCandidate' before initialization`。
+  - 顺手把同一条 live repair 暴露的 Step 7 placeholder 检索变体纳入 deterministic rewrite。
+- 已完成：
+  - 直接从 `intent_e2e_runs.state_json` 导出 `dd329...` 的 `attempt 1 / attempt 2` 最终执行代码，确认：
+    - `selectedBookedAmount` 已消失
+    - Step 3 的 `selectedAmount_row_fallback` 已进入最终执行代码
+    - 旧的 `#form_in_modal_testKeyWord` 检索链已不再出现
+  - 识别出新的真实 blocker 不是业务字段本身，而是 service-item guard 的代码层 TDZ：
+    - `attempt 2` 的 Step 4 在执行到 `selectedServiceItemCandidate` 自引用块时立即抛错
+    - 根因是历史坏块被 repair 复用后，再次经过 sanitizer 时继续嵌套，形成了“旧 guard + 新 guard”双层包裹
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 继续扩展 batch-account sanitizer：
+    - `buildBatchAccountSelectedServiceItemAssignmentBlock(...)` 的局部变量改成 `selectedServiceItemCandidateText`，避免和外层 live repair 变量同名
+    - 新增 `normalizeBatchAccountServiceItemAssignmentGuards(...)`，先把历史遗留的 service-item guard block 扁平化，再统一重新包成当前安全 guard
+    - `sanitizeBatchAccountAccountListLookupSlot(...)` 扩大到 `page.getByPlaceholder('请输入关键词').first()` 和任意行 artifact 目标（例如 `artifacts.bookedRow`），统一改写成 `resolvePrimaryRecord(...)`
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 新增真实回归：
+    - 卡住 `selectedServiceItemCandidate` 自引用不能再次出现
+    - 卡住 `/payment + 请输入关键词 + artifacts.bookedRow` 这类 live Step 7 变体必须被收口成 `resolvePrimaryRecord(...)`
+  - 用真实失败代码做离线复验：
+    - `tmp/debug/intent-run-dd329997-attempt2-sanitized.js` 已确认不再包含 `const selectedServiceItemCandidate = String(selectedServiceItemCandidate...`
+    - `/payment` 的 `resolvePrimaryRecord(...)` 与 `artifacts.bookedRow = row` 仍然保留
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/test-worker-source.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/project-intent-task-service.spec.ts tests/unit/project-intent-draft-service.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+  - 结果：
+    - `tests/unit/test-generator.spec.ts` 通过，`105/105 passed`
+    - 5 个受影响 unit test file 通过，`150/150 passed`
+    - `build` 通过
+    - `check-doc-links` 与 `check-roadmap-progress` 待本轮文档落盘后执行
+- 当前结果：
+  - `intent-run-dd329...` 证明前一轮主修复已经真正进入执行代码，旧的 `selectedBookedAmount` 根因已不再是当前 blocker。
+  - 新的 Step 4 TDZ 已被 deterministic sanitizer 收口，不再依赖模型自己避免变量同名。
+  - 新的 Step 7 placeholder 检索变体也已纳入统一 helper 链，避免下一轮 repair 再退回手动 `fill + 搜索 + findAntdTableRow(...)`。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成
+    - `订单批量入账专项金额断言守卫`：已完成
+    - `订单批量入账专项服务项状态守卫`：已完成
+    - `订单批量入账专项订单号与回查定位收口`：已完成
+    - `订单批量入账专项 repair-path / account-list helper 收口`：已完成
+    - `订单批量入账专项 Step 7 live structured-slot 收口`：已完成
+    - `订单批量入账专项 service-item guard TDZ / placeholder lookup 收口`：已完成（本轮）
+- 风险 / 未完成：
+  - 这轮修的是 service-item guard 与 Step 7 placeholder live 变体，不代表 batch-account 场景已经完全 recipe / verifier 化。
+  - 真实收益仍要看下一条新 run，确认 blocker 是否继续后移到纯业务字段一致性，而不是停在 repair 代码层。
+- 下一步：
+  - 基于这版继续跑新的 `订单批量入账到入账管理核对`。
+  - 优先观察：
+    - Step 4 是否还会出现任何 service-item 变量初始化类错误
+    - Step 7 是否还会回退成 placeholder 手动搜索链
+    - terminal blocker 是否继续后移到业务字段一致性校验
+
+## 2026-04-13 第二百五十一次更新（test-executor TS fallback 误伤 repair 三元表达式已收口）
+
+- 本轮目标：
+  - 复核真实 run `intent-run-bbc7ea9e-3119-4841-9f8e-b87785385cd5`，确认“为什么前面修了多轮 batch-account 业务逻辑后仍然没修好”。
+  - 只收口一个执行面 blocker：合法 repair code 在落到 `tests/e2e/generated/worker-*.mjs` 前，被 `lib/test-executor.ts` 的 TypeScript fallback 正则误改成非法 JS。
+- 已完成：
+  - 新增 [docs/intent-e2e-test-executor-ts-fallback-ternary-guard-task-brief-2026-04-13.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-test-executor-ts-fallback-ternary-guard-task-brief-2026-04-13.md)，固定 run 证据、范围与验证命令。
+  - 直接对比 `intent-run-bbc7ea9e-3119-4841-9f8e-b87785385cd5` 的 `attempt-2-trace.json` / DB `state_json` 与 worker 报错，确认：
+    - repair slot `plan_step_4` 在 trace / DB 中仍是合法 JS
+    - 真正报错的是 worker 落盘后的代码被改成 `rowKey ? rowSources.nth(i)=> ''`
+    - 根因不是 batch-account slot 本身，而是 `prepareTestCodeForExecution()` 的 `containsTypeScriptOnlySyntax()` + `tsToJs()` 把 `const part = (await (rowKey ? rowSources.nth(i) : row).innerText().catch(() => ''))` 中的 `: row` 误判成箭头函数返回类型
+  - 在 [lib/test-executor.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-executor.ts) 收窄 TS fallback：
+    - 为箭头函数返回类型单独定义更安全的 signature pattern，只匹配真实 arrow signature，不再把“赋值后的任意括号表达式”当成函数签名
+    - `containsTypeScriptOnlySyntax()` 复用同一套更安全的 pattern，避免纯 JS 仅因 `.catch(() => '')` 就误触发 fallback
+    - 放宽 generic return type 兼容，`async function foo(...): Promise<string> {}` 这类旧 TS 形态也能被正确剥离
+  - 在 [tests/unit/test-executor.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-executor.spec.ts) 新增回归：
+    - 纯 JS 下的 `rowKey ? rowSources.nth(0) : row` + `.catch(() => '')` 不应误判为 TS
+    - 含 TS 参数 / `Promise<string>` 返回类型时，fallback 也必须保留同一条三元表达式，不得再生成 `rowSources.nth(0)=> ''`
+- 验证：
+  - `npx vitest run tests/unit/test-executor.spec.ts`
+  - `npm run build`
+  - 结果：
+    - `tests/unit/test-executor.spec.ts` 通过，`48/48 passed`
+    - `build` 通过
+- 当前结果：
+  - `intent-run-bbc7ea9e-3119-4841-9f8e-b87785385cd5` 证明前面几轮 batch-account 业务修复并不是“完全没生效”，而是 repair 生成的合法 JS 在执行器落盘阶段被二次破坏，导致还没真正跑到下一层业务 blocker。
+  - 当前 `prepareTestCodeForExecution()` 已不再把这类 ternary row-source 读取改坏，并且 generic return type 旧 TS 兼容也一起补齐。
+  - 这轮验证聚焦执行器兼容层；后续新的 batch-account run 是否已经继续后移到真实业务 blocker，需要再结合新 trace 判断。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成
+    - `订单批量入账专项金额断言守卫`：已完成
+    - `订单批量入账专项服务项状态守卫`：已完成
+    - `订单批量入账专项订单号与回查定位收口`：已完成
+    - `订单批量入账专项 repair-path / account-list helper 收口`：已完成
+    - `订单批量入账专项 Step 7 live structured-slot 收口`：已完成
+    - `订单批量入账专项 service-item guard TDZ / placeholder lookup 收口`：已完成
+    - `订单批量入账专项 execution fallback 语法守卫`：已完成（本轮）
+- 风险 / 未完成：
+  - 这轮修的是执行器 fallback 误伤，不代表 batch-account 场景已经完全 recipe / verifier 化。
+  - 仍需要新的 batch-account run 继续验证 blocker 是否已经从语法层稳定后移到真实业务字段一致性层。
+  - `tsToJs()` 仍是 regex 级兼容兜底，不是完整 parser；后续如果再出现新的 TS fallback 误伤模式，还要继续补回归样例。
+- 下一步：
+  - 基于这版重新跑同一条 `订单批量入账到入账管理核对`。
+  - 优先观察：
+    - 是否还会出现 `Malformed arrow function parameter list`
+    - `intent-run-*` 是否能真正进入 repair 后执行，而不是停在 worker import 前
+    - 若语法层 blocker 已消失，terminal blocker 是否继续后移到纯业务字段一致性校验
+
+## 2026-04-13 第二百五十二次更新（batch-account legacy repair 服务项 fallback 已收口）
+
+- 本轮目标：
+  - 复核新 run `intent-run-38873515-2d48-4f87-8a39-717ebe9d7ec1`，确认为什么修掉执行器语法层以后，这条任务依然没有通过。
+  - 只收口一个新的真实 blocker：structured repair 超时回退到 legacy 自由代码 repair 时，Step 4 仍可能因为 `selectedServiceItem` 提取链太窄而失败。
+- 已完成：
+  - 新增 [docs/intent-e2e-batch-account-legacy-repair-service-item-fallback-task-brief-2026-04-13.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-batch-account-legacy-repair-service-item-fallback-task-brief-2026-04-13.md)，固定 run 证据、范围与验证命令。
+  - 直接对比 `intent-run-38873515-2d48-4f87-8a39-717ebe9d7ec1` 的 `run-trace.json` / `attempt-2-trace.json` / `attempt-2-logs.txt` / `attempt-2-repair-observation.json`，确认：
+    - repair 已经真实进入 worker 执行，不再报 `Malformed arrow function parameter list`
+    - structured repair 在 `60000ms` 超时后显式回退到了 legacy 自由代码 repair
+    - `detail_field_evidence` 已经拿到 `订单号=202604011028194322`
+    - `field=入账金额： source=入账金额 value=疑难核名解决方案`，同时 `field-miss=服务项`、`field-miss=服务项目`
+    - 新 blocker 不是“服务项根本不可见”，而是 legacy Step 4 没把“金额标签下读偏的业务文案”和“已选中订单行文本”回流成 `selectedServiceItem`
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 扩展 batch-account legacy Step 4 sanitizer：
+    - 将旧的 `serviceByField / serviceByRegex` 提取块统一改写到 `buildBatchAccountModalFieldFallbackBlock(...)`
+    - 当 `入账金额 / 金额` 字段读到的是非金额业务文案时，允许把它作为 `selectedServiceItem` fallback
+    - 当 modal 标签继续 miss 时，再从已勾选真实订单行文本里保守回填服务项，并过滤状态词、金额、手机号和字段标签占位值
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 新增回归，直接复刻 legacy Step 4 “服务项 miss + 金额标签误读业务文案 + 需要 row fallback”的失败模式。
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - 结果：
+    - `tests/unit/test-generator.spec.ts` 通过，`106/106 passed`
+    - `build` 通过
+- 当前结果：
+  - `intent-run-38873515-2d48-4f87-8a39-717ebe9d7ec1` 已经证明前一轮执行器修复是有效的：这条 run 不再死在 worker import 语法层，而是继续后移到 Step 4 真实业务字段提取。
+  - 当前 legacy repair 路径也已经补上 deterministic `selectedServiceItem` fallback，不再只依赖 `服务项 / 服务项目` 标签命中。
+  - 这次“为什么修了 5、6 次还没好”的直接答案已经明确：前面不是同一个 bug 一直没修掉，而是语法层 blocker 清掉后，legacy repair 路径里另一个服务项提取漏网点才真正暴露出来。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成
+    - `订单批量入账专项金额断言守卫`：已完成
+    - `订单批量入账专项服务项状态守卫`：已完成
+    - `订单批量入账专项订单号与回查定位收口`：已完成
+    - `订单批量入账专项 repair-path / account-list helper 收口`：已完成
+    - `订单批量入账专项 Step 7 live structured-slot 收口`：已完成
+    - `订单批量入账专项 service-item guard TDZ / placeholder lookup 收口`：已完成
+    - `订单批量入账专项 execution fallback 语法守卫`：已完成
+    - `订单批量入账专项 legacy repair 服务项 fallback`：已完成（本轮）
+- 风险 / 未完成：
+  - 这轮只收口 legacy repair 的 Step 4 fallback，不解决 structured repair `60000ms` timeout 本身。
+  - 当前仍未把 batch-account 场景彻底 recipe / verifier 化；真实收益还要看新一条 run 是否继续后移到更后面的业务一致性校验。
+- 下一步：
+  - 基于这版再次重跑同一条 `订单批量入账到入账管理核对`。
+  - 优先观察：
+    - 是否还会出现 `提取失败：selectedServiceItem 为空`
+    - structured repair 是否还会频繁因为 `60000ms` timeout 回退到 legacy path
+    - 如果 Step 4 已经稳定通过，terminal blocker 是否继续后移到 Step 7 / Step 8 的记录一致性校验
+
+## 2026-04-13 第二百五十三次更新（knowledge no-hit 不再额外截断 self-heal 次数已完成）
+
+- 本轮目标：
+  - 修正 `assetReadiness.status=no_hit` 时 repair budget 仍把自动修复次数压到 1 的问题。
+  - 让草稿任务在未命中项目知识时保留提醒和 CTA，但继续尊重运行配置里的 `selfHealRetries`。
+- 已完成：
+  - 在 [lib/intent-e2e-repair-budget.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-repair-budget.ts) 调整 `knowledge_no_hit` 分支：
+    - 保留 `reasonCode=knowledge_no_hit` 与“补项目知识”的引导语义
+    - 不再把 `resolvedCap` 强制收紧到 `1`
+    - summary 文案改为“建议尽快补项目知识；当前不再额外收紧 repair budget”
+  - 在 [tests/unit/intent-e2e-service.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-service.spec.ts) 改写 no-hit 回归：
+    - 使用 `selfHealRetries=3`
+    - 让 4 次执行返回不同失败签名，避开 `repair_stagnated` 早停
+    - 验证最终会走满 `generate + 3 次 repair`
+    - 验证最终 `repairBudget.maxRepairAttempts=3`、`usedRepairAttempts=3`、`reasonCode=knowledge_no_hit`
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+  - 结果：
+    - `tests/unit/intent-e2e-service.spec.ts` 通过
+    - `build` 通过
+    - `check-roadmap-progress` 通过
+- 当前结果：
+  - `knowledge_no_hit` 现在只保留“建议补项目知识”的提醒，不再隐式覆盖用户或环境里显式配置的 `selfHealRetries`。
+  - 后续草稿任务如果仍然很早停止，优先应看 `repair_stagnated`、`ui_anchor_missing`、`auth_failed` 或外层 task-platform retry 判定，而不是再误判成 no-hit cap。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成
+    - `订单批量入账专项金额断言守卫`：已完成
+    - `订单批量入账专项服务项状态守卫`：已完成
+    - `订单批量入账专项订单号与回查定位收口`：已完成
+    - `订单批量入账专项 repair-path / account-list helper 收口`：已完成
+    - `订单批量入账专项 Step 7 live structured-slot 收口`：已完成
+    - `订单批量入账专项 service-item guard TDZ / placeholder lookup 收口`：已完成
+    - `knowledge no-hit repair budget 收口`：已完成（本轮）
+- 风险 / 未完成：
+  - 本轮没有放开 `repair_stagnated` 早停；若连续多次命中完全相同的失败签名，仍会在 repair stagnation 处提前停止。
+  - 本轮也没有放开外层 task platform 的整轮重试判定；`env_blocked / timeout / network error` 之外仍不会触发 whole-run replay。
+- 下一步：
+  - 继续观察新的草稿任务 run，确认 no-hit 场景不再稳定停在 `generate + 1 repair`。
+  - 若仍存在“尝试数明显低于预期”的 run，下一步优先把 `repair_stagnated` 和 `ui_anchor_missing` 的早停证据直接透到工作台。
+
+## 2026-04-13 第二百五十四次更新（batch-account selectedServiceItem guard 幂等化已完成）
+
+- 本轮目标：
+  - 复核新 run `intent-run-e4be86fb-b4e4-45c9-aba9-bd0647b533b5`，确认为什么前一轮修掉执行器语法层和 legacy Step 4 `selectedServiceItem` fallback 以后，这条任务仍然失败。
+  - 只收口一个新的 deterministic blocker：batch-account `selectedServiceItem` guard 在 sanitizer 二次清洗时发生自嵌套，产出 TDZ 自引用初始化。
+- 已完成：
+  - 新增 [docs/intent-e2e-batch-account-selected-service-item-guard-idempotence-task-brief-2026-04-13.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-batch-account-selected-service-item-guard-idempotence-task-brief-2026-04-13.md)，固定 run 证据、目标范围与验证命令。
+  - 直接复核 `intent-run-e4be86fb-b4e4-45c9-aba9-bd0647b533b5` 的 `run-trace.json`、`attempt-1-trace.json`、`attempt-2-trace.json`、`attempt-3-trace.json` 和对应 logs，确认：
+    - 3 次尝试都终止于同一签名：`Cannot access 'selectedServiceItemCandidateText' before initialization`
+    - 新 blocker 不是旧的 `Malformed arrow function parameter list`
+    - 也不是上一轮的 `提取失败：selectedServiceItem 为空`
+    - 真正根因是 `sanitizeBatchAccountServiceItemHandling(...)` 把已经 canonical 的 `shared.selectedServiceItem` guard 又包了一层，生成 `const selectedServiceItemCandidateText = String(selectedServiceItemCandidateText && ... )`
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 收紧 batch-account `selectedServiceItem` rewrite 判定：
+    - `normalizeBatchAccountServiceItemAssignmentGuards(...)` 继续兼容清理已经被旧 sanitizer 改坏的 self-reference block
+    - `sanitizeBatchAccountServiceItemHandling(...)` 现在只跳过“已经是 canonical guard”的 RHS
+    - 对仍然只是旧版弱 guard 的 `selectedServiceItemCandidate` 变体，继续升级到完整 canonical guard，避免为躲 TDZ 而放弃既有 amount / phone / label 过滤
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 补回归：
+    - 保留 live placeholder `/payment` 变体，验证旧 guard 仍会被规范化且不再生成 TDZ
+    - 新增“重复 sanitize 仍保持单层 guard”的幂等化回归，直接复刻 self-reference 自嵌套失败模式
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+  - `node scripts/check-doc-links.mjs`
+  - 结果：
+    - `tests/unit/test-generator.spec.ts` 通过，`107/107 passed`
+    - `build` 通过
+    - `check-roadmap-progress` 通过
+    - `check-doc-links` 通过
+- 当前结果：
+  - `intent-run-e4be86fb-b4e4-45c9-aba9-bd0647b533b5` 确实有问题，但它暴露的是一个新的 sanitizer 幂等化缺陷，不是前面已经修过的旧语法 bug，也不是上一轮的 legacy Step 4 服务项提取漏网点。
+  - 现在 batch-account `selectedServiceItem` guard 对重复 sanitize 已经保持幂等，不会再把自己包成 `String(selectedServiceItemCandidateText && ...)` 这种 TDZ 自引用。
+  - 同时保住了旧 batch-account live 变体的 canonical guard 升级，不会因为“避免重复包裹”而把弱 guard 原样放过。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成
+    - `订单批量入账专项金额断言守卫`：已完成
+    - `订单批量入账专项服务项状态守卫`：已完成
+    - `订单批量入账专项订单号与回查定位收口`：已完成
+    - `订单批量入账专项 repair-path / account-list helper 收口`：已完成
+    - `订单批量入账专项 Step 7 live structured-slot 收口`：已完成
+    - `订单批量入账专项 service-item guard TDZ / placeholder lookup 收口`：已完成
+    - `订单批量入账专项 execution fallback 语法守卫`：已完成
+    - `订单批量入账专项 legacy repair 服务项 fallback`：已完成
+    - `订单批量入账专项 selectedServiceItem guard 幂等化`：已完成（本轮）
+- 风险 / 未完成：
+  - 这轮只修 deterministic sanitizer 自嵌套，不处理 structured repair `60000ms` timeout。
+  - 这轮也没有证明 batch-account 场景已经端到端稳定通过；仍需要新的真实 run 验证 blocker 是否继续后移到更后面的业务一致性校验。
+- 下一步：
+  - 用同一条 `订单批量申请入账并到入账管理按订单号核对` 意图重新跑一次。
+  - 优先观察：
+    - 是否还会出现 `Cannot access 'selectedServiceItemCandidateText' before initialization`
+    - structured repair 是否仍频繁因 `60000ms` timeout 回退到 legacy path
+    - 如果 TDZ blocker 消失，terminal blocker 是否继续后移到 Step 7 / Step 8 的记录一致性校验
+
+## 2026-04-13 第二百五十五次更新（batch-account bookedMgmt 搜索框漂移与 rowText 幂等化已完成）
+
+- 本轮目标：
+  - 复核新 run `intent-run-9d4884a0-ede1-4fb9-bdb4-2b0c700d2165` 和 `intent-run-160f68bd-c3b4-4e2d-8b7b-edcd4e5088fb`，确认为什么前一轮修掉 TDZ 以后，这两条任务仍然都以 task-platform `720000ms` 总超时结束。
+  - 只收口一组新的 deterministic blocker：bookedMgmt 页搜索框/锚点漂移 + Step 2 rowText clone-safe 聚合和 `selectedServiceItem` assertion guard 的重复 sanitize 套娃。
+- 已完成：
+  - 新增 [docs/intent-e2e-batch-account-bookedmgmt-search-and-rowtext-idempotence-task-brief-2026-04-13.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-batch-account-bookedmgmt-search-and-rowtext-idempotence-task-brief-2026-04-13.md)，固定两个 run 的失败证据、目标范围与验证命令。
+  - 直接复核 `intent-run-9d4884a0-ede1-4fb9-bdb4-2b0c700d2165` 的 DB state，确认：
+    - 这条 run 不再死在旧 TDZ，而是在 6 次 attempt 里一路后移
+    - `attempt 4` 进入 bookedMgmt 后命中 hidden `#form_in_modal_testKeyWord`
+    - `attempt 5` 的 Step 2 rowText clone-safe 聚合块被重复 sanitize，膨胀成多层 `rowTextPartRowKey / rowTextPartPart`，最终卡在 stale `tr[data-row-key=...].nth(...)`
+    - `attempt 6` 继续在“筛选后未找到可勾选真实订单行”上自耗，最终把整轮预算拖到 `720000ms`
+  - 直接复核 `intent-run-160f68bd-c3b4-4e2d-8b7b-edcd4e5088fb` 的 DB state，确认：
+    - `attempt 1` 先暴露老的 `selectedServiceItem 为空`
+    - `attempt 2` 后移到提交后 `page.waitForURL`
+    - `attempt 3/4` 又命中 hidden `#form_in_modal_testKeyWord`
+    - `attempt 5` 进一步漂移到 `getByText('管帮手服务中心').first()`
+    - `attempt 6` 切成 `getByPlaceholder('请输入关键词').first()`，本质上仍是同一 hidden clone 问题
+    - 这条 run 最终也不是新业务错误，而是 bookedMgmt surface checks / search-input checks 在 repair 里不断漂移，耗尽了 5 次修复预算
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 收口三类 batch-account sanitizer：
+    - `sanitizeBatchAccountAccountListLookupSlot(...)` 现在会把 `/booked` / `/payment` 的手写搜索框链整体收成 `__e2e.resolvePrimaryRecord(...)`，并正确保留 `artifacts['booked_target_row'] = recordCheck.row` 这类 row artifact
+    - `sanitizeBatchAccountRowTextAggregation(...)` 现在会跳过已经 canonical 的 `...Part / ...Source` 子层，避免 rowText clone-safe 聚合在重复 sanitize 时递归扩写
+    - `sanitizeBatchAccountServiceItemHandling(...)` 现在不会再对已经处于 canonical `selectedServiceItemText` guard 内的断言继续重复包裹
+    - 额外新增 `sanitizeBatchAccountBookedMgmtSurfaceChecks(...)`，统一清掉 bookedMgmt 页里脆弱的 `管帮手服务中心` 文本锚点、hidden `form_in_modal_testKeyWord` / placeholder 可见性硬断言，只保留 URL / 搜索按钮这类更稳定的 surface 证据
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 补了 4 条回归：
+    - `/booked` hidden input + currentVisibleRow 变体要收口成 `resolvePrimaryRecord(...)`
+    - bookedMgmt surface drift 要去掉 `管帮手服务中心` 与 placeholder hidden fallback
+    - rowText clone-safe 聚合对重复 sanitize 保持单层，不再产出 `rowTextPartRowKey`
+    - `selectedServiceItem` assertion guard 对重复 sanitize 保持单层，不再继续套娃
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+  - `node scripts/check-doc-links.mjs`
+  - 结果：
+    - `tests/unit/test-generator.spec.ts` 通过，`111/111 passed`
+    - `build` 通过
+    - `check-roadmap-progress` 通过
+    - `check-doc-links` 通过
+- 当前结果：
+  - `intent-run-9d4884a0-ede1-4fb9-bdb4-2b0c700d2165` 和 `intent-run-160f68bd-c3b4-4e2d-8b7b-edcd4e5088fb` 最终都显示为 task-platform 总超时，但真正的根因并不是“平台莫名卡死”，而是 repair 在 bookedMgmt surface checks / rowText 聚合 / service-item assertion guard 上出现了一串 deterministic 漂移与非幂等套娃。
+  - 这轮修复后，新的 batch-account rerun 不应再因为 `#form_in_modal_testKeyWord` hidden clone、`getByPlaceholder('请输入关键词')` hidden clone、`管帮手服务中心` 锚点，或 `rowTextPartRowKey` 递归扩写而在 Step 2 / Step 6 / Step 7 被白白耗光预算。
+  - 这也解释了“为什么修了 5、6 次还没好”：不是同一个 bug 一直修不掉，而是每清掉一层 deterministic blocker，repair 链又暴露出下一层 sanitizer / surface drift。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成
+    - `订单批量入账专项金额断言守卫`：已完成
+    - `订单批量入账专项服务项状态守卫`：已完成
+    - `订单批量入账专项订单号与回查定位收口`：已完成
+    - `订单批量入账专项 repair-path / account-list helper 收口`：已完成
+    - `订单批量入账专项 Step 7 live structured-slot 收口`：已完成
+    - `订单批量入账专项 service-item guard TDZ / placeholder lookup 收口`：已完成
+    - `订单批量入账专项 execution fallback 语法守卫`：已完成
+    - `订单批量入账专项 legacy repair 服务项 fallback`：已完成
+    - `订单批量入账专项 selectedServiceItem guard 幂等化`：已完成
+    - `订单批量入账专项 bookedMgmt 搜索框漂移与 rowText 幂等化`：已完成（本轮）
+- 风险 / 未完成：
+  - 这轮没有调整 task-platform `720000ms` 超时策略本身。
+  - 这轮也没有证明 bookedMgmt 提交后一定会无条件自动跳转；若后续真实页面继续偶发停在订单页，下一步还要继续收口提交后 route-ready 的稳定证据。
+- 下一步：
+  - 基于这版再次重跑同一条 `订单批量申请入账并到入账管理按订单号核对`。
+  - 优先观察：
+    - 是否还会出现 `locator('#form_in_modal_testKeyWord')` / `getByPlaceholder('请输入关键词')` hidden clone 漂移
+    - 是否还会出现 `rowTextPartRowKey` / `rowTextPartPart` 这类重复 sanitize 递归扩写
+    - 如果这些 deterministic blocker 已消失，terminal blocker 是否继续后移到真正的 submitted-state / record-consistency 校验
+
+## 2026-04-13 第二百五十六次更新（batch-account resolvePrimaryRecord no-input hard-fail 已收口）
+
+- 本轮目标：
+  - 复核新 run `intent-run-08f02429-9d95-445e-bf11-cd7107831598`，确认为什么在前几轮 generator / sanitizer 修复已生效后，这条任务仍然在 `Step 7` 失败。
+  - 只收口一类新的 deterministic blocker：`__e2e.resolvePrimaryRecord(...)` 在 bookedMgmt 页没有可见检索框时立即抛错，导致当前列表重试和延迟刷行完全来不及发生。
+- 已完成：
+  - 新增 [docs/intent-e2e-batch-account-resolve-primary-record-no-input-soft-fallback-task-brief-2026-04-13.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-batch-account-resolve-primary-record-no-input-soft-fallback-task-brief-2026-04-13.md)，固定 `intent-run-08f02429-9d95-445e-bf11-cd7107831598` 的失败证据、目标范围与验证命令。
+  - 直接复核 [run-trace.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/runs/intent-run-08f02429-9d95-445e-bf11-cd7107831598/run-trace.json) 与 [attempt-6-logs.txt](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/runs/intent-run-08f02429-9d95-445e-bf11-cd7107831598/attempt-6-logs.txt)，确认：
+    - `Step 5` 已观察到 `submit state observed`
+    - 页面 URL 已切到 `/#/payment/bookedMgmt`
+    - `Step 7` 只调用了 `__e2e.resolvePrimaryRecord(page, { primaryValue, listResponse, rowHasTexts, maxLookupAttempts: 3, retryIntervalMs: 900 })`
+    - helper 在第一次 attempt 里命中“未找到可见列表检索框”后立刻 throw，导致原本应该继续执行的第 2/3 次 retry 直接被短路
+  - 在 [lib/test-worker.mjs](/Users/xiaolongbao/Workspace/ai-test/lib/test-worker.mjs) 收口 `resolvePrimaryRecord(...)`：
+    - no-input 分支不再 immediate throw
+    - 改为记录 `primary lookup keyword input not found` warn，并沿用现有 `primary lookup retry scheduled` 机制继续重试
+    - 最后一轮若仍缺失输入框，则回到 helper 的统一 `not_found / detail fallback` 收口，而不是把“没有可见输入框”硬编码成 terminal error
+  - 在 [tests/unit/test-executor.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-executor.spec.ts) 新增 worker regression：
+    - 直接复刻“keyword input 是 hidden clone、目标行稍后才刷出来”的场景
+    - 旧实现会在第一次 attempt 直接报 `未找到可见列表检索框`
+    - 新实现会先记录 warn，再进入 retry，最终从当前表格拿到目标行
+- 验证：
+  - `npx vitest run tests/unit/test-executor.spec.ts tests/unit/test-worker-source.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+  - `node scripts/check-doc-links.mjs`
+  - 结果：
+    - `tests/unit/test-executor.spec.ts` 与 `tests/unit/test-worker-source.spec.ts` 通过，`50/50 passed`
+    - `build` 通过
+    - `check-roadmap-progress` 通过
+    - `check-doc-links` 通过
+- 当前结果：
+  - `intent-run-08f02429-9d95-445e-bf11-cd7107831598` 这次暴露的 terminal blocker 已经确认不是“generator 还没修好”，而是 worker helper 侧的 no-input hard-fail。
+  - 这轮修复后，同类 batch-account rerun 不应再因为 bookedMgmt 页暂时没有可见 keyword input，就在 `Step 7` 第一次 attempt 被直接判死；helper 至少会把现有 retry 预算真正用完，再决定是否 `not_found`。
+  - 这也进一步解释了“为什么前面修了 5、6 次还没彻底好”：不是同一个点一直修不动，而是每清掉一层 deterministic blocker，下一层更底的 deterministic blocker 才会暴露出来；这次已经下沉到 worker helper。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成
+    - `订单批量入账专项金额断言守卫`：已完成
+    - `订单批量入账专项服务项状态守卫`：已完成
+    - `订单批量入账专项订单号与回查定位收口`：已完成
+    - `订单批量入账专项 repair-path / account-list helper 收口`：已完成
+    - `订单批量入账专项 Step 7 live structured-slot 收口`：已完成
+    - `订单批量入账专项 service-item guard TDZ / placeholder lookup 收口`：已完成
+    - `订单批量入账专项 execution fallback 语法守卫`：已完成
+    - `订单批量入账专项 legacy repair 服务项 fallback`：已完成
+    - `订单批量入账专项 selectedServiceItem guard 幂等化`：已完成
+    - `订单批量入账专项 bookedMgmt 搜索框漂移与 rowText 幂等化`：已完成
+    - `订单批量入账专项 resolvePrimaryRecord no-input hard-fail`：已完成（本轮）
+- 风险 / 未完成：
+  - 这轮没有修改 bookedMgmt 页如果真实必须“显式输入订单号后再点击搜索”时的页面契约，只收口了 no-input 直接终止。
+  - 这轮也没有调整 task-platform `720000ms` 总超时策略。
+  - 是否还存在提交后数据最终一致性延迟，需要靠新的 rerun 才能继续确认。
+- 下一步：
+  - 基于这版再次重跑同一条 `订单批量申请入账并到入账管理按订单号核对`。
+  - 优先观察：
+    - `Step 7` 是否还会以 `未找到可见列表检索框` 直接终止
+    - helper 是否已经进入第 2/3 次 retry，并把 terminal blocker 后移到真正的 `row not found / record consistency` 层
+    - 如果 blocker 继续后移，再决定是补 bookedMgmt 结果列表契约，还是补提交后的数据一致性等待
+
+## 2026-04-13 第二百五十七次更新（batch-account Step 1 pending-row surface rebuild 已收口）
+
+- 本轮目标：
+  - 复核新 run `intent-run-81bc54c8-b6ad-4286-92d7-34fddc8ec296`，确认为什么上轮 `resolvePrimaryRecord` helper 修复后，这条任务仍然被 repair stagnation 停止。
+  - 只收口一类新的 deterministic blocker：repair / slot rebuild 把 `Step 1: 进入订单列表并完成待申请筛选` 改写成“刚筛完就立即勾选真实订单行”，导致超时预算耗在错误的步骤语义上。
+- 已完成：
+  - 新增 [docs/intent-e2e-batch-account-step1-pending-row-surface-slot-rebuild-task-brief-2026-04-13.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-batch-account-step1-pending-row-surface-slot-rebuild-task-brief-2026-04-13.md)，固定 `intent-run-81bc54c8-b6ad-4286-92d7-34fddc8ec296` 的失败背景、目标范围与验证命令。
+  - 复核服务端 run `intent-run-81bc54c8-b6ad-4286-92d7-34fddc8ec296` 的终态信息，确认当前已是 `status=failed / stage=completed`，终态错误为“判定为修复停滞……最后一次失败: 测试执行超时 (120s)”。
+  - 对照此前排查到的 repair 轨迹与当前 sanitizer 逻辑，确认真正的问题不是 `Step 7` helper 退回，而是 `Step 1` 的 slot rebuild 混入了“扫描可见真实行并立即点击 checkbox”的副作用，导致本该只做待申请筛选确认的步骤和后续选行动作串位。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 收口 batch-account `Step 1` rebuild：
+    - 新增 `buildBatchAccountPendingRowSurfaceBlock(...)`，只在筛选后扫描 `.ant-table-tbody tr[data-row-key]:visible`，聚合 clone-safe 文本并确认至少存在 `待申请入账` 结果行
+    - 新增 `sanitizeBatchAccountPendingRowSurfaceSlot(...)`，只对 `plan_step_1` 生效，避免它复用后续步骤的“立即勾选真实行” rewrite
+    - `sanitizeBatchAccountRowSelection(...)` 先对 `plan_step_1` 做无副作用 surface rewrite，再对后续步骤保留真实选行逻辑
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 新增 generator regression：
+    - 直接复刻 “Step 1 只做待申请筛选确认，Step 2 才实际勾选目标行” 的结构
+    - 旧实现会把 `Step 1` 中的 `findAntdTableRow(...)` 重写成带 `clickAntdRowCheckbox(...)` 的块
+    - 新实现会保证 `Step 1` 只保留结果面扫描，不再提前勾选
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/test-executor.spec.ts tests/unit/test-worker-source.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+  - `node scripts/check-doc-links.mjs`
+  - 结果：
+    - `tests/unit/test-generator.spec.ts`、`tests/unit/test-executor.spec.ts`、`tests/unit/test-worker-source.spec.ts` 通过，`162/162 passed`
+    - `build` 通过
+    - `check-roadmap-progress` 通过
+    - `check-doc-links` 通过
+- 当前结果：
+  - `intent-run-81bc54c8-b6ad-4286-92d7-34fddc8ec296` 暴露的 terminal blocker 已确认不是“前一轮 helper 修复没生效”，而是 generator repair 路径又把 `Step 1` 重写坏了。
+  - 这轮修复后，同类 batch-account rerun 不应再在 `Step 1` 因提前勾选真实行而连续消耗 120s 超时预算；`Step 1` 会重新回到“确认筛选结果存在”的职责，真实选行留给后续步骤。
+  - 这也继续解释了“为什么前面修了 5、6 次还没彻底好”：不是同一个 bug 一直没修掉，而是每清掉一层 deterministic blocker，下一层更底的 deterministic repair 漂移才会暴露出来；现在 worker helper 和 generator `Step 1` rebuild 这两层都已补上。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成
+    - `订单批量入账专项金额断言守卫`：已完成
+    - `订单批量入账专项服务项状态守卫`：已完成
+    - `订单批量入账专项订单号与回查定位收口`：已完成
+    - `订单批量入账专项 repair-path / account-list helper 收口`：已完成
+    - `订单批量入账专项 Step 7 live structured-slot 收口`：已完成
+    - `订单批量入账专项 service-item guard TDZ / placeholder lookup 收口`：已完成
+    - `订单批量入账专项 execution fallback 语法守卫`：已完成
+    - `订单批量入账专项 legacy repair 服务项 fallback`：已完成
+    - `订单批量入账专项 selectedServiceItem guard 幂等化`：已完成
+    - `订单批量入账专项 bookedMgmt 搜索框漂移与 rowText 幂等化`：已完成
+    - `订单批量入账专项 resolvePrimaryRecord no-input hard-fail`：已完成
+    - `订单批量入账专项 Step 1 pending-row surface rebuild`：已完成（本轮）
+- 风险 / 未完成：
+  - `intent-run-81bc54c8-b6ad-4286-92d7-34fddc8ec296` 本身已经在旧代码上终态失败，这轮无法把它“补救成成功 run”，只能通过新的 rerun 验证修复是否生效。
+  - 这轮没有修改 task-platform `720000ms` 总超时策略。
+  - 如果 rerun 通过 `Step 1` 后继续失败，下一层 blocker 可能在提交后的列表一致性等待、回查命中或更后面的状态断言。
+- 下一步：
+  - 基于这版再次重跑同一条 `订单批量申请入账并到入账管理按订单号核对`。
+  - 优先观察：
+    - `Step 1` 是否还会出现 repair 把“筛选确认”改写成“立即勾选真实行”
+    - blocker 是否已经从 `Step 1` 明确后移到后续提交 / 回查链路
+    - 如果 blocker 后移，再按新的真实失败点继续做最小收口
+
+## 2026-04-13 第二百五十八次更新（batch-account `/payment` submit wait hard-chain 已收口）
+
+- 本轮目标：
+  - 复核新 run `intent-run-b54cd539-8eac-49ab-bd4f-e8666334a313`，确认在 `Step 1` row-surface 无副作用修复已生效后，新的 terminal / repair blocker 是否已经后移。
+  - 只收口一类新的 deterministic blocker：点击“批量申请入账”弹窗“确定”后，生成脚本硬等 `__e2e.waitForApiResponse(page, { urlIncludes: '/payment', method: 'POST' })`，导致 `page.waitForResponse` 15 秒超时。
+- 已完成：
+  - 新增 [docs/intent-e2e-batch-account-payment-submit-wait-softening-task-brief-2026-04-13.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-batch-account-payment-submit-wait-softening-task-brief-2026-04-13.md)，固定 `intent-run-b54cd539-8eac-49ab-bd4f-e8666334a313` 的 live 失败背景、目标范围与验证命令。
+  - 直接复核 `intent-run-b54cd539-8eac-49ab-bd4f-e8666334a313` 的中间事件，确认：
+    - repair 生成代码里的 `Step 1` 已经是新的 pending-row surface scan，无提前勾选副作用
+    - 新的失败已后移到提交阶段
+    - 现场 worker logs 显示勾选行、打开“批量申请入账”弹窗、点击“确定”都已发生，但随后报 `page.waitForResponse: Timeout 15000ms exceeded while waiting for event "response"`
+    - 失败代码里存在 `const submitResp = __e2e.waitForApiResponse(page, { urlIncludes: '/payment', method: 'POST' });`
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 扩展 `sanitizeBatchAccountSubmitAndSearchWaits(...)`：
+    - 既有 `/account` POST/GET soft wait rewrite 继续保留
+    - 新增 `/payment` POST/GET 同类 rewrite
+    - 让 batch-account 生成代码里这类 `waitForApiResponse(...)` 从 hard wait 改成 `timeoutMs: 2500 + expectOk: false + catch(() => null)`，不再把命中某个 `/payment` POST 响应当成提交继续执行的唯一前提
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 新增 regression：
+    - 直接复刻 live repair 里 `Step 4` 提交阶段的 `/payment` POST 等待代码
+    - 固定 sanitize 后必须改成短超时 soft wait，而不是继续保留 15 秒硬等待
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+  - `node scripts/check-doc-links.mjs`
+  - 结果：
+    - `tests/unit/test-generator.spec.ts` 通过
+    - `build` 通过
+    - `check-roadmap-progress` 通过
+    - `check-doc-links` 通过
+- 当前结果：
+  - `intent-run-b54cd539-8eac-49ab-bd4f-e8666334a313` 已经证明前一轮 `Step 1` 修复点生效；当前暴露出来的 blocker 是更新的 `/payment` submit wait hard-chain，而不是旧的 row-selection 串位。
+  - 这轮修复后，同类 batch-account rerun 不应再因为 `/payment` POST 响应没被宽泛匹配到，就在点击“确定”后原地卡满 15 秒才失败；提交链路会更快交给 `__e2e.observeSubmitState(...)` 去判定真正的页面收敛证据。
+  - 这继续说明前面多轮修复不是无效返工，而是每清掉一层 deterministic blocker，下一层更底的 deterministic wait / sanitize 漂移才会暴露出来。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成
+    - `订单批量入账专项金额断言守卫`：已完成
+    - `订单批量入账专项服务项状态守卫`：已完成
+    - `订单批量入账专项订单号与回查定位收口`：已完成
+    - `订单批量入账专项 repair-path / account-list helper 收口`：已完成
+    - `订单批量入账专项 Step 7 live structured-slot 收口`：已完成
+    - `订单批量入账专项 service-item guard TDZ / placeholder lookup 收口`：已完成
+    - `订单批量入账专项 execution fallback 语法守卫`：已完成
+    - `订单批量入账专项 legacy repair 服务项 fallback`：已完成
+    - `订单批量入账专项 selectedServiceItem guard 幂等化`：已完成
+    - `订单批量入账专项 bookedMgmt 搜索框漂移与 rowText 幂等化`：已完成
+    - `订单批量入账专项 resolvePrimaryRecord no-input hard-fail`：已完成
+    - `订单批量入账专项 Step 1 pending-row surface rebuild`：已完成
+    - `订单批量入账专项 /payment submit wait hard-chain`：已完成（本轮）
+- 风险 / 未完成：
+  - `intent-run-b54cd539-8eac-49ab-bd4f-e8666334a313` 仍可能继续在旧代码上执行 / 重试，这轮本地修复不会反向注入到已启动的 server run。
+  - 这轮没有处理若继续后移到 `bookedMgmt` 回查、金额字段抽取或最终一致性校验的新 blocker。
+  - 这轮也没有修改 task-platform `720000ms` 总超时策略。
+- 下一步：
+  - 基于这版再次重跑同一条 `订单批量申请入账并到入账管理按订单号核对`。
+  - 优先观察：
+    - 点击“确定”后是否还会因为 `/payment` POST `waitForResponse` 超时而停在提交阶段
+    - blocker 是否已经继续后移到 bookedMgmt 回查或最终字段一致性断言
+    - 如果继续后移，再按新的真实失败点做最小收口
+
+## 2026-04-13 第二百五十九次更新（batch-account helper 后置 checked-locator 复验已收口）
+
+- 本轮目标：
+  - 继续复核 `intent-run-b54cd539-8eac-49ab-bd4f-e8666334a313` 的终态，确认为什么这条 run 最终仍然在 task-platform 总超时前没有收敛。
+  - 只收口一类新的 deterministic blocker：`__e2e.clickAntdRowCheckbox(...)` 已成功后，生成脚本又重新读取 `targetRow` 的 `data-row-key` 并手写 `.ant-checkbox-checked` 可见性断言，导致列表重渲染后 rowKey 漂移把成功结果误判成失败。
+- 已完成：
+  - 新增 [docs/intent-e2e-batch-account-post-click-checkbox-assertion-strip-task-brief-2026-04-13.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-batch-account-post-click-checkbox-assertion-strip-task-brief-2026-04-13.md)，固定 `intent-run-b54cd539-8eac-49ab-bd4f-e8666334a313` 最后一条已落盘 repair result 的失败背景、目标范围与验证命令。
+  - 直接复核 `intent-run-b54cd539-8eac-49ab-bd4f-e8666334a313` 的终态与最后一次 `attempt_result`，确认：
+    - run 最终是 `status=failed / stage=error`
+    - 顶层错误是 `任务平台运行超时 (720000ms)，已停止本次自动测试`
+    - 最后一条已落盘 repair result 的真实失败是 `selector_drift`
+    - logs 里 `row checkbox clicked` 已经明确出现，helper 实际点中的是 `rowKey=461804`
+    - 失败脚本随后又对 `targetRow` 重新读出 `rowKey=461730`，并断言 `locator('tr[data-row-key="461730"] .ant-checkbox-checked:visible').first()`，从而把已经成功的勾选误判成失败
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 新增 `sanitizeBatchAccountPostClickCheckboxAssertions(...)`：
+    - 统一剥掉 `clickAntdRowCheckbox(...)` 之后，再按 `rowKey` / `.ant-checkbox-checked` / `.ant-checkbox-wrapper-checked` 做可见性复验的代码块
+    - 让 `clickAntdRowCheckbox(...)` 自身继续作为唯一勾选成功证据，避免行重渲染后的 rowKey 漂移
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 新增 regression：
+    - 直接复刻 Step 2 里 “helper 勾选成功后又按 rowKey 查 checked locator” 的 live 代码形态
+    - 固定 sanitize 后必须删除这段后置复验，只保留 `clickAntdRowCheckbox(...)`
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+  - `node scripts/check-doc-links.mjs`
+  - 结果：
+    - `tests/unit/test-generator.spec.ts` 通过
+    - `build` 通过
+    - `check-roadmap-progress` 通过
+    - `check-doc-links` 通过
+- 当前结果：
+  - `intent-run-b54cd539-8eac-49ab-bd4f-e8666334a313` 最终已经证明：在 `/payment` submit wait 问题之外，后续 repair 还会继续暴露 Step 2 的 rowKey 漂移误判。
+  - 这轮修复后，同类 batch-account rerun 不应再出现“helper 明明已经点选成功，但又被生成脚本自己写的 checked-locator 复验翻成失败”的情况。
+  - 这也进一步解释了为什么之前多轮修复后还会继续失败：并不是旧修复没生效，而是链路后面还埋着新的 deterministic 误判点。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成
+    - `订单批量入账专项金额断言守卫`：已完成
+    - `订单批量入账专项服务项状态守卫`：已完成
+    - `订单批量入账专项订单号与回查定位收口`：已完成
+    - `订单批量入账专项 repair-path / account-list helper 收口`：已完成
+    - `订单批量入账专项 Step 7 live structured-slot 收口`：已完成
+    - `订单批量入账专项 service-item guard TDZ / placeholder lookup 收口`：已完成
+    - `订单批量入账专项 execution fallback 语法守卫`：已完成
+    - `订单批量入账专项 legacy repair 服务项 fallback`：已完成
+    - `订单批量入账专项 selectedServiceItem guard 幂等化`：已完成
+    - `订单批量入账专项 bookedMgmt 搜索框漂移与 rowText 幂等化`：已完成
+    - `订单批量入账专项 resolvePrimaryRecord no-input hard-fail`：已完成
+    - `订单批量入账专项 Step 1 pending-row surface rebuild`：已完成
+    - `订单批量入账专项 /payment submit wait hard-chain`：已完成
+    - `订单批量入账专项 helper 后置 checked-locator 复验`：已完成（本轮）
+- 风险 / 未完成：
+  - `intent-run-b54cd539-8eac-49ab-bd4f-e8666334a313` 已经在旧代码上终态失败，这轮本地修复不会反向改变它的结果。
+  - 这轮没有处理如果 rerun 继续后移到 bookedMgmt 回查、金额字段抽取或最终一致性断言的新 blocker。
+  - 这轮也没有调整 task-platform `720000ms` 总超时策略。
+- 下一步：
+  - 基于这版再次重跑同一条 `订单批量申请入账并到入账管理按订单号核对`。
+  - 优先观察：
+    - Step 2 是否还会在 `clickAntdRowCheckbox(...)` 成功后，再被后置 checked-locator 复验误判失败
+    - blocker 是否已经继续后移到提交后回查或最终字段一致性验收
+    - 如果继续后移，再按新的真实失败点做最小收口
+
+## 2026-04-13 第二百六十次更新（failed run 推进更远脚本复用已收口）
+
+- 本轮目标：
+  - 解决用户明确指出的 rerun 学习缺口：当前某次 run 已把前序步骤修通、只是更后面的步骤失败时，系统应优先复用这段“推进更远”的历史脚本，而不是回退到旧草稿或重新从头生成。
+  - 用真实 run 证据固定这个问题不是偶发波动：`intent-run-08f02429-9d95-445e-bf11-cd7107831598` 已推进到 `Step 7`，但后一个 `intent-run-81bc54c8-b6ad-4286-92d7-34fddc8ec296` 又退回 `Step 1` 并触发 `repair_stagnated`，说明系统此前没有接住上一轮已经修通的前半段脚本经验。
+- 已完成：
+  - 按 [docs/intent-e2e-progressed-run-code-reuse-task-brief-2026-04-13.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-progressed-run-code-reuse-task-brief-2026-04-13.md) 收口 generate 首轮的第二层脚本复用来源。
+  - 在 [lib/ai/intent-e2e-service.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-service.ts) 新增 `recent_progressed_run` 复用来源，并补齐：
+    - failed attempt 的失败步骤标题解析
+    - `Step N -> progressedStepCount = N - 1` 的推进深度计算
+    - 同一条 failed run 内“推进最远 attempt”候选选择
+    - 多条 failed run 并存时的“推进更远脚本”选择
+  - generate 首轮的复用优先级现在明确为：
+    - `recent_successful_run`
+    - `recent_progressed_run`
+    - `draft_first_pass`
+    - fresh generate
+  - 继续保留语法守卫：如果 progressed failed run 脚本本身有语法错误，会自动回退到正常生成链路，而不是把坏脚本直接送进执行器。
+  - 在 [tests/unit/intent-e2e-service.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-service.spec.ts) 新增 3 个 regression：
+    - newer failed run 已回退到更早步骤时，仍应优先复用更深的 older failed run 脚本
+    - 若存在 matched passed run，继续优先复用 passed run，而不是 failed progressed run
+    - progressed failed run 脚本若语法损坏，应自动退回 fresh generation
+  - 顺手把 generate 阶段的 `skipReason` stage message 泛化为“候选复用脚本不可用”，避免把 successful/progressed reuse 的回退错误地显示成“草稿旧骨架”。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+  - `node scripts/check-doc-links.mjs`
+  - 结果：
+    - `tests/unit/intent-e2e-service.spec.ts` 通过（`35/35`）
+    - `build` 通过
+    - `check-roadmap-progress` 通过
+    - `check-doc-links` 通过
+- 当前结果：
+  - `intent-run-08f02429-9d95-445e-bf11-cd7107831598 -> intent-run-81bc54c8-b6ad-4286-92d7-34fddc8ec296` 这类“更晚的 rerun 反而退回更早步骤”的回退场景，已经被服务层单测固定住；当没有 passed run 可复用时，系统现在会优先拿“推进更远”的 failed run 脚本作为首轮基线。
+  - 这轮解决的是“脚本经验复用缺失”，不是 runtime 级断点续跑；rerun 仍会重放前序步骤，但不应再轻易回退到更差的早期骨架。
+  - 这也解释了为什么之前看起来像“修了 5、6 次都没修好”：前几轮确实分别清掉了 `/payment` submit wait、checked-locator 误判等 deterministic blocker，但系统没有把 `Step 7` 前已经跑通的脚本基线复用起来，后续 rerun 仍可能重新退回更前面的失败点。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成
+    - `订单批量入账专项金额断言守卫`：已完成
+    - `订单批量入账专项服务项状态守卫`：已完成
+    - `订单批量入账专项订单号与回查定位收口`：已完成
+    - `订单批量入账专项 repair-path / account-list helper 收口`：已完成
+    - `订单批量入账专项 Step 7 live structured-slot 收口`：已完成
+    - `订单批量入账专项 service-item guard TDZ / placeholder lookup 收口`：已完成
+    - `订单批量入账专项 execution fallback 语法守卫`：已完成
+    - `订单批量入账专项 legacy repair 服务项 fallback`：已完成
+    - `订单批量入账专项 selectedServiceItem guard 幂等化`：已完成
+    - `订单批量入账专项 bookedMgmt 搜索框漂移与 rowText 幂等化`：已完成
+    - `订单批量入账专项 resolvePrimaryRecord no-input hard-fail`：已完成
+    - `订单批量入账专项 Step 1 pending-row surface rebuild`：已完成
+    - `订单批量入账专项 /payment submit wait hard-chain`：已完成
+    - `订单批量入账专项 helper 后置 checked-locator 复验`：已完成
+    - `failed run 推进更远脚本复用`：已完成（本轮）
+- 风险 / 未完成：
+  - 这轮没有实现 runtime 级 step checkpoint / resume；即使脚本被复用，前序步骤仍会重新执行。
+  - `intent-run-08f02429-9d95-445e-bf11-cd7107831598` 暴露出来的 `Step 7` bookedMgmt 检索框缺失问题仍未在本轮直接修复。
+  - 已经启动并终态失败的历史 server runs 不会被这轮本地代码变更反向修正。
+- 下一步：
+  - 基于这版再次重跑同一条 `订单批量申请入账并到入账管理按订单号核对`。
+  - 优先观察：
+    - generate 首轮是否显式命中 `recent_progressed_run`
+    - rerun 是否继续停在 `Step 7` 或更后，而不是再次退回 `Step 1`
+    - 如果 blocker 仍稳定停在 bookedMgmt 回查，再对 `Step 7` 做最小收口
+
+## 2026-04-13 第二百六十一次更新（bookedMgmt 订单存在性多命中收口）
+
+- 本轮目标：
+  - 解决 `intent-run-822e7e5b-e11f-4ed1-8f37-ea680dd0faca` 暴露出来的新 deterministic blocker：bookedMgmt 列表里同一订单号可能合法出现多条记录，但当前 Step 7 / Step 8 / verification 仍把这类场景按“唯一命中失败”处理。
+  - 把这条批量入账链的验收语义收口回真实需求：“至少存在一条订单号等于目标值的记录”，而不是“订单号必须唯一命中一条记录”。
+- 已完成：
+  - 按 [docs/intent-e2e-batch-account-bookedmgmt-order-existence-multi-match-task-brief-2026-04-13.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-batch-account-bookedmgmt-order-existence-multi-match-task-brief-2026-04-13.md) 收口 bookedMgmt 多命中存在性校验。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 调整 batch-account Step 7 canonical 回查骨架：
+    - `resolvePrimaryRecord(...)` 的 `rowHasTexts: [shared.selectedOrderNo]` 现在会显式带上 `allowMultipleUniqueMatches: true`
+    - 新增 batch-account existence-only sanitizer，把 Step 8 / final verification 里基于 `shared.selectedOrderNo` 的直接 `findAntdTableRow(...)` 也改成允许多条合法命中
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 新增并更新 regression，直接覆盖：
+    - Step 7 canonical `/account` / `/payment` / `/booked` 回查块必须带 `allowMultipleUniqueMatches: true`
+    - `822e...` 风格的 Step 8 / verification 直接 `findAntdTableRow(...selectedOrderNo...)` 也必须走存在性多命中语义
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+  - `node scripts/check-doc-links.mjs`
+  - 结果：
+    - `tests/unit/test-generator.spec.ts` 通过（`115/115`）
+    - `build` 通过
+    - `check-roadmap-progress` 通过
+    - `check-doc-links` 通过
+- 当前结果：
+  - `intent-run-822e7e5b-e11f-4ed1-8f37-ea680dd0faca` 的 3 次 attempt 已经证明系统不再退回前半段；现在新的根因不是“修复没生效”，而是 bookedMgmt 页面业务上允许同一订单号多条记录，系统却还沿用通用唯一命中标准，导致 Step 7 稳定误判失败。
+  - 这轮没有放宽通用 helper 的默认歧义失败语义，只把 batch-account 的 `selectedOrderNo` existence-only 校验链收口成允许多条合法命中，避免误伤其他确实需要唯一命中的业务流。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成
+    - `订单批量入账专项金额断言守卫`：已完成
+    - `订单批量入账专项服务项状态守卫`：已完成
+    - `订单批量入账专项订单号与回查定位收口`：已完成
+    - `订单批量入账专项 repair-path / account-list helper 收口`：已完成
+    - `订单批量入账专项 Step 7 live structured-slot 收口`：已完成
+    - `订单批量入账专项 service-item guard TDZ / placeholder lookup 收口`：已完成
+    - `订单批量入账专项 execution fallback 语法守卫`：已完成
+    - `订单批量入账专项 legacy repair 服务项 fallback`：已完成
+    - `订单批量入账专项 selectedServiceItem guard 幂等化`：已完成
+    - `订单批量入账专项 bookedMgmt 搜索框漂移与 rowText 幂等化`：已完成
+    - `订单批量入账专项 resolvePrimaryRecord no-input hard-fail`：已完成
+    - `订单批量入账专项 Step 1 pending-row surface rebuild`：已完成
+    - `订单批量入账专项 /payment submit wait hard-chain`：已完成
+    - `订单批量入账专项 helper 后置 checked-locator 复验`：已完成
+    - `failed run 推进更远脚本复用`：已完成
+    - `订单批量入账专项 bookedMgmt 订单存在性多命中收口`：已完成（本轮）
+- 风险 / 未完成：
+  - `intent-run-822e7e5b-e11f-4ed1-8f37-ea680dd0faca` 已经在旧代码上终态失败，这轮本地修复不会反向改变它的历史结果。
+  - 这轮只修“存在性验收过严”，不处理如果 rerun 继续后移到详情字段、金额一致性或最终业务态核对时暴露出的新 blocker。
+  - 通用 `findAntdTableRow` 仍保持默认“多条唯一记录即失败”；本轮没有改变全局语义。
+- 下一步：
+  - 用这版代码重新跑同一条 `订单批量入账到入账管理核对` 草稿。
+  - 优先观察：
+    - 首轮 reused progressed script 是否直接跨过旧的 Step 7 多命中误判
+    - Step 8 / final verification 是否也不再因为同订单号多条记录而失败
+    - 如果 blocker 继续后移，再按新的真实失败点做最小收口
+
+## 2026-04-13 第二百六十二次更新（bookedMgmt 搜索动作忠实与 raw Step 6 跳转收口）
+
+- 本轮目标：
+  - 解决用户明确指出的动作忠实性问题：当提示词已经明确要求“用 placeholder 为‘请输入关键词’的筛选框搜索订单号”时，bookedMgmt Step 7 不应再直接走 `current_table` shortcut。
+  - 继续补齐 `intent-run-c14e3086-43fe-4aa6-990f-2071f84cc523` 暴露出来的 raw `Step 6` 过渡块：fresh generate 真实产出的 `waitForURL + toHaveURL + artifacts.plan_step_6 = { url }` 旧形态此前没有被 sanitizer 吃到。
+- 已完成：
+  - 直接复核历史终态代码：
+    - `intent-run-d9eb8c54-010b-430d-83bc-347a816f9c8d` 的 `plan_step_7` 已确认只有 `resolvePrimaryRecord(... listResponse/rowHasTexts ...)`，没有显式传 `keywordInput / searchButton / preferCurrentVisibleRow: false`，因此结果虽然对，但动作并不忠实。
+    - `intent-run-822e7e5b-e11f-4ed1-8f37-ea680dd0faca` 也仍然是同一类旧形态。
+    - `intent-run-072adefb-010d-4952-beb6-9d68397b5abf` 与 `intent-run-c14e3086-43fe-4aa6-990f-2071f84cc523` 证明后续 fresh generate / repair 已经开始收口到 helper 真搜，但 `Step 6` raw 跳转块和部分 `Step 7` alias 去重仍存在缺口。
+  - 延续 [docs/intent-e2e-batch-account-bookedmgmt-search-action-fidelity-task-brief-2026-04-13.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-batch-account-bookedmgmt-search-action-fidelity-task-brief-2026-04-13.md) 的范围，在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 继续补齐：
+    - `sanitizeBatchAccountBookedMgmtStep6TransitionSlot(...)` 不再只匹配“已带 placeholder + ready:true”的中间形态；
+    - 现在会额外吃到真实 fresh-generate 的 raw URL-only 过渡块：
+      - `await page.waitForURL(/#\\/payment\\/bookedMgmt/i, ...)`
+      - `await expect(page).toHaveURL('https://uat-service.yikaiye.com/#/payment/bookedMgmt')`
+      - `artifacts.plan_step_6 = { url: page.url() }`
+    - 同时显式排除仍包含 submit/modal 交互的 Step 6 变体，避免把“确认提交”步骤误改写成纯跳转守卫。
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 新增 regression：
+    - 直接复刻 `c14e...` 风格的 raw Step 6 代码
+    - 固定 sanitize 后必须变成 `BOOKED_URL` fallback + `page.goto(.../payment/bookedMgmt)` + placeholder/search button ready 守卫
+  - 保持 Step 7 的 targeted 语义不变：
+    - 只对这条 batch-account / bookedMgmt 且提示词明确要求 placeholder 搜索的链路收紧
+    - 真实搜索动作继续交给 `resolvePrimaryRecord(...)`
+    - 不对通用列表回查场景全局强制“先搜索再校验”
+  - 已再次发起 fresh rerun：`intent-run-e8060568-ef76-4a4a-8587-88f62770fee8`（`attachments=[]`，避免复用旧 passed run 骨架）。
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+  - `node scripts/check-doc-links.mjs`
+  - 结果：
+    - `tests/unit/test-generator.spec.ts` 通过（`118/118`）
+    - `build` 通过
+    - `check-roadmap-progress` 通过
+    - `check-doc-links` 通过
+- 当前结果：
+  - 这轮已经能明确回答用户的问题：
+    - “结果是对的，但当前流程动作对吗？”答案是否定的；旧 run 的 Step 7 的确没有执行提示词明确要求的 placeholder 搜索动作。
+    - “这会不会影响通用型泛化测试？”如果做成全局强制，会误伤很多本来应该优先复用当前可见列表的场景；因此这轮只做专项 targeted 收口，避免把通用 `resolvePrimaryRecord` 默认语义打坏。
+  - 当前代码层面，bookedMgmt 这条 batch-account 链已经同时补上：
+    - Step 7 helper 真搜动作忠实
+    - Step 6 raw URL-only 跳转块 fallback
+  - fresh rerun `intent-run-e8060568-ef76-4a4a-8587-88f62770fee8` 已启动，但当前仍停留在 `stage=analyzing`，尚未产出新的 `attempt_event.complete`；因此本轮的服务端 end-to-end 证据还在等待这条新 run 完成。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成
+    - `订单批量入账专项金额断言守卫`：已完成
+    - `订单批量入账专项服务项状态守卫`：已完成
+    - `订单批量入账专项订单号与回查定位收口`：已完成
+    - `订单批量入账专项 repair-path / account-list helper 收口`：已完成
+    - `订单批量入账专项 Step 7 live structured-slot 收口`：已完成
+    - `订单批量入账专项 service-item guard TDZ / placeholder lookup 收口`：已完成
+    - `订单批量入账专项 execution fallback 语法守卫`：已完成
+    - `订单批量入账专项 legacy repair 服务项 fallback`：已完成
+    - `订单批量入账专项 selectedServiceItem guard 幂等化`：已完成
+    - `订单批量入账专项 bookedMgmt 搜索框漂移与 rowText 幂等化`：已完成
+    - `订单批量入账专项 resolvePrimaryRecord no-input hard-fail`：已完成
+    - `订单批量入账专项 Step 1 pending-row surface rebuild`：已完成
+    - `订单批量入账专项 /payment submit wait hard-chain`：已完成
+    - `订单批量入账专项 helper 后置 checked-locator 复验`：已完成
+    - `failed run 推进更远脚本复用`：已完成
+    - `订单批量入账专项 bookedMgmt 订单存在性多命中收口`：已完成
+    - `订单批量入账专项 bookedMgmt 搜索动作忠实与 raw Step 6 跳转收口`：已完成（本轮）
+- 风险 / 未完成：
+  - `intent-run-e8060568-ef76-4a4a-8587-88f62770fee8` 当前在 `analyzing` 阶段停留时间偏长，本轮尚未证明这是暂态耗时还是另一类平台侧卡顿。
+  - 这轮没有去改 analyzing 阶段的 timeout / heartbeat / observability；若 fresh rerun 最终长期卡在 `analyzing`，需要单独立项排查服务层分析链路。
+  - 已经终态失败的历史 run 不会被这轮代码变更反向改写。
+- 下一步：
+  - 继续等 `intent-run-e8060568-ef76-4a4a-8587-88f62770fee8` 完成，并优先检查它的 `attempt_event.complete`：
+    - `plan_step_6` 是否已变成 `BOOKED_URL` fallback 版本
+    - `plan_step_7` 是否稳定带上 `keywordInput / searchButton / preferCurrentVisibleRow: false`
+  - 如果这条 fresh rerun 最终还是长时间停在 `analyzing`，下一步单独收口 analyzing 阶段的超时与事件回写问题，而不是继续误判成 batch-account 业务脚本失败。
+
+## 2026-04-13 第二百六十三次更新（Step 7 resolve-only 旧块与 Step 6 submit fallback ready 守卫收口）
+
+- 本轮目标：
+  - 继续把 batch-account bookedMgmt 链路的动作忠实性收口到底，补齐 `intent-run-a2ba7065-566e-43d9-960a-5c5c7dfbcfd5` 这类“最终 passed，但 Step 7 仍是 resolve-only 旧块”的遗漏。
+  - 针对 `intent-run-1cff9f55-07cb-4a39-bfab-349334ff8d0d` 暴露出的新 blocker，补上 submit 后 `#/payment/bookedMgmt` 的 ready 守卫，避免 Step 7 明明已切到 helper 真搜，却因为搜索 surface 还没 ready 直接报 `primary lookup keyword input not found`。
+- 已完成：
+  - 直接复核 `intent-run-a2ba7065-566e-43d9-960a-5c5c7dfbcfd5` 终态证据：
+    - 最终 run 虽然 `passed`，但日志仍有 `primary record resolved in current table`；
+    - 说明旧 Step 7 并未执行提示词要求的 placeholder 搜索，只是结果碰巧正确，因此不能视为动作忠实通过。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 继续补齐专项 sanitizer：
+    - `sanitizeBatchAccountAccountListLookupSlot(...)` 现在除了处理“手写 fill/click/search”旧形态，也会吃到 `a2ba...` 这类只剩 `resolvePrimaryRecord(...)` 的 resolve-only Step 7 旧块；
+    - 收口后会强制透传 `keywordInput`、`searchButton`、`preferCurrentVisibleRow: false`，并继续保留 `allowMultipleUniqueMatches: true`，让 helper 真正执行搜索动作，而不是回退到 current-table shortcut。
+  - 新增 `sanitizeBatchAccountBookedMgmtSubmitUrlFallback(...)`：
+    - 对 submit 后仍停在 `#/order/list` 的 Step 6 变体注入 `page.goto('https://uat-service.yikaiye.com/#/payment/bookedMgmt', ...)` fallback；
+    - 在 Step 6 末尾显式等待 `page.getByPlaceholder('请输入关键词').first()` 与搜索按钮 ready，再把 `plan_step_6` 标记为 ready。
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 增补 regression：
+    - `a2ba...` 风格的 resolve-only Step 7 旧块必须被改写成 helper 真搜；
+    - raw Step 6 URL-only 过渡块必须被重写；
+    - submit 后 bookedMgmt URL fallback + keyword/search readiness 必须被注入。
+  - 直接复核 `intent-run-1cff9f55-07cb-4a39-bfab-349334ff8d0d`：
+    - 终态代码已出现 `keywordInput: page.getByPlaceholder('请输入关键词').first()`、`searchButton`、`preferCurrentVisibleRow: false` 与 `goto('https://uat-service.yikaiye.com/#/payment/bookedMgmt', ...)`；
+    - 终态日志不再出现 `primary record resolved in current table`，而是稳定后移为 `primary lookup keyword input not found`，说明“没执行搜索动作”这一类问题已经修掉，新的 blocker 已收敛到 bookedMgmt ready / selector surface。
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - `npm run build`
+  - `node scripts/check-roadmap-progress.mjs`
+  - `node scripts/check-doc-links.mjs`
+  - 结果：
+    - `tests/unit/test-generator.spec.ts` 通过（`120/120`）
+    - `build` 通过
+    - `check-roadmap-progress`：待本轮回写后复跑确认
+    - `check-doc-links`：待本轮回写后复跑确认
+- 当前结果：
+  - `a2ba...` 这类“结果对但动作不对”的问题已经被明确定义为不合格通过，不能再拿最终 `passed` 掩盖动作缺失。
+  - `1cff...` 已证明这轮修复不是“又修错方向”：Step 7 已从 current-table shortcut 切到 helper 真搜，新的失败点是 submit 后 bookedMgmt 搜索控件 readiness 没有稳定暴露。
+  - 这轮仍保持专项 targeted 收口，没有改坏通用 `resolvePrimaryRecord` 默认语义；只有 batch-account / bookedMgmt 且明确要求 placeholder 搜索的链路会强制真搜。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 后续专项：
+    - `E1`：已完成
+    - `E2`：已完成
+    - `E3`：已完成
+    - `E4`：已完成
+    - `订单批量入账专项首轮 guard`：已完成
+    - `订单批量入账专项提交 / 回查 hardening`：已完成
+    - `订单批量入账专项金额断言守卫`：已完成
+    - `订单批量入账专项服务项状态守卫`：已完成
+    - `订单批量入账专项订单号与回查定位收口`：已完成
+    - `订单批量入账专项 repair-path / account-list helper 收口`：已完成
+    - `订单批量入账专项 Step 7 live structured-slot 收口`：已完成
+    - `订单批量入账专项 service-item guard TDZ / placeholder lookup 收口`：已完成
+    - `订单批量入账专项 execution fallback 语法守卫`：已完成
+    - `订单批量入账专项 legacy repair 服务项 fallback`：已完成
+    - `订单批量入账专项 selectedServiceItem guard 幂等化`：已完成
+    - `订单批量入账专项 bookedMgmt 搜索框漂移与 rowText 幂等化`：已完成
+    - `订单批量入账专项 resolvePrimaryRecord no-input hard-fail`：已完成
+    - `订单批量入账专项 Step 1 pending-row surface rebuild`：已完成
+    - `订单批量入账专项 /payment submit wait hard-chain`：已完成
+    - `订单批量入账专项 helper 后置 checked-locator 复验`：已完成
+    - `failed run 推进更远脚本复用`：已完成
+    - `订单批量入账专项 bookedMgmt 订单存在性多命中收口`：已完成
+    - `订单批量入账专项 bookedMgmt 搜索动作忠实与 raw Step 6 跳转收口`：已完成
+    - `订单批量入账专项 Step 7 resolve-only 旧块与 Step 6 submit fallback ready 守卫收口`：已完成（本轮）
+- 风险 / 未完成：
+  - `intent-run-1cff9f55-07cb-4a39-bfab-349334ff8d0d` 是旧代码上的历史终态，不会被本轮本地修复反向改写。
+  - 这轮还没有新的 fresh/prefilled rerun 终态证据来证明 ready 守卫已经彻底消除 `keyword input missing`。
+  - 如果下一轮 rerun 仍失败，优先应继续沿 bookedMgmt 搜索 surface / selector drift 收口，而不是再回到“动作是否执行”的老问题。
+- 下一步：
+  - 先跑 `check-roadmap-progress` 与 `check-doc-links`，确认文档回写已闭环。
+  - 复用 `intent-run-a2ba7065-566e-43d9-960a-5c5c7dfbcfd5` 的 `scenarioCard` 再发一条 `prefilledScenarioCard` run。
+  - 优先检查新的 `attempt_event.complete`：
+    - `plan_step_6` 是否已经显式包含 `goto(...#/payment/bookedMgmt)` 与 keyword/search ready 守卫；
+    - `plan_step_7` 是否仍稳定带 `keywordInput / searchButton / preferCurrentVisibleRow: false`；
+    - 日志里是否还会出现 `primary lookup keyword input not found`。
+
+## 2026-04-13 第二百六十四次更新（Phase 0 低自由度 gating / failure bucket / fallback telemetry 收口）
+
+- 本轮目标：
+  - 严格按 [docs/intent-e2e-90-success-codex-implementation-brief-2026-04-13.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-90-success-codex-implementation-brief-2026-04-13.md) 只落地 `Phase 0`，不提前扩到 Phase 1+。
+  - 先把 launch gating、failure triage、executor guard 和 fallback telemetry 这些“先止血”的自由度收紧点真正写进主链路，并补齐对应单测、构建和文档回写。
+- 已完成：
+  - 在 [lib/intent-e2e-launch-decision.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-launch-decision.ts) 收紧 launch gating：
+    - 新增 `priorityScenarioFamily` / `priorityScenarioFamilySource` / `priorityScenarioTextFamily` / `priorityScenarioVisualFamily`、`hasTrackedPriorityScenarioFamily`、`hasPriorityScenarioFamilyConflict`、`hasStablePriorityScenarioPath`、`hasExplicitVerifierSignal` 等可观测 signals；
+    - 低信息量截图请求命中 `image_led_request_needs_task_details`；
+    - family 冲突直接 `needs_clarify`；
+    - 缺失稳定 verifier / family path 的请求更容易落到 `draft_only`；
+    - repeated failure suppression 现在会把稳定 family path 缺口显式带进 reasons。
+  - 在 [app/api/intent-e2e/launch-decision/route.ts](/Users/xiaolongbao/Workspace/ai-test/app/api/intent-e2e/launch-decision/route.ts) 把 `resolveIntentE2EPriorityScenarioFamilyRoute(...)` 的结果接进 launch decision，并把 recent terminal run repeated-failure 查询包上 timeout budget，避免 route 被慢查询拖死。
+  - 在 [lib/ai/intent-e2e-failure-triage.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-failure-triage.ts)、[lib/intent-e2e-repair-budget.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-repair-budget.ts)、[lib/intent-e2e-quality-split.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-quality-split.ts) 把 `unknown` 拆成更可行动的类：
+    - `auth_state_invalid`
+    - `fixture_contract_missing`
+    - `response_missing`
+    - `record_lookup_miss`
+    - `runtime_syntax_damage`
+    - `repair_non_progress`
+    - 并同步把 repair budget / quality split 改成和这些新 bucket 对齐。
+  - 在 [lib/test-executor.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-executor.ts) 收紧执行器路径：
+    - 合法 JavaScript 先 parse-first，不再无脑走 TS fallback；
+    - 只有检测到 TS-only 语法且原始 JS parse 失败时才走兼容降级；
+    - `executeTest(...)` 遇到预处理语法损坏时改为返回结构化 `runtime_syntax_damage` 失败结果，而不是直接抛异常。
+  - 在 [lib/ai/intent-e2e-service.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-service.ts)、[lib/intent-e2e-run-artifacts.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-run-artifacts.ts)、[lib/ai/intent-e2e-run-registry.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-run-registry.ts)、[lib/intent-e2e-run-review.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-run-review.ts)、[lib/ai/intent-e2e-insights.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-insights.ts) 收口自由 fallback：
+    - attempt artifact / registry / insights 现在会保留 `fallbackTelemetry`；
+    - 显式记录 `prefilled_plan_reuse`、`legacy_free_generate`、`legacy_free_repair`、legacy fallback reason code、sanitizer rescue source；
+    - fixture setup / cleanup 失败会归为 `fixture_contract_missing`；
+    - repair 输出与上一轮代码等价时，主链路会以 `repair_non_progress` 早停，不再盲跑 repair。
+  - 为了完成 `build:web` 验证，又做了不改行为的浏览器侧装配剥离：
+    - 新增 [lib/intent-e2e-run-control-shared.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-run-control-shared.ts) 与 [lib/intent-e2e-system-onboarding-shared.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-system-onboarding-shared.ts)；
+    - [lib/ai/intent-e2e-request.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-request.ts) 不再从带 `node:crypto` 的 server-only 模块间接进入前端 bundle，只保留浏览器侧真正需要的 normalize 逻辑。
+  - 补齐并更新 Phase 0 相关单测：
+    - [tests/unit/intent-e2e-launch-decision.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-launch-decision.spec.ts)
+    - [tests/unit/api-intent-e2e-launch-decision-route.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/api-intent-e2e-launch-decision-route.spec.ts)
+    - [tests/unit/intent-e2e-failure-triage.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-failure-triage.spec.ts)
+    - [tests/unit/test-executor.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-executor.spec.ts)
+    - [tests/unit/intent-e2e-service.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-service.spec.ts)
+    - [tests/unit/intent-e2e-run-review.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-run-review.spec.ts)
+    - [tests/unit/intent-e2e-insights.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-insights.spec.ts)
+    - [tests/unit/intent-e2e-request.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-request.spec.ts)
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-launch-decision.spec.ts`
+  - `npx vitest run tests/unit/api-intent-e2e-launch-decision-route.spec.ts`
+  - `npx vitest run tests/unit/intent-e2e-failure-triage.spec.ts`
+  - `npx vitest run tests/unit/test-executor.spec.ts`
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts`
+  - `npx vitest run tests/unit/intent-e2e-run-review.spec.ts`
+  - `npx vitest run tests/unit/intent-e2e-insights.spec.ts`
+  - `npx vitest run tests/unit/intent-execution-compiler.spec.ts`
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - `npx vitest run tests/unit/intent-e2e-request.spec.ts`
+  - `npm run build`
+  - `npm run build:web`
+  - `npm run test:e2e`
+  - 结果：
+    - 上述 unit spec、`build`、`build:web` 已通过。
+    - `test:e2e`：`8 passed / 1 skipped / 1 failed`；失败项为 `tests/e2e/scenario-task-smoke.spec.ts:1342 smoke: archived capability is excluded from recipe until restored @smoke`。
+    - 该 E2E 失败快照显示 `稳定能力` 页当前没有渲染 `恢复能力 归档前商机检索能力` 按钮，并伴随 `helper-health` / `verification-queue` mock route 未处理提示；这是工作台 capability archive/restore smoke 问题，不是本轮 Phase 0 launch gating / triage / executor / fallback 主链路回归。
+- 当前结果：
+  - 这轮真实完成的是“先止血、先收紧自由度”而不是“已经拿到 90% 成功率”。
+  - 现有 benchmark 事实仍是 brief 里那组基线：
+    - `firstPassPassRate = 24`
+    - `repairedPassRate = 6`
+    - `terminalPassRate = 30`
+    - `playbookHitRate = 0`
+    - 高频失败类仍包括 `assertion_too_strict`、`unknown`、`repair_stagnated`、`data_missing`、`selector_drift`
+  - 本轮没有重跑 benchmark compare，所以不能声称成功率已经抬升；但主链路代码现在已经把“低置信照样 auto_run”“自由 fallback 不可见”“语法损坏继续盲跑”“unknown 垃圾桶”这些明显浪费点收成了显式、可测的约束。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - Phase 0（launch gating / failure taxonomy / executor guard / fallback telemetry）：已完成（本轮范围）
+- 风险 / 未完成：
+  - 这轮还没有 fresh benchmark / live rerun 证据来证明 `terminalPassRate`、`unknown` 占比或 playbook hit rate 已经实际提升；当前只能证明 guardrails 已经进代码并被测试锁住。
+  - 高置信 family 虽然现在会显式暴露 legacy fallback / sanitizer rescue，但 deterministic family 资产还没有工业化到足以彻底替代自由 generate / repair；这部分仍是后续 Phase 1 的主任务。
+  - `npm run test:e2e` 仍有一个与工作台 capability archive/restore 相关的 smoke 失败，说明仓库当前并非全量绿灯；该问题需要单独沿着 workbench UI / mocked API route 收口，不能误判成本轮 Phase 0 主链路退化。
+- 下一步：
+  - 先跑 `node scripts/check-doc-links.mjs`、`node scripts/check-roadmap-progress.mjs`、`bash scripts/check-boundaries.sh`，确认本轮回写和边界约束闭环。
+  - 按 brief 进入 `Phase 1` 之前，先补 benchmark compare / live rerun 证据，验证新 gating 和新 triage bucket 是否真的把 `unknown`、无效 auto-run 和自由 fallback 压下去。
+  - 后续优先级仍按 brief：先做 Top Families 工业化，而不是回头继续放大自由生成。
+
+## 2026-04-13 第二百六十五次更新（订单批量入账专项 visible-first 搜索框与纯数字订单号提取收口）
+
+- 本轮目标：
+  - 收口 batch-account bookedMgmt / account-list 回查里仍会命中 hidden placeholder clone 的 `getByPlaceholder('请输入关键词').first()` 旧写法。
+  - 收口 Step 3 fresh-generate / repair 变体里把纯数字长订单号误判成“金额”而丢失的提取分支。
+  - 用真实 rerun 证明问题已经从“动作不忠实 / hidden placeholder”前移，而不是继续靠重复 rerun 自欺。
+- 已完成：
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 为 batch-account bookedMgmt / account-list 专项链路引入 visible-first keyword input 绑定：
+    - 统一优先使用 `input[placeholder="请输入关键词"]:visible`；
+    - 不存在时再 fallback 到 `input#form_in_modal_testKeyWord:visible, input#service-data-item_keyWord:visible`；
+    - `plan_step_6` raw transition、submit fallback、`plan_step_7` helper-driven lookup 现在都复用这套绑定，不再对 hidden placeholder `.first()` 做 `toBeVisible()`。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 扩展 Step 3 订单号提取 sanitizer：
+    - `link.innerText()` / `cell.innerText()` 的旧判断不再把 `12+` 位纯数字订单号一律当作金额排除；
+    - `tokens.filter(... /^[A-Za-z0-9_-]{6,}$/ && !/^\\d+(\\.\\d+)?$/ ...)` 这类 repair 变体统一改成允许 `\\d{12,64}` 的 structured-id 规则；
+    - modal fallback 里的 `normalized` 也同步走同一条订单号 canonical guard。
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 新增并更新回归：
+    - visible-first keyword input 绑定不再生成 hidden placeholder `.first()`;
+    - Step 3 link/cell/tokens/modal fallback 变体会保留纯数字长订单号。
+  - 本轮真实排障还确认了一个非代码根因：
+    - 本地 `3666` dev server 再次跑在旧内存代码上；
+    - 重启前，`intent-run-f29e3446-65ba-4b82-946e-c003f0639c88` 首轮 attempt 仍返回旧 placeholder 写法；
+    - 重启后，首轮 attempt 已明确带上 visible-first binding，证明问题不是“本地改了单测没进服务端”，而是 stale server。
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+  - 结果：
+    - `122/122` 通过。
+  - 真实 run 审计：
+    - `intent-run-f29e3446-65ba-4b82-946e-c003f0639c88`
+      - 重启前首轮 attempt 仍返回旧 placeholder 写法；
+      - 本地对同一份 code 重新跑 `sanitizeGeneratedCode()` 会变成 visible-first，直接坐实 stale dev server。
+    - `intent-run-974faedf-37a6-40a4-b52f-170c7373ae2e`
+      - 重启后首轮 attempt 已不再包含 `page.getByPlaceholder('请输入关键词').first()`；
+      - 问题真实前移到 Step 3 / repair 输入污染，不再是 hidden placeholder。
+    - `intent-run-d3ff5cd3-2dd2-4bf3-971a-0c0121094b35`
+      - 终态 `passed`；
+      - 第 3 次 attempt（repair）通过；
+      - 终态 code 仍保留 visible-first keyword input 绑定，且不再出现 hidden placeholder 写法；
+      - worker 日志未再出现 `primary record resolved in current table` 这类旧 shortcut 信号。
+- 当前阶段状态：
+  - R0：已完成
+  - R1：已完成
+  - R2：已完成（当前 roadmap scope）
+  - R3：已完成（当前 roadmap scope）
+  - R4：已完成
+  - R5：已完成
+  - R6：已完成（当前 roadmap scope）
+  - R7：已完成
+  - 订单批量入账专项 visible-first 搜索框与纯数字订单号提取：已完成（本轮）
+- 风险 / 未完成：
+  - 当前仓库的 `npm run build` 仍被本轮之外的既有 TypeScript 问题挡住：
+    - `lib/ai/intent-e2e-service.ts`
+    - `tests/unit/intent-e2e-insights.spec.ts`
+    - 这不是本轮修改文件引入的新报错，但会继续影响“全仓绿灯”验证。
+  - `intent-run-974faedf-37a6-40a4-b52f-170c7373ae2e` 的 repair 失败里掺入了我手工验证时追加的日期尾注，不应再把这种人为验证文案当业务失败根因。
+- 下一步：
+  - 先跑 `node scripts/check-roadmap-progress.mjs` 与 `node scripts/check-doc-links.mjs`，确认本轮回写闭环。
+  - 等仓库里与本轮无关的 TS 报错被清掉后，再补一轮 `npm run build` 全仓绿灯验证。
+  - 若后续同 family 再失败，优先检查真实业务数据 / 列表结果本身，不要再回头怀疑 hidden placeholder 或纯数字订单号提取老问题。
+
+## 2026-04-13 第二百六十六次更新（订单批量入账专项补充审计：构建与归档状态纠偏）
+
+- 本轮目标：
+  - 补充审计上一轮收口是否已经真正闭环，避免 roadmap 继续保留过时结论。
+  - 用归档证据把 `intent-run-a2ba7065-566e-43d9-960a-5c5c7dfbcfd5` 的“结果通过但动作不忠实”和 `intent-run-d3ff5cd3-2dd2-4bf3-971a-0c0121094b35` 的“最终动作忠实通过”明确区分开。
+- 已完成：
+  - 复核 [reports/intent-e2e/runs/intent-run-a2ba7065-566e-43d9-960a-5c5c7dfbcfd5/attempt-1-response-summary.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/runs/intent-run-a2ba7065-566e-43d9-960a-5c5c7dfbcfd5/attempt-1-response-summary.json) 与 [reports/intent-e2e/runs/intent-run-a2ba7065-566e-43d9-960a-5c5c7dfbcfd5/attempt-1-logs.txt](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/runs/intent-run-a2ba7065-566e-43d9-960a-5c5c7dfbcfd5/attempt-1-logs.txt)：
+    - 该 run 确实 `success: true`；
+    - 但 worker 日志仍出现 `primary record resolved in current table`，说明当时 Step 7 还是旧 shortcut，并不满足“必须真搜”的动作忠实要求。
+  - 复核 [reports/intent-e2e/runs/intent-run-d3ff5cd3-2dd2-4bf3-971a-0c0121094b35/attempt-3-response-summary.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/runs/intent-run-d3ff5cd3-2dd2-4bf3-971a-0c0121094b35/attempt-3-response-summary.json)、[reports/intent-e2e/runs/intent-run-d3ff5cd3-2dd2-4bf3-971a-0c0121094b35/attempt-3-trace.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/runs/intent-run-d3ff5cd3-2dd2-4bf3-971a-0c0121094b35/attempt-3-trace.json) 与 [reports/intent-e2e/runs/intent-run-d3ff5cd3-2dd2-4bf3-971a-0c0121094b35/attempt-3-logs.txt](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/runs/intent-run-d3ff5cd3-2dd2-4bf3-971a-0c0121094b35/attempt-3-logs.txt)：
+    - 该 run 第 3 次 attempt `success: true`；
+    - Step 7 trace 明确使用了 `input[placeholder="请输入关键词"]:visible` 填值并点击搜索按钮；
+    - worker 日志未再出现 `primary record resolved in current table` 旧 shortcut 信号。
+  - 补跑验证，确认第二百六十五次更新里“build 仍被既有 TS 错误挡住”的状态已经过时：
+    - `npx vitest run tests/unit/test-generator.spec.ts`
+    - `node scripts/check-roadmap-progress.mjs`
+    - `node scripts/check-doc-links.mjs`
+    - `npm run build`
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+    - `122/122` 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `npm run build`
+    - 通过。
+- 当前阶段状态：
+  - 订单批量入账专项 visible-first 搜索框与纯数字订单号提取：已完成
+  - 订单批量入账专项补充审计与构建纠偏：已完成（本轮）
+- 风险 / 未完成：
+  - 当前 family 的主问题已收口；若后续再失败，优先排查真实业务数据、列表结果与服务端活代码版本，不要再把旧 placeholder / 纯数字订单号提取当作默认嫌疑。
+  - repair 链路仍可能生成新的局部脚本错误（例如曾出现过 `searchResp is not defined` 这类一次性 repair 变量遗漏）；这类问题应继续通过更强的结构化 slot 约束和成功代码复用来收敛，而不是靠重复 rerun。
+- 下一步：
+  - 把“复用上次成功步骤 / 成功脚本片段”的能力继续前推到 run 级默认策略，减少 repair 再次回退到脆弱自由生成。
+  - 后续审计同 family 失败时，先对比最近一次 passed run 的 Step trace 与 worker log，再决定是否真的需要重新生成整段脚本。
+
+## 2026-04-14 第二百六十七次更新（repair 基线默认复用最近更远历史脚本）
+
+- 本轮目标：
+  - 不再只让 generate 首轮吃到 `recent_progressed_run`；当 repair 已经把脚本修坏、退回更早步骤时，也要能自动回退到最近一次推进更远的历史脚本基线。
+  - 保持修改范围只在 repair 的“基线脚本选择”，不混入 runtime checkpoint / 跳步执行。
+- 已完成：
+  - 新增 [docs/intent-e2e-repair-baseline-progressed-run-reuse-task-brief-2026-04-14.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-repair-baseline-progressed-run-reuse-task-brief-2026-04-14.md)，固定本轮目标、范围与验证命令。
+  - 在 [lib/ai/intent-e2e-service.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-service.ts) 新增 repair 基线决策：
+    - `resolveIntentE2ERepairBaselineDecision(...)` 会比较“上一轮实际失败脚本推进步数”与“最近更远历史脚本推进步数”；
+    - 只有当历史脚本推进更远时，repair 才把 `previousCode` 切回那份历史脚本；
+    - `repair_non_progress` 的比较基线仍保留为“上一轮实际失败脚本”，避免把“回退到更优历史基线”误判成无进展。
+  - repair 链路现在支持两层复用行为：
+    - generate 首轮继续按原优先级复用 `recent_successful_run -> recent_progressed_run -> draft_first_pass`；
+    - repair 轮次若发现上一轮脚本退化，则会记录 `repairBaselineReuseSource=recent_progressed_run` 并发出明确 attempt log，说明已切回历史更优基线。
+  - 在 [tests/unit/intent-e2e-service.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-service.spec.ts) 补两条主回归：
+    - 当新的 repair attempt 退回更早步骤时，下一轮 repair 会重新以最近更远历史脚本为 `previousCode`；
+    - 当当前 repair 已经比历史脚本推进更远时，不会盲目回退历史脚本。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts`
+    - `40/40` 通过。
+  - `npm run build`
+    - 当前失败，但根因不是本轮 TypeScript 代码错误，而是 `tsconfig.json` include 了缺失的 `.next-e2e/types/**/*.ts` 文件；
+    - 当前报错形态为多条 `TS6053 File '.next-e2e/types/...` not found`，属于工作区生成产物缺失。
+- 当前阶段状态：
+  - successful run code reuse：已完成
+  - progressed run code reuse（generate 首轮）：已完成
+  - repair 基线默认复用最近更远历史脚本：已完成（本轮）
+- 风险 / 未完成：
+  - 这轮仍只解决“repair 基线脚本选择”，不会跳过已成功步骤；执行层仍会从头执行。
+  - 如果历史更远脚本本身已经过时、但步数更远，repair 仍可能基于它生成新错误；当前靠 syntax check 和“只在更远时才切换”做最小防守。
+  - 全仓 `build` 目前被 `.next-e2e/types` 缺失挡住，无法用它证明全仓绿灯。
+- 下一步：
+  - 继续把 repair 基线复用结果透出到 run review / insights，避免用户只能从 attempt log 里看。
+  - 若后续还要进一步减少时间浪费，再评估执行层 step checkpoint / artifact resume，而不是继续放大自由 repair。
+
+## 2026-04-14 第二百六十八次更新（successful-run 复用优先选择更新且更干净的候选脚本）
+
+- 本轮目标：
+  - 收口 `recent_successful_run` 的候选选择，不再只靠“同 draft + requestInput 完全相等 + attachmentCount 完全相等”的第一条命中。
+  - 让系统在同一草稿、同一目标页面下，优先复用“请求兼容、更新时间更近、且原始代码更少依赖 sanitizer rescue”的成功脚本。
+- 已完成：
+  - 新增 [docs/intent-e2e-successful-run-reuse-freshness-task-brief-2026-04-14.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-successful-run-reuse-freshness-task-brief-2026-04-14.md)，固定本轮目标、范围与验证命令。
+  - 在 [lib/ai/intent-e2e-service.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-service.ts) 收口 successful-run 复用候选：
+    - successful-run 候选现在仍要求 `intentDraftUid + targetUrl` 一致，但 `requestInput` 从“必须完全相等”放宽为“完全相等或一方包含另一方的兼容提示词”；
+    - `attachmentCount` 改为排序信号，不再作为硬排除条件；
+    - 候选排序新增三层优先级：`是否需要 sanitizer rescue` -> `requestInput 匹配强度（exact > compatible）` -> `创建时间更新度`，最后才看附件是否精确匹配与 attempt 数量。
+  - 这次修正直接覆盖了真实 family 里暴露的问题：
+    - `intent-run-a2ba7065-566e-43d9-960a-5c5c7dfbcfd5` 虽然 request 完全相等，但复用时仍需要 `sanitizer rescue`；
+    - `intent-run-d3ff5cd3-2dd2-4bf3-971a-0c0121094b35` 因为追加了验证尾注、附件数不同，之前被旧逻辑排除；现在会作为“同草稿兼容提示词且更干净”的候选进入排序。
+  - 在 [tests/unit/intent-e2e-service.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-service.spec.ts) 补两条主回归：
+    - 较老的 exact 成功脚本若仍依赖 sanitizer rescue，不会再抢过更新的 compatible 干净成功脚本；
+    - exact 成功脚本如果本身已经干净，仍会优先于更宽松的 compatible 候选。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts`
+    - `42/42` 通过。
+  - `npm run build`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过。
+- 当前阶段状态：
+  - successful run code reuse：已完成
+  - successful run reuse freshness / cleanliness 排序：已完成（本轮）
+  - progressed run code reuse（generate 首轮）：已完成
+  - repair 基线默认复用最近更远历史脚本：已完成
+- 风险 / 未完成：
+  - 这轮只优化“成功脚本候选选择”，还没有把“已成功前序步骤直接 checkpoint / resume”做进执行层。
+  - `compatible_request` 目前是保守字符串兼容，不是更宽的语义检索；如果用户在同一 draft 下大幅改写需求，仍不会盲目跨语义复用。
+  - 旧成功脚本即使被降权，仍可能在没有更优候选时被复用；当前仍靠 sanitizer 做最后一道兜底。
+- 下一步：
+  - 继续把 successful / repair 复用决策透出到 run review / insights，避免只能从 attempt log 里看出“为什么选了这份脚本”。
+  - 若后续还要进一步减少时间浪费，再评估执行层 checkpoint / artifact resume，而不是继续依赖从头执行整段脚本。
+
+## 2026-04-14 第二百六十九次更新（successful-run 排序补识别历史 sanitizer rescue 记录）
+
+- 本轮目标：
+  - 修正 successful-run 候选排序里的一个真实漏判：落库后的 `attempt.code` 已经是 sanitize 后代码时，不能再只靠 `sanitizeGeneratedCode(code) !== code` 判断该候选是否依赖 rescue。
+  - 让系统显式识别“历史上已经记录过 `sanitizerRescueSource` 的成功脚本”，避免它继续抢占更干净的成功候选。
+- 已完成：
+  - 新增 [docs/intent-e2e-successful-run-rescue-telemetry-ranking-task-brief-2026-04-14.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-successful-run-rescue-telemetry-ranking-task-brief-2026-04-14.md)，固定本轮 run 证据、目标与验证命令。
+  - 在 [lib/ai/intent-e2e-service.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-service.ts) 补 `resolveIntentE2ELastAttemptSanitizerRescueSource(...)`：
+    - successful-run 候选现在会同时读取最后一次 attempt 的 `fallbackTelemetry.sanitizerRescueSource`；
+    - `requiresSanitizerRescue` 从“仅看代码还能否继续被 sanitize 改写”扩展为“历史 telemetry 标记过 rescue，或代码仍需 sanitize 任一满足即可”。
+  - 这次修正直接来自真实 run 审计：
+    - `intent-run-067d0e3a-2d73-4e5b-8848-40084ff68ce0` 最终复用了 `intent-run-3021f7a8-9382-4209-8251-6dd954d288b8`；
+    - `intent-run-3021f7a8-9382-4209-8251-6dd954d288b8` 自己又是复用 `intent-run-d3ff5cd3-2dd2-4bf3-971a-0c0121094b35` 后被 `sanitizer rescue` 纠正的 run；
+    - 旧排序逻辑因为只看落库后的 sanitize 结果，误把 `3021...` 当成干净成功脚本。
+  - 在 [tests/unit/intent-e2e-service.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-service.spec.ts) 增补回归：
+    - exact 但历史上已记录 sanitizer rescue 的成功脚本，不再抢过 compatible 且干净的成功脚本。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts`
+    - `43/43` 通过。
+  - `npm run build`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过。
+- 当前阶段状态：
+  - successful run code reuse：已完成
+  - successful run reuse freshness / cleanliness 排序：已完成
+  - successful run 排序补识别历史 sanitizer rescue 记录：已完成（本轮）
+  - progressed run code reuse（generate 首轮）：已完成
+  - repair 基线默认复用最近更远历史脚本：已完成
+- 风险 / 未完成：
+  - 这轮仍只在“候选排序”层面降权历史 rescue 脚本，不会改写历史 run 本身，也不会跳过执行。
+  - 如果更老的历史 run 没记录 `fallbackTelemetry`，系统仍只能退回代码级 sanitize 差异来判断。
+  - `intent-run-067d0e3a-2d73-4e5b-8848-40084ff68ce0` 已经在旧排序逻辑下完成；这轮修复会影响后续新的 runs，而不会回溯改变它的归档结果。
+- 下一步：
+  - 继续把 successful / repair 复用决策和候选排序理由透出到 run review / insights。
+  - 若后续仍看到“旧 rescued pass 抢占新 clean pass”，再补更强的历史 run 质量分层，而不是继续堆 prompt。
+
+## 2026-04-14 第二百七十次更新（Phase 1：Top Families 工业资产首轮落地）
+
+- 本轮目标：
+  - 严格停在 `Phase 1`，只把 top families 从“family-aware hints / soft routing”推进到“主链路可消费的结构化工业资产”，不提前扩到 Phase 2/3/4。
+  - 先基于本地真实证据确认本轮 top 3 family，再补 router signal、deterministic skeleton、stable identifier path、verifier contract、readiness/fixture contract 和 regression coverage。
+- 已完成：
+  - family 选择证据已固定：
+    - `business_create_list_verify`
+      - [reports/intent-e2e/projects/proj_default/intent-e2e.benchmark.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark.json) 的高频代表 case 仍是“创建商机后在我创建的列表中校验新记录状态为新入库”：
+        - `runCount = 81`
+        - `failedRuns = 42`
+        - `recipeHitRate = 90.1`
+        - `terminalPassRate = 48.1`
+      - 说明这条 family 既高价值、又仍值得继续压自由生成。
+    - `list_search_detail`
+      - [docs/intent-e2e-success-hardening-plan-2026-04-01.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-success-hardening-plan-2026-04-01.md) 的 `S4` 首轮 family 仍明确保留它；
+      - [docs/intent-e2e-high-success-roadmap-2026-03-20.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-high-success-roadmap-2026-03-20.md) 在 `2026-03-27` 的真实观测里曾明确记录它 `firstPassPassRate = 0`、`terminalPassRate = 0`，不能继续只靠 soft hints。
+    - `modal_or_drawer_save`
+      - `S4` 首轮 family 默认包含它；
+      - roadmap 在 `2026-03-27` 的去污染后真实观测里记录：
+        - `totalRuns = 12`
+        - `firstPassPassRate = 16.7%`
+        - `terminalPassRate = 16.7%`
+      - 同时 hardening plan 也明确要求它与 `list_search_detail` 一起作为首轮 family-aware sanitizer / compiler hints 的延续收口对象。
+    - 没有替换默认候选。
+    - `business_to_order` 仍按 [docs/intent-e2e-success-hardening-plan-2026-04-01.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-success-hardening-plan-2026-04-01.md) 的取舍规则继续保留为候选，而不是无证据挤进本轮 top 3。
+  - 在 [lib/intent-e2e-priority-scenario-family.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-priority-scenario-family.ts) 新增共享 family industrial asset profile：
+    - 为 `business_create_list_verify` / `list_search_detail` / `modal_or_drawer_save` 统一定义：
+      - `preferredCapabilitySlugs`
+      - `preferredRecipeSlugs`
+      - `executionRules`
+      - `preferredPrimitives`
+      - `outputContract`
+      - `stableIdentifier`
+      - `verifier`
+      - `readiness`
+    - 这轮不再把 family 知识分散埋在 compiler/test-generator 各自的 hint 文案里。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 把 family signal 前推到 planning 主路径：
+    - `resolveIntentPromptPlanningContext(...)` 在 family route 命中后，会先对 DSL 注入 family-aware step overlay，再做 recipe 选择与 ExecutionPlan / VerificationPlan 构建；
+    - 这意味着高置信 family 不再和 `untracked` 任务走同一套原始 DSL 默认路径；
+    - recipe 选择和动作库优先级现在会显式吃到 family capability / recipe preference，而不是只靠后续自由 prompt 自行领会。
+  - 在 [lib/intent-execution-plan.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-execution-plan.ts) 把 family 工业资产落成结构化 plan / verifier contract：
+    - `ExecutionPlan` 现在会把 family `executionRules`、`preferredPrimitives`、`outputContract` 写进结构化计划，而不是只存在 prompt hint；
+    - `VerificationPlan` 现在会把 family `policyNotes`、`requiredEvidence`、`fixtureContract`、`readiness` 写进结构化验收计划；
+    - family-aware verification overlay 现在会补：
+      - expected fields
+      - detail surface defaults
+      - record lookup defaults
+      - `business_create_list_verify` / `list_search_detail` / `modal_or_drawer_save` 的 check kind 收口
+    - `renderIntentExecutionPlan(...)` 现在也会显式渲染 `outputContract`，让 fallback prompt 继续消费这些结构化 contract。
+  - 在 [lib/intent-recipe-registry.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-recipe-registry.ts) 补 family preferred skeleton 轻量加权：
+    - 命中 industrialized family 时，family 推荐 recipe skeleton 会额外打 `family_skeleton=...` 信号；
+    - 不做跨 family 的硬覆盖，但 deterministic recipe 排序不再和开放式任务完全一样。
+  - 在 [lib/intent-action-library.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-action-library.ts) 改为直接复用共享 family profile 的 capability preference，不再手写散落的 top-family capability map。
+  - 在 [reports/intent-e2e/projects/proj_default/intent-e2e.project-recipes.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.project-recipes.json) 把项目级 recipe 资产补齐到本轮 top 3 family：
+    - 保留既有 `business_create_list_verify` recipe；
+    - 新增 `intent.list-search-detail.primary-record`；
+    - 新增 `intent.modal-or-drawer-save.visible-container`；
+    - 让 project recipe 资产不再只覆盖 create-business 一条 family。
+  - regression coverage 已补齐：
+    - [tests/unit/intent-recipe-registry.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-recipe-registry.spec.ts)
+      - 新增 top-family preferred skeleton 命中回归。
+    - [tests/unit/intent-action-library.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-action-library.spec.ts)
+      - 新增 `business_create_list_verify` capability 前置顺序回归。
+    - [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts)
+      - 新增 `business_create_list_verify` family outputContract / verifier policy / prompt section 回归；
+      - 新增 `modal_or_drawer_save` family readiness / scoped helper contract 回归。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/intent-execution-compiler.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/intent-project-recipe-registry.spec.ts tests/unit/intent-action-library.spec.ts tests/unit/intent-e2e-experience-search.spec.ts`
+    - `8/8` 文件通过，`272/272` 测试通过。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `npm run test:e2e`
+    - `9 passed / 1 skipped`。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+- 当前阶段状态：
+  - Phase 0：已完成
+  - Phase 1（Top Families 工业化首轮）：已完成（本轮范围）
+- 风险 / 未完成：
+  - 这轮只把 top 3 family 的 router / recipe / verifier / readiness / stable-id contract 工业化成主链路资产；没有进入 Runtime Adapter、结构化 normalizer、Eval Gate 或 Fixture executor 工业化。
+  - `readiness / fixture contract` 这轮仍以“显式暴露缺口”为主，还没有自动补全 fixture；Phase 4 仍需要把这些 contract 变成真正可执行的 fixture/data plane。
+  - fallback debt 仍然存在，只是现在继续显式可见；本轮没有删除自由 generate / repair，也没有声称它们已经不再影响成功率。
+  - 本轮没有跑 fresh benchmark compare，也没有追加 live rerun 样本，因此不能宣称 `firstPassPassRate` / `terminalPassRate` 已经提升。
+- 下一步：
+  - 先补 fresh benchmark compare / live rerun 证据，再判断这批 family 工业资产是否真的把 high-confidence family 从自由 generate / repair 拉回 deterministic 主路径。
+  - 若需要继续扩 scope，优先只在已有证据支持下决定是否把 `business_to_order` 纳入下一批 family；不要无证据扩到更多 family。
+  - Phase 2 之前，不要回头继续堆 prompt/sanitizer；优先审计这轮 family contract 在真实 runs 里是否被稳定命中、是否仍过度依赖 fallback。
+
+## 2026-04-14 第二百七十一次更新（sanitizer rescue telemetry 改成语义判定，去掉格式化误报）
+
+- 本轮目标：
+  - 修正 `attempt.fallbackTelemetry.sanitizerRescueSource` 的一个真实误报：当复用成功脚本时，sanitize 只改空白/缩进，不应继续把这次 run 标成 “rescue”。
+  - 让当前 attempt telemetry 与 successful-run 候选排序使用同一套“语义等价”比较口径，避免系统一边把历史脚本当干净候选，一边又把本次复用标成 rescued。
+- 已完成：
+  - 新增 [docs/intent-e2e-sanitizer-rescue-semantic-telemetry-task-brief-2026-04-14.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-sanitizer-rescue-semantic-telemetry-task-brief-2026-04-14.md)，固定这轮真实 run 证据、目标、范围与验证命令。
+  - 在 [lib/ai/intent-e2e-service.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-service.ts) 调整 `buildIntentE2EAttemptFallbackTelemetry(...)`：
+    - `sanitizerRescueSource` 不再使用 `sanitizedRawCandidate !== rawCodeCandidate` 的原始字符串比较；
+    - 改为比较 `normalizeIntentE2EAttemptComparableCode(...)` 后的可比脚本内容，只在 sanitize 真正改写脚本语义骨架时才记录 rescue。
+  - 在 [tests/unit/intent-e2e-service.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-service.spec.ts) 补充回归：
+    - `recent_successful_run` 复用脚本如果 sanitize 只做空白收口，仍会复用该 run，但不会再写出 `sanitizerRescueSource`；
+    - 原有“结构化 fallback 确实被 sanitizer 救回”的测试继续保留，确保真正的 rescue telemetry 没被误删。
+  - 这轮修正直接对应真实 run 审计：
+    - `intent-run-22b72655-66bd-4d95-a35f-9ebee2e4c466` 已正确复用 `intent-run-d3ff5cd3-2dd2-4bf3-971a-0c0121094b35`；
+    - 它的 Step 7 仍按要求使用 placeholder 为“请输入关键词”的搜索框校验订单号，动作链路正确；
+    - 之前残留的问题是 telemetry 误把格式化差异记成了 `sanitizerRescueSource=recent_successful_run`。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前阶段状态：
+  - successful run code reuse：已完成
+  - successful run reuse freshness / cleanliness 排序：已完成
+  - successful run 排序补识别历史 sanitizer rescue 记录：已完成
+  - sanitizer rescue telemetry 语义化判定：已完成（本轮）
+  - progressed run code reuse（generate 首轮）：已完成
+  - repair 基线默认复用最近更远历史脚本：已完成
+- 风险 / 未完成：
+  - 这轮只修复 telemetry 误报，不会回溯改写历史 run 已经落库的 `sanitizerRescueSource`。
+  - `intent-run-22b72655-66bd-4d95-a35f-9ebee2e4c466` 在进入 `attempt_started` 之前仍有一段明显的 analyzing 停顿；这轮没有继续拆耗时来源。
+  - 如果后续 sanitize 在不改语义的前提下还引入更复杂的格式重排，当前 comparable normalization 仍以空白归一为主，而不是完整 AST 级比较。
+- 下一步：
+  - 继续定位 analyzing 阶段的耗时分布，优先确认是 precheck snapshot 复用、experience search、planning 还是 run candidate 加载在拖慢首轮启动。
+  - 若后续还要进一步减少“复用但仍从头执行”的时间浪费，再评估 step checkpoint / artifact resume，而不是继续放大自由 repair。
+
+## 2026-04-14 第二百七十二次更新（analyzing 阶段拆成可审计 timing 子步骤）
+
+- 本轮目标：
+  - 不再把 `analyzing -> attempt_started` 当成黑箱，直接把页面快照、经验检索、planning、历史脚本候选加载拆成可审计的 timing message。
+  - 让后续任一真实 run 都能直接回答“慢在什么子步骤”，而不是继续靠人工猜测。
+- 已完成：
+  - 新增 [docs/intent-e2e-analyze-stage-timing-task-brief-2026-04-14.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-analyze-stage-timing-task-brief-2026-04-14.md)，固定本轮背景、范围与验证命令。
+  - 在 [lib/ai/intent-e2e-service.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-service.ts) 新增 `buildIntentE2EProgressTimingMessage(...)`，统一输出 `耗时 + 累计耗时 + 关键细节`。
+  - `analyzing` 阶段现在会额外发出以下子步骤消息：
+    - 页面快照已就绪（区分 `复用预检查快照` 与 `实时分析`）
+    - 规则 / Starter / recipe 反馈已加载
+    - 历史经验检索已完成
+    - 执行上下文已整理完成
+    - 历史脚本候选已完成
+  - 历史脚本候选 timing 还会显式透出：
+    - `successful=... / miss`
+    - `progressed=... / miss / skip`
+    - `successfulWait`
+    - `successfulLookupAge`
+    - `progressedWait`
+    - `reuse=...`
+  - 在 [tests/unit/intent-e2e-service.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-service.spec.ts) 补回归：
+    - 正常主链路会产出 analyzing 子步骤 timing message
+    - 复用 precheck snapshot 时会显式记录 `页面快照已就绪（复用预检查快照）`
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts`
+  - `npm run build`
+  - `npm run test:e2e`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+- 当前阶段状态：
+  - successful run code reuse：已完成
+  - successful run reuse freshness / cleanliness 排序：已完成
+  - successful run 排序补识别历史 sanitizer rescue 记录：已完成
+  - sanitizer rescue telemetry 语义化判定：已完成
+  - analyzing 子步骤 timing observability：已完成（本轮）
+  - progressed run code reuse（generate 首轮）：已完成
+  - repair 基线默认复用最近更远历史脚本：已完成
+- 风险 / 未完成：
+  - 这轮只解决“看不见慢点”的问题，还没有优化任何子步骤本身的耗时。
+  - 当前仍通过现有消息流承载 timing evidence，没有新增独立结构化耗时字段；后续若要做聚合报表，再评估是否升级 schema。
+  - 需要新的真实 run 才能确认当前慢点究竟落在 experience search、planning，还是历史脚本候选加载。
+- 下一步：
+  - 用下一条真实 run 直接审计 analyzing 子步骤 timing，确认瓶颈子步骤。
+  - 只有在瓶颈被证实后，才决定是否继续做并行化、缓存或结果复用；不要在黑箱未拆开的情况下继续盲改主链路。
+
+## 2026-04-14 第二百七十三次更新（analyzing 支撑数据加短 TTL 缓存，重复 rerun 不再重复加载同一批反馈）
+
+- 本轮目标：
+  - 直接压掉用户连续 rerun 同一项目 / 模块时重复发生的 analyze 支撑数据加载，减少 `规则 / Starter / recipe 反馈已加载` 这一步的重复等待。
+  - 保持 successful / progressed run code reuse 的候选查询继续实时，不把“复用刚跑通脚本”的主链路也一起缓存成陈旧数据。
+- 已完成：
+  - 新增 [docs/intent-e2e-analyze-support-cache-task-brief-2026-04-14.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-analyze-support-cache-task-brief-2026-04-14.md)，固定这轮的背景、范围、验收标准与风险。
+  - 在 [lib/ai/intent-e2e-service.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-service.ts) 将 `loadIntentE2EAnalyzeSupportData(...)` 拆成 `fetch + cache` 两层：
+    - 新增短 TTL 的进程内 cache，默认只缓存 analyze support data（terminal feedback runs、knowledge audits、module-scoped experience run snapshots）；
+    - TTL 支持通过 `INTENT_E2E_ANALYZE_SUPPORT_CACHE_TTL_MS` 覆盖，测试环境默认关闭缓存，避免 unit tests 被跨用例状态污染；
+    - cache 命中只影响 analyze feedback / experience snapshot 这条慢路径，不缓存 successful / progressed run code reuse candidate 查询。
+  - analyzing timing message 的“规则 / Starter / recipe 反馈已加载”现在会额外透出 `source=fresh|memory_cache`，后续真实 run 可以直接判断这次是否命中了缓存。
+  - 在 [tests/unit/intent-e2e-service.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-service.spec.ts) 新增 regression：
+    - 同一 `projectUid + moduleUid` 连续执行两次 run，在 TTL 内第二次直接命中 `memory_cache`；
+    - repository 的 terminal run / audit 查询不会被重复调用；
+    - 现有 experience-search 预加载 run snapshots 回归继续保留，避免再次退回到 analyze 阶段重复查库。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-experience-search.spec.ts`
+    - 通过，`50/50` 测试通过。
+  - `npm run build`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过。
+  - `npm run test:e2e`
+    - 已尝试，但当前阻塞在 `tests/e2e/scenario-task-smoke.spec.ts` 的 smoke server ready 超时：`Scenario smoke server did not become ready: fetch failed`；这是现有本地环境阻塞，尚未指向本轮 analyze cache 改动。
+- 当前阶段状态：
+  - successful run code reuse：已完成
+  - successful run reuse freshness / cleanliness 排序：已完成
+  - successful run 排序补识别历史 sanitizer rescue 记录：已完成
+  - sanitizer rescue telemetry 语义化判定：已完成
+  - analyzing 子步骤 timing observability：已完成
+  - analyzing 支撑数据轻量化：已完成
+  - analyzing 支撑数据短 TTL cache：已完成（本轮）
+  - progressed run code reuse（generate 首轮）：已完成
+  - repair 基线默认复用最近更远历史脚本：已完成
+- 风险 / 未完成：
+  - 这轮缓存主要优化“重复 rerun”而不是第一次 cold load；如果首次查询本身仍慢，下一刀需要继续细拆 query / JSON parse 成本。
+  - analyze support data 在 TTL 窗口内可能略旧，不过最新 successful / progressed run code reuse 仍然实时，所以不会阻断“刚跑通就立刻复用”。
+  - 还没有拿到一条带 `source=memory_cache` 的真实线上 rerun 证据；下一条用户连续 rerun 才能直接验证体感提升。
+  - `scenario-task-smoke` 的 smoke server ready 失败仍在，导致本轮没有拿到完整 e2e 回归绿灯。
+- 下一步：
+  - 用下一条真实连续 rerun 验证 analyzing 消息里的 `source=memory_cache` 是否命中，以及 `规则 / Starter / recipe 反馈已加载` 的耗时是否明显下降。
+  - 如果首次 cold load 仍然慢，继续往 repository / state_json 解析成本下钻，而不是再盲目调 prompt。
+  - 单独排查 `scenario-task-smoke` 的 smoke server ready 超时，恢复 `npm run test:e2e` 的稳定验证通道。
+
+## 2026-04-14 第二百七十五次更新（Phase 1 证据补强：family-scoped benchmark + recipe asset 显式链路）
+
+- 本轮目标：
+  - 严格停在 Phase 1 证据补强，不进入 Phase 2/3/4。
+  - 在现有 benchmark harness 上正式补齐 `priorityScenarioFamily` 维度，并让 project recipe 资产支持显式 export / import / replay。
+  - 对 `business_create_list_verify`、`list_search_detail`、`modal_or_drawer_save` 给出 fresh family-scoped 结论。
+- 已完成：
+  - 新增 [docs/intent-e2e-phase1-family-evidence-task-brief-2026-04-14.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase1-family-evidence-task-brief-2026-04-14.md)，固定本轮目标、边界与验证命令。
+  - 在 [lib/ai/intent-e2e-insights.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-insights.ts) 的 evaluation baseline candidate 正式补上 `priorityScenarioFamily`，不再只剩 `scenarioFamily` 粗粒度。
+  - 在 [lib/intent-e2e-benchmark.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-benchmark.ts) 把 `priorityScenarioFamily` 接进：
+    - benchmark `scope`
+    - suite / replay / compare case
+    - family-aware cluster matching
+    - backward-compatible benchmark 读取
+    - compare 报告的 `priorityScenarioFamilies` 汇总
+  - 在 [scripts/intent-e2e-benchmark.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-benchmark.ts) 新增：
+    - `--priority-scenario-family <family>`
+    - `--recipe-asset-input <path>`
+    - `--recipe-asset-output <path>`
+    并让现有 `candidates / freeze / replay / compare` 全部可消费这些参数。
+  - 在 [lib/intent-project-recipe-registry.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-project-recipe-registry.ts) 新增显式 `exportIntentProjectRecipeProfile(...)` / `importIntentProjectRecipeProfile(...)`，把项目 recipe 资产从 ignored 默认路径提升成可显式导入 / 导出的正式链路。
+  - 在 [tests/unit/intent-e2e-benchmark.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-benchmark.spec.ts) 与 [tests/unit/intent-project-recipe-registry.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-project-recipe-registry.spec.ts) 补回归，覆盖：
+    - family-scoped replay / compare
+    - legacy benchmark 兼容读取
+    - project recipe 资产 export / import roundtrip
+  - 已拿到 fresh family-scoped artifacts：
+    - full benchmark freeze：
+      [2026-04-14T04-59-58-471Z-bench_ba548129b764.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-14T04-59-58-471Z-bench_ba548129b764.json)
+    - explicit recipe asset snapshot：
+      [proj_default.project-recipes.json](/Users/xiaolongbao/Workspace/ai-test/artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json)
+    - business family compare：
+      [2026-04-14T05-03-08-893Z-bench_ba548129b764-family-business-current.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-14T05-03-08-893Z-bench_ba548129b764-family-business-current.json)
+    - list family compare：
+      [2026-04-14T05-05-42-421Z-bench_ba548129b764-family-list-current.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-14T05-05-42-421Z-bench_ba548129b764-family-list-current.json)
+    - modal family compare：
+      [2026-04-14T05-08-03-430Z-bench_ba548129b764-family-modal-current.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-14T05-08-03-430Z-bench_ba548129b764-family-modal-current.json)
+  - family-scoped 当前结论：
+    - `business_create_list_verify`：`unchanged`
+    - `list_search_detail`：`insufficient evidence`
+    - `modal_or_drawer_save`：`insufficient evidence`
+- 验证：
+  - `npm run build`
+  - `npx vitest run tests/unit/intent-e2e-benchmark.spec.ts tests/unit/intent-project-recipe-registry.spec.ts`
+  - `npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --test-type browser_e2e --max-cases 12 --release-candidate phase1-family-evidence-2026-04-14 --recipe-asset-output tmp/intent-e2e-family-evidence/proj_default.project-recipes.json`
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family business_create_list_verify --recipe-asset-output artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json`
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family business_create_list_verify --recipe-asset-input tmp/intent-e2e-family-evidence/proj_default.project-recipes.json`
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family business_create_list_verify --recipe-asset-input tmp/intent-e2e-family-evidence/proj_default.project-recipes.json --compared-label family-business-current`
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family business_create_list_verify --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --compared-label family-business-current-artifact`
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family list_search_detail --recipe-asset-input tmp/intent-e2e-family-evidence/proj_default.project-recipes.json`
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family list_search_detail --recipe-asset-input tmp/intent-e2e-family-evidence/proj_default.project-recipes.json --compared-label family-list-current`
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --recipe-asset-input tmp/intent-e2e-family-evidence/proj_default.project-recipes.json`
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --recipe-asset-input tmp/intent-e2e-family-evidence/proj_default.project-recipes.json --compared-label family-modal-current`
+- 当前阶段状态：
+  - Phase 0：已完成
+  - Phase 1（Top Families 工业资产）：已完成
+  - Phase 1 证据补强与可复现化：已完成（本轮范围）
+- 风险 / 未完成：
+  - `business_create_list_verify` 当前 fresh family compare 只能证明“未回退”，不能证明收益继续扩大；它现在是 `unchanged`，不是 improved。
+  - `list_search_detail` 与 `modal_or_drawer_save` 在当前 `proj_default + mod_1773303139537_c84d8476 + browser_e2e + recent-200 terminal runs` 窗口里没有可匹配 benchmark case，当前只能如实记为 `insufficient evidence`。
+  - compare 报告已经能显式带 family scope，但若 scope 过滤后没有 case，当前报告只会落 0-case summary；是否再升级成专门的 zero-case evidence card，留待后续按需收口。
+- 下一步：
+  - 先补 `list_search_detail` 与 `modal_or_drawer_save` 的 fresh terminal 样本，再跑同一套 family-scoped replay / compare；在没有样本之前，不进入 Phase 2。
+  - 如果下一轮要继续推进成功率，优先让 top family benchmark window 里真正出现稳定样本，而不是扩大 runtime loop 或继续泛化 prompt。
+
+## 2026-04-14 第二百七十四次更新（analyzing cache 默认拉到 15 分钟，并在 terminal snapshot 持久化后回填）
+
+- 本轮目标：
+  - 解决上一刀落地后，真实人工 rerun 仍频繁看到 `source=fresh` 的两个剩余问题：
+    - 默认 TTL 仍然太短，不适合用户隔几分钟手动重跑的节奏；
+    - cache 命中后如果不吸收新 terminal snapshot，长 TTL 只会把 analyze 支撑数据固定在旧快照上。
+  - 让系统真正符合“吸取上一轮成功经验”的用户预期，而不是每次 rerun 又把同一批 feedback runs / audits 从头读一遍。
+- 已完成：
+  - 更新 [docs/intent-e2e-analyze-support-cache-task-brief-2026-04-14.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-analyze-support-cache-task-brief-2026-04-14.md)，把这轮追加收口的目标从“短 TTL cache”扩到“15 分钟 TTL + terminal snapshot backfill”。
+  - 在 [lib/ai/intent-e2e-service.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-service.ts) 继续扩展 analyze support cache：
+    - 默认 TTL 从短窗口拉到 `900000ms`（15 分钟）；测试环境仍默认关闭，避免跨 case 污染；
+    - cache entry 现在保留 `projectUid / moduleUid / feedbackRunLimit / experienceRunLimit / auditLimit + auditEntries`，支持在同一 entry 上原地重算 rule / starter / recipe map；
+    - 新增 `applyIntentE2EAnalyzeSupportDataCacheTerminalSnapshot(...)`，在新的 terminal run snapshot 持久化后，把快照按 `runId` 去重回填到 feedback / experience snapshots，而不是清空 cache 或等 TTL 过期。
+  - 在 [lib/ai/intent-e2e-run-registry.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-run-registry.ts) 新增 `persistRunSnapshot(...)`，并让：
+    - 正常 persistence
+    - 外部 run state persistence
+    - stale-run interruption persistence
+    都统一走 terminal snapshot backfill。
+  - 在 [tests/unit/intent-e2e-run-registry.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-run-registry.spec.ts) 补回归：
+    - terminal snapshot 落库后会调用 analyze support cache backfill；
+    - 原有 `intent-e2e-service` / `intent-e2e-experience-search` 的 cache regression 继续保留，避免这刀把 preloaded snapshots 又打回冷查库。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-experience-search.spec.ts tests/unit/intent-e2e-run-registry.spec.ts`
+    - 通过，`71/71` 测试通过。
+  - `npm run build`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 待本轮 roadmap 落盘后执行。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 待本轮 roadmap 落盘后执行。
+  - live rerun（重启 `localhost:3666` 旧进程后复测）：
+    - `intent-run-a38bccfe-f421-4ec9-a499-c2e62777778f`：请求体修通前的样本，卡在 planning `LLM 请求超时 (60000ms)`，不作为 cache 结论依据；
+    - `intent-run-aef9db61-6117-4f80-bdf3-d336fba7765c`：带真实 auth 的 warm-up run，analyzing 显示 `反馈已加载（耗时 29s；source=fresh）`；
+    - `intent-run-7d11aa1d-2b29-4cb8-998d-ca188077ceba`：紧接着同请求 rerun，analyzing 显示 `反馈已加载（耗时 1ms；source=memory_cache）`。
+- 当前阶段状态：
+  - successful run code reuse：已完成
+  - successful run reuse freshness / cleanliness 排序：已完成
+  - successful run 排序补识别历史 sanitizer rescue 记录：已完成
+  - sanitizer rescue telemetry 语义化判定：已完成
+  - analyzing 子步骤 timing observability：已完成
+  - analyzing 支撑数据轻量化：已完成
+  - analyzing 支撑数据短 TTL cache：已完成
+  - analyzing 支撑数据 15 分钟 TTL + terminal snapshot backfill：已完成（本轮）
+  - progressed run code reuse（generate 首轮）：已完成
+  - repair 基线默认复用最近更远历史脚本：已完成
+- 风险 / 未完成：
+  - 这轮 live 证据已经证明 `memory_cache` 生效，但 terminal snapshot backfill 的收益主要还是通过 unit regression 覆盖；当前 live 样本没有单独拆出“只验证 backfill、不验证普通 warm cache”的独立 run。
+  - `intent-run-7d11aa1d-2b29-4cb8-998d-ca188077ceba` 因为命中了同签名串行化隔离，启动前先进入了 queued；这不影响 cache 结论，但说明真实用户的“连续狂点重跑”仍会受到同签名排队策略约束。
+  - analyze 启动慢点已经明显收口，下一阶段主要瓶颈重新回到执行期本身，尤其是批量入账 flow 的 Step 4/5/6/7 仍偏重。
+  - `scenario-task-smoke` 的 smoke server ready 失败仍在，完整 `npm run test:e2e` 通道还没恢复。
+- 下一步：
+  - 如果用户继续要求把体感从 `70s` 左右往下压，下一刀不要再围绕 analyze，而是直接下钻执行期重步骤：
+    - modal 字段读取重复探测
+    - submit 后页面收敛等待
+    - 入账管理回查搜索与表格命中等待
+  - 若后续还要把“吸取上次成功经验”再做强一层，可继续把 progressed / successful run 的更多中间证据收口成 step checkpoint / artifact resume，而不是继续只做 prompt 级复用。
+
+## 2026-04-14 第二百七十六次更新（批量入账执行期热点去重：modal snapshot 复用 + row artifact 复用）
+
+- 本轮目标：
+  - 只盯执行期，不再继续优化 `analyzing`。
+  - 把批量入账 flow 的 Step 4/5/6/7 里最明显的重复等待收口掉：
+    - Step 4/5/6 重复跑同一段 modal 字段兜底；
+    - Step 7 已命中目标行后，Step 8 / verification 仍再次扫表；
+    - `searchResp` / `searchRespPromise` 之类变量改名不一致导致 sanitizer 留下脆弱引用。
+- 已完成：
+  - 新增 [docs/intent-e2e-batch-account-execution-hotspot-dedup-task-brief-2026-04-14.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-batch-account-execution-hotspot-dedup-task-brief-2026-04-14.md)，固定这轮执行期优化的目标、边界与验证命令。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 为批量入账 modal 字段兜底块新增 `artifacts['batch_account_modal_field_snapshot']` 复用逻辑：
+    - Step 4/5/6 第一次命中时仍完整解析 `订单号 / 服务项 / 入账金额`；
+    - 后续步骤优先直接复用 snapshot，并回填 `shared.selectedOrderNo / selectedServiceItem / selectedAmount`，避免再次无条件跑 `readDetailField(... required: false)`。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 为 Step 8 / final verification 增加 row artifact 复用：
+    - 优先吃 `plan_step_7_row`；
+    - 若存在 `plan_step_7_record.row` 也直接复用；
+    - verification 再优先吃 `plan_step_8_row`，只在缺失时才 fallback 到 `findAntdTableRow(...)`。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 补了搜索等待变量一致性收口，避免 `searchResp` / `searchRespPromise`、`verifySearchResp` / `verifySearchRespPromise` 因局部改名留下悬空 `await`。
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 新增 / 更新回归，覆盖：
+    - modal 字段 snapshot 在 Step 4/5/6 的复用；
+    - Step 8 / verification 对 Step 7 已命中 row 的复用；
+    - 搜索等待变量命名一致性。
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+    - 通过，`127/127` 测试通过。
+  - `npm run build`
+    - 通过。
+  - `npx playwright test tests/e2e/scenario-task-smoke.spec.ts --reporter=line`
+    - 通过，`8 passed (1.2m)`。
+  - `node scripts/check-doc-links.mjs`
+    - 待本轮 roadmap 落盘后执行。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 待本轮 roadmap 落盘后执行。
+- 当前阶段状态：
+  - analyzing 支撑数据 15 分钟 TTL + terminal snapshot backfill：已完成
+  - 批量入账执行期 modal snapshot 复用：已完成（本轮）
+  - 批量入账执行期 row artifact 复用：已完成（本轮）
+  - placeholder 为“请输入关键词”的搜索动作忠实性：已保留
+- 风险 / 未完成：
+  - 这轮主要去掉的是“重复做同一件事”的浪费，尚未继续下钻 `observeSubmitState / bookedMgmt` URL 收敛本身的等待成本。
+  - `scenario-task-smoke` 这次 targeted run 已经恢复绿灯，但还没有补跑完整 `npm run test:e2e` 全套回归。
+  - modal snapshot 当前是 run 内 artifacts 级复用，还不是跨 run 的 checkpoint resume；更激进的“从上次成功步骤直接续跑”仍要后续单独设计。
+- 下一步：
+  - 若用户继续要求把总时长再往下压，下一刀优先继续拆 `Step 6 submit settle` 与 `Step 7 resolvePrimaryRecord` 的等待成本，而不是再回头调 analyze。
+  - 如果要把“自动学习 / 自动迭代升级”做成更像真正的端到端系统，下一阶段应把当前 run 内 step artifact 复用继续升级成跨 run 的 checkpoint / successful-step resume。
+
+## 2026-04-14 第二百七十七次更新（批量入账 Step 7 lookup 超时与重试收紧）
+
+- 本轮目标：
+  - 继续只盯执行期，不回头改 `analyzing`。
+  - 把批量入账 Step 7 里 `resolvePrimaryRecord(...)` 这条回查链从“偏保守但慢”收紧成“仍保留 placeholder 搜索动作、但减少空等列表 GET / busy / 多轮重试”。
+- 已完成：
+  - 新增 [docs/intent-e2e-batch-account-step7-lookup-tuning-task-brief-2026-04-14.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-batch-account-step7-lookup-tuning-task-brief-2026-04-14.md)，单独固定这轮 Step 7 lookup latency tuning 的目标、边界与验证命令。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 收紧 batch-account Step 7 生成器输出的 `resolvePrimaryRecord(...)` 参数：
+    - 保留 `preferCurrentVisibleRow: false`，继续保证“用 placeholder 为‘请输入关键词’的筛选框搜索订单号”这条动作忠实性；
+    - 新增更短的 `listResponseTimeoutMs / timeoutMs / surfaceTimeoutMs / inputTimeoutMs / searchButtonTimeoutMs / postFillSettleMs / busyTimeoutMs / busyObserveWindowMs / rowTimeoutMs / relaxedRowTimeoutMs`；
+    - 把重试从 `maxLookupAttempts: 3 + retryIntervalMs: 900` 收紧到 `maxLookupAttempts: 2 + retryIntervalMs: 250`。
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 新增统一断言 helper，固化 batch-account Step 7 的快速 lookup 参数，避免不同 `/account`、`/payment`、`/booked` 变体继续漂移。
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+    - 通过，`127/127` 测试通过。
+  - `npm run build`
+    - 通过。
+  - `npx playwright test tests/e2e/scenario-task-smoke.spec.ts --reporter=line`
+    - 未通过；本轮两次复测都没有打到当前生成器改动链路：
+      - 全量 smoke 首次失败在 `archived capability is excluded from recipe until restored`，超时点是工作台弹层内 `知识文档` 按钮未出现；
+      - 单独 rerun 该用例时又提前失败在 `Scenario smoke server did not become ready: fetch failed`。
+    - 当前只能如实记为 smoke 环境 / 现有 UI 链路波动，不能把它当成这轮 Step 7 参数收紧的直接回归。
+  - `node scripts/check-doc-links.mjs`
+    - 待本轮 roadmap 落盘后执行。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 待本轮 roadmap 落盘后执行。
+- 当前阶段状态：
+  - 批量入账执行期 modal snapshot 复用：已完成
+  - 批量入账执行期 row artifact 复用：已完成
+  - 批量入账 Step 7 lookup timeout / retry tuning：已完成（本轮）
+  - placeholder 为“请输入关键词”的搜索动作忠实性：已保留
+- 风险 / 未完成：
+  - 这轮仍然只是 batch-account 生成器参数调优，没有改 `lib/test-worker.mjs` 里 `resolvePrimaryRecord(...)` 的全局执行顺序；“先等列表响应再扫表”这类更深层耗时还在其他 family 保留。
+  - smoke 当前存在与本轮改动无关的环境 / UI 波动，完整 `test:e2e` 通道还不能拿来给这刀做强结论。
+  - 目前的优化还是 run 内执行期收口，不是跨 run checkpoint resume；“复用上次成功步骤直接续跑”仍要后续单独设计。
+- 下一步：
+  - 若用户继续要求把批量入账总时长再往下压，下一刀优先考虑 worker 级的 `resolvePrimaryRecord(...)` 执行顺序优化，例如“可选列表响应不再先阻塞，再去扫表”。
+  - 在 smoke 环境恢复稳定前，继续以 unit + targeted runtime evidence 为主，不把当前 UI smoke 波动误判成生成器回归。

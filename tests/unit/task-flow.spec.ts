@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildFlowSummary,
+  collectFlowVariableNames,
   collectScenarioSnapshotTargets,
   normalizeFlowDefinition,
   normalizeTaskMode,
@@ -71,6 +72,14 @@ describe('task flow helpers', () => {
     expect(flow.entryUrl).toBe('https://example.com/products/new');
     expect(flow.steps).toHaveLength(1);
     expect(flow.steps[0]?.title).toBe('打开创建页');
+  });
+
+  it('splits multi-variable strings into stable variable names', () => {
+    expect(collectFlowVariableNames('selectedOrderNo, selectedServiceItem\nselectedAmount；selectedOrderNo')).toEqual([
+      'selectedOrderNo',
+      'selectedServiceItem',
+      'selectedAmount',
+    ]);
   });
 
   it('preserves empty steps when a form needs to keep editable placeholders', () => {

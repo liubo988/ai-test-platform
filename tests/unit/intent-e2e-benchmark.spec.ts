@@ -8,9 +8,13 @@ vi.mock('@/lib/db/repository', () => ({
 }));
 
 import {
+  buildIntentE2EBenchmarkCompareReport,
+  buildIntentE2EBenchmarkReplayFromData,
   buildIntentE2EBenchmarkSuiteFromData,
   compareIntentE2EBenchmark,
   freezeIntentE2EBenchmark,
+  normalizeIntentE2EBenchmarkRequestCorpus,
+  preflightIntentE2EBenchmarkRequestCorpus,
   readIntentE2EBenchmark,
 } from '@/lib/intent-e2e-benchmark';
 import { listIntentE2ERunSnapshots, type IntentE2ERunSnapshotRecord } from '@/lib/db/repository';
@@ -257,6 +261,51 @@ function makeCurrentReplaySnapshots(): IntentE2ERunSnapshotRecord[] {
   ];
 }
 
+function makeListSearchDetailSnapshots(statuses: Array<'passed' | 'failed'>, startedAt = '2026-04-01T08:00:00.000Z') {
+  return statuses.map((status, index) =>
+    makeRunSnapshot({
+      runId: `list_search_detail_${status}_${index + 1}`,
+      status,
+      requestInput: '搜索客户并进入详情查看联系人手机号',
+      targetUrl: 'https://example.com/customer/list',
+      endedAt: new Date(Date.parse(startedAt) + index * 60_000).toISOString(),
+      state: makeResultState({
+        title: '客户列表搜索详情校验',
+        taskMode: 'scenario',
+        stepTypes: ['ui', 'extract', 'assert'],
+        description: '先搜索客户，再进入详情核对联系人和手机号',
+        attempts:
+          status === 'passed'
+            ? [
+                {
+                  attempt: 1,
+                  kind: 'generate',
+                  result: { success: true },
+                  helperUsage: {
+                    usedHelpers: ['__e2e.clickAntdRowAction', '__e2e.readDetailField'],
+                    usedSuggestedHelpers: [],
+                  },
+                },
+              ]
+            : [
+                {
+                  attempt: 1,
+                  kind: 'generate',
+                  result: { success: false },
+                  helperUsage: {
+                    usedHelpers: ['__e2e.clickAntdRowAction'],
+                    usedSuggestedHelpers: [],
+                  },
+                  triage: {
+                    failureClass: 'target_row_not_found',
+                  },
+                },
+              ],
+      }),
+    })
+  );
+}
+
 describe('intent-e2e-benchmark', () => {
   const originalProjectAssetRoot = process.env.INTENT_E2E_PROJECT_ASSET_ROOT;
   let tempAssetRoot = '';
@@ -319,10 +368,12 @@ describe('intent-e2e-benchmark', () => {
       moduleUid: 'mod_sales',
       testTypes: ['browser_e2e'],
       runnerTypes: [],
+      priorityScenarioFamily: '',
     });
     expect(benchmark.cases).toHaveLength(3);
     expect(benchmark.cases.every((item) => item.moduleUids.every((value) => value === 'mod_sales'))).toBe(true);
     expect(benchmark.cases.every((item) => item.testTypes.every((value) => value === 'browser_e2e'))).toBe(true);
+    expect(benchmark.cases.some((item) => item.priorityScenarioFamily === 'business_create_list_verify')).toBe(true);
     expect(benchmark.label).toBe('rc-2026-03-31 benchmark');
     expect(benchmark.source.generatedFromRuns).toBe(4);
   });
@@ -492,6 +543,14 @@ describe('intent-e2e-benchmark', () => {
       frozenTopFailureReasons: expect.any(Array),
       currentTopFailureReasons: expect.any(Array),
     });
+    expect(compareResult.report.priorityScenarioFamilies).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          priorityScenarioFamily: 'business_create_list_verify',
+          conclusion: 'insufficient_evidence',
+        }),
+      ])
+    );
 
     const evalCaseByTargetPath = new Map(frozen.benchmark.cases.map((item) => [item.targetPath, item.evalCaseId]));
     const compareCaseByEvalCaseId = new Map(compareResult.report.cases.map((item) => [item.evalCaseId, item]));
@@ -507,5 +566,155 @@ describe('intent-e2e-benchmark', () => {
       recipeHitRate: expect.any(Number),
       reviewWriteRate: expect.any(Number),
     });
+  });
+
+  it('filters benchmark replay and compare by priorityScenarioFamily', () => {
+    const frozenSnapshots = [
+      ...makeListSearchDetailSnapshots(['failed', 'passed', 'failed'], '2026-04-01T08:00:00.000Z'),
+      makeRunSnapshot({
+        runId: 'other_family_business',
+        status: 'passed',
+        requestInput: '登录后新建商机并校验列表',
+        targetUrl: 'https://example.com/business/createbusiness',
+        endedAt: '2026-04-01T08:05:00.000Z',
+        state: makeResultState({
+          title: '新建商机并回列表校验',
+          taskMode: 'scenario',
+          stepTypes: ['ui', 'extract', 'assert'],
+        }),
+      }),
+    ];
+
+    const benchmark = buildIntentE2EBenchmarkSuiteFromData(frozenSnapshots, {
+      projectUid: 'proj_checkout',
+      moduleUid: 'mod_sales',
+      testTypes: ['browser_e2e'],
+      priorityScenarioFamily: 'list_search_detail',
+      maxCases: 3,
+      frozenAt: '2026-04-01T09:00:00.000Z',
+    });
+
+    expect(benchmark.scope).toMatchObject({
+      projectUid: 'proj_checkout',
+      priorityScenarioFamily: 'list_search_detail',
+    });
+    expect(benchmark.cases).toHaveLength(1);
+    expect(benchmark.cases[0]?.priorityScenarioFamily).toBe('list_search_detail');
+
+    const replay = buildIntentE2EBenchmarkReplayFromData(
+      benchmark,
+      makeListSearchDetailSnapshots(['passed', 'passed', 'passed'], '2026-04-01T10:00:00.000Z'),
+      '2026-04-01T10:30:00.000Z'
+    );
+    const report = buildIntentE2EBenchmarkCompareReport(benchmark, replay, {
+      comparedAt: '2026-04-01T10:30:00.000Z',
+      comparedLabel: 'family-current',
+    });
+
+    expect(replay.scope.priorityScenarioFamily).toBe('list_search_detail');
+    expect(replay.cases).toHaveLength(1);
+    expect(replay.cases[0]?.priorityScenarioFamily).toBe('list_search_detail');
+    expect(report.priorityScenarioFamilies).toEqual([
+      expect.objectContaining({
+        priorityScenarioFamily: 'list_search_detail',
+        conclusion: 'improved',
+        totalCases: 1,
+        matchedCases: 1,
+        frozenRunCount: 3,
+        currentRunCount: 3,
+      }),
+    ]);
+  });
+
+  it('normalizes tracked request corpus and applies scope defaults', () => {
+    const corpus = normalizeIntentE2EBenchmarkRequestCorpus({
+      version: 1,
+      projectUid: 'proj_scope',
+      moduleUid: 'mod_scope',
+      priorityScenarioFamily: 'list_search_detail',
+      requests: [
+        {
+          requestId: 'list_1',
+          input: '在客户列表搜索目标记录并进入详情页核对联系人和手机号',
+          targetUrl: 'https://example.com/customer/list',
+        },
+      ],
+    });
+
+    expect(corpus).toMatchObject({
+      projectUid: 'proj_scope',
+      moduleUid: 'mod_scope',
+      testType: 'browser_e2e',
+      priorityScenarioFamily: 'list_search_detail',
+      actorUserUid: 'usr_default_owner',
+    });
+    expect(corpus.requests[0]).toMatchObject({
+      requestId: 'list_1',
+      projectUid: 'proj_scope',
+      moduleUid: 'mod_scope',
+      expectedPriorityScenarioFamily: 'list_search_detail',
+      input: '在客户列表搜索目标记录并进入详情页核对联系人和手机号',
+    });
+  });
+
+  it('preflights request corpus against the expected tracked family', () => {
+    const corpus = normalizeIntentE2EBenchmarkRequestCorpus({
+      version: 1,
+      projectUid: 'proj_scope',
+      moduleUid: 'mod_scope',
+      priorityScenarioFamily: 'modal_or_drawer_save',
+      requests: [
+        {
+          requestId: 'modal_1',
+          input: '在订单列表打开弹窗并点击保存提交，确认弹窗关闭后回到稳定态',
+          targetUrl: 'https://example.com/order/list',
+        },
+        {
+          requestId: 'modal_2',
+          input: '在客户列表搜索目标记录并进入详情页核对联系人和手机号',
+          targetUrl: 'https://example.com/customer/list',
+          expectedPriorityScenarioFamily: 'modal_or_drawer_save',
+        },
+      ],
+    });
+
+    const preflight = preflightIntentE2EBenchmarkRequestCorpus(corpus);
+
+    expect(preflight[0]).toMatchObject({
+      requestId: 'modal_1',
+      expectedPriorityScenarioFamily: 'modal_or_drawer_save',
+      matchesExpectedFamily: true,
+    });
+    expect(preflight[0]?.route.family).toBe('modal_or_drawer_save');
+    expect(preflight[1]).toMatchObject({
+      requestId: 'modal_2',
+      expectedPriorityScenarioFamily: 'modal_or_drawer_save',
+      matchesExpectedFamily: false,
+    });
+    expect(preflight[1]?.route.family).toBe('list_search_detail');
+  });
+
+  it('reads legacy benchmark files without priorityScenarioFamily metadata', async () => {
+    const benchmark = buildIntentE2EBenchmarkSuiteFromData(makeImprovedFrozenSnapshots(), {
+      projectUid: 'proj_checkout',
+      moduleUid: 'mod_sales',
+      testTypes: ['browser_e2e'],
+      maxCases: 3,
+      frozenAt: '2026-03-31T10:00:00.000Z',
+    });
+    const legacyBenchmark = JSON.parse(JSON.stringify(benchmark));
+    delete legacyBenchmark.scope.priorityScenarioFamily;
+    for (const item of legacyBenchmark.cases) {
+      delete item.priorityScenarioFamily;
+    }
+
+    const benchmarkPath = path.join(tempAssetRoot, 'proj_checkout', 'intent-e2e.benchmark.json');
+    await fs.mkdir(path.dirname(benchmarkPath), { recursive: true });
+    await fs.writeFile(benchmarkPath, JSON.stringify(legacyBenchmark, null, 2), 'utf8');
+
+    const readResult = await readIntentE2EBenchmark('proj_checkout');
+
+    expect(readResult?.benchmark.scope.priorityScenarioFamily).toBe('');
+    expect(readResult?.benchmark.cases.every((item) => item.priorityScenarioFamily === 'untracked')).toBe(true);
   });
 });

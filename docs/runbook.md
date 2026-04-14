@@ -24,6 +24,7 @@
 - 批量沉淀历史 playbook 到项目 recipe：`npm run intent:playbook:promote -- --project-uid <projectUid>`
 - 列出 benchmark holdout candidates：`npm run intent:benchmark:candidates -- --project-uid <projectUid>`
 - 冻结 benchmark：`npm run intent:benchmark:freeze -- --project-uid <projectUid>`
+- 回放 benchmark：`npm run intent:benchmark:replay -- --project-uid <projectUid>`
 - 对比当前 benchmark：`npm run intent:benchmark:compare -- --project-uid <projectUid>`
 
 ## 推荐工作流
@@ -40,6 +41,13 @@
    `npm run intent:benchmark:freeze -- --project-uid <projectUid> --module-uid <moduleUid> --test-type browser_e2e --max-cases 12 --release-candidate <label>`
 4. 改完策略后跑：
    `npm run intent:benchmark:compare -- --project-uid <projectUid> --compared-label <label>`
+5. 如果只想复核某个 tracked family，直接复用同一套 CLI：
+   `npm run intent:benchmark:freeze -- --project-uid <projectUid> --module-uid <moduleUid> --test-type browser_e2e --priority-scenario-family list_search_detail --release-candidate <label>`
+6. 如果需要把当前项目 recipe 资产显式落盘，补上：
+   `--recipe-asset-output <tracked-path>`
+7. 如果要按同一份 recipe 资产复核，先导回当前项目 registry 再 replay / compare：
+   `npm run intent:benchmark:compare -- --project-uid <projectUid> --priority-scenario-family list_search_detail --recipe-asset-input <tracked-path> --compared-label <label>`
+8. family compare 的 `priorityScenarioFamilies` 汇总如果显示 `insufficient_evidence`，表示冻结窗口或当前窗口的 terminal 样本少于 3；此时只能继续补样本，不能宣称收益。
 
 ### 改前端工作台
 1. `npm run build`

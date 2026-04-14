@@ -1,0 +1,1 @@
+export const INTENT_E2E_MAX_RUN_RETRY_LIMIT = 5;

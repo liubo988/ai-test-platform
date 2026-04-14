@@ -49,6 +49,18 @@ export interface IntentE2ERunArtifactArchiveAttempt {
     }>;
   };
   triage?: IntentE2EFailureTriage | null;
+  fallbackTelemetry?: {
+    path: string;
+    priorityScenarioFamily: string;
+    priorityScenarioFamilySource: string;
+    highConfidenceFamily: boolean;
+    legacyFallbackReasonCode?: string;
+    legacyFallbackReason?: string;
+    prefilledPlanReuseSource?: string;
+    reusedRunId?: string;
+    prefilledPlanSkipReason?: string;
+    sanitizerRescueSource?: string;
+  };
   runnerArtifacts?: IntentRunnerGeneratedArtifact[];
 }
 

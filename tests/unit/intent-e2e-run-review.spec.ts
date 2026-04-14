@@ -191,6 +191,54 @@ describe('intent-e2e-run-review', () => {
     });
   });
 
+  it('marks legacy free fallback and sanitizer rescue as playbook pitfalls', () => {
+    const review = buildIntentE2ERunReview({
+      runId: 'intent-run-legacy-success',
+      targetUrl: 'https://example.com/checkout',
+      description: '访问结算页并完成提交',
+      scenarioTitle: '结算成功流程',
+      scenarioFamily: 'simple_scenario',
+      executionPlan: {
+        version: 1,
+        compiler: 'deterministic_dsl_v1',
+        mode: 'scenario',
+        entryUrl: 'https://example.com/checkout',
+        summary: '打开结算页并提交',
+        expectedOutcome: '看到成功页面',
+        sharedVariables: [],
+        globalRules: [],
+        preferredPrimitives: [],
+        outputContract: [],
+        steps: [],
+      },
+      verificationPlan: {
+        version: 1,
+        strategy: 'deterministic_verification_v1',
+        expectedOutcome: '看到成功页面',
+        cleanupNotes: '',
+        checks: [],
+      } as any,
+      finalResult: {
+        success: true,
+      },
+      attempts: [
+        {
+          kind: 'generate',
+          fallbackTelemetry: {
+            path: 'legacy_free_generate',
+            sanitizerRescueSource: 'legacy_free_generate',
+          },
+          result: {
+            success: true,
+          },
+        },
+      ],
+    });
+
+    expect(review.playbookCandidates[0]?.knownPitfalls.join('\n')).toContain('legacy_free_generate');
+    expect(review.playbookCandidates[0]?.knownPitfalls.join('\n')).toContain('sanitizer');
+  });
+
   it('falls back to execution and verification plan recipe slugs when runtime recipes are absent', () => {
     const review = buildIntentE2ERunReview({
       runId: 'intent-run-current',

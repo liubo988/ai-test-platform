@@ -42,6 +42,7 @@ async function main() {
     await ensureProjectTables(connection);
     await ensureCollaborationTables(connection);
     await ensureWorkspaceLLMSettingsTable(connection);
+    await ensureWorkspaceIntentRunSettingsTable(connection);
     await ensureModuleTables(connection);
     await ensureConfigurationColumns(connection);
     await ensureDerivedProjectColumns(connection);
@@ -232,6 +233,25 @@ async function ensureWorkspaceLLMSettingsTable(connection) {
       PRIMARY KEY (id),
       UNIQUE KEY uk_workspace_llm_settings_scope (scope_uid),
       CONSTRAINT fk_workspace_llm_settings_updated_by_user_uid FOREIGN KEY (updated_by_user_uid) REFERENCES workspace_users (user_uid)
+        ON UPDATE CASCADE ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+}
+
+async function ensureWorkspaceIntentRunSettingsTable(connection) {
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS workspace_intent_run_settings (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      scope_uid VARCHAR(64) NOT NULL,
+      max_concurrent_runs INT NOT NULL DEFAULT 2,
+      default_retry_limit INT NOT NULL DEFAULT 0,
+      updated_by_user_uid VARCHAR(64) NULL,
+      updated_by_label VARCHAR(128) NOT NULL DEFAULT 'system',
+      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (id),
+      UNIQUE KEY uk_workspace_intent_run_settings_scope (scope_uid),
+      CONSTRAINT fk_workspace_intent_run_settings_updated_by_user_uid FOREIGN KEY (updated_by_user_uid) REFERENCES workspace_users (user_uid)
         ON UPDATE CASCADE ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);

@@ -1,6 +1,7 @@
 import type { AuthConfig } from './page-analyzer';
 import type { IntentE2EPriorityScenarioFamily } from './intent-e2e-priority-scenario-family';
 import { buildIntentSharedVariableJsonPaths, looksLikeIntentStableIdentifierVariable } from './intent-shared-variable-utils';
+import { collectFlowVariableNames } from './task-flow';
 import type {
   IntentExecutionPlan,
   IntentExecutionPlanStep,
@@ -276,7 +277,7 @@ function buildGenericStatusJsonPaths(): string[] {
 function buildSharedVariables(plan: IntentExecutionPlan): string[] {
   return uniqueStrings([
     ...plan.sharedVariables,
-    ...plan.steps.map((step) => step.extractVariable),
+    ...plan.steps.flatMap((step) => collectFlowVariableNames(step.extractVariable)),
     ...plan.steps.flatMap((step) => step.sharedVariables),
   ]);
 }
@@ -292,7 +293,7 @@ function toSafeIdentifier(value: string, fallback: string): string {
 }
 
 function collectRelatedSharedVariables(steps: IntentExecutionPlanStep[]): string[] {
-  return uniqueStrings(steps.flatMap((step) => [step.extractVariable, ...step.sharedVariables]));
+  return uniqueStrings(steps.flatMap((step) => [...collectFlowVariableNames(step.extractVariable), ...step.sharedVariables]));
 }
 
 function normalizeIntentToken(value: string): string {
@@ -1595,8 +1596,8 @@ function shouldInjectAuthPrelude(plan: IntentExecutionPlan, auth?: AuthConfig): 
 }
 
 function shouldPreferResponseJsonExtraction(step: IntentExecutionPlanStep): boolean {
-  const extractVariable = normalizeText(step.extractVariable);
-  if (!extractVariable) return false;
+  const extractVariables = collectFlowVariableNames(step.extractVariable);
+  if (extractVariables.length === 0) return false;
 
   return (
     step.allowedActions.includes('wait_for_response') ||
@@ -1604,7 +1605,7 @@ function shouldPreferResponseJsonExtraction(step: IntentExecutionPlanStep): bool
     /(接口|响应|返回|json|payload|response|api)/i.test(
       [step.target, step.goal, ...step.requiredAssertions].filter(Boolean).join('\n')
     ) ||
-    looksLikeIntentStableIdentifierVariable(extractVariable)
+    extractVariables.some((item) => looksLikeIntentStableIdentifierVariable(item))
   );
 }
 
@@ -1682,10 +1683,12 @@ function buildStepInstructions(
     );
   }
   if (shouldPreferResponseJsonExtraction(step)) {
-    const candidatePaths = buildIntentSharedVariableJsonPaths(step.extractVariable);
-    instructions.push(
-      `如果要提取 ${step.extractVariable}，优先从接口响应读取：const payload = await __e2e.readJsonResponse(await RESPONSE_PROMISE); const value = __e2e.pickJsonValue(payload, { label: '${step.extractVariable}', paths: ${renderJsStringArray(candidatePaths)} });`
-    );
+    for (const variable of collectFlowVariableNames(step.extractVariable)) {
+      const candidatePaths = buildIntentSharedVariableJsonPaths(variable);
+      instructions.push(
+        `如果要提取 ${variable}，优先从接口响应读取：const payload = await __e2e.readJsonResponse(await RESPONSE_PROMISE); const value = __e2e.pickJsonValue(payload, { label: '${variable}', paths: ${renderJsStringArray(candidatePaths)} });`
+      );
+    }
   }
   if (step.preferredHelpers.includes('__e2e.observeSubmitState')) {
     instructions.push(
@@ -1714,6 +1717,22 @@ function buildStepInstructions(
   if (step.preferredHelpers.includes('__e2e.findAntdTableRow')) {
     instructions.push(
       "表格目标行优先用 __e2e.findAntdTableRow(page, { hasTexts: ['稳定标识', '联系人/手机号'] })，至少传两个稳定身份文本；状态只在可见时再断言，不要默认把它写成唯一匹配前提。"
+    );
+  }
+  if (
+    /(orderid|orderno|订单号)/i.test([step.extractVariable, step.title, step.goal, step.target].filter(Boolean).join('\n')) &&
+    /(订单|入账|批量)/i.test([step.title, step.goal, step.target, ...step.requiredAssertions].filter(Boolean).join('\n'))
+  ) {
+    instructions.push(
+      "如果本步要从订单列表行提取 orderId/orderNo/订单号，而同一行还混有手机号、金额或联系人，不要写 `const orderNoMatch = rowText.match(/\\b[A-Za-z0-9_-]{6,}\\b/)` 这类“第一段长串”兜底；优先读订单号列、首个编号链接或带“订单号”标签的单元格。"
+    );
+    instructions.push(
+      "若当前页面只能从整行 `rowText` 保守兜底，至少排除 `/^1\\d{10}$/` 手机号和纯金额 token，再保留更像订单号的值；不要把手机号写进 shared.orderId / shared.selectedOrderNo。"
+    );
+  }
+  if (/(批量申请入账|批量入账|入账管理)/i.test([step.title, step.goal, step.target].filter(Boolean).join('\n'))) {
+    instructions.push(
+      "批量入账/入账管理这类弹窗验收优先按 `订单号 / 服务项 / 入账金额` 三类字段做 scoped 校验，不要把整行联系人/手机号全文复制成 `expect(modal).toContainText(...)` 的硬断言。"
     );
   }
   if (
@@ -1801,8 +1820,11 @@ function buildStepInstructions(
   if (step.preferredHelpers.includes('__e2e.getFrame')) {
     instructions.push("如果控件在 iframe 中，优先用 __e2e.getFrame(page, { selector, urlIncludes, nameIncludes }) 进入真实业务 frame。");
   }
-  if (step.extractVariable) {
-    instructions.push(`必须把真实提取结果写入 ${toSharedAccessor(step.extractVariable)}，禁止编造或用随机值代替。`);
+  const extractedVariables = collectFlowVariableNames(step.extractVariable);
+  if (extractedVariables.length > 0) {
+    for (const variable of extractedVariables) {
+      instructions.push(`必须把真实提取结果写入 ${toSharedAccessor(variable)}，禁止编造或用随机值代替。`);
+    }
   }
   if (primarySharedVariable && looksLikeIntentStableIdentifierVariable(primarySharedVariable)) {
     instructions.push(

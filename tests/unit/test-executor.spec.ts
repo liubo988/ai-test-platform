@@ -35,6 +35,24 @@ describe('test-executor worker template rendering', () => {
     expect(prepareTestCodeForExecution(code)).toBe(code);
   });
 
+  it('does not treat ternary row-source reads with catch arrows as TypeScript in pure javascript', () => {
+    const code = `
+      test('pure js ternary catch stays intact', async () => {
+        const primaryRow = { innerText: async () => 'primary row' };
+        const fallbackRow = { innerText: async () => 'fallback row' };
+        const rowKey = 'ROW-1';
+        const rowSources = rowKey ? { nth: () => primaryRow } : fallbackRow;
+
+        const part = (await (rowKey ? rowSources.nth(0) : fallbackRow).innerText().catch(() => '')).replace(/\\s+/g, ' ').trim();
+
+        expect(part).toBe('primary row');
+      });
+    `.trim();
+
+    expect(prepareTestCodeForExecution(code)).toBe(code);
+    expect(getTestCodeSyntaxError(code, 'pure_js_ternary_catch')).toBe('');
+  });
+
   it('uses TypeScript stripping only as a compatibility fallback', () => {
     const code = `
       import type { Page } from '@playwright/test';
@@ -80,6 +98,39 @@ test('markdown fence wrapper', async () => {
     });
   });
 
+  it(
+    'keeps ternary row-source reads intact when the TypeScript fallback is enabled',
+    async () => {
+      const code = `
+        async function readPart(row: any, rowSources: any, rowKey: string): Promise<string> {
+          const part = (await (rowKey ? rowSources.nth(0) : row).innerText().catch(() => '')).replace(/\\s+/g, ' ').trim();
+          return part;
+        }
+
+        test('ts fallback ternary catch stays intact', async () => {
+          const primaryRow = { innerText: async () => 'primary row' };
+          const fallbackRow = { innerText: async () => 'fallback row' };
+          const rowSources = { nth: () => primaryRow };
+          const part = await readPart(fallbackRow, rowSources, 'ROW-1');
+
+          expect(part).toBe('primary row');
+        });
+      `.trim();
+
+      const prepared = prepareTestCodeForExecution(code);
+      expect(prepared).toContain("rowKey ? rowSources.nth(0) : row).innerText().catch(() => '')");
+      expect(prepared).not.toContain("rowSources.nth(0)=> ''");
+      expect(getTestCodeSyntaxError(code, 'ts_fallback_ternary_catch')).toBe('');
+
+      const result = await executeTest(code, 'worker-ts-fallback-ternary-catch-row-source');
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+    },
+    20000
+  );
+
   it('keeps generated business-flow javascript intact when it contains object literals and template strings', () => {
     const code = `
       test('business capability generated js stays intact', async () => {
@@ -105,6 +156,29 @@ test('markdown fence wrapper', async () => {
     `.trim();
 
     expect(getTestCodeSyntaxError(code, 'draft_first_pass')).toContain('Unexpected');
+  });
+
+  it('returns a structured runtime_syntax_damage failure instead of throwing during worker preparation', async () => {
+    const code = `
+      test('broken-prefill', async ({ page }) => {
+        const broken = \`page.getByRole('button', { name: /^提\\\\s*交$/ }).first();
+        await page.goto('https://example.com/checkout');
+      });
+    `.trim();
+
+    const result = await executeTest(code, 'worker-runtime-syntax-damage');
+
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringContaining('runtime_syntax_damage'),
+      steps: [
+        expect.objectContaining({
+          title: '准备测试脚本',
+          status: 'failed',
+          error: expect.stringContaining('runtime_syntax_damage'),
+        }),
+      ],
+    });
   });
 
   it('preserves object literal null fields when applying the TypeScript fallback', async () => {
@@ -1154,6 +1228,84 @@ test('markdown fence wrapper', async () => {
         success: true,
         error: null,
       });
+    },
+    20000
+  );
+
+  it(
+    'retries current-table resolution when the lookup input stays hidden',
+    async () => {
+      const logs: Array<{ level: string; message: string; meta?: any }> = [];
+      const result = await executeTest(
+        `test('resolve primary record with hidden lookup input', async ({ page }) => {
+          await page.goto('about:blank');
+          await page.setContent(\`
+            <div class="search">
+              <input id="businessList_keywords" style="display:none" />
+            </div>
+            <div class="ant-table-wrapper">
+              <table><tbody>
+                <tr id="target-row" data-row-key="biz-1" style="display:none">
+                  <td>BIZ-001</td>
+                  <td>待申请入账</td>
+                </tr>
+              </tbody></table>
+            </div>
+          \`);
+
+          await page.evaluate(() => {
+            const row = document.getElementById('target-row');
+            setTimeout(() => {
+              if (row instanceof HTMLElement) row.style.display = 'table-row';
+            }, 1500);
+          });
+
+          const recordCheck = await __e2e.resolvePrimaryRecord(page, {
+            primaryValue: 'BIZ-001',
+            rowHasTexts: ['BIZ-001'],
+            maxLookupAttempts: 3,
+            retryIntervalMs: 120,
+            timeoutMs: 4500,
+          });
+
+          expect(recordCheck.mode).toBe('table_row');
+          expect(recordCheck.row).toBeTruthy();
+          await expect(recordCheck.row).toHaveAttribute('id', 'target-row');
+          await expect(recordCheck.row).toContainText('待申请入账');
+        });`,
+        'worker-resolve-primary-record-hidden-input-retry',
+        undefined,
+        {
+          onLog(payload) {
+            logs.push(payload);
+          },
+        }
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          level: 'warn',
+          message: 'primary lookup keyword input not found',
+          meta: expect.objectContaining({
+            primaryValue: 'BIZ-001',
+            attemptIndex: 1,
+          }),
+        })
+      );
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          level: 'info',
+          message: 'primary lookup retry scheduled',
+          meta: expect.objectContaining({
+            primaryValue: 'BIZ-001',
+            reason: 'keyword_input_missing',
+          }),
+        })
+      );
     },
     20000
   );

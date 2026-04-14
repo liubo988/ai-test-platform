@@ -1,4 +1,4 @@
-import rawManifest from '@/intent-e2e.system-onboarding-manifests.json';
+import rawManifest from '@/intent-e2e.system-onboarding-manifests.json' with { type: 'json' };
 import {
   mergeIntentE2ERuntimeGovernance,
   normalizeIntentE2ERuntimeGovernance,
@@ -8,6 +8,11 @@ import {
   type IntentE2ERuntimeGovernance,
 } from '@/lib/intent-e2e-runtime-governance';
 import {
+  normalizeIntentE2ECiCdProfile,
+  resolveIntentE2ECiCdProfile,
+  type IntentE2ECiCdProfile,
+} from '@/lib/intent-e2e-system-onboarding-shared';
+import {
   DEFAULT_INTENT_E2E_RUNNER_TYPE,
   DEFAULT_INTENT_E2E_TEST_TYPE,
   normalizePlatformRunnerType,
@@ -15,8 +20,11 @@ import {
   type PlatformRunnerType,
   type PlatformTestType,
 } from '@/lib/test-platform-asset-model';
-
-export type IntentE2ECiCdProfile = 'manual' | 'pr_gate' | 'scheduled_regression' | 'release_candidate_validation';
+export {
+  normalizeIntentE2ECiCdProfile,
+  resolveIntentE2ECiCdProfile,
+};
+export type { IntentE2ECiCdProfile };
 export type IntentE2ESystemOnboardingBenchmarkBindingMode = 'project_default' | 'none';
 
 export interface IntentE2ESystemOnboardingSystemProfile {
@@ -94,25 +102,6 @@ function uniqueStrings(values: Array<string | null | undefined>): string[] {
   }
 
   return items;
-}
-
-export function normalizeIntentE2ECiCdProfile(value: unknown): IntentE2ECiCdProfile | undefined {
-  switch (normalizeString(value).toLowerCase()) {
-    case 'manual':
-      return 'manual';
-    case 'pr_gate':
-      return 'pr_gate';
-    case 'scheduled_regression':
-      return 'scheduled_regression';
-    case 'release_candidate_validation':
-      return 'release_candidate_validation';
-    default:
-      return undefined;
-  }
-}
-
-export function resolveIntentE2ECiCdProfile(value: unknown): IntentE2ECiCdProfile {
-  return normalizeIntentE2ECiCdProfile(value) || 'manual';
 }
 
 function cloneBenchmarkBinding(
