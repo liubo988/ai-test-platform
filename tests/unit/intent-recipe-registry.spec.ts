@@ -180,6 +180,60 @@ describe('intent-recipe-registry', () => {
     expect(unrelatedOwnershipRecipe?.score).toBe(baseOwnershipRecipe?.score);
   });
 
+  it('narrowly excludes mismatched family recipes for high-confidence routes while keeping the matched family recipe', () => {
+    const dsl = buildIntentActionDSL({
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/createbusiness',
+      featureDescription: '在创建商机页的当前可见 drawer 内填写并保存，等待提交收敛后回商机列表按 businessId 搜索并打开详情抽屉继续校验。',
+      expectedOutcome: '保存成功并在列表里按 businessId 命中目标记录',
+      sharedVariables: ['businessId'],
+      steps: [
+        {
+          stepUid: 'step_1',
+          stepType: 'ui',
+          title: '保存当前可见抽屉',
+          target: 'https://example.com/#/business/createbusiness',
+          instruction: '在 modal 或 drawer 内点击保存并等待提交收敛',
+          expectedResult: '保存成功并关闭抽屉',
+          extractVariable: 'businessId',
+        },
+        {
+          stepUid: 'step_2',
+          stepType: 'assert',
+          title: '回列表按 businessId 校验',
+          target: 'https://example.com/#/business/businesslist',
+          instruction: '回商机列表按 businessId 搜索目标记录并打开详情抽屉',
+          expectedResult: '命中目标记录并完成详情校验',
+          extractVariable: '',
+        },
+      ],
+    });
+
+    const baseRegistry = selectIntentRecipeRegistry({
+      dsl,
+      snapshot: {
+        url: 'https://example.com/#/business/createbusiness',
+        title: '创建商机',
+        frames: [],
+      },
+    });
+    const narrowedRegistry = selectIntentRecipeRegistry({
+      dsl,
+      snapshot: {
+        url: 'https://example.com/#/business/createbusiness',
+        title: '创建商机',
+        frames: [],
+      },
+      priorityScenarioFamily: 'modal_or_drawer_save',
+      narrowToPriorityScenarioFamily: true,
+    });
+
+    expect(baseRegistry.items.map((item) => item.recipe.slug)).toContain('business.create');
+    expect(baseRegistry.items.map((item) => item.recipe.slug)).toContain('ui.antd-modal-drawer-save');
+    expect(narrowedRegistry.items.map((item) => item.recipe.slug)).toContain('ui.antd-modal-drawer-save');
+    expect(narrowedRegistry.items.map((item) => item.recipe.slug)).not.toContain('business.create');
+  });
+
   it('selects seeded runtime recipes for create-order and batch-contact flows', () => {
     const createOrderDsl = buildIntentActionDSL({
       taskMode: 'scenario',

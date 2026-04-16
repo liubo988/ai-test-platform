@@ -3,6 +3,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { NextRequest } from 'next/server';
 import {
+  buildIntentE2EBenchmarkSuiteFromData,
   compareIntentE2EBenchmark,
   freezeIntentE2EBenchmark,
   getIntentE2EBenchmarkReportDir,
@@ -13,19 +14,20 @@ import {
   type CompareIntentE2EBenchmarkOptions,
   type FreezeIntentE2EBenchmarkOptions,
   type IntentE2EBenchmarkCompareReport,
+  type IntentE2EBenchmarkProofWindow,
   type IntentE2EBenchmarkRequestCorpusPreflightItem,
   type IntentE2EBenchmarkReplayResult,
   type IntentE2EBenchmarkSuite,
   type ReplayIntentE2EBenchmarkOptions,
 } from '@/lib/intent-e2e-benchmark';
 import {
-  buildIntentE2EEvaluationBaselineFromRuns,
   normalizeIntentE2ETerminalRunSnapshot,
   type IntentE2EInsightRunRecord,
 } from '@/lib/ai/intent-e2e-insights';
 import {
   cancelIntentE2ERun,
   createIntentE2ERun,
+  getIntentE2ERun,
   startIntentE2ERun,
   waitForIntentE2ERunCompletion,
 } from '@/lib/ai/intent-e2e-run-registry';
@@ -72,6 +74,7 @@ const parsed = parseArgs({
     'test-type': { type: 'string', multiple: true },
     'runner-type': { type: 'string', multiple: true },
     'priority-scenario-family': { type: 'string' },
+    'proof-window': { type: 'string' },
     'eval-case-id': { type: 'string', multiple: true },
     'max-cases': { type: 'string' },
     'run-limit': { type: 'string' },
@@ -107,6 +110,7 @@ function printHelp() {
   --test-type <type>          多次传入或逗号分隔；如 browser_e2e
   --runner-type <type>        多次传入或逗号分隔；如 playwright_runner
   --priority-scenario-family  仅保留指定 priorityScenarioFamily，如 list_search_detail
+  --proof-window <mode>       candidates / freeze 的证明窗口；支持 default、non_weak
   --run-limit <n>             读取最近多少条 terminal runs，默认 ${DEFAULT_RUN_LIMIT}
   --max-cases <n>             candidates / freeze 的 case 数上限
   --eval-case-id <id>         freeze 时显式选择 case，可重复传入或逗号分隔
@@ -135,8 +139,8 @@ rerun 额外选项：
   --max-requests <n>          只执行 corpus 前 n 条请求
 
 示例：
-  npm run intent:benchmark:candidates -- --project-uid proj_default --module-uid mod_xxx --test-type browser_e2e --priority-scenario-family list_search_detail
-  npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_xxx --test-type browser_e2e --priority-scenario-family modal_or_drawer_save --max-cases 12 --release-candidate ai-holdout-2026-04-09
+  npm run intent:benchmark:candidates -- --project-uid proj_default --module-uid mod_xxx --test-type browser_e2e --priority-scenario-family list_search_detail --proof-window non_weak
+  npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_xxx --test-type browser_e2e --priority-scenario-family modal_or_drawer_save --proof-window non_weak --max-cases 12 --release-candidate ai-holdout-2026-04-09
   npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family business_create_list_verify --compared-label post-e1e2e3
   npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_xxx --priority-scenario-family list_search_detail --request-corpus artifacts/intent-e2e-family-evidence/proj_default.list-search-detail.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json
 `);
@@ -206,6 +210,10 @@ function normalizePriorityScenarioFamily(
   return normalizeIntentE2EPriorityScenarioFamily(value);
 }
 
+function normalizeProofWindow(value: string | undefined): IntentE2EBenchmarkProofWindow {
+  return value === 'non_weak' ? 'non_weak' : 'default';
+}
+
 function formatPercent(value: number): string {
   return `${Number.isFinite(value) ? value.toFixed(1) : '0.0'}%`;
 }
@@ -217,6 +225,7 @@ function buildScopeFromFlags() {
     testTypes: normalizeTestTypes(readOptionalStringList(parsed.values['test-type'])),
     runnerTypes: normalizeRunnerTypes(readOptionalStringList(parsed.values['runner-type'])),
     priorityScenarioFamily: normalizePriorityScenarioFamily(readOptionalString(parsed.values['priority-scenario-family'])),
+    proofWindow: normalizeProofWindow(readOptionalString(parsed.values['proof-window'])),
     runLimit: normalizeInteger(readOptionalString(parsed.values['run-limit']), DEFAULT_RUN_LIMIT),
     maxCases: normalizeInteger(readOptionalString(parsed.values['max-cases']), DEFAULT_CANDIDATE_LIMIT, 200),
     evalCaseIds: readOptionalStringList(parsed.values['eval-case-id']),
@@ -265,6 +274,20 @@ function printRecipeAssetOperations(
   }
 }
 
+function printProofWindowSummary(
+  proofWindow: Pick<IntentE2EBenchmarkSuite['proofWindow'], 'mode' | 'excludedWeakCaseCount' | 'excludedWeakCases'>
+) {
+  console.log(`proof-window: ${proofWindow.mode} | excluded-weak-cases=${proofWindow.excludedWeakCaseCount}`);
+  if (proofWindow.excludedWeakCases.length > 0) {
+    console.log(
+      `excluded-weak-case-ids: ${proofWindow.excludedWeakCases
+        .slice(0, 5)
+        .map((item) => item.evalCaseId)
+        .join(', ')}`
+    );
+  }
+}
+
 function printSuiteSummary(benchmark: IntentE2EBenchmarkSuite) {
   console.log(`benchmark: ${benchmark.label} (${benchmark.benchmarkUid})`);
   console.log(
@@ -275,6 +298,7 @@ function printSuiteSummary(benchmark: IntentE2EBenchmarkSuite) {
     }`
   );
   console.log(`frozenAt: ${benchmark.frozenAt}`);
+  printProofWindowSummary(benchmark.proofWindow);
   console.log(`cases: ${benchmark.cases.length} | runs=${benchmark.summary.runCount}`);
   console.log(
     `metrics: terminal=${formatPercent(benchmark.summary.terminalPassRate)} first-pass=${formatPercent(
@@ -309,6 +333,7 @@ function printReplaySummary(replay: IntentE2EBenchmarkReplayResult) {
     } runnerTypes=${replay.scope.runnerTypes.join(',') || '-'} priorityFamily=${replay.scope.priorityScenarioFamily || '-'}`
   );
   console.log(`cases: matched=${replay.summary.matchedCases} missing=${replay.summary.missingCases} total=${replay.summary.caseCount}`);
+  printProofWindowSummary(replay.proofWindow);
   console.log(
     `metrics: terminal=${formatPercent(replay.summary.terminalPassRate)} first-pass=${formatPercent(
       replay.summary.firstPassPassRate
@@ -338,6 +363,7 @@ function printCompareSummary(report: IntentE2EBenchmarkCompareReport, writtenTo:
   console.log(
     `cases: improved=${report.summary.improvedCases} regressed=${report.summary.regressedCases} unchanged=${report.summary.unchangedCases} missing=${report.summary.missingCases}`
   );
+  printProofWindowSummary(report.proofWindow);
   console.log(
     `terminal: ${formatPercent(report.summary.frozenTerminalPassRate)} -> ${formatPercent(
       report.summary.currentTerminalPassRate
@@ -382,7 +408,9 @@ interface IntentE2EBenchmarkRerunEntryResult {
   expectedPriorityScenarioFamily: IntentE2EPriorityScenarioFamily;
   preflight: IntentE2EBenchmarkRequestCorpusPreflightItem['route'];
   runId: string;
-  status: 'passed' | 'failed' | 'canceled' | 'unknown';
+  status: 'created' | 'queued' | 'running' | 'passed' | 'failed' | 'canceled' | 'unknown';
+  terminal: boolean;
+  timedOut: boolean;
   finishedAt: string;
   priorityScenarioFamily: IntentE2EPriorityScenarioFamily | '';
   targetPath: string;
@@ -413,6 +441,8 @@ interface IntentE2EBenchmarkRerunReport {
   summary: {
     requestCount: number;
     terminalCount: number;
+    pendingCount: number;
+    timedOutCount: number;
     passedRuns: number;
     failedRuns: number;
     canceledRuns: number;
@@ -431,6 +461,46 @@ async function waitForTerminalRun(runId: string, timeoutMs: number): Promise<voi
   });
 
   await Promise.race([waitForIntentE2ERunCompletion(runId), timer]);
+}
+
+function normalizeRerunRunStatus(value: unknown): IntentE2EBenchmarkRerunEntryResult['status'] {
+  if (value === 'created' || value === 'queued' || value === 'running' || value === 'passed' || value === 'failed' || value === 'canceled') {
+    return value;
+  }
+  return 'unknown';
+}
+
+function isTerminalRerunRunStatus(status: IntentE2EBenchmarkRerunEntryResult['status']): boolean {
+  return status === 'passed' || status === 'failed' || status === 'canceled';
+}
+
+function collectRerunMatchedRecipeSlugs(runRecord: ReturnType<typeof getIntentE2ERun> | null): string[] {
+  if (!runRecord?.result) return [];
+
+  const executionPlanRecipeSlugs = Array.isArray(runRecord.result.executionPlan?.matchedRecipeSlugs)
+    ? runRecord.result.executionPlan.matchedRecipeSlugs
+    : [];
+  const verificationPlanRecipeSlugs = Array.isArray(runRecord.result.verificationPlan?.matchedRecipeSlugs)
+    ? runRecord.result.verificationPlan.matchedRecipeSlugs
+    : [];
+  return [...new Set([...executionPlanRecipeSlugs, ...verificationPlanRecipeSlugs].filter(Boolean))];
+}
+
+function collectRerunFailureClass(runRecord: ReturnType<typeof getIntentE2ERun> | null): string {
+  const finalFailureClass = runRecord?.result?.finalFailureTriage?.failureClass;
+  if (typeof finalFailureClass === 'string' && finalFailureClass.trim()) {
+    return finalFailureClass.trim();
+  }
+
+  const attempts = Array.isArray(runRecord?.result?.attempts) ? runRecord.result.attempts : [];
+  for (let index = attempts.length - 1; index >= 0; index -= 1) {
+    const failureClass = attempts[index]?.triage?.failureClass;
+    if (typeof failureClass === 'string' && failureClass.trim()) {
+      return failureClass.trim();
+    }
+  }
+
+  return '';
 }
 
 function resolveDefaultRerunReportPath(projectUid: string, priorityScenarioFamily: IntentE2EPriorityScenarioFamily): string {
@@ -472,7 +542,9 @@ function buildRerunSummaryPayload(
     preflight,
     summary: {
       requestCount: runs.length,
-      terminalCount: runs.filter((item) => item.status !== 'unknown').length,
+      terminalCount: runs.filter((item) => item.terminal).length,
+      pendingCount: runs.filter((item) => !item.terminal).length,
+      timedOutCount: runs.filter((item) => item.timedOut).length,
       passedRuns: runs.filter((item) => item.status === 'passed').length,
       failedRuns: runs.filter((item) => item.status === 'failed').length,
       canceledRuns: runs.filter((item) => item.status === 'canceled').length,
@@ -502,8 +574,17 @@ async function listCandidates() {
     throw new Error('当前 scope 下没有可用的 terminal runs');
   }
 
-  const baseline = buildIntentE2EEvaluationBaselineFromRuns(runs);
-  const candidates = baseline.candidates.slice(0, scope.maxCases);
+  const preview = buildIntentE2EBenchmarkSuiteFromData(runSnapshots, {
+    projectUid: scope.projectUid,
+    moduleUid: scope.moduleUid,
+    testTypes: scope.testTypes,
+    runnerTypes: scope.runnerTypes,
+    priorityScenarioFamily: scope.priorityScenarioFamily,
+    maxCases: scope.maxCases,
+    runLimit: scope.runLimit,
+    proofWindow: scope.proofWindow,
+  });
+  const candidates = preview.cases;
   const payload = {
     scope: {
       projectUid: scope.projectUid,
@@ -511,12 +592,14 @@ async function listCandidates() {
       testTypes: scope.testTypes,
       runnerTypes: scope.runnerTypes,
       priorityScenarioFamily: scope.priorityScenarioFamily,
+      proofWindow: scope.proofWindow,
     },
-    generatedFromRuns: baseline.generatedFromRuns,
-    candidateClusters: baseline.candidateClusters,
-    recommendedCount: baseline.recommendedCount,
-    recommendedFamilies: baseline.recommendedFamilies,
-    selectionNote: baseline.selectionNote,
+    proofWindow: preview.proofWindow,
+    generatedFromRuns: preview.source.generatedFromRuns,
+    candidateClusters: preview.source.candidateClusters,
+    recommendedCount: preview.source.recommendedCount,
+    recommendedFamilies: preview.source.recommendedFamilies,
+    selectionNote: preview.source.selectionNote,
     candidates,
   };
   const exportedRecipeAsset = await maybeExportRecipeAsset(scope.projectUid);
@@ -539,8 +622,11 @@ async function listCandidates() {
   }
 
   printRecipeAssetOperations(importedRecipeAsset, exportedRecipeAsset);
-  console.log(`candidates: generatedFromRuns=${baseline.generatedFromRuns} clusters=${baseline.candidateClusters} recommended=${baseline.recommendedCount}`);
-  console.log(`selection-note: ${baseline.selectionNote}`);
+  console.log(
+    `candidates: generatedFromRuns=${preview.source.generatedFromRuns} clusters=${preview.source.candidateClusters} recommended=${preview.source.recommendedCount}`
+  );
+  printProofWindowSummary(preview.proofWindow);
+  console.log(`selection-note: ${preview.source.selectionNote}`);
   for (const item of candidates) {
     console.log('');
     console.log(
@@ -549,7 +635,9 @@ async function listCandidates() {
       }`
     );
     console.log(`  title: ${item.representativeScenarioTitle}`);
-    console.log(`  runs: total=${item.runCount} terminal=${formatPercent(item.terminalPassRate)} first-pass=${formatPercent(item.firstPassPassRate)} repair=${formatPercent(item.repairedPassRate)} knowledge=${formatPercent(item.knowledgeHitRate)}`);
+    console.log(
+      `  runs: total=${item.frozenMetrics.runCount} terminal=${formatPercent(item.frozenMetrics.terminalPassRate)} first-pass=${formatPercent(item.frozenMetrics.firstPassPassRate)} repair=${formatPercent(item.frozenMetrics.repairedPassRate)} knowledge=${formatPercent(item.frozenMetrics.knowledgeHitRate)}`
+    );
     console.log(`  recipes: ${item.matchedRecipeSlugs.join(', ') || '-'}`);
     console.log(`  helpers: ${item.usedHelpers.join(', ') || '-'}`);
     console.log(`  reason: ${item.selectionReason}`);
@@ -569,6 +657,7 @@ async function freezeBenchmark() {
     evalCaseIds: scope.evalCaseIds,
     maxCases: scope.maxCases,
     runLimit: scope.runLimit,
+    proofWindow: scope.proofWindow,
     label: readOptionalString(parsed.values.label),
     releaseCandidate: readOptionalString(parsed.values['release-candidate']),
     frozenAt: readOptionalString(parsed.values['frozen-at']),
@@ -729,6 +818,7 @@ async function rerunRequestCorpus() {
     let runId = '';
     let resolvedActorUserUid = actorUserUid;
     let errorMessage = '';
+    let timedOut = false;
 
     try {
       const prepared = await prepareIntentE2ERequest(nextRequest);
@@ -739,13 +829,30 @@ async function rerunRequestCorpus() {
       await waitForTerminalRun(createdRun.runId, waitTimeoutMs);
     } catch (error: unknown) {
       errorMessage = error instanceof Error ? error.message : '未知 rerun 错误';
+      timedOut = /等待 run 终态超时/.test(errorMessage);
       if (runId) {
         cancelIntentE2ERun(runId);
+        await waitForTerminalRun(runId, Math.max(5_000, Math.min(15_000, Math.floor(waitTimeoutMs / 6)))).catch(() => undefined);
       }
     }
 
+    const runRecord = runId ? getIntentE2ERun(runId) : null;
     const snapshot = runId ? await getIntentE2ERunSnapshotByRunId(runId) : null;
     const normalizedRun = snapshot ? normalizeIntentE2ETerminalRunSnapshot(snapshot) : null;
+    const status = normalizeRerunRunStatus(runRecord?.status || snapshot?.status || normalizedRun?.status);
+    const terminal = isTerminalRerunRunStatus(status);
+    const matchedRecipeSlugs = [
+      ...new Set([
+        ...(normalizedRun?.matchedRecipeSlugs || []),
+        ...collectRerunMatchedRecipeSlugs(runRecord),
+      ].filter(Boolean)),
+    ];
+    const experienceHintCount = Array.isArray(runRecord?.result?.experience?.hints)
+      ? runRecord.result.experience.hints.length
+      : 0;
+    const reviewWritten = normalizedRun?.reviewWritten || Boolean(runRecord?.result?.review?.reviewedAt);
+    const experienceHit = normalizedRun?.experienceHit || experienceHintCount > 0;
+    const failureClass = normalizedRun?.failureClass || collectRerunFailureClass(runRecord);
 
     runs.push({
       requestId: request.requestId,
@@ -754,16 +861,18 @@ async function rerunRequestCorpus() {
       expectedPriorityScenarioFamily: request.expectedPriorityScenarioFamily,
       preflight: preflightItem.route,
       runId,
-      status: normalizedRun?.status || (snapshot?.status as 'passed' | 'failed' | 'canceled' | undefined) || 'unknown',
-      finishedAt: normalizedRun?.finishedAt || snapshot?.endedAt || snapshot?.updatedAt || '',
+      status,
+      terminal,
+      timedOut,
+      finishedAt: runRecord?.endedAt || normalizedRun?.finishedAt || snapshot?.endedAt || snapshot?.updatedAt || '',
       priorityScenarioFamily: normalizedRun?.priorityScenarioFamily || preflightItem.route.family || '',
       targetPath: normalizedRun?.targetPath || '',
-      matchedRecipeSlugs: normalizedRun?.matchedRecipeSlugs || [],
-      recipeHit: (normalizedRun?.matchedRecipeSlugs.length || 0) > 0,
-      playbookHit: (normalizedRun?.matchedRecipeSlugs || []).some((slug) => isIntentPlaybookRecipeSlug(slug)),
-      reviewWritten: normalizedRun?.reviewWritten || false,
-      experienceHit: normalizedRun?.experienceHit || false,
-      failureClass: normalizedRun?.failureClass || '',
+      matchedRecipeSlugs,
+      recipeHit: matchedRecipeSlugs.length > 0,
+      playbookHit: matchedRecipeSlugs.some((slug) => isIntentPlaybookRecipeSlug(slug)),
+      reviewWritten,
+      experienceHit,
+      failureClass,
       actorUserUid: resolvedActorUserUid,
       errorMessage,
     });
@@ -815,13 +924,13 @@ async function rerunRequestCorpus() {
     `scope: project=${corpus.projectUid} module=${corpus.moduleUid} testType=${corpus.testType} priorityFamily=${corpus.priorityScenarioFamily}`
   );
   console.log(
-    `summary: requests=${report.summary.requestCount} terminal=${report.summary.terminalCount} passed=${report.summary.passedRuns} failed=${report.summary.failedRuns} canceled=${report.summary.canceledRuns} recipe-hit=${report.summary.recipeHitRuns} playbook-hit=${report.summary.playbookHitRuns}`
+    `summary: requests=${report.summary.requestCount} terminal=${report.summary.terminalCount} pending=${report.summary.pendingCount} timed-out=${report.summary.timedOutCount} passed=${report.summary.passedRuns} failed=${report.summary.failedRuns} canceled=${report.summary.canceledRuns} recipe-hit=${report.summary.recipeHitRuns} playbook-hit=${report.summary.playbookHitRuns}`
   );
   for (const item of runs) {
     console.log(
       `- ${item.requestId}: runId=${item.runId || '-'} status=${item.status} family=${item.priorityScenarioFamily || '-'} targetPath=${
         item.targetPath || '-'
-      } recipeHit=${item.recipeHit ? 'yes' : 'no'} playbookHit=${item.playbookHit ? 'yes' : 'no'}${
+      } terminal=${item.terminal ? 'yes' : 'no'} timedOut=${item.timedOut ? 'yes' : 'no'} recipeHit=${item.recipeHit ? 'yes' : 'no'} playbookHit=${item.playbookHit ? 'yes' : 'no'}${
         item.errorMessage ? ` error=${item.errorMessage}` : ''
       }`
     );

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Script } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import {
   buildPrompt,
@@ -13,11 +14,11 @@ import { resetIntentProjectKnowledgeCache } from '../../lib/intent-project-knowl
 import { buildFlowSummary } from '../../lib/task-flow';
 
 function expectBatchAccountVisibleKeywordInput(code: string) {
-  expect(code).toContain("const keywordInputByPlaceholder = page.locator('input[placeholder=\"请输入关键词\"]:visible').first();");
   expect(code).toContain(
     "const keywordInputById = page.locator('input#form_in_modal_testKeyWord:visible, input#service-data-item_keyWord:visible').first();"
   );
-  expect(code).toContain('const keywordInput = (await keywordInputByPlaceholder.count()) ? keywordInputByPlaceholder : keywordInputById;');
+  expect(code).toContain("const keywordInputByPlaceholder = page.locator('input[placeholder=\"请输入关键词\"]:visible').first();");
+  expect(code).toContain('const keywordInput = (await keywordInputById.count()) ? keywordInputById : keywordInputByPlaceholder;');
   expect(code).not.toContain("page.getByPlaceholder('请输入关键词').first()");
 }
 
@@ -1272,6 +1273,33 @@ test("批量申请入账", async ({ page }) => {
     expect(code).toContain("const confirmBtn = modal.getByRole('button', { name: /确\\s*定|提\\s*交|保\\s*存/i }).first();");
   });
 
+  it('rewrites awaited batch-account truthy guards without corrupting comments or syntax', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 awaited truthy guards", async ({ page }) => {
+  const shared = { selectedOrderNo: '', selectedServiceItem: '', selectedAmount: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Verification: 最终业务验收", async () => {
+    // SLOT_START: verification
+    // expect(shared.selectedOrderNo).toBeTruthy();
+    await expect(shared.selectedOrderNo).toBeTruthy();
+    await expect(shared.selectedServiceItem).toBeTruthy();
+    await expect(shared.selectedAmount).toBeTruthy();
+    // SLOT_END: verification
+  });
+});
+`.trim());
+
+    expect(code).toContain("// expect(shared.selectedOrderNo).toBeTruthy();");
+    expect(code).not.toContain('await if (!shared.selectedOrderNo)');
+    expect(code).not.toContain('await if (!shared.selectedServiceItem)');
+    expect(code).not.toContain('await if (!shared.selectedAmount)');
+    expect(code).toContain("if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = true;");
+    expect(code).toContain("if (!shared.selectedServiceItem) artifacts['selectedServiceItem_missing_before_modal'] = true;");
+    expect(code).toContain("if (!shared.selectedAmount) artifacts['selectedAmount_missing_before_modal'] = true;");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
   it('sanitizes batch-account repair row fallback when duplicate status texts match multiple real rows', () => {
     const code = sanitizeGeneratedCode(`
 test("批量申请入账 repair 选行守卫", async ({ page }) => {
@@ -1501,6 +1529,282 @@ test("批量申请入账订单号守卫", async ({ page }) => {
     expect(code).toContain("if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = true;");
   });
 
+  it('rewrites generic selected-row extraction blocks to keep rowKey fallback and drop global checkbox assertions', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 generic selected row extraction", async ({ page }) => {
+  const shared = { selectedOrderNo: '', selectedServiceItem: '', selectedAmount: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 3: 勾选一条订单并提取订单号", async () => {
+    // SLOT_START: plan_step_3
+    const mainRows = page.locator('.ant-table-tbody tr[data-row-key]:visible');
+    const rowCount = await mainRows.count();
+    let targetRow = null;
+    for (let i = 0; i < rowCount; i += 1) {
+      const candidate = mainRows.nth(i);
+      try {
+        await __e2e.clickAntdRowCheckbox(page, candidate);
+        targetRow = candidate;
+        break;
+      } catch {}
+    }
+    if (!targetRow) throw new Error('未找到可勾选订单行');
+
+    const orderLink = targetRow.locator('a').first();
+    let selectedOrderNo = '';
+    if (await orderLink.count()) {
+      selectedOrderNo = (await orderLink.innerText().catch(() => '')).replace(/\\s+/g, '').trim();
+    }
+    if (!selectedOrderNo) {
+      const rowText = ((await targetRow.innerText().catch(() => '')) || '').replace(/\\s+/g, ' ').trim();
+      const tokens = rowText.split(' ').map((t) => t.trim()).filter(Boolean);
+      selectedOrderNo = tokens.find((t) => /^[A-Za-z0-9_-]{6,64}$/.test(t) && !/^1\\d{10}$/.test(t) && !/^\\d+(\\.\\d+)?$/.test(t)) || '';
+    }
+    if (!selectedOrderNo) throw new Error('未能从已勾选订单行提取有效订单号');
+
+    shared.selectedOrderNo = selectedOrderNo;
+    artifacts.plan_step_3_targetRow = targetRow;
+    artifacts["plan_step_3"] = { selectedOrderNo: shared.selectedOrderNo };
+    await expect(page.locator('.ant-checkbox-checked').first()).toBeVisible({ timeout: 5000 });
+    // SLOT_END: plan_step_3
+  });
+});
+`.trim());
+
+    const step3Slot = code.match(/\/\/ SLOT_START: plan_step_3([\s\S]*?)\/\/ SLOT_END: plan_step_3/)?.[1] || '';
+
+    expect(step3Slot).toContain("const selectedOrderNoFromRowKeyCandidate = String(rowKey || '').trim();");
+    expect(step3Slot).toContain("const selectedOrderNo = selectedOrderNoFromLink || selectedOrderNoFromRowKey || selectedOrderNoFromTokens;");
+    expect(step3Slot).toContain("if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = { rowKey, rowText, linkTexts };");
+    expect(step3Slot).not.toContain("await expect(page.locator('.ant-checkbox-checked').first()).toBeVisible({ timeout: 5000 });");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('rewrites live step-3 checked-row extraction variants that throw 未能从已勾选行提取有效订单号', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 live step3 checked-row extraction", async ({ page }) => {
+  const shared = { selectedOrderNo: '', selectedServiceItem: '', selectedAmount: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 3: 勾选记录并提取订单号", async () => {
+    // SLOT_START: plan_step_3
+    const rows = page.locator('.ant-table-tbody tr[data-row-key]:visible');
+    const total = await rows.count();
+    let targetRow = null;
+    for (let i = 0; i < Math.min(total, 12); i += 1) {
+      const row = rows.nth(i);
+      try {
+        await __e2e.clickAntdRowCheckbox(page, row);
+        targetRow = row;
+        break;
+      } catch {}
+    }
+    if (!targetRow) {
+      throw new Error('前置数据不足：未找到可勾选的真实订单行');
+    }
+
+    const rowText = (await targetRow.innerText().catch(() => '')) || '';
+    const linkTexts = await targetRow.locator('a:visible').allTextContents().catch(() => []);
+    const tokens = [];
+    for (const t of linkTexts) {
+      const v = String(t || '').trim();
+      if (v) tokens.push(v);
+    }
+    for (const t of rowText.split(/\\s+/)) {
+      const v = String(t || '').trim();
+      if (v) tokens.push(v);
+    }
+    const orderNo = tokens.find((v) => /^[A-Za-z0-9_-]{6,64}$/.test(v) && !/^1\\d{10}$/.test(v) && !/^\\d+(\\.\\d+)?$/.test(v)) || '';
+    if (!orderNo) {
+      throw new Error('未能从已勾选行提取有效订单号');
+    }
+    shared.selectedOrderNo = orderNo;
+    artifacts['plan_step_3'] = { selectedOrderNo: shared.selectedOrderNo, rowText };
+    expect(shared.selectedOrderNo).toBeTruthy();
+    // SLOT_END: plan_step_3
+  });
+});
+`.trim());
+
+    const step3Slot = code.match(/\/\/ SLOT_START: plan_step_3([\s\S]*?)\/\/ SLOT_END: plan_step_3/)?.[1] || '';
+
+    expect(step3Slot).toContain("artifacts.plan_step_3_targetRow = targetRow;");
+    expect(step3Slot).toContain("const selectedOrderNoFromRowKeyCandidate = String(rowKey || '').trim();");
+    expect(step3Slot).toContain("const selectedOrderNo = selectedOrderNoFromLink || selectedOrderNoFromRowKey || selectedOrderNoFromTokens;");
+    expect(step3Slot).toContain("if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = { rowKey, rowText, linkTexts };");
+    expect(step3Slot).not.toContain("throw new Error('未能从已勾选行提取有效订单号');");
+    expect(step3Slot).not.toContain('expect(shared.selectedOrderNo).toBeTruthy();');
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('rewrites list step-3 extraction when ambiguous pending lookup uses __e2e.findAntdTableRow', () => {
+    const code = sanitizeGeneratedCode(`
+test("list_search_detail ambiguous __e2e step3", async ({ page }) => {
+  const TARGET_URL = 'https://uat.example.com/#/order/list';
+  const shared = { selectedOrderNo: '' };
+  const artifacts = Object.create(null);
+  await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
+
+  await test.step("Step 3: 从候选结果提取唯一订单号", async () => {
+    // SLOT_START: plan_step_3
+    const candidateRow = artifacts.plan_step_2_row || await __e2e.findAntdTableRow(page, { hasTexts: ['待申请入账', '服务中'], timeoutMs: 15000 });
+
+    let selectedOrderNo = '';
+
+    const orderLink = candidateRow.locator('a').first();
+    if (await orderLink.count()) {
+      const linkText = (await orderLink.innerText().catch(() => '')).trim();
+      if (linkText && !/^1\\d{10}$/.test(linkText) && !/^\\d+(\\.\\d+)?$/.test(linkText)) {
+        selectedOrderNo = linkText;
+      }
+    }
+
+    if (!selectedOrderNo) {
+      const rowKey = ((await candidateRow.getAttribute('data-row-key')) || '').trim();
+      if (rowKey && !/^1\\d{10}$/.test(rowKey) && !/^\\d+(\\.\\d+)?$/.test(rowKey)) {
+        selectedOrderNo = rowKey;
+      }
+    }
+
+    if (!selectedOrderNo) {
+      const rowText = (await candidateRow.innerText().catch(() => '')).replace(/\\s+/g, ' ');
+      const tokens = rowText.match(/[A-Za-z0-9_-]{6,}/g) || [];
+      selectedOrderNo = tokens.find((t) => !/^1\\d{10}$/.test(t) && !/^\\d+(\\.\\d+)?$/.test(t)) || '';
+    }
+
+    shared.selectedOrderNo = selectedOrderNo;
+    artifacts.plan_step_3 = { selectedOrderNo };
+    // SLOT_END: plan_step_3
+  });
+});
+`.trim());
+
+    const step3Slot = code.match(/\/\/ SLOT_START: plan_step_3([\s\S]*?)\/\/ SLOT_END: plan_step_3/)?.[1] || '';
+
+    expect(step3Slot).toContain("const candidateRows = page.locator('.ant-table-tbody tr[data-row-key]:visible');");
+    expect(step3Slot).toContain("const selectedOrderNoFromRowKeyCandidate = String(rowKey || '').trim();");
+    expect(step3Slot).toContain("artifacts['plan_step_3'] = { row: targetRow, rowText, rowKey, linkTexts, selectedOrderNo: shared.selectedOrderNo || '' };");
+    expect(step3Slot).not.toContain("const candidateRow = artifacts.plan_step_2_row || await __e2e.findAntdTableRow");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('defers selected-row order-number misses to modal fallback instead of failing in plan_step_2', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 selected row fallback", async ({ page }) => {
+  const shared = { selectedOrderNo: '', selectedServiceItem: '', selectedAmount: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 2: 从已勾选订单行提取订单号", async () => {
+    // SLOT_START: plan_step_2
+    const checkedRows = page.locator('tr[data-row-key]').filter({
+      has: page.locator('.ant-checkbox-wrapper-checked, .ant-checkbox-checked'),
+    });
+
+    let targetRow = null;
+    const checkedCount = await checkedRows.count();
+    if (checkedCount > 0) {
+      targetRow = checkedRows.first();
+    } else {
+      const candidates = page.locator('.ant-table-tbody tr[data-row-key]:visible');
+      const candidateCount = await candidates.count();
+      for (let i = 0; i < candidateCount; i += 1) {
+        const row = candidates.nth(i);
+        try {
+          await __e2e.clickAntdRowCheckbox(page, row);
+          targetRow = row;
+          break;
+        } catch {}
+      }
+    }
+
+    if (!targetRow) {
+      throw new Error('未找到可勾选订单行：请确认订单列表存在可选记录');
+    }
+
+    await targetRow.scrollIntoViewIfNeeded();
+
+    const rowKey = ((await targetRow.getAttribute('data-row-key')) || '').trim();
+    const linkText = ((await targetRow.locator('a').first().textContent().catch(() => '')) || '').replace(/\\s+/g, '').trim();
+    const rowText = ((await targetRow.innerText().catch(() => '')) || '').replace(/\\s+/g, ' ').trim();
+
+    const candidates = [linkText, rowKey].filter(Boolean);
+    let selectedOrderNo = candidates.find((v) => /^[A-Za-z0-9_-]{6,64}$/.test(v) && !/^1\\d{10}$/.test(v) && !/^\\d+(\\.\\d+)?$/.test(v)) || '';
+
+    if (!selectedOrderNo) {
+      const tokens = rowText.split(/\\s+/).filter(Boolean);
+      selectedOrderNo = tokens.find((v) => /^[A-Za-z0-9_-]{6,64}$/.test(v) && !/^1\\d{10}$/.test(v) && !/^\\d+(\\.\\d+)?$/.test(v)) || '';
+    }
+
+    if (!selectedOrderNo) {
+      throw new Error(\`已定位目标行但未提取到有效订单号，rowKey=\${rowKey} rowText=\${rowText}\`);
+    }
+
+    shared.selectedOrderNo = selectedOrderNo;
+    if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = true;
+    artifacts['plan_step_2'] = { row: targetRow, rowText, rowKey, selectedOrderNo };
+    // SLOT_END: plan_step_2
+  });
+});
+`.trim());
+
+    expect(code).toContain("artifacts['plan_step_2_row'] = targetRow;");
+    expect(code).toContain('artifacts.plan_step_2_targetRow = targetRow;');
+    expect(code).toContain('const linkTexts = [];');
+    expect(code).toContain('const selectedOrderNoFromLinkCandidate = String(');
+    expect(code).toContain('const selectedOrderNoFromRowKeyCandidate = String(rowKey || \'\').trim();');
+    expect(code).toContain("const selectedOrderNo = selectedOrderNoFromLink || selectedOrderNoFromRowKey || selectedOrderNoFromTokens;");
+    expect(code).not.toContain('已定位目标行但未提取到有效订单号');
+    expect(code).toContain("artifacts['selectedOrderNo_missing_before_modal'] = { rowKey, rowText, linkTexts };");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('rewrites selected-row rowText token extraction in plan_step_2 to reject date-like pseudo order numbers', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 plan_step_2 selected row date drift", async ({ page }) => {
+  const shared = { selectedOrderNo: '', selectedServiceItem: '', selectedAmount: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 2: 收敛目标订单并提取订单号", async () => {
+    // SLOT_START: plan_step_2
+    const candidates = page.locator('.ant-table-tbody tr[data-row-key]:visible');
+    const candidateCount = await candidates.count();
+    let selectedRow = null;
+    for (let i = 0; i < candidateCount; i += 1) {
+      const row = candidates.nth(i);
+      try {
+        await __e2e.clickAntdRowCheckbox(page, row);
+        selectedRow = row;
+        break;
+      } catch {}
+    }
+    if (!selectedRow) throw new Error('未找到可勾选的真实订单行');
+
+    const rowText = (await selectedRow.innerText().catch(() => '')).replace(/\\s+/g, ' ').trim();
+    const tokens = rowText.match(/[A-Za-z0-9_-]{6,}/g) || [];
+    const orderNo = tokens.find((t) => !/^1\\d{10}$/.test(t) && !/^\\d+(\\.\\d+)?$/.test(t)) || '';
+    shared.selectedOrderNo = orderNo;
+    if (!shared.selectedOrderNo) {
+      throw new Error('未能从已勾选订单行提取到有效订单号 selectedOrderNo');
+    }
+    await expect(shared.selectedOrderNo).not.toBe('');
+    // SLOT_END: plan_step_2
+  });
+});
+`.trim());
+
+    const step2Slot = code.match(/\/\/ SLOT_START: plan_step_2([\s\S]*?)\/\/ SLOT_END: plan_step_2/)?.[1] || '';
+
+    expect(step2Slot).toContain("artifacts['plan_step_2_row'] = selectedRow;");
+    expect(step2Slot).toContain("const selectedOrderNoFromLinkCandidate = String(");
+    expect(step2Slot).toContain("const selectedOrderNoFromTokensLooksLikeDate = /^(?:19|20)\\d{2}[-/.](?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\\d|3[01])$/.test(selectedOrderNoFromTokensCandidate)");
+    expect(step2Slot).toContain("const selectedOrderNo = selectedOrderNoFromLink || selectedOrderNoFromRowKey || selectedOrderNoFromTokens;");
+    expect(step2Slot).toContain("artifacts['selectedOrderNo_missing_before_modal'] = { rowKey, rowText, linkTexts };");
+    expect(step2Slot).not.toContain("const tokens = rowText.match(/[A-Za-z0-9_-]{6,}/g) || [];");
+    expect(step2Slot).not.toContain("throw new Error('未能从已勾选订单行提取到有效订单号 selectedOrderNo');");
+    expect(step2Slot).not.toContain("await expect(shared.selectedOrderNo).not.toBe('');");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
   it('rewrites fresh-generate batch-account step3 extraction blocks to keep numeric order numbers', () => {
     const code = sanitizeGeneratedCode(`
 test("批量申请入账 fresh generate step3 order extraction", async ({ page }) => {
@@ -1555,6 +1859,228 @@ test("批量申请入账 fresh generate step3 order extraction", async ({ page }
     expect(code).not.toContain("const orderNo = tokens.find((t) => !/^1\\d{10}$/.test(t) && !/^\\d+(\\.\\d+)?$/.test(t)) || '';");
     expect(code).not.toContain("throw new Error('提取订单号失败：未从目标行识别到有效订单号');");
     expect(code).toContain("if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = true;");
+  });
+
+  it('rewrites filtered-token step3 extraction variants from structured live runs', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 structured live step3 filtered extraction", async ({ page }) => {
+  const shared = { selectedOrderNo: '', selectedServiceItem: '', selectedAmount: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 3: 提取待入账订单号", async () => {
+    // SLOT_START: plan_step_3
+    const candidates = page.locator('.ant-table-tbody tr[data-row-key]:visible');
+    const count = await candidates.count();
+    let selectedRow = null;
+    for (let i = 0; i < count; i += 1) {
+      const row = candidates.nth(i);
+      const txt = await row.innerText().catch(() => '');
+      if (/待申请入账/.test(txt)) {
+        selectedRow = row;
+        break;
+      }
+    }
+    if (!selectedRow) throw new Error('未找到包含“待申请入账”的可见订单行');
+    const rowText = await selectedRow.innerText();
+    const tokens = rowText.match(/[A-Za-z0-9_-]{8,}/g) || [];
+    const filtered = tokens.filter((t) => !/^1\\d{10}$/.test(t) && !/^\\d+(\\.\\d+)?$/.test(t));
+    shared.selectedOrderNo = (filtered[0] || '').trim();
+    if (!shared.selectedOrderNo) throw new Error('提取订单号失败：selectedOrderNo 为空');
+    artifacts['plan_step_3'] = { selectedOrderNo: shared.selectedOrderNo, rowText };
+    // SLOT_END: plan_step_3
+  });
+});
+`.trim());
+
+    expect(code).not.toContain('const rowText = await selectedRow.innerText();');
+    expect(code).toContain("const rowTextRowKey = ((await selectedRow.getAttribute('data-row-key')) || '').trim();");
+    expect(code).toContain("const orderLink = selectedRow.locator('a').first();");
+    expect(code).toContain("const orderFromLinkIsStructuredId = /^(?:[A-Za-z0-9_-]{6,64}|\\d{12,64})$/.test(orderFromLinkNormalized);");
+    expect(code).toContain("const orderFromTokensIsStructuredId = /^(?:[A-Za-z0-9_-]{6,64}|\\d{12,64})$/.test(orderFromTokensNormalized);");
+    expect(code).toContain('const orderNo = orderFromLink || orderFromTokens;');
+    expect(code).not.toContain("shared.selectedOrderNo = (filtered[0] || '').trim();");
+    expect(code).not.toContain("throw new Error('提取订单号失败：selectedOrderNo 为空');");
+    expect(code).toContain("if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = true;");
+  });
+
+  it('rewrites reused successful-run step3 token-first extraction variants into canonical selected-row extraction', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 reused successful step3 extraction", async ({ page }) => {
+  const shared = { selectedOrderNo: '', selectedServiceItem: '', selectedAmount: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 3: 勾选首条结果并提取订单号", async () => {
+    // SLOT_START: plan_step_3
+    const rows = page.locator('.ant-table-tbody tr[data-row-key]:visible');
+    const rowCount = await rows.count();
+    if (rowCount === 0) test.skip(true, '前置数据不足：无可勾选订单行');
+
+    let targetRow = null;
+    for (let i = 0; i < rowCount; i += 1) {
+      const candidate = rows.nth(i);
+      try {
+        await __e2e.clickAntdRowCheckbox(page, candidate);
+        targetRow = candidate;
+        break;
+      } catch (e) {}
+    }
+    if (!targetRow) test.skip(true, '前置数据不足：筛选结果中无可勾选行');
+
+    const rowText = await targetRow.innerText();
+    const tokens = (rowText.match(/[A-Za-z0-9_-]{6,}/g) || []).filter((t) => !/^1\\d{10}$/.test(t) && !/^\\d+(\\.\\d+)?$/.test(t));
+    shared.selectedOrderNo = (tokens[0] || '').trim();
+
+    if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = true;
+    artifacts["plan_step_3"] = { rowText, selectedOrderNo: shared.selectedOrderNo };
+    // SLOT_END: plan_step_3
+  });
+});
+`.trim());
+
+    const step3Slot = code.match(/\/\/ SLOT_START: plan_step_3([\s\S]*?)\/\/ SLOT_END: plan_step_3/)?.[1] || '';
+
+    expect(step3Slot).toContain("const rowTextRowKey = ((await targetRow.getAttribute('data-row-key')) || '').trim();");
+    expect(step3Slot).toContain("const linkNodes = targetRow.locator('a:visible');");
+    expect(step3Slot).toContain("const selectedOrderNoFromLinkIsStructuredId = /^(?:[A-Za-z0-9_-]{6,64}|\\d{12,64})$/.test(selectedOrderNoFromLinkNormalized);");
+    expect(step3Slot).toContain('const selectedOrderNo = selectedOrderNoFromLink || selectedOrderNoFromRowKey || selectedOrderNoFromTokens;');
+    expect(step3Slot).not.toContain('const rowText = await targetRow.innerText();');
+    expect(step3Slot).not.toContain("shared.selectedOrderNo = (tokens[0] || '').trim();");
+    expect(step3Slot).toContain("artifacts['plan_step_3'] = { row: targetRow, rowText, rowKey, linkTexts, selectedOrderNo: shared.selectedOrderNo || '' };");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('rewrites live-run linkNo/filter step3 extraction to reject short letter-prefixed codes and keep long numeric order numbers', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 live run step3 linkNo/filter extraction", async ({ page }) => {
+  const shared = { selectedOrderNo: '', selectedServiceItem: '', selectedAmount: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 3: 提取待入账订单号", async () => {
+    // SLOT_START: plan_step_3
+    const candidateRows = page.locator('.ant-table-tbody tr[data-row-key]:visible');
+    const rowCount = await candidateRows.count();
+    let selectedOrderNo = '';
+
+    for (let i = 0; i < rowCount; i++) {
+      const row = candidateRows.nth(i);
+      const rowText = (await row.innerText().catch(() => '')).trim();
+      if (!rowText.includes('待申请入账')) continue;
+
+      const linkNo = (await row.locator('a:visible').first().innerText().catch(() => '')).trim();
+      if (linkNo && !/^1\\d{10}$/.test(linkNo)) {
+        selectedOrderNo = linkNo;
+        break;
+      }
+
+      const tokens = rowText.match(/\\b[A-Za-z0-9_-]{8,}\\b/g) || [];
+      const filtered = tokens.find((t) => !/^1\\d{10}$/.test(t) && !/^\\d+(\\.\\d+)?$/.test(t));
+      if (filtered) {
+        selectedOrderNo = filtered;
+        break;
+      }
+    }
+
+    if (!selectedOrderNo) {
+      throw new Error('未能从“待申请入账”记录中提取到有效订单号');
+    }
+
+    shared.selectedOrderNo = selectedOrderNo;
+    if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = true;
+    artifacts["plan_step_3"] = { selectedOrderNo: shared.selectedOrderNo };
+    // SLOT_END: plan_step_3
+  });
+});
+`.trim());
+
+    expect(code).toContain("const linkNoOrderNoLooksLikeLetterPrefixedShortCode = /^[A-Za-z]\\d{7,11}$/.test(linkNoOrderNoNormalized);");
+    expect(code).toContain("const filtered = tokens.find((t) => { const raw = String(t || '').trim();");
+    expect(code).not.toContain("if (linkNo && !/^1\\d{10}$/.test(linkNo)) {");
+    expect(code).not.toContain("const filtered = tokens.find((t) => !/^1\\d{10}$/.test(t) && !/^\\d+(\\.\\d+)?$/.test(t));");
+    expect(code).not.toContain("throw new Error('未能从“待申请入账”记录中提取到有效订单号');");
+    expect(code).toContain("if (!selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = true;");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('rewrites fresh live-run rowKey/orderId fallback variants before selectedOrderNo is reused in step 4', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 fresh live rowKey fallback extraction", async ({ page }) => {
+  const shared = { selectedOrderNo: '', selectedServiceItem: '', selectedAmount: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 3: 提取待入账订单号", async () => {
+    // SLOT_START: plan_step_3
+    const candidates = page.locator('.ant-table-tbody tr[data-row-key]:visible');
+    const count = await candidates.count();
+    let pickedRow = null;
+
+    for (let i = 0; i < count; i += 1) {
+      const row = candidates.nth(i);
+      const txtRowKey = ((await row.getAttribute('data-row-key')) || '').trim();
+      const txtSources = txtRowKey ? page.locator(\`tr[data-row-key="\${txtRowKey}"]\`) : row;
+      const txtParts = [];
+      const txtSourceCount = txtRowKey ? await txtSources.count() : 1;
+      for (let txtIndex = 0; txtIndex < txtSourceCount; txtIndex += 1) {
+        const txtSource = txtRowKey ? txtSources.nth(txtIndex) : row;
+        const txtPart = (await txtSource.innerText().catch(() => '')).replace(/\\s+/g, ' ').trim();
+        if (txtPart && !txtParts.includes(txtPart)) txtParts.push(txtPart);
+      }
+      const txt = txtParts.join(' ').trim();
+      if (/待申请入账/.test(txt)) {
+        pickedRow = row;
+        break;
+      }
+    }
+
+    if (!pickedRow) {
+      throw new Error('未找到包含“待申请入账”的可见真实订单行，无法提取订单号');
+    }
+
+    const orderLink = pickedRow.locator('a').first();
+    let selectedOrderNo = '';
+    if (await orderLink.count()) {
+      selectedOrderNo = (await orderLink.innerText().catch(() => '')).trim();
+    }
+
+    if (!selectedOrderNo) {
+      const rowKey = ((await pickedRow.getAttribute('data-row-key')) || '').trim();
+      if (rowKey && !/^1\\d{10}$/.test(rowKey)) selectedOrderNo = rowKey;
+    }
+
+    if (!selectedOrderNo) {
+      const rowTextRowKey = ((await pickedRow.getAttribute('data-row-key')) || '').trim();
+      const rowTextSources = rowTextRowKey ? page.locator(\`tr[data-row-key="\${rowTextRowKey}"]\`) : pickedRow;
+      const rowTextParts = [];
+      const rowTextSourceCount = rowTextRowKey ? await rowTextSources.count() : 1;
+      for (let rowTextIndex = 0; rowTextIndex < rowTextSourceCount; rowTextIndex += 1) {
+        const rowTextSource = rowTextRowKey ? rowTextSources.nth(rowTextIndex) : pickedRow;
+        const rowTextPart = (await rowTextSource.innerText().catch(() => '')).replace(/\\s+/g, ' ').trim();
+        if (rowTextPart && !rowTextParts.includes(rowTextPart)) rowTextParts.push(rowTextPart);
+      }
+      const rowText = rowTextParts.join(' ').trim();
+      const tokens = rowText.match(/[A-Za-z0-9_-]{8,}/g) || [];
+      selectedOrderNo = tokens.find((t) => !/^1\\d{10}$/.test(t) && !/^\\d+(\\.\\d+)?$/.test(t)) || '';
+    }
+
+    if (!selectedOrderNo) {
+      throw new Error('提取订单号失败：未获得非空 selectedOrderNo');
+    }
+
+    shared.selectedOrderNo = selectedOrderNo;
+    artifacts["plan_step_3"] = { selectedOrderNo, row: pickedRow };
+    if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = true;
+    // SLOT_END: plan_step_3
+  });
+});
+`.trim());
+
+    expect(code).toContain("const selectedOrderNoFromLinkLooksLikeShortNumeric = /^\\d+$/.test(selectedOrderNoFromLinkNormalized) && selectedOrderNoFromLinkNormalized.length < 12;");
+    expect(code).toContain("const rowKeyOrderNoLooksLikeShortNumeric = /^\\d+$/.test(rowKeyOrderNoNormalized) && rowKeyOrderNoNormalized.length < 12;");
+    expect(code).toContain("const selectedOrderNoToken = tokens.find((t) => { const raw = String(t || '').trim();");
+    expect(code).not.toContain("selectedOrderNo = (await orderLink.innerText().catch(() => '')).trim();");
+    expect(code).not.toContain("if (rowKey && !/^1\\d{10}$/.test(rowKey)) selectedOrderNo = rowKey;");
+    expect(code).not.toContain("selectedOrderNo = tokens.find((t) => !/^1\\d{10}$/.test(t) && !/^\\d+(\\.\\d+)?$/.test(t)) || '';");
+    expect(code).toContain("if (!selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = true;");
+    expect(() => new Script(code)).not.toThrow();
   });
 
   it('allows pure numeric order numbers in repair step3 link/cell extraction variants', () => {
@@ -1949,6 +2475,94 @@ test("批量申请入账 modal 字段复用", async ({ page }) => {
     expect(code).toContain("if (!shared.selectedServiceItem && modalFieldSnapshot.selectedServiceItem) shared.selectedServiceItem = String(modalFieldSnapshot.selectedServiceItem || '').trim();");
   });
 
+  it('allows modal fallback to override stale selectedOrderNo values with stronger modal order numbers', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 modal order override", async ({ page }) => {
+  const shared = { selectedOrderNo: 'H202600056', selectedServiceItem: '', selectedAmount: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 4: 提取弹窗中的关键对账信息", async () => {
+    // SLOT_START: plan_step_4
+    const modal = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '批量申请入账' });
+    const modalText = await modal.innerText().catch(() => '');
+    const modalOrderNo = (await __e2e.readDetailField(page, { label: '订单号', scope: modal, titleIncludes: '批量申请入账', required: false })) || (await __e2e.readDetailField(page, { label: '订单编号', scope: modal, titleIncludes: '批量申请入账', required: false })) || '';
+    const modalOrderNoText = (((modalText.match(/订单号[：:\\s]*([A-Za-z0-9_-]+)/) || [])[1] || '')).trim();
+    if (!shared.selectedOrderNo) {
+      const nextOrderNo = modalOrderNo.trim() || modalOrderNoText;
+      if (nextOrderNo && !/^1\\d{10}$/.test(nextOrderNo)) shared.selectedOrderNo = nextOrderNo;
+    }
+    const modalServiceItem = (await __e2e.readDetailField(page, { label: '服务项', scope: modal, titleIncludes: '批量申请入账', required: false })) || '';
+    const modalServiceItemText = (((modalText.match(/服务项[：:\\s]*([^\\n]+)/) || [])[1] || '').trim());
+    if (!shared.selectedServiceItem) {
+      const nextServiceItem = modalServiceItem.trim() || modalServiceItemText;
+      if (nextServiceItem && !/^(订单号|订单编号|批量申请入账)$/i.test(nextServiceItem)) shared.selectedServiceItem = nextServiceItem;
+    }
+    const modalAmountRaw = (await __e2e.readDetailField(page, { label: '入账金额', scope: modal, titleIncludes: '批量申请入账', required: false })) || '';
+    const modalAmountText = ((((modalText.match(/入账金额[：:\\s]*([0-9][0-9,]*(?:\\.\\d{1,2})?)/) || [])[1] || '').replace(/,/g, '')).trim());
+    const normalizedModalAmount = ((modalAmountText || '').trim());
+    let fallbackRowAmount = '';
+    const modalAmountSourceRow = artifacts['plan_step_2_row'] || null;
+    const modalServiceSourceRow = modalAmountSourceRow;
+    const resolvedModalAmount = (normalizedModalAmount || fallbackRowAmount || '').trim();
+    if (!shared.selectedAmount && resolvedModalAmount) shared.selectedAmount = resolvedModalAmount;
+    artifacts["plan_step_4"] = { modalOpened: true };
+    // SLOT_END: plan_step_4
+  });
+});
+`.trim());
+
+    expect(code).toContain("const nextOrderNoLooksLikeLetterPrefixedShortCode = /^[A-Za-z]\\d{7,11}$/.test(nextOrderNoNormalized);");
+    expect(code).toContain("const currentSelectedOrderNoCandidate = String(shared.selectedOrderNo || '').trim();");
+    expect(code).toContain("const shouldAdoptModalOrderNo = Boolean(nextOrderNo) && (!currentSelectedOrderNo || currentSelectedOrderNo !== nextOrderNo);");
+    expect(code).toContain("artifacts['selectedOrderNo_modal_override'] = { previous: currentSelectedOrderNoCandidate, next: nextOrderNo };");
+    expect(code).toContain("const cachedModalFieldSnapshot = artifacts['batch_account_modal_field_snapshot'];");
+    expect(code).not.toContain("if (!shared.selectedOrderNo) {\n      const nextOrderNo = modalOrderNo.trim() || modalOrderNoText;");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('lets modal orderNo override long numeric row tokens when they disagree', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 modal order override long numeric", async ({ page }) => {
+  const shared = { selectedOrderNo: '1776130980449', selectedServiceItem: '', selectedAmount: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 4: 提取弹窗中的关键对账信息", async () => {
+    // SLOT_START: plan_step_4
+    const modal = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '批量申请入账' });
+    const modalText = await modal.innerText().catch(() => '');
+    const modalOrderNo = (await __e2e.readDetailField(page, { label: '订单号', scope: modal, titleIncludes: '批量申请入账', required: false })) || (await __e2e.readDetailField(page, { label: '订单编号', scope: modal, titleIncludes: '批量申请入账', required: false })) || '';
+    const modalOrderNoText = (((modalText.match(/订单号[：:\\s]*([A-Za-z0-9_-]+)/) || [])[1] || '')).trim();
+    if (!shared.selectedOrderNo) {
+      const nextOrderNo = modalOrderNo.trim() || modalOrderNoText;
+      if (nextOrderNo && !/^1\\d{10}$/.test(nextOrderNo)) shared.selectedOrderNo = nextOrderNo;
+    }
+    const modalServiceItem = (await __e2e.readDetailField(page, { label: '服务项', scope: modal, titleIncludes: '批量申请入账', required: false })) || '';
+    const modalServiceItemText = (((modalText.match(/服务项[：:\\s]*([^\\n]+)/) || [])[1] || '').trim());
+    if (!shared.selectedServiceItem) {
+      const nextServiceItem = modalServiceItem.trim() || modalServiceItemText;
+      if (nextServiceItem && !/^(订单号|订单编号|批量申请入账)$/i.test(nextServiceItem)) shared.selectedServiceItem = nextServiceItem;
+    }
+    const modalAmountRaw = (await __e2e.readDetailField(page, { label: '入账金额', scope: modal, titleIncludes: '批量申请入账', required: false })) || '';
+    const modalAmountText = ((((modalText.match(/入账金额[：:\\s]*([0-9][0-9,]*(?:\\.\\d{1,2})?)/) || [])[1] || '').replace(/,/g, '')).trim());
+    const normalizedModalAmount = ((modalAmountText || '').trim());
+    let fallbackRowAmount = '';
+    const modalAmountSourceRow = artifacts['plan_step_2_row'] || null;
+    const modalServiceSourceRow = modalAmountSourceRow;
+    const resolvedModalAmount = (normalizedModalAmount || fallbackRowAmount || '').trim();
+    if (!shared.selectedAmount && resolvedModalAmount) shared.selectedAmount = resolvedModalAmount;
+    artifacts['plan_step_4'] = { modalOpened: true };
+    // SLOT_END: plan_step_4
+  });
+});
+`.trim());
+
+    expect(code).toContain("const currentSelectedOrderNoCandidate = String(shared.selectedOrderNo || '').trim();");
+    expect(code).toContain("const shouldAdoptModalOrderNo = Boolean(nextOrderNo) && (!currentSelectedOrderNo || currentSelectedOrderNo !== nextOrderNo);");
+    expect(code).toContain("artifacts['selectedOrderNo_modal_override'] = { previous: currentSelectedOrderNoCandidate, next: nextOrderNo };");
+    expect(code).not.toContain("if (!shared.selectedOrderNo) {\n      const nextOrderNo = modalOrderNo.trim() || modalOrderNoText;");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
   it('avoids selectedServiceItemCandidate TDZ and rewrites placeholder-based /payment lookup live variants', () => {
     const code = sanitizeGeneratedCode(`
 test("批量申请入账 placeholder live 变体", async ({ page }) => {
@@ -2006,7 +2620,8 @@ test("批量申请入账 bookedMgmt hidden input live 变体", async ({ page }) 
     // SLOT_START: plan_step_1
     await expect(page.getByText('订单列表').first()).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole('button', { name: '批量入账' }).first()).toBeVisible({ timeout: 20000 });
-    await expect(page.locator('#form_in_modal_testKeyWord')).toBeVisible({ timeout: 20000 });
+    const keywordInput = page.locator('#form_in_modal_testKeyWord').first();
+    await expect(keywordInput).toBeVisible({ timeout: 20000 });
     artifacts["plan_step_1"] = null;
     // SLOT_END: plan_step_1
   });
@@ -2014,7 +2629,8 @@ test("批量申请入账 bookedMgmt hidden input live 变体", async ({ page }) 
   await test.step("Step 6: 校验跳转到入账管理", async () => {
     // SLOT_START: plan_step_6
     await expect(page).toHaveURL('https://uat-service.yikaiye.com/#/payment/bookedMgmt');
-    await expect(page.locator('#form_in_modal_testKeyWord')).toBeVisible({ timeout: 15000 });
+    const keywordInput = page.locator('#form_in_modal_testKeyWord').first();
+    await expect(keywordInput).toBeVisible({ timeout: 15000 });
     await expect(page.getByRole('button', { name: /搜\\s*索/i }).first()).toBeVisible({ timeout: 10000 });
     artifacts["plan_step_6"] = null;
     // SLOT_END: plan_step_6
@@ -2055,11 +2671,18 @@ test("批量申请入账 bookedMgmt hidden input live 变体", async ({ page }) 
 });
 `.trim());
 
+    const step1Slot = code.match(/\/\/ SLOT_START: plan_step_1([\s\S]*?)\/\/ SLOT_END: plan_step_1/)?.[1] || '';
+    const step6Slot = code.match(/\/\/ SLOT_START: plan_step_6([\s\S]*?)\/\/ SLOT_END: plan_step_6/)?.[1] || '';
+
+    expect(step1Slot).not.toContain('form_in_modal_testKeyWord');
+    expect(step1Slot).not.toContain('请输入关键词');
     expect(code).not.toContain("await expect(page.locator('#form_in_modal_testKeyWord')).toBeVisible({ timeout: 20000 });");
     expect(code).not.toContain("await expect(page.locator('#form_in_modal_testKeyWord')).toBeVisible({ timeout: 15000 });");
     expect(code).not.toContain("const keywordInput = page.locator('#form_in_modal_testKeyWord');");
+    expect(code).not.toContain("const keywordInput = page.locator('#form_in_modal_testKeyWord').first();");
     expect(code).not.toContain('const currentVisibleRow = await (async () => {');
     expect(code).toContain("const recordCheck = await __e2e.resolvePrimaryRecord(page, {");
+    expectBatchAccountVisibleKeywordInput(step6Slot);
     expectBatchAccountVisibleKeywordInput(code);
     expect(code).toContain('keywordInput,');
     expect(code).toContain("searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(),");
@@ -2069,6 +2692,108 @@ test("批量申请入账 bookedMgmt hidden input live 变体", async ({ page }) 
     expectBatchAccountFastLookupOptions(code);
     expect(code).toContain("artifacts['booked_target_row'] = recordRow;");
     expect(code).toContain("artifacts['plan_step_7'] = recordCheck.response;");
+  });
+
+  it('rebinds bookedMgmt ready-step placeholder checks onto visible keyword inputs', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 bookedMgmt ready placeholder drift", async ({ page }) => {
+  const shared = { selectedOrderNo: '202604141126437251', selectedServiceItem: '科技型中小企业认定', selectedAmount: '5000.00' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 5: 进入入账管理页", async () => {
+    // SLOT_START: plan_step_5
+    if (!page.url().includes('#/payment/bookedMgmt')) {
+      await page.goto('https://uat-service.yikaiye.com/#/payment/bookedMgmt', { waitUntil: 'domcontentloaded' });
+    }
+    await expect(page).toHaveURL(/#\\/payment\\/bookedMgmt/);
+    const keywordInput = page.getByPlaceholder('请输入关键词').first();
+    await expect(keywordInput).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('button', { name: /查\\s*询|搜\\s*索/i }).first()).toBeVisible({ timeout: 15000 });
+    artifacts['plan_step_5'] = null;
+    // SLOT_END: plan_step_5
+  });
+});
+`.trim());
+
+    const step5Slot = code.match(/\/\/ SLOT_START: plan_step_5([\s\S]*?)\/\/ SLOT_END: plan_step_5/)?.[1] || '';
+
+    expectBatchAccountVisibleKeywordInput(step5Slot);
+    expect(step5Slot).not.toContain("page.getByPlaceholder('请输入关键词').first()");
+    expect(step5Slot).toContain("await expect(keywordInput).toBeVisible({ timeout: 15000 });");
+    expect(step5Slot).toContain("await expect(page.getByRole('button', { name: /查\\s*询|搜\\s*索/i }).first()).toBeVisible({ timeout: 15000 });");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('rebinds bookedMgmt ready-step raw id checks onto visible keyword inputs', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 bookedMgmt ready raw id drift", async ({ page }) => {
+  const shared = { selectedOrderNo: '202604141126437251', selectedServiceItem: '科技型中小企业认定', selectedAmount: '5000.00' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 5: 进入入账管理页", async () => {
+    // SLOT_START: plan_step_5
+    if (!page.url().includes('#/payment/bookedMgmt')) {
+      await page.goto('https://uat-service.yikaiye.com/#/payment/bookedMgmt', { waitUntil: 'domcontentloaded' });
+    }
+    await expect(page).toHaveURL(/#\\/payment\\/bookedMgmt/);
+    const keywordInput = page.locator('#form_in_modal_testKeyWord').first();
+    await expect(keywordInput).toBeVisible({ timeout: 15000 });
+    const searchBtn = page.getByRole('button', { name: /查\\s*询|搜\\s*索/i }).first();
+    await expect(searchBtn).toBeVisible({ timeout: 15000 });
+    artifacts['plan_step_5'] = null;
+    // SLOT_END: plan_step_5
+  });
+});
+`.trim());
+
+    const step5Slot = code.match(/\/\/ SLOT_START: plan_step_5([\s\S]*?)\/\/ SLOT_END: plan_step_5/)?.[1] || '';
+
+    expectBatchAccountVisibleKeywordInput(step5Slot);
+    expect(step5Slot).not.toContain("page.locator('#form_in_modal_testKeyWord').first()");
+    expect(step5Slot).toContain("await expect(keywordInput).toBeVisible({ timeout: 15000 });");
+    expect(step5Slot).toContain("const searchBtn = page.getByRole('button', { name: /查\\s*询|搜\\s*索/i }).first();");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('removes raw placeholder keyword declarations before injecting helper-driven bookedMgmt step7 lookup code', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 bookedMgmt raw placeholder lookup", async ({ page }) => {
+  const shared = { selectedOrderNo: '202604141126437251', selectedServiceItem: '科技型中小企业认定', selectedAmount: '5000.00' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 7: 按同一订单号检索提交记录", async () => {
+    // SLOT_START: plan_step_7
+    if (!shared.selectedOrderNo) throw new Error('共享变量 selectedOrderNo 为空，无法执行入账管理检索');
+
+    const keywordInput = page.locator('input[placeholder="请输入关键词"]').first();
+    const searchBtn = page.getByRole('button', { name: '搜 索' }).first();
+
+    const recordCheck = await __e2e.resolvePrimaryRecord(page, {
+      primaryValue: shared.selectedOrderNo,
+      keywordInput,
+      searchButton: searchBtn,
+      listResponse: { urlIncludes: '/payment', method: 'GET' },
+      rowHasTexts: [shared.selectedOrderNo],
+      maxLookupAttempts: 4,
+      retryIntervalMs: 1200,
+    });
+    artifacts['plan_step_7'] = recordCheck.response;
+    if (!recordCheck.row) throw new Error(\`入账列表未找到订单号=\${shared.selectedOrderNo} 的记录\`);
+    const recordRow = recordCheck.row;
+    artifacts['plan_step_7_row'] = recordRow;
+    // SLOT_END: plan_step_7
+  });
+});
+`.trim());
+
+    const step7Slot = code.match(/\/\/ SLOT_START: plan_step_7([\s\S]*?)\/\/ SLOT_END: plan_step_7/)?.[1] || '';
+
+    expect(step7Slot).not.toContain("const keywordInput = page.locator('input[placeholder=\"请输入关键词\"]').first();");
+    expect(step7Slot).not.toContain("const searchBtn = page.getByRole('button', { name: '搜 索' }).first();");
+    expectBatchAccountVisibleKeywordInput(step7Slot);
+    expect(step7Slot).toContain("const recordCheck = await __e2e.resolvePrimaryRecord(page, {");
+    expect(step7Slot.match(/\bconst keywordInput =/g)?.length || 0).toBe(1);
+    expect(() => new Script(code)).not.toThrow();
   });
 
   it('forces helper-driven bookedMgmt search actions when the prompt explicitly requires placeholder search', () => {
@@ -2107,6 +2832,47 @@ test("批量申请入账 bookedMgmt 动作忠实", async ({ page }) => {
     expectBatchAccountFastLookupOptions(code);
     expect(code).toContain("artifacts['plan_step_7'] = recordCheck.response;");
     expect(code).toContain("artifacts['plan_step_7_row'] = row;");
+  });
+
+  it('rewrites bookedMgmt search steps that are still numbered plan_step_6 into helper-driven visible lookups', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 bookedMgmt step6 search", async ({ page }) => {
+  const shared = { selectedOrderNo: '202604141126437251', selectedServiceItem: '科技型中小企业认定', selectedAmount: '5000.00' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 6: 按提取订单号执行检索", async () => {
+    // SLOT_START: plan_step_6
+    if (!shared.selectedOrderNo) throw new Error('selectedOrderNo 为空，无法执行检索');
+    const keywordInput = page.locator('input[placeholder="请输入关键词"]').first();
+    await expect(keywordInput).toBeVisible({ timeout: 15000 });
+    await keywordInput.fill(shared.selectedOrderNo);
+
+    const searchBtn = page.getByRole('button', { name: '搜 索' }).first();
+    const listResp = __e2e.waitForApiResponse(page, {
+      urlIncludes: '/payment',
+      method: 'GET',
+      expectOk: false,
+      timeoutMs: 8000,
+    }).catch(() => null);
+
+    await searchBtn.click();
+    artifacts['plan_step_6'] = await listResp;
+    // SLOT_END: plan_step_6
+  });
+});
+`.trim());
+
+    const step6Slot = code.match(/\/\/ SLOT_START: plan_step_6([\s\S]*?)\/\/ SLOT_END: plan_step_6/)?.[1] || '';
+
+    expect(step6Slot).toContain("const BOOKED_URL = /#\\/payment\\/bookedMgmt/i;");
+    expectBatchAccountVisibleKeywordInput(step6Slot);
+    expect(step6Slot).toContain("const searchBtn = page.getByRole('button', { name: /搜\\s*索|查\\s*询/i }).first();");
+    expect(step6Slot).toContain("const recordCheck = await __e2e.resolvePrimaryRecord(page, {");
+    expect(step6Slot).toContain("artifacts['plan_step_6'] = recordCheck.response;");
+    expect(step6Slot).toContain("artifacts['plan_step_6_record'] = recordCheck;");
+    expect(step6Slot).toContain("artifacts['plan_step_7_row'] = recordRow;");
+    expect(step6Slot).not.toContain('await keywordInput.fill(shared.selectedOrderNo);');
+    expect(() => new Script(code)).not.toThrow();
   });
 
   it('rewrites resolvePrimaryRecord-only bookedMgmt step7 blocks into helper-driven search blocks', () => {
@@ -2301,6 +3067,176 @@ test("批量申请入账 submit bookedMgmt fallback", async ({ page }) => {
     expect(code).toContain("await expect(searchBtn).toBeVisible({ timeout: 10000 });");
   });
 
+  it('rewrites raw bookedMgmt step6 search blocks without duplicating prelude guards', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 raw bookedMgmt step6 lookup dedupe", async ({ page }) => {
+  const shared = { selectedOrderNo: '202604141126437251', selectedServiceItem: '科技型中小企业认定', selectedAmount: '5000.00' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 6: 按订单号搜索入账记录", async () => {
+    // SLOT_START: plan_step_6
+    if (!shared.selectedOrderNo) {
+      throw new Error('缺少共享变量 selectedOrderNo，无法执行订单号搜索');
+    }
+    if (!page.url().includes('#/payment/bookedMgmt')) {
+      await page.goto('https://uat-service.yikaiye.com/#/payment/bookedMgmt', { waitUntil: 'domcontentloaded' });
+    }
+    await expect(page).toHaveURL(/#\\/payment\\/bookedMgmt/);
+
+    const keywordInput = page.getByPlaceholder('请输入关键词').first();
+    await keywordInput.fill(shared.selectedOrderNo);
+
+    const queryBtn = page.getByRole('button', { name: /查\\s*询|搜\\s*索/i }).first();
+    const listResp = __e2e.waitForApiResponse(page, { urlIncludes: '/payment', method: 'GET' });
+    await queryBtn.click();
+    artifacts['plan_step_6'] = await listResp;
+
+    await expect(keywordInput).toHaveValue(shared.selectedOrderNo);
+    // SLOT_END: plan_step_6
+  });
+});
+`.trim());
+
+    const step6Slot = code.match(/\/\/ SLOT_START: plan_step_6([\s\S]*?)\/\/ SLOT_END: plan_step_6/)?.[1] || '';
+
+    expect(step6Slot.split("const BOOKED_URL = /#\\/payment\\/bookedMgmt/i;").length - 1).toBe(1);
+    expect(step6Slot.match(/if \(!shared\.selectedOrderNo\)/g)?.length || 0).toBe(1);
+    expect(step6Slot).not.toContain("page.getByPlaceholder('请输入关键词').first()");
+    expect(step6Slot).toContain("artifacts['plan_step_6_record'] = recordCheck;");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('adds bookedMgmt goto fallback for structured submit blocks with non-i url assertions', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 structured submit bookedMgmt fallback", async ({ page }) => {
+  const shared = { selectedOrderNo: '202604011028194322', selectedServiceItem: '疑难核名解决方案', selectedAmount: '18000.00' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 6: 确认提交批量入账", async () => {
+    // SLOT_START: plan_step_6
+    const modal = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '批量申请入账' });
+    const confirmBtn = modal.getByRole('button', { name: '确 定' }).first();
+    const submitResp = __e2e.waitForApiResponse(page, { urlIncludes: '/payment', method: 'POST' });
+    await confirmBtn.click();
+    artifacts["plan_step_6"] = await submitResp;
+    await __e2e.observeSubmitState(page, {
+      submitButton: confirmBtn,
+      closeLocator: modal,
+      urlIncludes: '#/payment/bookedMgmt'
+    });
+    await expect(page).toHaveURL(/#\\/payment\\/bookedMgmt/, { timeout: 20000 });
+    // SLOT_END: plan_step_6
+  });
+});
+`.trim());
+
+    expect(code).toContain("if (!page.url().includes('#/payment/bookedMgmt')) {");
+    expect(code).toContain("const bookedMgmtAnchor = page.getByRole('tab', { name: /入账确认|入账历史/i }).first();");
+    expect(code).toContain("await page.goto('https://uat-service.yikaiye.com/#/payment/bookedMgmt', { waitUntil: 'domcontentloaded' });");
+    expect(code).toContain("await expect(page).toHaveURL(/#\\/payment\\/bookedMgmt/i, { timeout: 30000 });");
+    expectBatchAccountVisibleKeywordInput(code);
+    expect(code).toContain("await expect(keywordInput).toBeVisible({ timeout: 20000 });");
+    expect(code).toContain("const searchBtn = page.getByRole('button', { name: /搜\\s*索/i }).first();");
+    expect(code).toContain("await expect(searchBtn).toBeVisible({ timeout: 10000 });");
+  });
+
+  it('keeps bookedMgmt keyword bindings idempotent when submit fallback sanitization runs twice', () => {
+    const rawCode = `
+test("批量申请入账 structured submit bookedMgmt fallback idempotent", async ({ page }) => {
+  const shared = { selectedOrderNo: '202604011028194322', selectedServiceItem: '疑难核名解决方案', selectedAmount: '18000.00' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 6: 确认提交批量入账", async () => {
+    // SLOT_START: plan_step_6
+    const modal = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '批量申请入账' });
+    const confirmBtn = modal.getByRole('button', { name: '确 定' }).first();
+    const submitResp = __e2e.waitForApiResponse(page, { urlIncludes: '/payment', method: 'POST' });
+    await confirmBtn.click();
+    artifacts["plan_step_6"] = await submitResp;
+    await __e2e.observeSubmitState(page, {
+      submitButton: confirmBtn,
+      closeLocator: modal,
+      urlIncludes: '#/payment/bookedMgmt'
+    });
+    await expect(page).toHaveURL(/#\\/payment\\/bookedMgmt/, { timeout: 20000 });
+    // SLOT_END: plan_step_6
+  });
+});
+`.trim();
+
+    const once = sanitizeGeneratedCode(rawCode);
+    const twice = sanitizeGeneratedCode(once);
+    const step6Slot = twice.match(/\/\/ SLOT_START: plan_step_6([\s\S]*?)\/\/ SLOT_END: plan_step_6/)?.[1] || '';
+
+    expect(step6Slot.match(/const keywordInputByPlaceholder =/g)?.length || 0).toBe(1);
+    expect(step6Slot.match(/const keywordInputById =/g)?.length || 0).toBe(1);
+    expect(step6Slot.match(/const keywordInput =/g)?.length || 0).toBe(1);
+    expect(step6Slot.match(/const searchBtn =/g)?.length || 0).toBe(1);
+    expect(() => new Script(twice)).not.toThrow();
+  });
+
+  it('normalizes shared.orderNo aliases and legacy bookedMgmt keyword checks from live rerun code shapes', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 live rerun aliases", async ({ page }) => {
+  const shared = { orderNo: '', selectedServiceItem: '', selectedAmount: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 6: 进入入账管理列表", async () => {
+    // SLOT_START: plan_step_6
+    if (!page.url().includes('#/payment/bookedMgmt')) {
+      await page.goto('https://uat-service.yikaiye.com/#/payment/bookedMgmt', { waitUntil: 'domcontentloaded' });
+    }
+    await expect(page).toHaveURL(/#\\/payment\\/bookedMgmt/);
+    const keywordInput = page.locator('input#form_in_modal_testKeyWord:visible').first();
+    await expect(keywordInput).toBeVisible({ timeout: 15000 });
+    const searchBtn = page.getByRole('button', { name: /搜\\s*索|查\\s*询/ }).first();
+    await expect(searchBtn).toBeVisible({ timeout: 10000 });
+    artifacts["plan_step_6"] = { enteredBookedMgmt: true };
+    // SLOT_END: plan_step_6
+  });
+
+  await test.step("Step 7: 按订单号检索", async () => {
+    // SLOT_START: plan_step_7
+    expect(shared.orderNo).toBeTruthy();
+    const keywordInput = page.locator('input#form_in_modal_testKeyWord:visible').first();
+    await expect(keywordInput).toBeVisible({ timeout: 15000 });
+    const recordCheck = await __e2e.resolvePrimaryRecord(page, {
+      primaryValue: shared.orderNo,
+      keywordInput,
+      searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(),
+      listResponse: { urlIncludes: '/payment', method: 'GET' },
+      rowHasTexts: [shared.orderNo],
+      maxLookupAttempts: 4,
+      retryIntervalMs: 1200,
+    });
+    artifacts['plan_step_7'] = recordCheck.response;
+    if (!recordCheck.row) throw new Error(\`入账列表未找到订单号=\${shared.orderNo} 的记录\`);
+    const recordRow = recordCheck.row;
+    artifacts['plan_step_7_row'] = recordRow;
+    // SLOT_END: plan_step_7
+  });
+
+  await test.step("Verification: 最终业务验收", async () => {
+    // SLOT_START: verification
+    await expect(page).toHaveURL(/#\\/payment\\/bookedMgmt/);
+    const keywordInput = page.locator('input#form_in_modal_testKeyWord:visible').first();
+    await expect(keywordInput).toBeVisible();
+    const resultRow = await __e2e.findAntdTableRow(page, { hasTexts: [shared.orderNo] });
+    await expect(resultRow).toBeVisible();
+    // SLOT_END: verification
+  });
+});
+`.trim());
+
+    expect(code).not.toContain('shared.orderNo');
+    expect(code).toContain('shared.selectedOrderNo');
+    expect(code).not.toContain("const keywordInput = page.locator('input#form_in_modal_testKeyWord:visible').first();");
+    expectBatchAccountVisibleKeywordInput(code);
+    expect(code).toContain("const BOOKED_URL = /#\\/payment\\/bookedMgmt/i;");
+    expect(code).toContain("artifacts['plan_step_7_row']");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
   it('allows duplicate bookedMgmt order rows when the task only needs existence checks', () => {
     const code = sanitizeGeneratedCode(`
 test("批量申请入账 bookedMgmt 重复订单号存在性校验", async ({ page }) => {
@@ -2389,6 +3325,654 @@ test("批量申请入账 bookedMgmt step8 行复用回填", async ({ page }) => 
     expect(code).toContain("const finalRow = artifacts['plan_step_8_row'] || artifacts['plan_step_7_row'] || ((artifacts['plan_step_7_record'] && artifacts['plan_step_7_record'].row) || null) || await __e2e.findAntdTableRow(page, { hasTexts: [shared.selectedOrderNo], allowMultipleUniqueMatches: true, timeoutMs: 15000 });");
   });
 
+  it('rewrites order-list ready union locators into sequential visible anchor checks', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 order list ready union locator", async ({ page }) => {
+  const shared = { selectedOrderNo: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 1: 进入订单列表页", async () => {
+    // SLOT_START: plan_step_1
+    await page.goto('https://uat.example.com/#/order/list', { waitUntil: 'domcontentloaded' });
+    await expect(page).toHaveURL(/#\\/order\\/list/);
+    const expandBtn = page.getByRole('button', { name: '展开' }).first();
+    const searchBtn = page.getByRole('button', { name: /搜\\s*索/ }).first();
+    await expect(expandBtn.or(searchBtn)).toBeVisible({ timeout: 15000 });
+    artifacts['plan_step_1'] = null;
+    // SLOT_END: plan_step_1
+  });
+});
+`.trim());
+
+    expect(code).not.toContain('expandBtn.or(searchBtn)');
+    expect(code).toContain("const expandBtnVisible = await expandBtn.isVisible().catch(() => false);");
+    expect(code).toContain("if (expandBtnVisible) {");
+    expect(code).toContain("await expect(expandBtn).toBeVisible({ timeout: 15000 });");
+    expect(code).toContain("await expect(searchBtn).toBeVisible({ timeout: 15000 });");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('drops premature bookedMgmt keyword-input unions from order-list ready step', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 order list ready bookedmgmt union", async ({ page }) => {
+  const shared = { selectedOrderNo: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 1: 打开订单列表页", async () => {
+    // SLOT_START: plan_step_1
+    await page.goto('https://uat.example.com/#/order/list', { waitUntil: 'domcontentloaded' });
+    await expect(page).toHaveURL(/#\\/order\\/list/);
+    const expandBtn = page.getByRole('button', { name: '展开' }).first();
+    const keywordInput = page.locator('#form_in_modal_testKeyWord:visible').first();
+    await expect(keywordInput.or(expandBtn)).toBeVisible({ timeout: 15000 });
+    artifacts['plan_step_1'] = null;
+    // SLOT_END: plan_step_1
+  });
+});
+`.trim());
+
+    expect(code).not.toContain("const keywordInput = page.locator('#form_in_modal_testKeyWord:visible').first();");
+    expect(code).not.toContain('keywordInput.or(expandBtn)');
+    expect(code).toContain("await expect(expandBtn).toBeVisible({ timeout: 15000 });");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('drops undeclared keywordInput unions from batch-account order-list ready anchors', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 order list ready undeclared keywordInput union", async ({ page }) => {
+  const shared = { selectedOrderNo: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 1: 打开订单列表页", async () => {
+    // SLOT_START: plan_step_1
+    await page.goto('https://uat.example.com/#/order/list', { waitUntil: 'domcontentloaded' });
+    await expect(page).toHaveURL(/#\\/order\\/list/);
+    const searchBtn = page.getByRole('button', { name: /搜\\s*索/ }).first();
+    const expandBtn = page.getByRole('button', { name: '展开' }).first();
+    await expect(keywordInput.or(searchBtn).or(expandBtn).first()).toBeVisible({ timeout: 15000 });
+    artifacts['plan_step_1'] = null;
+    // SLOT_END: plan_step_1
+  });
+});
+`.trim());
+
+    const step1Slot = code.match(/\/\/ SLOT_START: plan_step_1([\s\S]*?)\/\/ SLOT_END: plan_step_1/)?.[1] || '';
+
+    expect(step1Slot).not.toContain('keywordInput.or(searchBtn).or(expandBtn)');
+    expect(step1Slot).toContain("const searchBtn = page.getByRole('button', { name: /搜\\s*索/ }).first();");
+    expect(step1Slot).toContain("const expandBtn = page.getByRole('button', { name: '展开' }).first();");
+    expect(step1Slot).toContain("const expandBtnVisible = await expandBtn.isVisible().catch(() => false);");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('drops undeclared keywordInput table-wrapper unions from batch-account order-list ready anchors', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 order list ready undeclared keywordInput table union", async ({ page }) => {
+  const shared = { selectedOrderNo: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 1: 打开订单列表页", async () => {
+    // SLOT_START: plan_step_1
+    await page.goto('https://uat.example.com/#/order/list', { waitUntil: 'domcontentloaded' });
+    await expect(page).toHaveURL(/#\\/order\\/list/);
+    const expandBtn = page.getByRole('button', { name: '展开' }).first();
+    const searchBtn = page.getByRole('button', { name: /搜\\s*索/ }).first();
+    const resetBtn = page.getByRole('button', { name: /重\\s*置/ }).first();
+    await expect(expandBtn.or(searchBtn).first()).toBeVisible({ timeout: 15000 });
+    await expect(searchBtn).toBeVisible();
+    await expect(resetBtn).toBeVisible();
+    await expect(keywordInput.or(page.locator('.ant-table-wrapper:visible').first()).first()).toBeVisible({ timeout: 15000 });
+    artifacts['plan_step_1'] = null;
+    // SLOT_END: plan_step_1
+  });
+});
+`.trim());
+
+    const step1Slot = code.match(/\/\/ SLOT_START: plan_step_1([\s\S]*?)\/\/ SLOT_END: plan_step_1/)?.[1] || '';
+
+    expect(step1Slot).not.toContain("keywordInput.or(page.locator('.ant-table-wrapper:visible').first())");
+    expect(step1Slot).toContain("await expect(page.locator('.ant-table-wrapper:visible').first()).toBeVisible({ timeout: 15000 });");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('drops brittle pending-status visibility gates when step 2 already scans selectable rows', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 pending row assertions", async ({ page }) => {
+  const shared = { selectedOrderNo: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 2: 设置入账状态筛选为待申请", async () => {
+    // SLOT_START: plan_step_2
+    const searchBtn = page.getByRole('button', { name: '搜 索' }).first();
+    const listResp = __e2e.waitForApiResponse(page, { urlIncludes: '/order', method: 'GET' });
+    await searchBtn.click();
+    artifacts['plan_step_2'] = await listResp;
+    const pendingTag = page.getByText('待申请入账').first();
+    await expect(pendingTag).toBeVisible({ timeout: 15000 });
+    const candidates = page.locator('.ant-table-tbody tr[data-row-key]:visible');
+    await expect(candidates.first()).toBeVisible({ timeout: 20000 });
+    const count = await candidates.count();
+    let selectableRow = null;
+    for (let i = 0; i < count; i += 1) {
+      const row = candidates.nth(i);
+      try {
+        await __e2e.clickAntdRowCheckbox(page, row);
+        selectableRow = row;
+        break;
+      } catch {}
+    }
+    if (!selectableRow) {
+      throw new Error('前置数据不足：筛选“待申请”后没有可勾选订单行');
+    }
+    artifacts['plan_step_2_selectable_row'] = selectableRow;
+    // SLOT_END: plan_step_2
+  });
+});
+`.trim());
+
+    expect(code).not.toContain("const pendingTag = page.getByText('待申请入账').first();");
+    expect(code).not.toContain("await expect(pendingTag).toBeVisible({ timeout: 15000 });");
+    expect(code).not.toContain("await expect(candidates.first()).toBeVisible({ timeout: 20000 });");
+    expect(code).toContain("const candidates = page.locator('.ant-table-tbody tr[data-row-key]:visible');");
+    expect(code).toContain("await __e2e.clickAntdRowCheckbox(page, row);");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('rewrites legacy batch-account step 2 order extraction into clone-safe selectedOrderNo capture', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 legacy step2 order extraction", async ({ page }) => {
+  const shared = { selectedOrderNo: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 2: 提取并勾选首条订单记录", async () => {
+    // SLOT_START: plan_step_2
+    const candidateRows = page.locator('.ant-table-tbody tr[data-row-key]:visible');
+    const rowCount = await candidateRows.count();
+    if (rowCount === 0) {
+      throw new Error('前置数据不足：筛选后无可用订单记录');
+    }
+
+    let targetRow = null;
+    for (let i = 0; i < rowCount; i += 1) {
+      const row = candidateRows.nth(i);
+      try {
+        await __e2e.clickAntdRowCheckbox(page, row);
+        targetRow = row;
+        break;
+      } catch {
+        // 尝试下一条可勾选行
+      }
+    }
+
+    if (!targetRow) {
+      throw new Error('前置数据不足：筛选结果中没有可勾选订单行');
+    }
+
+    const orderLink = targetRow.locator('a').first();
+    let selectedOrderNo = '';
+    if (await orderLink.count()) {
+      selectedOrderNo = (await orderLink.innerText()).trim();
+    }
+
+    if (!selectedOrderNo) {
+      const rowText = (await targetRow.innerText()).replace(/\\s+/g, ' ').trim();
+      const tokens = rowText.split(' ').filter(Boolean);
+      selectedOrderNo = tokens.find((t) => /^[A-Za-z0-9_-]{6,64}$/.test(t) && !/^1\\d{10}$/.test(t) && !/^\\d+(\\.\\d+)?$/.test(t)) || '';
+    }
+
+    if (!selectedOrderNo) {
+      throw new Error('未能从已勾选订单行提取订单号 selectedOrderNo');
+    }
+
+    shared.selectedOrderNo = selectedOrderNo;
+    artifacts['plan_step_2'] = { selectedOrderNo: shared.selectedOrderNo, rowKey: await targetRow.getAttribute('data-row-key') };
+
+    await expect(page.locator('.ant-checkbox-wrapper-checked, .ant-checkbox-checked').first()).toBeVisible();
+    // SLOT_END: plan_step_2
+  });
+});
+`.trim());
+
+    const step2Slot = code.match(/\/\/ SLOT_START: plan_step_2([\s\S]*?)\/\/ SLOT_END: plan_step_2/)?.[1] || '';
+
+    expect(step2Slot).toContain("artifacts['plan_step_2_row'] = targetRow;");
+    expect(step2Slot).toContain("artifacts.plan_step_2_targetRow = targetRow;");
+    expect(step2Slot).toContain("const linkNodes = targetRow.locator('a:visible');");
+    expect(step2Slot).toContain("const rowText = rowTextParts.join(' ').trim();");
+    expect(step2Slot).toContain("const selectedOrderNo = selectedOrderNoFromLink || selectedOrderNoFromRowKey || selectedOrderNoFromTokens;");
+    expect(step2Slot).toContain("artifacts['plan_step_2'] = { row: targetRow, rowText, rowKey, linkTexts, selectedOrderNo: shared.selectedOrderNo || '' };");
+    expect(step2Slot).not.toContain("const orderLink = targetRow.locator('a').first();");
+    expect(step2Slot).not.toContain("throw new Error('未能从已勾选订单行提取订单号 selectedOrderNo');");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('keeps the selectable-row missing guard outside the modal step-3 selectedOrderNo extraction rewrite', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 selectable row guard stays outside extraction", async ({ page }) => {
+  const shared = { selectedOrderNo: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 3: 提取并勾选目标订单", async () => {
+    // SLOT_START: plan_step_3
+    const targetRow = artifacts["plan_step_2_selectable_row"];
+    if (!targetRow) {
+      throw new Error('前置失败：缺少已勾选订单行，无法提取订单号');
+    }
+
+    let selectedOrderNo = '';
+    const orderLink = targetRow.locator('a').first();
+    if (await orderLink.count()) {
+      selectedOrderNo = (await orderLink.innerText()).trim();
+    }
+
+    if (!selectedOrderNo) {
+      const rowText = (await targetRow.innerText()).replace(/\\s+/g, ' ').trim();
+      const tokens = rowText.split(' ').filter(Boolean);
+      selectedOrderNo = tokens.find((t) => /^[A-Za-z0-9_-]{6,64}$/.test(t) && !/^1\\d{10}$/.test(t) && !/^\\d+(\\.\\d+)?$/.test(t)) || '';
+    }
+
+    shared.selectedOrderNo = selectedOrderNo;
+    artifacts['plan_step_3'] = { selectedOrderNo };
+    // SLOT_END: plan_step_3
+  });
+});
+`.trim());
+
+    const step3Slot = code.match(/\/\/ SLOT_START: plan_step_3([\s\S]*?)\/\/ SLOT_END: plan_step_3/)?.[1] || '';
+
+    expect(step3Slot).toContain("if (!targetRow) {");
+    expect(step3Slot).toContain("throw new Error('前置失败：缺少已勾选订单行，无法提取订单号');");
+    expect(step3Slot).toContain("artifacts['plan_step_3_row'] = targetRow;");
+    expect(step3Slot).toContain("const selectedOrderNo = selectedOrderNoFromLink || selectedOrderNoFromRowKey || selectedOrderNoFromTokens;");
+    expect(step3Slot).not.toContain("if (!targetRow) {\n      artifacts['plan_step_3_row'] = targetRow;");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('rewrites modal step-2 selected-value drift into the deterministic visible-filter helper', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 step2 selected value drift", async ({ page }) => {
+  const shared = { selectedOrderNo: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 2: 按待申请状态筛选订单", async () => {
+    // SLOT_START: plan_step_2
+    const expandBtn = page.getByRole('button', { name: '展开' }).first();
+    await expect(expandBtn).toBeVisible({ timeout: 15000 });
+    await expandBtn.click();
+
+    const searchBtn = page.getByRole('button', { name: '搜 索' }).first();
+    await expect(searchBtn).toBeVisible({ timeout: 10000 });
+
+    const filterSurface = page.locator('body');
+    const statusFieldByLabel = filterSurface.locator('.ant-form-item:visible').filter({ hasText: /入账状态/ }).first();
+    const statusField = (await statusFieldByLabel.count()) ? statusFieldByLabel : filterSurface.locator('.ant-form-item:visible').filter({ has: page.locator('.ant-select:visible') }).first();
+    await expect(statusField).toBeVisible({ timeout: 10000 });
+
+    await __e2e.selectAntdOption(page, statusField, { label: '待申请' });
+
+    const listResp = __e2e.waitForApiResponse(page, { urlIncludes: '/order', method: 'GET' });
+    await searchBtn.click();
+    artifacts["plan_step_2"] = await listResp;
+
+    const selectedValue = statusField.locator('.ant-select-selection-selected-value:visible, .ant-select-selection-item:visible').first();
+    if (await selectedValue.count()) {
+      await expect(selectedValue).toContainText('待申请', { timeout: 10000 });
+    } else {
+      await expect(page.locator('body')).toContainText('待申请', { timeout: 10000 });
+    }
+
+    const candidateRows = page.locator('.ant-table-tbody tr[data-row-key]:visible');
+    const placeholder = page.locator('.ant-table-placeholder:visible').first();
+    await expect(candidateRows.first().or(placeholder)).toBeVisible({ timeout: 15000 });
+
+    const hasRows = await candidateRows.count();
+    if (hasRows === 0) {
+      test.skip(true, '前置数据不足：筛选“待申请”后无可用订单数据');
+    }
+    // SLOT_END: plan_step_2
+  });
+});
+`.trim());
+
+    const step2Slot = code.match(/\/\/ SLOT_START: plan_step_2([\s\S]*?)\/\/ SLOT_END: plan_step_2/)?.[1] || '';
+
+    expect(step2Slot).toContain("const pendingFilter = await __e2e.applyDeterministicVisibleAntdFilter(page, {");
+    expect(step2Slot).toContain("summary: '入账状态=待申请',");
+    expect(step2Slot).toContain("artifacts['plan_step_2'] = pendingFilter;");
+    expect(step2Slot).not.toContain('const selectedValue = statusField.locator');
+    expect(step2Slot).not.toContain("await expect(selectedValue).toContainText('待申请', { timeout: 10000 });");
+    expect(step2Slot).not.toContain("await expect(page.locator('body')).toContainText('待申请', { timeout: 10000 });");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('sanitizes step-3 selectable-row token extraction variants into the deterministic selectedOrderNo chain', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 selectable row token extraction", async ({ page }) => {
+  const shared = { selectedOrderNo: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 3: 勾选订单并提取订单号", async () => {
+    // SLOT_START: plan_step_3
+    const targetRow = artifacts["plan_step_2_selectable_row"];
+    if (!targetRow) throw new Error('未找到可用目标行，无法提取订单号');
+
+    const rowText = (await targetRow.innerText().catch(() => '')).trim();
+    const tokens = rowText.split(/\\s+/).filter(Boolean);
+    const orderNoCandidate = tokens.find((t) => /^[A-Za-z0-9_-]{6,64}$/.test(t) && !/^1\\d{10}$/.test(t) && !/^\\d+(\\.\\d+)?$/.test(t));
+
+    if (!orderNoCandidate) {
+      throw new Error('未能从已勾选行提取有效订单号');
+    }
+
+    shared.selectedOrderNo = orderNoCandidate;
+    artifacts["plan_step_3"] = { selectedOrderNo: shared.selectedOrderNo };
+
+    if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = true;
+    // SLOT_END: plan_step_3
+  });
+});
+`.trim());
+
+    const step3Slot = code.match(/\/\/ SLOT_START: plan_step_3([\s\S]*?)\/\/ SLOT_END: plan_step_3/)?.[1] || '';
+
+    expect(step3Slot).toContain('artifacts.plan_step_3_targetRow = targetRow;');
+    expect(step3Slot).toContain("const linkNodes = targetRow.locator('a:visible');");
+    expect(step3Slot).toContain("const selectedOrderNo = selectedOrderNoFromLink || selectedOrderNoFromRowKey || selectedOrderNoFromTokens;");
+    expect(step3Slot).toContain("if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = { rowKey, rowText, linkTexts };");
+    expect(step3Slot).not.toContain("const tokens = rowText.split(/\\s+/).filter(Boolean);");
+    expect(step3Slot).not.toContain("const orderNoCandidate = tokens.find");
+    expect(step3Slot).not.toContain("throw new Error('未能从已勾选行提取有效订单号');");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('drops post-click checkbox checked assertions from live modal step-3 variants and rewrites extraction to row/link helpers', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 step3 checkbox checked drift", async ({ page }) => {
+  const shared = { selectedOrderNo: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 3: 勾选订单并提取订单号", async () => {
+    // SLOT_START: plan_step_3
+    const candidateRows = page.locator('.ant-table-tbody tr[data-row-key]:visible');
+    const rowCount = await candidateRows.count();
+    let targetRow = null;
+
+    for (let i = 0; i < Math.min(rowCount, 20); i += 1) {
+      const row = candidateRows.nth(i);
+      try {
+        await __e2e.clickAntdRowCheckbox(page, row);
+        targetRow = row;
+        break;
+      } catch {}
+    }
+
+    if (!targetRow) {
+      throw new Error('未找到可勾选的真实订单行');
+    }
+
+    const targetRowKey = ((await targetRow.getAttribute('data-row-key')) || '').trim();
+    if (targetRowKey) {
+      const checkedByRowKey = page.locator(\`tr[data-row-key="\${targetRowKey}"] .ant-checkbox-wrapper-checked, tr[data-row-key="\${targetRowKey}"] .ant-checkbox-checked\`);
+      await expect(checkedByRowKey.first()).toBeVisible({ timeout: 8000 });
+    } else {
+      const checkedAny = page.locator('.ant-checkbox-wrapper-checked, .ant-checkbox-checked');
+      await expect(checkedAny.first()).toBeVisible({ timeout: 8000 });
+    }
+
+    let selectedOrderNo = '';
+
+    const orderNoCell = targetRow.locator('td').filter({ hasText: /订单号|订单编号/ }).first();
+    if (await orderNoCell.count()) {
+      const orderNoCellText = ((await orderNoCell.innerText().catch(() => '')) || '').replace(/\\s+/g, ' ').trim();
+      const orderNoFromCell = (orderNoCellText.match(/[A-Za-z0-9_-]{6,64}|\\d{12,64}/g) || []).find((token) => {
+        const t = String(token || '').trim();
+        if (!t) return false;
+        if (/^1\\d{10}$/.test(t)) return false;
+        if (/^\\d+(?:\\.\\d{1,2})?$/.test(t) && (t.includes('.') || t.length <= 8)) return false;
+        return true;
+      }) || '';
+      if (orderNoFromCell) selectedOrderNo = orderNoFromCell;
+    }
+
+    if (!selectedOrderNo) {
+      const linkText = ((await targetRow.locator('a').first().innerText().catch(() => '')) || '').replace(/\\s+/g, '').trim();
+      if (linkText && !/^1\\d{10}$/.test(linkText) && !/^\\d+(?:\\.\\d{1,2})?$/.test(linkText)) {
+        selectedOrderNo = linkText;
+      }
+    }
+
+    if (!selectedOrderNo) {
+      const rowText = ((await targetRow.innerText().catch(() => '')) || '').replace(/\\s+/g, ' ').trim();
+      const tokens = rowText.match(/[A-Za-z0-9_-]{6,64}|\\d{12,64}/g) || [];
+      selectedOrderNo = tokens.find((token) => {
+        const t = String(token || '').trim();
+        if (!t) return false;
+        if (/^1\\d{10}$/.test(t)) return false;
+        if (/^(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])$/.test(t)) return false;
+        if (/^\\d+(?:\\.\\d{1,2})?$/.test(t) && (t.includes('.') || t.length <= 8)) return false;
+        return true;
+      }) || '';
+    }
+
+    if (!selectedOrderNo) {
+      throw new Error('未能从已勾选订单行提取订单号');
+    }
+
+    shared.selectedOrderNo = String(selectedOrderNo).trim();
+    if (!shared.selectedOrderNo) {
+      throw new Error('selectedOrderNo 提取结果为空');
+    }
+
+    artifacts['plan_step_3_targetRow'] = targetRow;
+    artifacts['plan_step_3_rowKey'] = targetRowKey;
+    artifacts['plan_step_3'] = { selectedOrderNo: shared.selectedOrderNo };
+    // SLOT_END: plan_step_3
+  });
+});
+`.trim());
+
+    const step3Slot = code.match(/\/\/ SLOT_START: plan_step_3([\s\S]*?)\/\/ SLOT_END: plan_step_3/)?.[1] || '';
+
+    expect(step3Slot).toContain("await __e2e.clickAntdRowCheckbox(page, row);");
+    expect(step3Slot).toContain("const linkNodes = targetRow.locator('a:visible');");
+    expect(step3Slot).toContain("const selectedOrderNo = selectedOrderNoFromLink || selectedOrderNoFromRowKey || selectedOrderNoFromTokens;");
+    expect(step3Slot).not.toContain('.ant-checkbox-wrapper-checked');
+    expect(step3Slot).not.toContain("throw new Error('selectedOrderNo 提取结果为空');");
+    expect(step3Slot).not.toContain("const orderNoCell = targetRow.locator('td').filter({ hasText: /订单号|订单编号/ }).first();");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('rewrites repair-style pickedOrderNo step-3 variants into the deterministic selectedOrderNo chain', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 repair pickedOrderNo extraction", async ({ page }) => {
+  const shared = { selectedOrderNo: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 3: 勾选订单并提取订单号", async () => {
+    // SLOT_START: plan_step_3
+    const rows = page.locator('.ant-table-tbody tr[data-row-key]:visible');
+    const count = await rows.count();
+    if (!count) throw new Error('前置数据不足：当前列表无可见订单行');
+
+    let pickedRow = null;
+    let pickedOrderNo = '';
+
+    for (let i = 0; i < Math.min(count, 12); i += 1) {
+      const row = rows.nth(i);
+      const rowText = (await row.innerText().catch(() => '')).trim();
+      const tokens = rowText.split(/\\s+/).filter(Boolean);
+      const candidate = tokens.find((t) => {
+        if (/^1\\d{10}$/.test(t)) return false;
+        if (/^\\d+(\\.\\d+)?$/.test(t)) return false;
+        return /^[A-Za-z0-9_-]{6,64}$/.test(t);
+      }) || '';
+
+      try {
+        await __e2e.clickAntdRowCheckbox(page, row);
+        pickedRow = row;
+        pickedOrderNo = candidate;
+        break;
+      } catch {}
+    }
+
+    if (!pickedRow) throw new Error('前置数据不足：未找到可勾选订单行');
+    if (!pickedOrderNo) {
+      const rowKey = ((await pickedRow.getAttribute('data-row-key')) || '').trim();
+      if (rowKey && !/^1\\d{10}$/.test(rowKey) && !/^\\d+(\\.\\d+)?$/.test(rowKey)) {
+        pickedOrderNo = rowKey;
+      }
+    }
+    if (!pickedOrderNo) throw new Error('订单号提取失败：未能从已勾选行提取有效订单号');
+
+    shared.selectedOrderNo = pickedOrderNo;
+    artifacts["plan_step_3"] = { selectedOrderNo: pickedOrderNo, row: pickedRow };
+    // SLOT_END: plan_step_3
+  });
+});
+`.trim());
+
+    const step3Slot = code.match(/\/\/ SLOT_START: plan_step_3([\s\S]*?)\/\/ SLOT_END: plan_step_3/)?.[1] || '';
+
+    expect(step3Slot).toContain("await __e2e.clickAntdRowCheckbox(page, row);");
+    expect(step3Slot).toContain("artifacts.plan_step_3_targetRow = pickedRow;");
+    expect(step3Slot).toContain("const selectedOrderNo = selectedOrderNoFromLink || selectedOrderNoFromRowKey || selectedOrderNoFromTokens;");
+    expect(step3Slot).not.toContain("let pickedOrderNo = '';");
+    expect(step3Slot).not.toContain("throw new Error('订单号提取失败：未能从已勾选行提取有效订单号');");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('dedupes clone-safe rowText aggregation when rewriting modal step-3 extraction', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 duplicate rowText aggregation", async ({ page }) => {
+  const shared = { selectedOrderNo: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 3: 勾选订单并提取订单号", async () => {
+    // SLOT_START: plan_step_3
+    const rows = page.locator('.ant-table-tbody tr[data-row-key]:visible');
+    const rowCount = await rows.count();
+    let targetRow = null;
+
+    for (let i = 0; i < rowCount; i += 1) {
+      const row = rows.nth(i);
+      try {
+        await __e2e.clickAntdRowCheckbox(page, row);
+        targetRow = row;
+        break;
+      } catch {}
+    }
+
+    if (!targetRow) {
+      throw new Error('未找到可勾选的真实订单行，无法提取订单号');
+    }
+
+    const rowTextRowKey = ((await targetRow.getAttribute('data-row-key')) || '').trim();
+    const rowTextSources = rowTextRowKey ? page.locator(\`tr[data-row-key="\${rowTextRowKey}"]\`) : targetRow;
+    const rowTextParts = [];
+    const rowTextSourceCount = rowTextRowKey ? await rowTextSources.count() : 1;
+    for (let rowTextIndex = 0; rowTextIndex < rowTextSourceCount; rowTextIndex += 1) {
+      const rowTextSource = rowTextRowKey ? rowTextSources.nth(rowTextIndex) : targetRow;
+      const rowTextPart = (await rowTextSource.innerText().catch(() => '')).replace(/\\s+/g, ' ').trim();
+      if (rowTextPart && !rowTextParts.includes(rowTextPart)) rowTextParts.push(rowTextPart);
+    }
+    const rowText = rowTextParts.join(' ').trim();
+
+    let selectedOrderNo = '';
+    const tokens = rowText.split(/\\s+/).filter(Boolean);
+    selectedOrderNo = tokens.find((t) => /^[A-Za-z0-9_-]{6,64}$/.test(t)) || '';
+    if (!selectedOrderNo) {
+      throw new Error('未能从已勾选订单行提取订单号');
+    }
+
+    shared.selectedOrderNo = String(selectedOrderNo).trim();
+    artifacts['plan_step_3'] = { selectedOrderNo: shared.selectedOrderNo };
+    // SLOT_END: plan_step_3
+  });
+});
+`.trim());
+
+    const step3Slot = code.match(/\/\/ SLOT_START: plan_step_3([\s\S]*?)\/\/ SLOT_END: plan_step_3/)?.[1] || '';
+    const rowTextRowKeyMatches = step3Slot.match(/const rowTextRowKey =/g) || [];
+
+    expect(rowTextRowKeyMatches).toHaveLength(1);
+    expect(step3Slot).toContain("artifacts.plan_step_3_targetRow = targetRow;");
+    expect(step3Slot).toContain("const selectedOrderNo = selectedOrderNoFromLink || selectedOrderNoFromRowKey || selectedOrderNoFromTokens;");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('drops bare table-first visibility checks from step-2 search variants and leaves the real row selection to later steps', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 pending row first visible drift", async ({ page }) => {
+  const shared = { selectedOrderNo: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 2: 展开筛选并设置入账状态", async () => {
+    // SLOT_START: plan_step_2
+    const expandBtn = page.getByRole('button', { name: '展开' }).first();
+    if (await expandBtn.isVisible().catch(() => false)) {
+      await expandBtn.click();
+    }
+
+    const searchBtn = page.getByRole('button', { name: '搜 索' }).first();
+    const listRespPromise = __e2e.waitForApiResponse(page, { urlIncludes: '/order', method: 'GET' });
+
+    const filterRoot = page.locator('.ant-form, .search, .ant-card').filter({ has: searchBtn }).first();
+    await __e2e.selectAntdOption(page, filterRoot, { label: '待申请' });
+
+    await searchBtn.click();
+    artifacts['plan_step_2'] = await listRespPromise;
+
+    const rows = page.locator('.ant-table-tbody tr[data-row-key]:visible');
+    await expect(rows.first()).toBeVisible({ timeout: 15000 });
+    // SLOT_END: plan_step_2
+  });
+});
+`.trim());
+
+    expect(code).toContain("const rows = page.locator('.ant-table-tbody tr[data-row-key]:visible');");
+    expect(code).not.toContain("await expect(rows.first()).toBeVisible({ timeout: 15000 });");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('prefers visible step-2 status candidates over hidden count-only matches', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 visible status candidates", async ({ page }) => {
+  const shared = { selectedOrderNo: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 2: 筛选待申请订单", async () => {
+    // SLOT_START: plan_step_2
+    const searchBtn = page.getByRole('button', { name: '搜 索' }).first();
+    await expect(searchBtn).toBeVisible();
+
+    const statusCandidates = [
+      page.locator('.ant-form-item').filter({ hasText: /订单状态|入账状态/ }).first(),
+      page.locator('.ant-form-item').filter({ has: page.locator('.ant-select:visible') }).nth(0),
+      page.locator('.ant-form-item').filter({ has: page.locator('.ant-select:visible') }).nth(1),
+    ];
+
+    let statusSource = null;
+    for (const candidate of statusCandidates) {
+      if (await candidate.count().catch(() => 0)) {
+        statusSource = candidate;
+        break;
+      }
+    }
+    if (!statusSource) {
+      throw new Error('未找到可用的状态筛选控件（订单状态/入账状态）');
+    }
+
+    await __e2e.selectAntdOption(page, statusSource, { label: '待申请' });
+    // SLOT_END: plan_step_2
+  });
+});
+`.trim());
+
+    expect(code).not.toContain('await candidate.count().catch(() => 0)');
+    expect(code).toContain('await candidate.isVisible().catch(() => false)');
+    expect(() => new Script(code)).not.toThrow();
+  });
+
   it('drops brittle bookedMgmt surface anchors and hidden placeholder fallbacks', () => {
     const code = sanitizeGeneratedCode(`
 test("批量申请入账 bookedMgmt surface drift", async ({ page }) => {
@@ -2428,6 +4012,61 @@ test("批量申请入账 bookedMgmt surface drift", async ({ page }) => {
     expect(code).not.toContain("await expect(keywordInputByPlaceholder).toBeVisible({ timeout: 10000 });");
     expect(code).toContain("const searchBtn = page.getByRole('button', { name: /搜\\s*索/i }).first();");
     expect(code).toContain("const clearBtn = page.getByRole('button', { name: '全部清除' }).first();");
+  });
+
+  it('rewrites weak bookedMgmt waitForURL transition blocks into the hardened BOOKED_URL fallback', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 weak bookedMgmt transition", async ({ page }) => {
+  const shared = { selectedOrderNo: '202604141126437251', selectedServiceItem: '科技型中小企业认定', selectedAmount: '5000.00' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 6: 校验跳转入账管理页", async () => {
+    // SLOT_START: plan_step_6
+    await page.waitForURL(/#\\/payment|bookedMgmt|account/i, { timeout: 20000 });
+    await expect(page).toHaveURL(/#\\/payment|bookedMgmt|account/i);
+
+    const paymentAnchor = page.getByText(/入账管理|入账确认/i).first();
+    await expect(paymentAnchor).toBeVisible({ timeout: 10000 });
+    artifacts['plan_step_6'] = { url: page.url() };
+    // SLOT_END: plan_step_6
+  });
+});
+`.trim());
+
+    const step6Slot = code.match(/\/\/ SLOT_START: plan_step_6([\s\S]*?)\/\/ SLOT_END: plan_step_6/)?.[1] || '';
+
+    expect(step6Slot).toContain("const BOOKED_URL = /#\\/payment\\/bookedMgmt/i;");
+    expect(step6Slot).toContain("await page.goto('https://uat-service.yikaiye.com/#/payment/bookedMgmt', { waitUntil: 'domcontentloaded' });");
+    expect(step6Slot).toContain("const keywordInputById = page.locator('input#form_in_modal_testKeyWord:visible, input#service-data-item_keyWord:visible').first();");
+    expect(step6Slot).toContain("artifacts['plan_step_6'] = {");
+    expect(step6Slot).not.toContain("await page.waitForURL(/#\\/payment|bookedMgmt|account/i, { timeout: 20000 });");
+    expect(step6Slot).not.toContain("const paymentAnchor = page.getByText(/入账管理|入账确认/i).first();");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('drops bare bookedMgmt placeholder visibility assertions without explicit timeout', () => {
+    const code = sanitizeGeneratedCode(`
+test("批量申请入账 bookedMgmt verification placeholder drift", async ({ page }) => {
+  const shared = { selectedOrderNo: '202604141126437251', selectedServiceItem: '科技型中小企业认定', selectedAmount: '18000.00' };
+  const artifacts = Object.create(null);
+
+  await test.step("Verification: 最终业务验收", async () => {
+    // SLOT_START: verification
+    await expect(page).toHaveURL(/#\\/payment\\/bookedMgmt/);
+    await expect(page.getByText('入账确认').first()).toBeVisible();
+    await expect(page.getByPlaceholder('请输入关键词').first()).toBeVisible();
+    const finalRow = await __e2e.findAntdTableRow(page, { hasTexts: [shared.selectedOrderNo] });
+    await expect(finalRow).toBeVisible();
+    // SLOT_END: verification
+  });
+});
+`.trim());
+
+    expect(code).not.toContain("await expect(page.getByPlaceholder('请输入关键词').first()).toBeVisible();");
+    expect(code).toContain("await expect(page).toHaveURL(/#\\/payment\\/bookedMgmt/);");
+    expect(code).toContain("await expect(page.getByText('入账确认').first()).toBeVisible();");
+    expect(code).toContain("const finalRow = artifacts['plan_step_8_row'] || artifacts['plan_step_7_row'] || ((artifacts['plan_step_7_record'] && artifacts['plan_step_7_record'].row) || null) || await __e2e.findAntdTableRow(page, { hasTexts: [shared.selectedOrderNo], allowMultipleUniqueMatches: true });");
+    expect(() => new Script(code)).not.toThrow();
   });
 
   it('rewrites legacy batch-account step-4 extraction to reuse amount-field and row-service fallbacks', () => {
@@ -4087,7 +5726,7 @@ Error: element(s) not found`,
     expect(template).toContain("const MAILS_LIST_URL = 'https://uat-service.yikaiye.com/#/mails/mailslist';");
   });
 
-  it('does not reuse the create-to-order deterministic recipe template for create-list verification tasks even if planning includes that recipe', () => {
+  it('keeps create-to-order deterministic templates out of narrowed create-list verification planning', () => {
     const snapshot = {
       url: 'https://uat.example.com/#/business/createbusiness',
       title: '创建商机',
@@ -4110,7 +5749,7 @@ Error: element(s) not found`,
     };
     const planning = resolveIntentPromptPlanningContext(snapshot, description, context);
 
-    expect(planning.recipes?.map((item) => item.recipe.slug)).toContain('business.create-to-order');
+    expect(planning.recipes?.map((item) => item.recipe.slug)).not.toContain('business.create-to-order');
 
     const template = resolveDeterministicTemplate(
       snapshot,
@@ -5827,5 +7466,901 @@ Received string: "批量申请入账 订单号：202604011028194322 服务项：
     expect(prompt).toContain('自动提级条件=负向 / 混合 signal 清零，且至少 2 条已判定 supporting rules 转为长期正向。');
     expect(prompt).toContain('长期证据=混合观察(2 条已判定规则)');
     expect(prompt).toContain('已从 suppressed 保守释放');
+  });
+
+  it('sanitizes list-search-detail step3 extraction into a deterministic selectedOrderNo chain', () => {
+    const code = sanitizeGeneratedCode(`
+test("list_search_detail step3 sanitize", async ({ page }) => {
+  const TARGET_URL = 'https://uat.example.com/#/order/list';
+  const shared = { selectedOrderNo: '', contactName: '', contactMobile: '', accountStatus: '' };
+  const artifacts = Object.create(null);
+  await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
+
+  await test.step("Step 3: 从待申请结果表格提取一条订单号", async () => {
+    // SLOT_START: plan_step_3
+    const candidateRows = page.locator('tr[data-row-key]:visible');
+    const count = await candidateRows.count();
+    if (count < 1) throw new Error('无可提取订单号的数据行');
+
+    let pickedOrderNo = '';
+    for (let i = 0; i < Math.min(count, 10); i++) {
+      const row = candidateRows.nth(i);
+      const rowText = (await row.innerText().catch(() => '')).trim();
+      if (!rowText) continue;
+
+      const link = row.locator('a:visible').first();
+      if (await link.count()) {
+        const linkText = ((await link.innerText().catch(() => '')) || '').trim();
+        if (linkText && !/^1\\d{10}$/.test(linkText) && !/^\\d+(\\.\\d+)?$/.test(linkText)) {
+          pickedOrderNo = linkText;
+          break;
+        }
+      }
+
+      const tokens = rowText.split(/\\s+/).map((t) => t.trim()).filter(Boolean);
+      const token = tokens.find((t) => /^[A-Za-z0-9_-]{6,64}$/.test(t) && !/^1\\d{10}$/.test(t) && !/^\\d+(\\.\\d+)?$/.test(t)) || '';
+      if (token) {
+        pickedOrderNo = token;
+        break;
+      }
+    }
+
+    if (!pickedOrderNo) {
+      throw new Error('未能从真实结果行提取到有效订单号');
+    }
+
+    shared.selectedOrderNo = pickedOrderNo;
+    expect(shared.selectedOrderNo).toBeTruthy();
+    // SLOT_END: plan_step_3
+  });
+});
+`.trim());
+
+    const step3Slot = code.match(/\/\/ SLOT_START: plan_step_3([\s\S]*?)\/\/ SLOT_END: plan_step_3/)?.[1] || '';
+
+    expect(step3Slot).toContain("artifacts['plan_step_3_row'] = targetRow;");
+    expect(step3Slot).toContain("const candidateOrderNoFromLinkLooksLikeLetterPrefixedShortCode = /^[A-Za-z]\\d{7,11}$/.test(candidateOrderNoFromLinkNormalized);");
+    expect(step3Slot).toContain("const selectedOrderNoFromRowKeyCandidate = String(rowKey || '').trim();");
+    expect(step3Slot).toContain("const selectedOrderNo = selectedOrderNoFromLink || selectedOrderNoFromRowKey || selectedOrderNoFromTokens;");
+    expect(step3Slot).toContain("throw new Error('前置失败：selectedOrderNo 为空，无法执行二次检索');");
+    expect(step3Slot).not.toContain("const link = row.locator('a:visible').first();");
+    expect(step3Slot).not.toContain("expect(shared.selectedOrderNo).toBeTruthy();");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('sanitizes live list-search-detail step3 variants that reuse ambiguous pending-status row lookups', () => {
+    const code = sanitizeGeneratedCode(`
+test("list_search_detail live ambiguous step3", async ({ page }) => {
+  const TARGET_URL = 'https://uat.example.com/#/order/list';
+  const shared = { selectedOrderNo: '', contactName: '', contactMobile: '', accountStatus: '' };
+  const artifacts = Object.create(null);
+  await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
+
+  await test.step("Step 3: 从候选结果提取唯一订单号", async () => {
+    // SLOT_START: plan_step_3
+    const candidateRow = await __e2e.findAntdTableRow(page, { hasTexts: ['待申请入账', '服务中'] });
+
+    let selectedOrderNo = '';
+    const orderLink = candidateRow.locator('a').first();
+    if (await orderLink.count()) {
+      selectedOrderNo = (await orderLink.innerText()).trim();
+    }
+
+    if (!selectedOrderNo) {
+      const rowKey = ((await candidateRow.getAttribute('data-row-key')) || '').trim();
+      if (rowKey && !/^1\\d{10}$/.test(rowKey) && !/^\\d+(\\.\\d+)?$/.test(rowKey)) {
+        selectedOrderNo = rowKey;
+      }
+    }
+
+    if (!selectedOrderNo) {
+      const rowText = await candidateRow.innerText();
+      const tokens = rowText.match(/[A-Za-z0-9_-]{6,}/g) || [];
+      selectedOrderNo = tokens.find((t) => !/^1\\d{10}$/.test(t) && !/^\\d+(\\.\\d+)?$/.test(t)) || '';
+    }
+
+    if (!selectedOrderNo) {
+      throw new Error('数据缺口：未能从候选结果行提取唯一订单号 selectedOrderNo');
+    }
+
+    shared.selectedOrderNo = selectedOrderNo;
+    artifacts['plan_step_3'] = { selectedOrderNo };
+    expect(shared.selectedOrderNo).toBeTruthy();
+    // SLOT_END: plan_step_3
+  });
+});
+`.trim());
+
+    const step3Slot = code.match(/\/\/ SLOT_START: plan_step_3([\s\S]*?)\/\/ SLOT_END: plan_step_3/)?.[1] || '';
+
+    expect(step3Slot).toContain("const candidateRows = page.locator('.ant-table-tbody tr[data-row-key]:visible');");
+    expect(step3Slot).toContain("const candidateOrderNoFromLinkLooksLikeLetterPrefixedShortCode = /^[A-Za-z]\\d{7,11}$/.test(candidateOrderNoFromLinkNormalized);");
+    expect(step3Slot).toContain("if (!candidateRowText || !/待申请入账|待申请/.test(candidateRowText)) continue;");
+    expect(step3Slot).toContain("const selectedOrderNo = selectedOrderNoFromLink || selectedOrderNoFromRowKey || selectedOrderNoFromTokens;");
+    expect(step3Slot).toContain("throw new Error('前置失败：selectedOrderNo 为空，无法执行二次检索');");
+    expect(step3Slot).not.toContain("findAntdTableRow(page, { hasTexts: ['待申请入账', '服务中'] })");
+    expect(step3Slot).not.toContain("expect(shared.selectedOrderNo).toBeTruthy();");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('sanitizes list-search-detail step2 selectedText assertions into a visible-only pending filter block', () => {
+    const code = sanitizeGeneratedCode(`
+test("list_search_detail step2 selectedText drift", async ({ page }) => {
+  const TARGET_URL = 'https://uat.example.com/#/order/list';
+  const shared = { selectedOrderNo: '', contactName: '', contactMobile: '', accountStatus: '' };
+  const artifacts = Object.create(null);
+  await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
+
+  await test.step("Step 2: 展开筛选并设置入账状态", async () => {
+    // SLOT_START: plan_step_2
+    const expandBtn = page.getByRole('button', { name: '展开' }).first();
+    if (await expandBtn.isVisible().catch(() => false)) {
+      await expandBtn.click();
+    }
+
+    const statusField = page.locator('.ant-form-item:visible').filter({ hasText: /入账状态/ }).first();
+    await expect(statusField).toBeVisible({ timeout: 10000 });
+    await __e2e.selectAntdOption(page, statusField, { label: '待申请' });
+
+    const searchBtn = page.getByRole('button', { name: /搜\\s*索/i }).first();
+    await expect(searchBtn).toBeVisible({ timeout: 10000 });
+    await searchBtn.click();
+
+    const selectedText = await (async () => {
+      const candidates = [
+        statusField.locator('.ant-select-selection-selected-value:visible').first(),
+        statusField.locator('.ant-select-selection-item:visible').first(),
+        statusField.locator('input:visible').first(),
+      ];
+      for (const c of candidates) {
+        const t = ((await c.inputValue().catch(() => '')) || (await c.textContent().catch(() => '')) || '').trim();
+        if (t) return t;
+      }
+      return '';
+    })();
+    expect(selectedText).toContain('待申请');
+
+    artifacts['plan_step_2'] = { status: '待申请', selectedText };
+    // SLOT_END: plan_step_2
+  });
+});
+`.trim());
+
+    const step2Slot = code.match(/\/\/ SLOT_START: plan_step_2([\s\S]*?)\/\/ SLOT_END: plan_step_2/)?.[1] || '';
+
+    expect(step2Slot).toContain("const statusCandidates = [");
+    expect(step2Slot).toContain("if (await candidate.isVisible().catch(() => false)) {");
+    expect(step2Slot).toContain("const listRespPromise = __e2e.waitForApiResponse(page, { urlIncludes: '/order', method: 'GET' });");
+    expect(step2Slot).toContain("filteredBy: '入账状态=待申请'");
+    expect(step2Slot).not.toContain('const selectedText = await (async () => {');
+    expect(step2Slot).not.toContain("expect(selectedText).toContain('待申请');");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('sanitizes list-search-detail step2 hidden status-field locators into scoped visible candidates', () => {
+    const code = sanitizeGeneratedCode(`
+test("list_search_detail step2 hidden ant-form-item drift", async ({ page }) => {
+  const TARGET_URL = 'https://uat.example.com/#/order/list';
+  const shared = { selectedOrderNo: '', contactName: '', contactMobile: '', accountStatus: '' };
+  const artifacts = Object.create(null);
+  await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
+
+  await test.step("Step 2: 按入账状态筛选待申请", async () => {
+    // SLOT_START: plan_step_2
+    const searchButton = page.getByRole('button', { name: /搜\\s*索/i }).first();
+    const statusField = page.locator('.ant-form-item').filter({ hasText: '入账状态' }).first();
+    await expect(statusField).toBeVisible({ timeout: 10000 });
+
+    await __e2e.selectAntdOption(page, statusField, { label: '待申请' });
+
+    const beforeRowCount = await page.locator('tr[data-row-key]:visible').count().catch(() => 0);
+    await searchButton.click();
+
+    const tableReady = page.locator('tr[data-row-key]:visible').first();
+    const tablePlaceholder = page.locator('.ant-table-placeholder:visible').first();
+    await expect(tableReady.or(tablePlaceholder)).toBeVisible({ timeout: 15000 });
+
+    const afterRowCount = await page.locator('tr[data-row-key]:visible').count().catch(() => 0);
+    artifacts['plan_step_2'] = { beforeRowCount, afterRowCount };
+    // SLOT_END: plan_step_2
+  });
+});
+`.trim());
+
+    const step2Slot = code.match(/\/\/ SLOT_START: plan_step_2([\s\S]*?)\/\/ SLOT_END: plan_step_2/)?.[1] || '';
+
+    expect(step2Slot).toContain("const filterRoot = page.locator('.ant-form:visible, form:visible, .search:visible, .ant-card:visible').filter({ has: searchButton }).first();");
+    expect(step2Slot).toContain("filterRoot.locator('.ant-form-item:visible').filter({ hasText: /订单状态|入账状态/ }).first(),");
+    expect(step2Slot).toContain("page.locator('.ant-form-item:visible').filter({ has: page.locator('.ant-select:visible') }).nth(1),");
+    expect(step2Slot).toContain("await __e2e.selectAntdOption(page, statusSource, { label: '待申请' });");
+    expect(step2Slot).not.toContain("const statusField = page.locator('.ant-form-item').filter({ hasText: '入账状态' }).first();");
+    expect(step2Slot).not.toContain('await expect(tableReady.or(tablePlaceholder)).toBeVisible({ timeout: 15000 });');
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('sanitizes list-search-detail step4 to avoid pre-search and matchedPhone fallback pollution', () => {
+    const code = sanitizeGeneratedCode(`
+test("list_search_detail step4 sanitize duplicate lookup", async ({ page }) => {
+  const shared = { selectedOrderNo: 'H202600056', contactName: '', contactMobile: '', accountStatus: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 4: 按提取订单号二次搜索", async () => {
+    // SLOT_START: plan_step_4
+    if (!shared.selectedOrderNo) {
+      throw new Error('二次搜索前缺少 selectedOrderNo，无法按订单号回查目标记录');
+    }
+
+    await expect(page).toHaveURL(/#\\/order\\/list/);
+
+    const keywordInput = page.locator('input#form_in_modal_testKeyWord:visible').first();
+    await expect(keywordInput).toBeVisible({ timeout: 15000 });
+    await keywordInput.fill('');
+    await keywordInput.fill(shared.selectedOrderNo);
+
+    const searchButton = page.getByRole('button', { name: /搜\\s*索/i }).first();
+    await expect(searchButton).toBeVisible({ timeout: 10000 });
+
+    const listResp = __e2e.waitForApiResponse(page, { urlIncludes: '/order', method: 'GET' });
+    await searchButton.click();
+    artifacts["plan_step_4"] = await listResp;
+
+    const listPayload = await __e2e.readJsonResponse(artifacts["plan_step_4"], { required: false });
+    const matchedRecord = listPayload
+      ? __e2e.pickJsonRecord(listPayload, {
+          label: 'selectedOrderNo',
+          value: shared.selectedOrderNo,
+          paths: ['orderNo', 'orderNum', 'serialNo', 'no', 'number', 'id'],
+          required: false,
+        })
+      : null;
+
+    const matchedPhone = matchedRecord
+      ? String(__e2e.pickJsonValue(matchedRecord, {
+          label: '手机号',
+          paths: ['mobile', 'phone', 'telephone', 'tel', 'contactPhone', 'contactMobile', 'mobilePhone'],
+          required: false,
+        }) || '').trim()
+      : '';
+
+    const rowHasTexts = [shared.selectedOrderNo, matchedPhone || '待申请'];
+    const recordCheck = await __e2e.resolvePrimaryRecord(page, {
+      primaryValue: shared.selectedOrderNo,
+      keywordInput,
+      searchButton,
+      listResponse: { urlIncludes: '/order', method: 'GET' },
+      rowHasTexts,
+      maxLookupAttempts: 4,
+      retryIntervalMs: 1200,
+    });
+
+    if (recordCheck.mode !== 'table_row' || !recordCheck.row) {
+      throw new Error(\`未命中目标记录：订单号=\${shared.selectedOrderNo}，mode=\${recordCheck.mode}\`);
+    }
+    // SLOT_END: plan_step_4
+  });
+});
+`.trim());
+
+    const step4Slot = code.match(/\/\/ SLOT_START: plan_step_4([\s\S]*?)\/\/ SLOT_END: plan_step_4/)?.[1] || '';
+
+    expect(step4Slot).toContain("const currentVisibleRow = shared.selectedOrderNo ? await (async () => {");
+    expect(step4Slot).toContain("rowHasTexts: [shared.selectedOrderNo],");
+    expect(step4Slot).toContain('preferCurrentVisibleRow: false,');
+    expect(step4Slot).toContain("artifacts['plan_step_4'] = recordCheck.response || null;");
+    expect(step4Slot).not.toContain("await keywordInput.fill(shared.selectedOrderNo);");
+    expect(step4Slot).not.toContain("const listResp = __e2e.waitForApiResponse(page, { urlIncludes: '/order', method: 'GET' });");
+    expect(step4Slot).not.toContain("matchedPhone || '待申请'");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('sanitizes list-search-detail step4 rowHasTexts phone/contact fallback variants into single-key lookup', () => {
+    const code = sanitizeGeneratedCode(`
+test("list_search_detail step4 sanitize phone fallback", async ({ page }) => {
+  const shared = { selectedOrderNo: '18921541592' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 4: 仅用订单号二次检索", async () => {
+    // SLOT_START: plan_step_4
+    if (!shared.selectedOrderNo) {
+      throw new Error('前置失败：selectedOrderNo 为空，无法执行二次检索');
+    }
+
+    await expect(page).toHaveURL(/#\\/order\\/list/);
+
+    const keywordInput = page.locator('#form_in_modal_testKeyWord:visible').first();
+    await expect(keywordInput).toBeVisible({ timeout: 10000 });
+    await keywordInput.fill('');
+    await keywordInput.fill(shared.selectedOrderNo);
+
+    const listRespPromise = __e2e.waitForApiResponse(page, { urlIncludes: '/order', method: 'GET' });
+    await page.getByRole('button', { name: /搜\\s*索/i }).first().click();
+    const listResp = await listRespPromise;
+    artifacts['plan_step_4'] = listResp;
+
+    const listJson = await __e2e.readJsonResponse(listResp, { required: false });
+    const matchedRecord = listJson
+      ? __e2e.pickJsonRecord(listJson, {
+          label: 'selectedOrderNo',
+          value: shared.selectedOrderNo,
+          paths: ['orderNo', 'orderNum', 'serialNo', 'no', 'number', 'selectedOrderNo', 'id', 'orderId'],
+          required: false,
+        })
+      : null;
+
+    const rowHasTexts = [shared.selectedOrderNo];
+    const contactPhone = matchedRecord
+      ? __e2e.pickJsonValue(matchedRecord, { label: '手机号', paths: ['mobile', 'phone', 'telephone', 'tel', 'contactPhone', 'contactMobile', 'mobilePhone'], required: false })
+      : '';
+    const contactName = matchedRecord
+      ? __e2e.pickJsonValue(matchedRecord, { label: '联系人', paths: ['contactName', 'contact', 'contactPerson', 'contactUser', 'contactUserName', 'linkman', 'name'], required: false })
+      : '';
+    if (contactPhone) rowHasTexts.push(String(contactPhone));
+    if (contactName) rowHasTexts.push(String(contactName));
+
+    const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: rowHasTexts, timeoutMs: 15000 });
+    artifacts['plan_step_4_row'] = targetRow;
+    await expect(targetRow).toBeVisible();
+    // SLOT_END: plan_step_4
+  });
+});
+`.trim());
+
+    const step4Slot = code.match(/\/\/ SLOT_START: plan_step_4([\s\S]*?)\/\/ SLOT_END: plan_step_4/)?.[1] || '';
+
+    expect(step4Slot).toContain("const recordCheck = currentVisibleRow");
+    expect(step4Slot).toContain("rowHasTexts: [shared.selectedOrderNo],");
+    expect(step4Slot).not.toContain('if (contactPhone) rowHasTexts.push(String(contactPhone));');
+    expect(step4Slot).not.toContain('if (contactName) rowHasTexts.push(String(contactName));');
+    expect(step4Slot).not.toContain('const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: rowHasTexts, timeoutMs: 15000 });');
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('sanitizes list-search-detail extraction when a result-settle step shifts it into plan_step_4', () => {
+    const code = sanitizeGeneratedCode(`
+test("list_search_detail shifted extraction slot", async ({ page }) => {
+  const TARGET_URL = 'https://uat.example.com/#/order/list';
+  const shared = { selectedOrderNo: '' };
+  const artifacts = Object.create(null);
+  await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
+
+  await test.step("Step 4: 从待申请结果表格提取一条真实订单号", async () => {
+    // SLOT_START: plan_step_4
+    const tableRows = page.locator('tr[data-row-key]:visible');
+    await expect(tableRows.first()).toBeVisible({ timeout: 15000 });
+
+    let selectedOrderNo = '';
+    let selectedRow = null;
+    const rowCount = await tableRows.count();
+
+    for (let i = 0; i < rowCount; i++) {
+      const row = tableRows.nth(i);
+      const rowKey = ((await row.getAttribute('data-row-key')) || '').trim();
+
+      const linkCandidates = row.locator('a:visible');
+      const linkCount = await linkCandidates.count();
+      for (let j = 0; j < linkCount; j++) {
+        const txt = ((await linkCandidates.nth(j).innerText()) || '').replace(/\\s+/g, '').trim();
+        if (!txt) continue;
+        if (/^1\\d{10}$/.test(txt)) continue;
+        if (/^\\d+(\\.\\d+)?$/.test(txt)) continue;
+        if (/^[A-Za-z0-9_-]{6,64}$/.test(txt) || /^\\d{6,20}$/.test(txt)) {
+          selectedOrderNo = txt;
+          selectedRow = row;
+          break;
+        }
+      }
+      if (selectedOrderNo) break;
+
+      if (rowKey && !/^1\\d{10}$/.test(rowKey) && !/^\\d+(\\.\\d+)?$/.test(rowKey) && (/^[A-Za-z0-9_-]{6,64}$/.test(rowKey) || /^\\d{6,20}$/.test(rowKey))) {
+        selectedOrderNo = rowKey;
+        selectedRow = row;
+        break;
+      }
+    }
+
+    if (!selectedOrderNo) {
+      throw new Error('数据缺口：筛选结果中未能提取到非空订单号');
+    }
+
+    shared.selectedOrderNo = selectedOrderNo;
+    artifacts['plan_step_4'] = { selectedOrderNo, row: selectedRow };
+    expect(shared.selectedOrderNo).toBeTruthy();
+    // SLOT_END: plan_step_4
+  });
+});
+`.trim());
+
+    const step4Slot = code.match(/\/\/ SLOT_START: plan_step_4([\s\S]*?)\/\/ SLOT_END: plan_step_4/)?.[1] || '';
+
+    expect(step4Slot).toContain("artifacts['plan_step_4_row'] = targetRow;");
+    expect(step4Slot).toContain('artifacts.plan_step_4_targetRow = targetRow;');
+    expect(step4Slot).toContain("artifacts['plan_step_4'] = { row: targetRow, rowText, rowKey, linkTexts, selectedOrderNo: shared.selectedOrderNo || '' };");
+    expect(step4Slot).toContain("throw new Error('前置失败：selectedOrderNo 为空，无法执行二次检索');");
+    expect(step4Slot).not.toContain('expect(shared.selectedOrderNo).toBeTruthy();');
+    expect(step4Slot).not.toContain("const tableRows = page.locator('tr[data-row-key]:visible');");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('sanitizes list-search-detail lookup when shifted into plan_step_5 and reuses plan_step_4 row evidence', () => {
+    const code = sanitizeGeneratedCode(`
+test("list_search_detail shifted lookup slot", async ({ page }) => {
+  const shared = { selectedOrderNo: 'H202600056' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 5: 仅用订单号二次检索", async () => {
+    // SLOT_START: plan_step_5
+    if (!shared.selectedOrderNo) {
+      throw new Error('前置失败：selectedOrderNo 为空，无法执行二次检索');
+    }
+
+    await expect(page).toHaveURL(/#\\/order\\/list/);
+
+    const keywordInput = page.locator('#form_in_modal_testKeyWord:visible').first();
+    await expect(keywordInput).toBeVisible({ timeout: 10000 });
+    await keywordInput.fill('');
+    await keywordInput.fill(shared.selectedOrderNo);
+
+    const listRespPromise = __e2e.waitForApiResponse(page, { urlIncludes: '/order', method: 'GET' });
+    await page.getByRole('button', { name: /搜\\s*索/i }).first().click();
+    const listResp = await listRespPromise;
+    artifacts['plan_step_5'] = listResp;
+
+    const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [shared.selectedOrderNo], timeoutMs: 15000 });
+    artifacts['plan_step_5_row'] = targetRow;
+    await expect(targetRow).toBeVisible();
+    // SLOT_END: plan_step_5
+  });
+});
+`.trim());
+
+    const step5Slot = code.match(/\/\/ SLOT_START: plan_step_5([\s\S]*?)\/\/ SLOT_END: plan_step_5/)?.[1] || '';
+
+    expect(step5Slot).toContain("const cachedTargetRow = artifacts['plan_step_4_row'] || artifacts.plan_step_4_targetRow || artifacts['plan_step_4']?.row || null;");
+    expect(step5Slot).toContain("const recordCheck = currentVisibleRow");
+    expect(step5Slot).toContain("rowHasTexts: [shared.selectedOrderNo],");
+    expect(step5Slot).toContain("artifacts['plan_step_5_record_check'] = recordCheck;");
+    expect(step5Slot).toContain("artifacts['plan_step_5'] = recordCheck.response || null;");
+    expect(step5Slot).not.toContain("await keywordInput.fill(shared.selectedOrderNo);");
+    expect(step5Slot).not.toContain("const listRespPromise = __e2e.waitForApiResponse(page, { urlIncludes: '/order', method: 'GET' });");
+    expect(step5Slot).not.toContain("const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [shared.selectedOrderNo], timeoutMs: 15000 });");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('sanitizes list-search-detail firstDataRow extraction variants into the deterministic selectedOrderNo chain', () => {
+    const code = sanitizeGeneratedCode(`
+test("list_search_detail firstDataRow extraction", async ({ page }) => {
+  const TARGET_URL = 'https://uat.example.com/#/order/list';
+  const shared = { selectedOrderNo: '' };
+  const artifacts = Object.create(null);
+  await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
+
+  await test.step("Step 3: 从候选结果提取真实订单号", async () => {
+    // SLOT_START: plan_step_3
+    const firstDataRow = page.locator('tr[data-row-key]:visible').first();
+    if (!(await firstDataRow.count())) {
+      throw new Error('无法提取真实订单号：按“待申请”筛选后无可用数据行');
+    }
+
+    const orderNoLink = firstDataRow.locator('a').first();
+    let selectedOrderNo = (await orderNoLink.innerText().catch(() => '')).trim();
+
+    if (!selectedOrderNo) {
+      const rowText = (await firstDataRow.innerText().catch(() => '')).trim();
+      const tokens = rowText.split(/\\s+/).map((t) => t.trim()).filter(Boolean);
+      selectedOrderNo = tokens.find((t) => {
+        const v = String(t || '').trim().replace(/\\s+/g, '');
+        if (!/^[A-Za-z0-9_-]{6,64}$/.test(v) && !/^\\d{12,64}$/.test(v)) return false;
+        if (/^1\\d{10}$/.test(v)) return false;
+        if (/^\\d+(\\.\\d+)?$/.test(v) && v.length <= 8) return false;
+        return true;
+      }) || '';
+    }
+
+    if (!selectedOrderNo) {
+      throw new Error('无法提取真实订单号：首条记录未识别到有效订单号');
+    }
+
+    shared.selectedOrderNo = selectedOrderNo;
+    artifacts['plan_step_3'] = { selectedOrderNo };
+    await expect.soft(shared.selectedOrderNo).not.toBe('');
+    // SLOT_END: plan_step_3
+  });
+});
+`.trim());
+
+    const step3Slot = code.match(/\/\/ SLOT_START: plan_step_3([\s\S]*?)\/\/ SLOT_END: plan_step_3/)?.[1] || '';
+
+    expect(step3Slot).toContain("const candidateRows = page.locator('.ant-table-tbody tr[data-row-key]:visible');");
+    expect(step3Slot).toContain("artifacts['plan_step_3_row'] = targetRow;");
+    expect(step3Slot).toContain("const candidateOrderNoFromLinkLooksLikeLetterPrefixedShortCode = /^[A-Za-z]\\d{7,11}$/.test(candidateOrderNoFromLinkNormalized);");
+    expect(step3Slot).not.toContain("const firstDataRow = page.locator('tr[data-row-key]:visible').first();");
+    expect(step3Slot).not.toContain("const orderNoLink = firstDataRow.locator('a').first();");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('keeps list-search-detail detail-entry slots out of primary-record lookup sanitization', () => {
+    const code = sanitizeGeneratedCode(`
+test("list_search_detail detail entry slot stays detail entry", async ({ page }) => {
+  const TARGET_URL = 'https://uat.example.com/#/order/list';
+  const shared = { selectedOrderNo: '202604151234567890' };
+  const artifacts = Object.create(null);
+  await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
+
+  await test.step("Step 5: 进入对应订单详情", async () => {
+    // SLOT_START: plan_step_5
+    const targetRow =
+      artifacts['plan_step_4_row'] ||
+      (await __e2e.findAntdTableRow(page, { hasTexts: [shared.selectedOrderNo], timeoutMs: 15000 }));
+
+    const orderLink = targetRow.locator('a:visible').filter({ hasText: shared.selectedOrderNo }).first();
+    await expect(orderLink).toBeVisible({ timeout: 10000 });
+    await orderLink.click();
+
+    await page.waitForLoadState('domcontentloaded');
+    await expect(page).toHaveURL(/#\\/order\\/(detail|view)|#\\/.*order.*detail/i, { timeout: 20000 });
+
+    const detailAnchor = page.getByText(/联系人|手机号|入账状态/).first();
+    await expect(detailAnchor).toBeVisible({ timeout: 15000 });
+
+    artifacts['plan_step_5'] = { enteredDetail: true };
+    // SLOT_END: plan_step_5
+  });
+});
+`.trim());
+
+    const step5Slot = code.match(/\/\/ SLOT_START: plan_step_5([\s\S]*?)\/\/ SLOT_END: plan_step_5/)?.[1] || '';
+
+    expect(step5Slot).toContain("const orderLink = targetRow.locator('a:visible').filter({ hasText: shared.selectedOrderNo }).first();");
+    expect(step5Slot).toContain("await orderLink.click();");
+    expect(step5Slot).not.toContain('const recordCheck = currentVisibleRow');
+    expect(step5Slot).not.toContain("artifacts['plan_step_5_record_check'] = recordCheck;");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('sanitizes generic list-search-detail row-action detail entry into order-link-first detail fallback', () => {
+    const code = sanitizeGeneratedCode(`
+test("list_search_detail generic row action detail entry", async ({ page }) => {
+  const TARGET_URL = 'https://uat.example.com/#/order/list';
+  const shared = { selectedOrderNo: '202604151234567890' };
+  const artifacts = Object.create(null);
+  await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
+
+  await test.step("Step 5: 进入订单详情并核对字段", async () => {
+    // SLOT_START: plan_step_5
+    const targetRow = artifacts['plan_step_4_row'] || await __e2e.findAntdTableRow(page, { hasTexts: [shared.selectedOrderNo] });
+    await __e2e.clickAntdRowAction(page, targetRow, '查看');
+
+    let detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '详情', timeoutMs: 5000, required: false });
+    if (!detailScope) {
+      detailScope = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '详情', timeoutMs: 4000, required: false });
+    }
+    if (!detailScope) {
+      throw new Error('状态证据缺失：列表行已命中，但“查看”后未出现可用详情弹层或详情页');
+    }
+
+    const contactText = await __e2e.readDetailField(page, { label: '联系人', scope: detailScope, required: false });
+    const phoneText = await __e2e.readDetailField(page, { label: '手机号', scope: detailScope, required: false });
+    const statusText = await __e2e.readDetailField(page, { label: '入账状态', scope: detailScope, required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailScope, required: false });
+
+    if (!contactText || !phoneText || !statusText) {
+      throw new Error('详情字段缺失：联系人/手机号/入账状态 至少一项为空');
+    }
+
+    artifacts['plan_step_5'] = { detailScope, contactText, phoneText, statusText };
+    // SLOT_END: plan_step_5
+  });
+});
+`.trim());
+
+    const step5Slot = code.match(/\/\/ SLOT_START: plan_step_5([\s\S]*?)\/\/ SLOT_END: plan_step_5/)?.[1] || '';
+
+    expect(step5Slot).toContain("let statusEvidenceRecordCheck = artifacts['plan_step_4_record_check'] || null;");
+    expect(step5Slot).toContain('requireListResponse: true,');
+    expect(step5Slot).toContain("const listPayload = statusEvidenceRecordCheck?.response");
+    expect(step5Slot).toContain("const matchedRecordByOrderNo = listPayload");
+    expect(step5Slot).toContain("const rowContactText = await __e2e.readAntdTableCellByHeader(page, targetRow, {");
+    expect(step5Slot).toContain("headerLabels: ['联系人', '联系人姓名', '客户姓名'],");
+    expect(step5Slot).toContain("const rowStatusText = await __e2e.readAntdTableCellByHeader(page, targetRow, {");
+    expect(step5Slot).toContain("const targetRowKey = ((await targetRow.getAttribute('data-row-key')) || '').trim();");
+    expect(step5Slot).toContain("const orderLinkNodes = targetRowKey ? page.locator(`tr[data-row-key=\"${targetRowKey}\"] a:visible`) : targetRow.locator('a:visible');");
+    expect(step5Slot).toContain("const orderLink = orderLinkNodes.filter({ hasText: shared.selectedOrderNo }).first();");
+    expect(step5Slot).toContain("let contactText = listContactText || rowContactText || '';");
+    expect(step5Slot).toContain("if (!detailScope && !onDetailUrl) {");
+    expect(step5Slot).toContain("await __e2e.clickAntdRowAction(page, targetRow, '查看');");
+    expect(step5Slot).toContain("label: '订单状态'");
+    expect(step5Slot).toContain("detailScope: evidenceScope || (onDetailUrl ? 'page_detail' : ''),");
+    expect(step5Slot).toContain("detailEntry: detailEntry || (matchedRecord ? 'list_response' : (rowContactText || rowPhoneText || rowStatusText) ? 'table_row_headers' : (onDetailUrl ? 'detail_url' : '')),");
+    expect(step5Slot).not.toContain("const orderLink = targetRow.locator('a:visible').filter({ hasText: shared.selectedOrderNo }).first();");
+    expect(step5Slot).not.toContain("throw new Error('状态证据缺失：列表行已命中，但“查看”后未出现可用详情弹层或详情页');");
+    expect(step5Slot).not.toContain("throw new Error('详情字段缺失：联系人/手机号/入账状态 至少一项为空');");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('sanitizes list-search-detail verification to reuse plan_step_5 lookup evidence before forcing detail entry', () => {
+    const code = sanitizeGeneratedCode(`
+test("list_search_detail verification evidence reuse", async ({ page }) => {
+  const TARGET_URL = 'https://uat.example.com/#/order/list';
+  const shared = { selectedOrderNo: '202604151234567890' };
+  const artifacts = Object.create(null);
+  await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
+
+  await test.step("Step 5: 进入订单详情并核对字段", async () => {
+    // SLOT_START: plan_step_5
+    if (!shared.selectedOrderNo) {
+      throw new Error('前置失败：selectedOrderNo 为空，无法执行二次检索');
+    }
+    await expect(page).toHaveURL(/#\\/order\\/list/);
+    const keywordInput = page.locator('input#form_in_modal_testKeyWord:visible').first();
+    await expect(keywordInput).toBeVisible({ timeout: 15000 });
+    const searchButton = page.getByRole('button', { name: /搜\\s*索/i }).first();
+    await expect(searchButton).toBeVisible({ timeout: 10000 });
+    const currentVisibleRow = shared.selectedOrderNo ? await (async () => {
+      try {
+        return await __e2e.findAntdTableRow(page, { hasTexts: [shared.selectedOrderNo], timeoutMs: 1200 });
+      } catch {
+        return null;
+      }
+    })() : null;
+    const recordCheck = currentVisibleRow
+      ? { primaryValue: shared.selectedOrderNo, mode: 'table_row', row: currentVisibleRow, response: null }
+      : await __e2e.resolvePrimaryRecord(page, {
+          primaryValue: shared.selectedOrderNo,
+          keywordInput,
+          searchButton,
+          listResponse: { urlIncludes: '/order', method: 'GET' },
+          rowHasTexts: [shared.selectedOrderNo],
+          preferCurrentVisibleRow: false,
+          maxLookupAttempts: 2,
+          retryIntervalMs: 400,
+        });
+    if (recordCheck.mode !== 'table_row' || !recordCheck.row) {
+      throw new Error(\`未命中目标记录：订单号=\${shared.selectedOrderNo}，mode=\${recordCheck.mode}\`);
+    }
+    artifacts['plan_step_5_record_check'] = recordCheck;
+    artifacts['plan_step_5_row'] = recordCheck.row;
+    artifacts['plan_step_5'] = recordCheck.response || null;
+    // SLOT_END: plan_step_5
+  });
+
+  await test.step("Verification: 最终业务验收", async () => {
+    // SLOT_START: verification
+    expect(shared.selectedOrderNo).toBeTruthy();
+
+    const targetRow = artifacts['plan_step_4_row'] || await __e2e.findAntdTableRow(page, { hasTexts: [shared.selectedOrderNo] });
+    const rowText = await targetRow.innerText().catch(() => '');
+    expect(rowText).toContain(shared.selectedOrderNo);
+
+    let detail = artifacts['plan_step_5'];
+    if (!detail || !detail.detailScope) {
+      await __e2e.clickAntdRowAction(page, targetRow, '查看');
+      let detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '详情', timeoutMs: 5000, required: false });
+      if (!detailScope) {
+        detailScope = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '详情', timeoutMs: 4000, required: false });
+      }
+      if (!detailScope) {
+        throw new Error('最终验收失败：未进入该订单对应详情页/详情抽屉');
+      }
+      const contactText = await __e2e.readDetailField(page, { label: '联系人', scope: detailScope, required: false });
+      const phoneText = await __e2e.readDetailField(page, { label: '手机号', scope: detailScope, required: false });
+      const statusText = await __e2e.readDetailField(page, { label: '入账状态', scope: detailScope, required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailScope, required: false });
+      detail = { detailScope, contactText, phoneText, statusText };
+    }
+
+    expect(detail.contactText).toBeTruthy();
+    expect(detail.phoneText).toBeTruthy();
+    expect(detail.statusText).toBeTruthy();
+    // SLOT_END: verification
+  });
+});
+`.trim());
+
+    const verificationSlot = code.match(/\/\/ SLOT_START: verification([\s\S]*?)\/\/ SLOT_END: verification/)?.[1] || '';
+
+    expect(verificationSlot).toContain("let detail = artifacts['plan_step_5'] || null;");
+    expect(verificationSlot).toContain('const detailLooksLikeStructuredEvidence = Boolean(');
+    expect(verificationSlot).toContain("let statusEvidenceRecordCheck = artifacts['plan_step_5_record_check'] || artifacts['plan_step_4_record_check'] || null;");
+    expect(verificationSlot).toContain("let targetRow = artifacts['plan_step_5_row'] || artifacts['plan_step_4_row'] || (statusEvidenceRecordCheck && statusEvidenceRecordCheck.row) || null;");
+    expect(verificationSlot).toContain("const listPayload = statusEvidenceRecordCheck?.response");
+    expect(verificationSlot).toContain("const matchedRecordByOrderNo = listPayload");
+    expect(verificationSlot).toContain("const rowContactText = targetRow");
+    expect(verificationSlot).toContain("contactText = contactText || listContactText || rowContactText || '';");
+    expect(verificationSlot).toContain("throw new Error('最终验收失败：未进入该订单对应详情页/详情抽屉');");
+    expect(verificationSlot).toContain("artifacts['verification'] = {");
+    expect(verificationSlot).not.toContain('if (!detail || !detail.detailScope) {');
+    expect(verificationSlot).not.toContain('expect(detail.contactText).toBeTruthy();');
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('sanitizes business_create_list_verify step6 to reuse fresh statusEvidenceRow and skip stale row derivation when matchedRecord exists', () => {
+    const code = sanitizeGeneratedCode(`
+test("business_create_list_verify step6 stale row sanitize", async ({ page }) => {
+  const TARGET_URL = 'https://uat.example.com/#/business/businesslist';
+  const shared = { createdBusinessKey: '19900001234', businessId: '' };
+  const artifacts = Object.create(null);
+  await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
+
+  await test.step("Step 6: 校验新建记录及进展状态", async () => {
+    // SLOT_START: plan_step_6
+    const primaryValue = String(shared.createdBusinessKey || '').trim();
+    if (!primaryValue) throw new Error('校验失败：createdBusinessKey 为空');
+
+    await __e2e.switchBusinessListOwnershipView(page, { label: '我创建的', listUrl: TARGET_URL });
+    const keywordInput = page.locator('input#businessList_keywords:visible').first();
+    const searchButton = page.getByRole('button', { name: /搜\\s*索/i }).first();
+    const businessIdFromCreate = String(artifacts['plan_step_4']?.businessId || '').trim();
+    const leadMobile = String(artifacts.leadMobile || '').trim();
+    const rowHasTexts = businessIdFromCreate ? [businessIdFromCreate] : [primaryValue];
+
+    const currentVisibleRow = await (async () => {
+      try {
+        return await __e2e.findAntdTableRow(page, { hasTexts: [primaryValue], timeoutMs: 1200 });
+      } catch {
+        return null;
+      }
+    })();
+
+    const recordCheck = currentVisibleRow
+      ? { primaryValue, mode: 'table_row', row: currentVisibleRow, response: null }
+      : await __e2e.resolvePrimaryRecord(page, {
+          primaryValue,
+          keywordInput,
+          searchButton,
+          listResponse: { urlIncludes: '/business', method: 'GET' },
+          rowHasTexts,
+          detailUrl: businessIdFromCreate ? \`#/business/detail/\${businessIdFromCreate}\` : undefined,
+          maxLookupAttempts: 4,
+          retryIntervalMs: 1200,
+        });
+
+    const statusEvidenceRecordCheck = recordCheck.response
+      ? recordCheck
+      : await __e2e.resolvePrimaryRecord(page, {
+          primaryValue,
+          keywordInput,
+          searchButton,
+          listResponse: { urlIncludes: '/business', method: 'GET' },
+          rowHasTexts,
+          preferCurrentVisibleRow: false,
+          maxLookupAttempts: 1,
+          retryIntervalMs: 200,
+          detailUrl: businessIdFromCreate ? \`#/business/detail/\${businessIdFromCreate}\` : undefined,
+        });
+
+    const listJson = statusEvidenceRecordCheck.response
+      ? await __e2e.readJsonResponse(statusEvidenceRecordCheck.response, { required: false })
+      : null;
+
+    let matchedRecord = listJson
+      ? __e2e.pickJsonRecord(listJson, {
+          label: businessIdFromCreate ? 'businessId' : 'leadMobile',
+          value: businessIdFromCreate || leadMobile || primaryValue,
+          paths: businessIdFromCreate ? ['businessId', 'id'] : ['mobile', 'phone', 'contactPhone', 'contactMobile'],
+          required: false,
+        })
+      : null;
+
+    let rowText = '';
+    let derivedBusinessId = businessIdFromCreate;
+    if (recordCheck.mode === 'table_row' && recordCheck.row) {
+      rowText = await recordCheck.row.innerText().catch(() => '');
+      const rowKey = ((await recordCheck.row.getAttribute('data-row-key')) || '').trim();
+      const fromRowKey = (/^[A-Za-z0-9_-]{6,64}$/.test(rowKey) && !/^1\\d{10}$/.test(rowKey)) ? rowKey : '';
+      const fromRowText = ((rowText.match(/\\b\\d{6,12}\\b/g) || []).find((item) => !/^1\\d{10}$/.test(item)) || '');
+      derivedBusinessId = derivedBusinessId || fromRowKey || fromRowText;
+    }
+
+    const matchedRecordByDerivedBusinessId = !matchedRecord && listJson && derivedBusinessId
+      ? __e2e.pickJsonRecord(listJson, {
+          label: 'derivedBusinessId',
+          value: derivedBusinessId,
+          paths: ['businessId', 'id'],
+          required: false,
+        })
+      : null;
+
+    matchedRecord = matchedRecord || matchedRecordByDerivedBusinessId;
+
+    let statusText = matchedRecord
+      ? String(__e2e.pickJsonValue(matchedRecord, {
+          label: '状态',
+          paths: ['status', 'statusName', 'statusText', 'state', 'stateName', 'stateText', 'displayStatus', 'progress.displayStatus'],
+          required: false,
+        }) || '')
+      : '';
+
+    const invalidStatus = (v) => {
+      const s = String(v || '').trim();
+      return !s || s === '()' || s === '抖音';
+    };
+
+    if (invalidStatus(statusText) && recordCheck.mode === 'table_row' && recordCheck.row) {
+      await __e2e.clickAntdRowAction(page, recordCheck.row, '查看');
+      let detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机详情', timeoutMs: 5000, required: false });
+      if (!detailScope) {
+        detailScope = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false });
+      }
+      if (!detailScope) throw new Error('状态证据缺失：列表行已命中，但“查看”后未出现可用详情弹层或详情页');
+
+      const progressText = await __e2e.readDetailField(page, { label: '商机进展', scope: detailScope, titleIncludes: '商机详情', required: false });
+      const fallbackStatus = await __e2e.readDetailField(page, { label: '状态', scope: detailScope, titleIncludes: '商机详情', required: false });
+      statusText = String(progressText || fallbackStatus || '').trim();
+    }
+
+    artifacts['plan_step_6'] = {
+      recordCheck,
+      statusText,
+      source: matchedRecord ? 'list_response' : 'detail_surface',
+      derivedBusinessId: derivedBusinessId || '',
+    };
+    // SLOT_END: plan_step_6
+  });
+});
+`.trim());
+
+    const step6Slot = code.match(/\/\/ SLOT_START: plan_step_6([\s\S]*?)\/\/ SLOT_END: plan_step_6/)?.[1] || '';
+
+    expect(step6Slot).toContain("const statusEvidenceRow = statusEvidenceRecordCheck?.row || recordCheck.row || null;");
+    expect(step6Slot).toContain('if (!matchedRecord && statusEvidenceRow) {');
+    expect(step6Slot).toContain("rowText = await statusEvidenceRow.innerText().catch(() => '');");
+    expect(step6Slot).toContain("const rowKey = ((await statusEvidenceRow.getAttribute('data-row-key')) || '').trim();");
+    expect(step6Slot).toContain("if (invalidStatus(statusText) && statusEvidenceRow) {");
+    expect(step6Slot).toContain("await __e2e.clickAntdRowAction(page, statusEvidenceRow, '查看');");
+    expect(step6Slot).toContain("recordCheck: statusEvidenceRecordCheck || recordCheck,");
+    expect(step6Slot).not.toContain("rowText = await recordCheck.row.innerText().catch(() => '');");
+    expect(step6Slot).not.toContain("const rowKey = ((await recordCheck.row.getAttribute('data-row-key')) || '').trim();");
+    expect(step6Slot).not.toContain("await __e2e.clickAntdRowAction(page, recordCheck.row, '查看');");
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('rewrites list verification when legacy code references artifacts.plan_step_5 via dot notation', () => {
+    const code = sanitizeGeneratedCode(`
+test("list_search_detail dot-notation verification", async ({ page }) => {
+  const TARGET_URL = 'https://uat.example.com/#/order/list';
+  const shared = { selectedOrderNo: 'ORDER202604150001' };
+  const artifacts = Object.create(null);
+  await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
+
+  await test.step("Verification: 最终业务验收", async () => {
+    // SLOT_START: verification
+    expect(shared.selectedOrderNo).toBeTruthy();
+    expect(/^1\\d{10}$/.test(shared.selectedOrderNo)).toBeFalsy();
+    expect(/^\\d+(\\.\\d+)?$/.test(shared.selectedOrderNo)).toBeFalsy();
+
+    const targetRow = artifacts.plan_step_4_row || await __e2e.findAntdTableRow(page, { hasTexts: [shared.selectedOrderNo], timeoutMs: 15000 });
+    const rowText = await targetRow.innerText().catch(() => '');
+    expect(rowText).toContain(shared.selectedOrderNo);
+
+    let detailScope = artifacts.plan_step_5?.detailScope || null;
+    if (!detailScope) {
+      await __e2e.clickAntdRowAction(page, targetRow, '查看');
+      detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '详情', timeoutMs: 5000, required: false });
+      if (!detailScope) {
+        detailScope = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '详情', timeoutMs: 5000, required: false });
+      }
+    }
+    if (!detailScope) {
+      throw new Error('最终验收失败：未进入该订单对应详情页/详情抽屉');
+    }
+
+    const contactText = artifacts.plan_step_5?.contactText || await __e2e.readDetailField(page, { label: '联系人', scope: detailScope, required: false });
+    const phoneText = artifacts.plan_step_5?.phoneText || await __e2e.readDetailField(page, { label: '手机号', scope: detailScope, required: false });
+    const accountingStatusText = artifacts.plan_step_5?.accountingStatusText || await __e2e.readDetailField(page, { label: '入账状态', scope: detailScope, required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailScope, required: false });
+
+    if (!contactText) throw new Error('最终验收失败：联系人字段为空');
+    if (!phoneText) throw new Error('最终验收失败：手机号字段为空');
+    if (!accountingStatusText) throw new Error('最终验收失败：入账状态字段为空');
+    // SLOT_END: verification
+  });
+});
+`.trim());
+
+    const verificationSlot = code.match(/\/\/ SLOT_START: verification([\s\S]*?)\/\/ SLOT_END: verification/)?.[1] || '';
+
+    expect(verificationSlot).toContain("let detail = artifacts['plan_step_5'] || null;");
+    expect(verificationSlot).toContain("let targetRow = artifacts['plan_step_5_row'] || artifacts['plan_step_4_row'] || (statusEvidenceRecordCheck && statusEvidenceRecordCheck.row) || null;");
+    expect(verificationSlot).toContain("artifacts['verification'] = {");
+    expect(verificationSlot).not.toContain('expect(/^1\\\\d{10}$/.test(shared.selectedOrderNo)).toBeFalsy();');
+    expect(verificationSlot).not.toContain('let detailScope = artifacts.plan_step_5?.detailScope || null;');
+    expect(() => new Script(code)).not.toThrow();
   });
 });

@@ -72,6 +72,28 @@ describe('intent-e2e-failure-triage', () => {
     expect(triage?.matchedSignals).toContain('fallback 行已命中');
   });
 
+  it('classifies final verification detail-entry misses as response_missing instead of unknown', () => {
+    const triage = classifyIntentE2EFailure({
+      success: false,
+      duration: 900,
+      steps: [
+        {
+          title: 'Verification: 最终业务验收',
+          status: 'failed',
+          duration: 900,
+          error: '最终验收失败：未进入该订单对应详情页/详情抽屉',
+        },
+      ],
+      error: '最终验收失败：未进入该订单对应详情页/详情抽屉',
+    });
+
+    expect(triage).toMatchObject({
+      failureClass: 'response_missing',
+      repairable: true,
+    });
+    expect(triage?.matchedSignals).toContain('详情入口缺失');
+  });
+
   it('classifies expired session errors as non-repairable auth_state_invalid', () => {
     const triage = classifyIntentE2EFailure({
       success: false,
@@ -242,6 +264,241 @@ describe('intent-e2e-failure-triage', () => {
     expect(triage?.matchedSignals).toContain('record lookup not_found');
   });
 
+  it('classifies missing actionable order rows as record lookup blockers instead of unknown', () => {
+    const triage = classifyIntentE2EFailure(
+      {
+        success: false,
+        duration: 900,
+        steps: [
+          {
+            title: '按入账状态待申请筛选订单',
+            status: 'failed',
+            duration: 900,
+            error: '未找到可勾选真实订单行',
+          },
+        ],
+        error: '未找到可勾选真实订单行',
+      },
+      [],
+      {
+        pageUrl: 'https://uat.example.com/#/order/list',
+        snapshot: {
+          url: 'https://uat.example.com/#/order/list',
+          title: '订单列表',
+          forms: [],
+          buttons: [],
+          tooltipElements: [],
+          headings: [],
+          frames: [],
+        },
+      }
+    );
+
+    expect(triage).toMatchObject({
+      failureClass: 'record_lookup_miss',
+      repairable: true,
+    });
+    expect(triage?.matchedSignals).toContain('order list actionable row missing');
+  });
+
+  it('classifies missing dropdown options as data-missing blockers instead of unknown', () => {
+    const triage = classifyIntentE2EFailure({
+      success: false,
+      duration: 900,
+      steps: [
+        {
+          title: '筛选待申请记录',
+          status: 'failed',
+          duration: 900,
+          error: '未找到下拉选项：待申请入账',
+        },
+      ],
+      error: '未找到下拉选项：待申请入账',
+    });
+
+    expect(triage).toMatchObject({
+      failureClass: 'data_missing',
+      repairable: true,
+    });
+    expect(triage?.matchedSignals).toContain('dropdown option missing');
+    expect(triage?.matchedSignals).toContain('filter option mismatch: 待申请入账');
+  });
+
+  it('classifies selectedOrderNo extraction failures as record lookup blockers instead of unknown', () => {
+    const triage = classifyIntentE2EFailure(
+      {
+        success: false,
+        duration: 900,
+        steps: [
+          {
+            title: '从已勾选订单行提取订单号',
+            status: 'failed',
+            duration: 900,
+            error: '前置不满足：订单列表中不存在已勾选订单行，无法提取 selectedOrderNo',
+          },
+        ],
+        error: '前置不满足：订单列表中不存在已勾选订单行，无法提取 selectedOrderNo',
+      },
+      [],
+      {
+        pageUrl: 'https://uat.example.com/#/order/list',
+        snapshot: {
+          url: 'https://uat.example.com/#/order/list',
+          title: '订单列表',
+          forms: [],
+          buttons: [],
+          tooltipElements: [],
+          headings: [],
+          frames: [],
+        },
+      }
+    );
+
+    expect(triage).toMatchObject({
+      failureClass: 'record_lookup_miss',
+      repairable: true,
+    });
+    expect(triage?.matchedSignals).toContain('selectedOrderNo missing before modal submit');
+  });
+
+  it('classifies selected-row order-number misses as record lookup blockers instead of unknown', () => {
+    const triage = classifyIntentE2EFailure(
+      {
+        success: false,
+        duration: 988,
+        steps: [
+          {
+            title: '从已勾选订单行提取订单号',
+            status: 'failed',
+            duration: 988,
+            error:
+              '已定位目标行但未提取到有效订单号，rowKey=461815 rowText=[服务中] 待申请入账 未确认 陈 18921541592 [签单人>相玉凤]',
+          },
+        ],
+        error:
+          '已定位目标行但未提取到有效订单号，rowKey=461815 rowText=[服务中] 待申请入账 未确认 陈 18921541592 [签单人>相玉凤]',
+      },
+      [],
+      {
+        pageUrl: 'https://uat.example.com/#/order/list',
+        snapshot: {
+          url: 'https://uat.example.com/#/order/list',
+          title: '订单列表',
+          forms: [],
+          buttons: [],
+          tooltipElements: [],
+          headings: [],
+          frames: [],
+        },
+      }
+    );
+
+    expect(triage).toMatchObject({
+      failureClass: 'record_lookup_miss',
+      repairable: true,
+    });
+    expect(triage?.matchedSignals).toContain('selectedOrderNo missing after selected row capture');
+  });
+
+  it('classifies selected-row selectedOrderNo extraction misses with the live-run wording as record lookup blockers', () => {
+    const triage = classifyIntentE2EFailure(
+      {
+        success: false,
+        duration: 1268,
+        steps: [
+          {
+            title: '定位并提取待申请入账订单号',
+            status: 'failed',
+            duration: 1268,
+            error: '已勾选目标行，但未能提取订单号 selectedOrderNo',
+          },
+        ],
+        error: '已勾选目标行，但未能提取订单号 selectedOrderNo',
+      },
+      [],
+      {
+        pageUrl: 'https://uat.example.com/#/order/list',
+        snapshot: {
+          url: 'https://uat.example.com/#/order/list',
+          title: '订单列表',
+          forms: [],
+          buttons: [],
+          tooltipElements: [],
+          headings: [],
+          frames: [],
+        },
+      }
+    );
+
+    expect(triage).toMatchObject({
+      failureClass: 'record_lookup_miss',
+      repairable: true,
+    });
+    expect(triage?.matchedSignals).toContain('selectedOrderNo missing before modal submit');
+  });
+
+  it('classifies 未能从已勾选行提取有效订单号 as record lookup blockers instead of unknown', () => {
+    const triage = classifyIntentE2EFailure(
+      {
+        success: false,
+        duration: 5324,
+        steps: [
+          {
+            title: 'Step 3: 勾选记录并提取订单号',
+            status: 'failed',
+            duration: 7,
+            error: '未能从已勾选行提取有效订单号',
+          },
+        ],
+        error: '未能从已勾选行提取有效订单号',
+      },
+      [],
+      {
+        pageUrl: 'https://uat.example.com/#/order/list',
+        snapshot: {
+          url: 'https://uat.example.com/#/order/list',
+          title: '订单列表',
+          forms: [],
+          buttons: [],
+          tooltipElements: [],
+          headings: [],
+          frames: [],
+        },
+      }
+    );
+
+    expect(triage).toMatchObject({
+      failureClass: 'record_lookup_miss',
+      repairable: true,
+    });
+    expect(triage?.matchedSignals).toContain('selectedOrderNo missing before modal submit');
+    expect(triage?.matchedSignals).toContain('selectedOrderNo missing from checked row extraction');
+  });
+
+  it('classifies missing bookedMgmt redirects as workflow gaps instead of unknown', () => {
+    const triage = classifyIntentE2EFailure({
+      success: false,
+      duration: 900,
+      steps: [
+        {
+          title: '校验跳转入账管理页',
+          status: 'failed',
+          duration: 900,
+          error:
+            'expect(page).toHaveURL(expected) failed\nExpected pattern: /#\\\\/payment\\\\//\nReceived string: "https://uat-service.yikaiye.com/#/order/list"',
+        },
+      ],
+      error:
+        'expect(page).toHaveURL(expected) failed\nExpected pattern: /#\\\\/payment\\\\//\nReceived string: "https://uat-service.yikaiye.com/#/order/list"',
+    });
+
+    expect(triage).toMatchObject({
+      failureClass: 'workflow_gap',
+      repairable: true,
+    });
+    expect(triage?.matchedSignals).toContain('post-submit payment redirect missing');
+  });
+
   it('classifies order-list findAntdTableRow misses as repairable target-row failures', () => {
     const triage = classifyIntentE2EFailure(
       {
@@ -347,5 +604,29 @@ describe('intent-e2e-failure-triage', () => {
       repairable: false,
     });
     expect(triage?.matchedSignals).toContain('runtime_syntax_damage');
+  });
+
+  it('classifies ambiguous multiple real-row matches as record_lookup_miss instead of unknown', () => {
+    const triage = classifyIntentE2EFailure({
+      success: false,
+      duration: 1200,
+      steps: [
+        {
+          title: '筛选待申请入账订单',
+          status: 'failed',
+          duration: 1200,
+          error:
+            '表格目标行匹配到多条真实记录：hasTexts=待申请；groups=461815:[服务中] 待申请入账 || 461814:[服务中] 待申请入账',
+        },
+      ],
+      error:
+        '表格目标行匹配到多条真实记录：hasTexts=待申请；groups=461815:[服务中] 待申请入账 || 461814:[服务中] 待申请入账',
+    });
+
+    expect(triage).toMatchObject({
+      failureClass: 'record_lookup_miss',
+      repairable: true,
+    });
+    expect(triage?.matchedSignals).toContain('record lookup ambiguous_multiple_matches');
   });
 });

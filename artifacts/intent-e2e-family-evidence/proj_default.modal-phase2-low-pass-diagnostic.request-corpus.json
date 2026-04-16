@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "projectUid": "proj_default",
+  "moduleUid": "mod_1773303139537_c84d8476",
+  "testType": "browser_e2e",
+  "priorityScenarioFamily": "modal_or_drawer_save",
+  "actorUserUid": "usr_default_owner",
+  "requests": [
+    {
+      "requestId": "modal-phase2-assert-extract-ui-representative",
+      "expectedPriorityScenarioFamily": "modal_or_drawer_save",
+      "input": "在订单列表发起批量申请入账：先从已勾选订单行提取订单号，再在当前可见的“批量申请入账”弹窗里点击“确定”提交，验证弹窗关闭并进入入账管理列表，然后按该订单号检索命中对应记录。",
+      "targetUrl": "https://uat-service.yikaiye.com/#/order/list",
+      "llmConfig": {
+        "selfHealRetries": 1
+      },
+      "runControl": {
+        "priority": "normal",
+        "timeoutMs": 420000,
+        "retryLimit": 0
+      }
+    },
+    {
+      "requestId": "modal-phase2-ui-assert-extract-representative",
+      "expectedPriorityScenarioFamily": "modal_or_drawer_save",
+      "input": "在订单列表通过“展开”筛选入账状态为“待申请”，勾选结果行后使用表头“批量入账”提交“批量申请入账”弹窗，并跳转到入账管理页按订单号检索验证记录存在。提交时必须在当前可见且标题为“批量申请入账”的弹窗内点击“确 定”，等待弹窗关闭后再在入账管理页按同一订单号检索。",
+      "targetUrl": "https://uat-service.yikaiye.com/#/order/list",
+      "llmConfig": {
+        "selfHealRetries": 1
+      },
+      "runControl": {
+        "priority": "normal",
+        "timeoutMs": 420000,
+        "retryLimit": 0
+      }
+    },
+    {
+      "requestId": "modal-phase2-ui-extract-representative",
+      "expectedPriorityScenarioFamily": "modal_or_drawer_save",
+      "input": "在订单列表通过“展开”筛选入账状态为“待申请”，勾选结果行后点击表头“批量入账”打开当前可见且标题为“批量申请入账”的弹窗；不改默认值，直接点击“确 定”并等待弹窗关闭，然后进入入账管理页按同一订单号检索验证记录存在。",
+      "targetUrl": "https://uat-service.yikaiye.com/#/order/list",
+      "llmConfig": {
+        "selfHealRetries": 1
+      },
+      "runControl": {
+        "priority": "normal",
+        "timeoutMs": 420000,
+        "retryLimit": 0
+      }
+    }
+  ]
+}

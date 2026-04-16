@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "projectUid": "proj_default",
+  "moduleUid": "mod_1773303139537_c84d8476",
+  "testType": "browser_e2e",
+  "priorityScenarioFamily": "modal_or_drawer_save",
+  "actorUserUid": "usr_default_owner",
+  "requests": [
+    {
+      "requestId": "modal-phase2-ui-assert-extract-deterministic-proof",
+      "expectedPriorityScenarioFamily": "modal_or_drawer_save",
+      "input": "在订单列表先展开筛选并把入账状态设为“待申请”，选择一条真实订单后通过表头“批量入账”打开并提交当前可见的“批量申请入账”弹窗；先确认弹窗关闭且页面进入入账管理稳定态，再按刚才那条订单号检索并校验命中记录。",
+      "targetUrl": "https://uat-service.yikaiye.com/#/order/list",
+      "llmConfig": {
+        "selfHealRetries": 1
+      },
+      "runControl": {
+        "priority": "normal",
+        "timeoutMs": 420000,
+        "retryLimit": 0
+      },
+      "prefilledScenarioCard": {
+        "version": 1,
+        "title": "订单列表批量申请入账并在弹窗关闭后按订单号校验记录",
+        "taskMode": "scenario",
+        "targetUrl": "https://uat-service.yikaiye.com/#/order/list",
+        "featureDescription": "在订单列表页展开筛选并将入账状态设为“待申请”，选择一条真实订单并发起表头“批量入账”；仅在当前可见且标题为“批量申请入账”的弹窗内点击“确 定”提交，先确认弹窗关闭与页面稳定，再进入入账管理页按同一订单号检索并校验记录存在。",
+        "flowDefinition": {
+          "version": 1,
+          "entryUrl": "https://uat-service.yikaiye.com/#/order/list",
+          "sharedVariables": [
+            "selectedOrderNo",
+            "confirmedOrderNo"
+          ],
+          "expectedOutcome": "批量申请入账提交成功，弹窗关闭后在入账管理页可按同一订单号检索到记录",
+          "cleanupNotes": "无自动清理；如环境需要可在后续人工撤销该入账申请。",
+          "steps": [
+            {
+              "stepUid": "step-1",
+              "stepType": "ui",
+              "title": "进入订单列表并设置待申请筛选",
+              "target": "订单列表页与筛选区域",
+              "instruction": "打开URL https://uat-service.yikaiye.com/#/order/list；如筛选区域折叠则点击“展开”，将“入账状态”设置为“待申请”并执行查询。",
+              "expectedResult": "URL包含#/order/list，列表刷新后页面出现订单列表主表格与待申请筛选结果。",
+              "extractVariable": ""
+            },
+            {
+              "stepUid": "step-2",
+              "stepType": "ui",
+              "title": "选择订单并打开批量申请入账弹窗",
+              "target": "订单列表结果表格与表头操作区",
+              "instruction": "在筛选结果中选择一条可勾选真实订单，先从该行读取订单号保存为${selectedOrderNo}，再勾选该行并点击表头“批量入账”。后续点击与断言都先 scope 到当前可见的弹层/抽屉容器内。",
+              "expectedResult": "成功记录选中订单号，且出现当前可见且标题为“批量申请入账”的弹窗。",
+              "extractVariable": "selectedOrderNo"
+            },
+            {
+              "stepUid": "step-3",
+              "stepType": "ui",
+              "title": "在指定弹窗内确认提交",
+              "target": "批量申请入账弹窗",
+              "instruction": "定位当前可见且标题为“批量申请入账”的弹窗，仅在该弹窗内点击“确 定”提交。",
+              "expectedResult": "提交动作触发，页面开始进入提交后的稳定收敛过程。",
+              "extractVariable": ""
+            },
+            {
+              "stepUid": "step-4",
+              "stepType": "assert",
+              "title": "校验弹窗关闭并进入入账管理稳定态",
+              "target": "批量申请入账弹窗与入账管理页",
+              "instruction": "等待并校验标题为“批量申请入账”的弹窗不可见或已关闭；同时确认页面进入入账管理相关稳定态。",
+              "expectedResult": "弹窗关闭，且页面已回到稳定态或进入入账管理页。",
+              "extractVariable": ""
+            },
+            {
+              "stepUid": "step-5",
+              "stepType": "ui",
+              "title": "在入账管理页按订单号检索",
+              "target": "入账管理页",
+              "instruction": "进入入账管理页，在订单号检索框输入${selectedOrderNo}并执行查询。",
+              "expectedResult": "URL包含入账管理路由，查询完成并刷新结果表格。",
+              "extractVariable": ""
+            },
+            {
+              "stepUid": "step-6",
+              "stepType": "extract",
+              "title": "提取命中记录的订单号",
+              "target": "入账管理查询结果表格",
+              "instruction": "在查询结果中定位订单号为${selectedOrderNo}的记录，并提取命中记录中的订单号文本保存为${confirmedOrderNo}。",
+              "expectedResult": "成功提取命中记录的订单号文本。",
+              "extractVariable": "confirmedOrderNo"
+            },
+            {
+              "stepUid": "step-7",
+              "stepType": "assert",
+              "title": "校验命中记录与原订单号一致",
+              "target": "入账管理查询结果表格",
+              "instruction": "校验${confirmedOrderNo} 与 ${selectedOrderNo} 一致，且结果表格中存在至少一条对应记录。",
+              "expectedResult": "命中记录订单号与提交前提取的订单号一致。",
+              "extractVariable": ""
+            }
+          ]
+        },
+        "successCriteria": [
+          "进入订单列表页后能展开筛选并把入账状态设置为待申请",
+          "从本次选择并提交的真实订单行中成功得到订单号",
+          "仅在当前可见且标题为“批量申请入账”的弹窗内点击“确 定”后，弹窗关闭并页面进入稳定态",
+          "进入入账管理页后按同一订单号检索可命中对应记录",
+          "命中记录中的订单号与提交前提取的订单号一致"
+        ],
+        "visualAnchors": [
+          "订单列表页包含“展开”“搜 索”“重 置”锚点",
+          "筛选项中存在“入账状态”与“待申请”选项",
+          "表头区域存在“批量入账”按钮",
+          "当前可见弹窗标题为“批量申请入账”，弹窗内存在“确 定”按钮",
+          "入账管理页存在订单号检索输入框与结果表格"
+        ],
+        "notes": [
+          "订单号必须来自本次选择并提交的同一条真实订单行，不要回退到固定测试数据。",
+          "先确认弹窗关闭和页面稳定，再执行入账管理页搜索，不要把 toast 当最终成功证据。",
+          "弹层 / 抽屉内的定位、点击与断言都先 scope 到当前可见容器。"
+        ]
+      }
+    }
+  ]
+}

@@ -287,10 +287,15 @@ function resolveProjectConcurrentLimit(): number {
 
 function resolveTaskPlatformRunControl(value?: IntentE2ERunControl | null): ResolvedIntentE2ERunControl {
   const resolved = resolveIntentE2ERunControl(value);
+  const workspaceRetryLimit = getWorkspaceIntentE2EGlobalRunConfigSnapshot().defaultRetryLimit;
+  const requestRetryLimit =
+    typeof value?.retryLimit === 'number' && Number.isFinite(value.retryLimit)
+      ? Math.max(0, Math.floor(value.retryLimit))
+      : null;
 
   return {
     ...resolved,
-    retryLimit: getWorkspaceIntentE2EGlobalRunConfigSnapshot().defaultRetryLimit,
+    retryLimit: requestRetryLimit === null ? workspaceRetryLimit : Math.min(requestRetryLimit, workspaceRetryLimit),
   };
 }
 

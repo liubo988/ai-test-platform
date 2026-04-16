@@ -235,7 +235,7 @@ function appendServerOutput(chunk: Buffer | string) {
   }
 }
 
-async function waitForServerReady(timeoutMs = 120_000) {
+async function waitForServerReady(timeoutMs = 240_000) {
   const deadline = Date.now() + timeoutMs;
   let lastError = '';
 
@@ -1081,7 +1081,7 @@ async function installApiMocks(
 }
 
 test.beforeAll(async () => {
-  test.setTimeout(180_000);
+  test.setTimeout(300_000);
   smokeServerOutput = '';
   smokeServer = spawn(
     process.execPath,

@@ -59,6 +59,7 @@ export interface SelectIntentRecipeRegistryInput {
   auth?: AuthConfig;
   snapshot: Pick<PageSnapshot, 'url' | 'title' | 'frames'>;
   priorityScenarioFamily?: IntentE2EPriorityScenarioFamily;
+  narrowToPriorityScenarioFamily?: boolean;
   preferredCapabilitySlugs?: string[];
   performanceBySlug?: Record<string, IntentRecipePerformanceFeedback>;
 }
@@ -158,6 +159,16 @@ function scoreIntentRecipe(
   const preferredCapabilitySlugSet = new Set((input.preferredCapabilitySlugs || []).map((item) => item.trim()).filter(Boolean));
   const stableIdentifierMatched = sharedVariables.some((item) => looksLikeIntentStableIdentifierVariable(item));
   const familyProfile = getIntentE2EPriorityScenarioFamilyAssetProfile(input.priorityScenarioFamily);
+
+  if (
+    input.narrowToPriorityScenarioFamily &&
+    input.priorityScenarioFamily &&
+    input.priorityScenarioFamily !== 'untracked' &&
+    recipe.family &&
+    recipe.family !== input.priorityScenarioFamily
+  ) {
+    return null;
+  }
 
   if (recipe.matchers.requiresAuth) {
     if (!authAvailable) return null;

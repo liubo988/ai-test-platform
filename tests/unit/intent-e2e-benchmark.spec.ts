@@ -306,6 +306,94 @@ function makeListSearchDetailSnapshots(statuses: Array<'passed' | 'failed'>, sta
   );
 }
 
+function makeModalStrongSnapshots(statuses: Array<'passed' | 'failed'>, startedAt = '2026-04-01T09:00:00.000Z') {
+  return statuses.map((status, index) =>
+    makeRunSnapshot({
+      runId: `modal_strong_${status}_${index + 1}`,
+      status,
+      requestInput: '在订单列表打开弹窗并点击保存提交，确认弹窗关闭后回到稳定态',
+      targetUrl: 'https://example.com/order/list',
+      endedAt: new Date(Date.parse(startedAt) + index * 60_000).toISOString(),
+      state: makeResultState({
+        title: '订单弹窗保存提交后回到列表校验',
+        taskMode: 'scenario',
+        stepTypes: ['ui', 'extract', 'assert'],
+        description: '打开弹窗并点击保存提交后返回订单列表并核对结果',
+        matchedRecipeSlugs: ['intent.intent-modal-or-drawer-save-visible-container'],
+        attempts: [
+          {
+            attempt: 1,
+            kind: 'generate',
+            result: { success: status === 'passed' },
+            helperUsage: {
+              usedHelpers: ['__e2e.selectAntdOption', '__e2e.waitForApiResponse'],
+              usedSuggestedHelpers: [],
+            },
+            triage:
+              status === 'failed'
+                ? {
+                    failureClass: 'selector_drift',
+                  }
+                : undefined,
+          },
+        ],
+      }),
+    })
+  );
+}
+
+function makeModalWeakUnknownNoStepsSnapshots(count = 3, startedAt = '2026-04-01T10:00:00.000Z') {
+  return Array.from({ length: count }, (_, index) =>
+    makeRunSnapshot({
+      runId: `modal_weak_unknown_${index + 1}`,
+      status: 'failed',
+      requestInput: '在订单列表打开弹窗并点击保存提交，确认弹窗关闭后回到稳定态',
+      targetUrl: 'https://example.com/order/list',
+      endedAt: new Date(Date.parse(startedAt) + index * 60_000).toISOString(),
+      state: {
+        result: {
+          testType: 'browser_e2e',
+          runnerType: 'playwright_runner',
+          description: '订单弹窗保存提交后回到列表校验',
+          scenarioCard: {
+            title: '订单弹窗保存提交后回到列表校验',
+            taskMode: 'unknown',
+            flowDefinition: {
+              steps: [],
+            },
+          },
+          executionPlan: {
+            matchedRecipeSlugs: [],
+          },
+          verificationPlan: {
+            matchedRecipeSlugs: [],
+            checks: [],
+          },
+          knowledge: {
+            matchedRuleIds: [],
+            matchedRuleTitles: [],
+            suggestedHelpers: [],
+          },
+          attempts: [
+            {
+              attempt: 1,
+              kind: 'generate',
+              result: { success: false },
+              helperUsage: {
+                usedHelpers: [],
+                usedSuggestedHelpers: [],
+              },
+              triage: {
+                failureClass: 'unknown',
+              },
+            },
+          ],
+        },
+      },
+    })
+  );
+}
+
 describe('intent-e2e-benchmark', () => {
   const originalProjectAssetRoot = process.env.INTENT_E2E_PROJECT_ASSET_ROOT;
   let tempAssetRoot = '';
@@ -626,6 +714,67 @@ describe('intent-e2e-benchmark', () => {
     ]);
   });
 
+  it('formalizes a non-weak proof window by excluding unknown no_steps cases from the modal benchmark proof chain', () => {
+    const frozenSnapshots = [
+      ...makeModalStrongSnapshots(['passed', 'passed', 'failed'], '2026-04-01T09:00:00.000Z'),
+      ...makeModalWeakUnknownNoStepsSnapshots(3, '2026-04-01T10:00:00.000Z'),
+    ];
+
+    const benchmark = buildIntentE2EBenchmarkSuiteFromData(frozenSnapshots, {
+      projectUid: 'proj_checkout',
+      moduleUid: 'mod_sales',
+      testTypes: ['browser_e2e'],
+      priorityScenarioFamily: 'modal_or_drawer_save',
+      proofWindow: 'non_weak',
+      maxCases: 5,
+      frozenAt: '2026-04-01T11:00:00.000Z',
+    });
+
+    expect(benchmark.proofWindow).toMatchObject({
+      mode: 'non_weak',
+      excludedWeakCaseCount: 1,
+    });
+    expect(benchmark.proofWindow.excludedWeakCases[0]).toMatchObject({
+      priorityScenarioFamily: 'modal_or_drawer_save',
+      taskMode: 'unknown',
+      stepCount: 0,
+      reasonCodes: ['unknown_task_mode', 'no_steps'],
+    });
+    expect(benchmark.proofWindow.excludedWeakCases[0]?.snapshotSignature).toContain('|unknown|');
+    expect(benchmark.proofWindow.excludedWeakCases[0]?.snapshotSignature).toContain('|no_steps');
+    expect(benchmark.cases).toHaveLength(1);
+    expect(benchmark.cases[0]?.snapshotSignature).not.toContain('|no_steps');
+    expect(benchmark.source.selectionNote).toContain('non_weak proof window');
+
+    const replay = buildIntentE2EBenchmarkReplayFromData(
+      benchmark,
+      makeModalStrongSnapshots(['passed', 'passed', 'passed'], '2026-04-01T12:00:00.000Z'),
+      '2026-04-01T12:30:00.000Z'
+    );
+    const report = buildIntentE2EBenchmarkCompareReport(benchmark, replay, {
+      comparedAt: '2026-04-01T12:30:00.000Z',
+      comparedLabel: 'modal-non-weak-current',
+    });
+
+    expect(replay.proofWindow).toMatchObject({
+      mode: 'non_weak',
+      excludedWeakCaseCount: 1,
+    });
+    expect(report.proofWindow).toMatchObject({
+      mode: 'non_weak',
+      excludedWeakCaseCount: 1,
+    });
+    expect(report.summary.totalCases).toBe(1);
+    expect(report.priorityScenarioFamilies).toEqual([
+      expect.objectContaining({
+        priorityScenarioFamily: 'modal_or_drawer_save',
+        totalCases: 1,
+        matchedCases: 1,
+        conclusion: 'improved',
+      }),
+    ]);
+  });
+
   it('normalizes tracked request corpus and applies scope defaults', () => {
     const corpus = normalizeIntentE2EBenchmarkRequestCorpus({
       version: 1,
@@ -716,5 +865,9 @@ describe('intent-e2e-benchmark', () => {
 
     expect(readResult?.benchmark.scope.priorityScenarioFamily).toBe('');
     expect(readResult?.benchmark.cases.every((item) => item.priorityScenarioFamily === 'untracked')).toBe(true);
+    expect(readResult?.benchmark.proofWindow).toMatchObject({
+      mode: 'default',
+      excludedWeakCaseCount: 0,
+    });
   });
 });

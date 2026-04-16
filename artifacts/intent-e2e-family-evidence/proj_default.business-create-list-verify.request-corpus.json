@@ -1,0 +1,316 @@
+{
+  "version": 1,
+  "projectUid": "proj_default",
+  "moduleUid": "mod_1773303139537_c84d8476",
+  "testType": "browser_e2e",
+  "priorityScenarioFamily": "business_create_list_verify",
+  "actorUserUid": "usr_default_owner",
+  "requests": [
+    {
+      "requestId": "business-create-list-verify-anchor-a",
+      "expectedPriorityScenarioFamily": "business_create_list_verify",
+      "input": "登录后台后在商机列表页发起新建商机并保存，随后切换到“我创建的”Tab，等待列表加载完成，校验新建商机记录出现在列表中且“商机进展”为“新入库”。",
+      "targetUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+      "prefilledScenarioCard": {
+        "version": 1,
+        "title": "登录后台后在商机列表页发起新建商机并保存，随后切换到“我创建的”Tab，等待列表加载完成，校验新建商机记录出现在列表中且“商机进展”为“新入库”。",
+        "taskMode": "scenario",
+        "targetUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+        "featureDescription": "business_create_list_verify fresh live evidence：在商机列表页完成真实新建商机、切换到“我创建的”并对真实新建记录执行严格状态验收，优先用结构化列表响应确认“商机进展”为“新入库”。",
+        "flowDefinition": {
+          "version": 1,
+          "entryUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+          "sharedVariables": [
+            "createdBusinessKey"
+          ],
+          "expectedOutcome": "在“我创建的”列表中稳定命中新建商机记录，并优先通过结构化列表响应确认其商机进展为“新入库”；仅在缺失时才回退到详情面的“商机进展 / 状态”字段。",
+          "cleanupNotes": "",
+          "steps": [
+            {
+              "stepUid": "step-1",
+              "stepType": "ui",
+              "title": "进入商机列表页",
+              "target": "https://uat-service.yikaiye.com/#/business/businesslist",
+              "instruction": "进入商机列表页并等待关键词搜索框、“新建商机”按钮和“商机进展”列表列头可见。",
+              "expectedResult": "商机列表页主表格和关键操作入口稳定可见"
+            },
+            {
+              "stepUid": "step-2",
+              "stepType": "ui",
+              "title": "打开新建商机入口",
+              "target": "商机列表页右上角“新建商机”按钮",
+              "instruction": "点击“新建商机”，等待新建商机表单或新建页面稳定出现；优先使用“商机联系人信息 / 商机来源”等真实可见锚点确认已进入创建上下文。",
+              "expectedResult": "已进入可填写的新建商机表单上下文"
+            },
+            {
+              "stepUid": "step-3",
+              "stepType": "ui",
+              "title": "填写并保存商机",
+              "target": "新建商机表单",
+              "instruction": "按页面真实最小必填项填写联系人、手机号、来源、企业名称和意向产品等信息，完成保存/提交，并等待返回商机列表上下文及创建响应可用。",
+              "expectedResult": "商机创建成功并返回或停留在商机列表上下文"
+            },
+            {
+              "stepUid": "step-4",
+              "stepType": "extract",
+              "title": "提取新建记录唯一标识",
+              "target": "创建响应或创建后可见回显",
+              "instruction": "优先从创建响应提取 businessId 作为 createdBusinessKey；若未提供 businessId，再回退到本次真实填写的唯一手机号或联系人标识，不要使用 toast、URL 或宽泛列表文本代替。",
+              "expectedResult": "createdBusinessKey 非空且可用于后续列表命中",
+              "extractVariable": "createdBusinessKey"
+            },
+            {
+              "stepUid": "step-5",
+              "stepType": "ui",
+              "title": "切换到“我创建的”Tab",
+              "target": "商机列表页顶部 Tab",
+              "instruction": "切换到“我创建的”Tab，并等待列表请求完成、关键词搜索框重新可用和结果表格稳定渲染。",
+              "expectedResult": "当前列表视图已切换到“我创建的”并完成加载"
+            },
+            {
+              "stepUid": "step-6",
+              "stepType": "ui",
+              "title": "校验新建记录及进展状态",
+              "target": "“我创建的”商机列表与可能的详情面",
+              "instruction": "使用 createdBusinessKey 或 businessId 在“我创建的”列表中稳定命中真实新建记录；优先使用结构化列表响应中的状态字段校验商机进展为“新入库”，仅当列表响应缺失状态证据时，才进入该记录详情面读取“商机进展 / 状态”字段做严格 fallback。",
+              "expectedResult": "真实新建商机记录已被命中，且最终业务状态明确校验为“新入库”"
+            }
+          ]
+        },
+        "successCriteria": [
+          "最终必须命中真实新建商机记录，而不是只凭 toast、URL 或任意列表文本判定通过",
+          "优先使用结构化列表响应中的状态证据；只有拿不到时才允许回退到详情面的“商机进展 / 状态”字段",
+          "最终业务状态必须明确校验为“新入库”"
+        ],
+        "visualAnchors": [
+          "我创建的",
+          "新建商机",
+          "商机联系人信息",
+          "商机来源",
+          "附件信息",
+          "商机进展"
+        ],
+        "notes": [
+          "前置条件：已登录后台系统。",
+          "新建商机所需字段按页面必填项最小集填写，不编造固定业务数据。",
+          "为避免数据冲突，需在创建后优先提取 businessId；若无 businessId，再回退到真实填写的唯一手机号或联系人标识。",
+          "进入创建商机页后，优先使用“商机联系人信息 / 关联产品意向信息 / 附件信息”等当前步骤标题或字段标签作为锚点，不要对裸“创建商机”文本做宽泛命中。",
+          "不要预设页面一定存在“商机名称输入框”；若页面未明确暴露该字段，优先围绕真实可见的联系人/手机号填写，并在最终提交后优先从响应提取 businessId。"
+        ]
+      },
+      "llmConfig": {
+        "selfHealRetries": 0,
+        "maxPlanSteps": 6
+      },
+      "runControl": {
+        "priority": "normal",
+        "timeoutMs": 720000,
+        "retryLimit": 0
+      }
+    },
+    {
+      "requestId": "business-create-list-verify-anchor-b",
+      "expectedPriorityScenarioFamily": "business_create_list_verify",
+      "input": "登录后台后在商机列表页发起新建商机并保存，随后切换到“我创建的”Tab，等待列表加载完成，校验新建商机记录出现在列表中且“商机进展”为“新入库”。",
+      "targetUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+      "prefilledScenarioCard": {
+        "version": 1,
+        "title": "登录后台后在商机列表页发起新建商机并保存，随后切换到“我创建的”Tab，等待列表加载完成，校验新建商机记录出现在列表中且“商机进展”为“新入库”。",
+        "taskMode": "scenario",
+        "targetUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+        "featureDescription": "business_create_list_verify fresh live evidence：在商机列表页完成真实新建商机、切换到“我创建的”并对真实新建记录执行严格状态验收，优先用结构化列表响应确认“商机进展”为“新入库”。",
+        "flowDefinition": {
+          "version": 1,
+          "entryUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+          "sharedVariables": [
+            "createdBusinessKey"
+          ],
+          "expectedOutcome": "在“我创建的”列表中稳定命中新建商机记录，并优先通过结构化列表响应确认其商机进展为“新入库”；仅在缺失时才回退到详情面的“商机进展 / 状态”字段。",
+          "cleanupNotes": "",
+          "steps": [
+            {
+              "stepUid": "step-1",
+              "stepType": "ui",
+              "title": "进入商机列表页",
+              "target": "https://uat-service.yikaiye.com/#/business/businesslist",
+              "instruction": "进入商机列表页并等待关键词搜索框、“新建商机”按钮和“商机进展”列表列头可见。",
+              "expectedResult": "商机列表页主表格和关键操作入口稳定可见"
+            },
+            {
+              "stepUid": "step-2",
+              "stepType": "ui",
+              "title": "打开新建商机入口",
+              "target": "商机列表页右上角“新建商机”按钮",
+              "instruction": "点击“新建商机”，等待新建商机表单或新建页面稳定出现；优先使用“商机联系人信息 / 商机来源”等真实可见锚点确认已进入创建上下文。",
+              "expectedResult": "已进入可填写的新建商机表单上下文"
+            },
+            {
+              "stepUid": "step-3",
+              "stepType": "ui",
+              "title": "填写并保存商机",
+              "target": "新建商机表单",
+              "instruction": "按页面真实最小必填项填写联系人、手机号、来源、企业名称和意向产品等信息，完成保存/提交，并等待返回商机列表上下文及创建响应可用。",
+              "expectedResult": "商机创建成功并返回或停留在商机列表上下文"
+            },
+            {
+              "stepUid": "step-4",
+              "stepType": "extract",
+              "title": "提取新建记录唯一标识",
+              "target": "创建响应或创建后可见回显",
+              "instruction": "优先从创建响应提取 businessId 作为 createdBusinessKey；若未提供 businessId，再回退到本次真实填写的唯一手机号或联系人标识，不要使用 toast、URL 或宽泛列表文本代替。",
+              "expectedResult": "createdBusinessKey 非空且可用于后续列表命中",
+              "extractVariable": "createdBusinessKey"
+            },
+            {
+              "stepUid": "step-5",
+              "stepType": "ui",
+              "title": "切换到“我创建的”Tab",
+              "target": "商机列表页顶部 Tab",
+              "instruction": "切换到“我创建的”Tab，并等待列表请求完成、关键词搜索框重新可用和结果表格稳定渲染。",
+              "expectedResult": "当前列表视图已切换到“我创建的”并完成加载"
+            },
+            {
+              "stepUid": "step-6",
+              "stepType": "ui",
+              "title": "校验新建记录及进展状态",
+              "target": "“我创建的”商机列表与可能的详情面",
+              "instruction": "使用 createdBusinessKey 或 businessId 在“我创建的”列表中稳定命中真实新建记录；优先使用结构化列表响应中的状态字段校验商机进展为“新入库”，仅当列表响应缺失状态证据时，才进入该记录详情面读取“商机进展 / 状态”字段做严格 fallback。",
+              "expectedResult": "真实新建商机记录已被命中，且最终业务状态明确校验为“新入库”"
+            }
+          ]
+        },
+        "successCriteria": [
+          "最终必须命中真实新建商机记录，而不是只凭 toast、URL 或任意列表文本判定通过",
+          "优先使用结构化列表响应中的状态证据；只有拿不到时才允许回退到详情面的“商机进展 / 状态”字段",
+          "最终业务状态必须明确校验为“新入库”"
+        ],
+        "visualAnchors": [
+          "我创建的",
+          "新建商机",
+          "商机联系人信息",
+          "商机来源",
+          "附件信息",
+          "商机进展"
+        ],
+        "notes": [
+          "前置条件：已登录后台系统。",
+          "新建商机所需字段按页面必填项最小集填写，不编造固定业务数据。",
+          "为避免数据冲突，需在创建后优先提取 businessId；若无 businessId，再回退到真实填写的唯一手机号或联系人标识。",
+          "进入创建商机页后，优先使用“商机联系人信息 / 关联产品意向信息 / 附件信息”等当前步骤标题或字段标签作为锚点，不要对裸“创建商机”文本做宽泛命中。",
+          "不要预设页面一定存在“商机名称输入框”；若页面未明确暴露该字段，优先围绕真实可见的联系人/手机号填写，并在最终提交后优先从响应提取 businessId。"
+        ]
+      },
+      "llmConfig": {
+        "selfHealRetries": 0,
+        "maxPlanSteps": 6
+      },
+      "runControl": {
+        "priority": "normal",
+        "timeoutMs": 720000,
+        "retryLimit": 0
+      }
+    },
+    {
+      "requestId": "business-create-list-verify-anchor-c",
+      "expectedPriorityScenarioFamily": "business_create_list_verify",
+      "input": "登录后台后在商机列表页发起新建商机并保存，随后切换到“我创建的”Tab，等待列表加载完成，校验新建商机记录出现在列表中且“商机进展”为“新入库”。",
+      "targetUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+      "prefilledScenarioCard": {
+        "version": 1,
+        "title": "登录后台后在商机列表页发起新建商机并保存，随后切换到“我创建的”Tab，等待列表加载完成，校验新建商机记录出现在列表中且“商机进展”为“新入库”。",
+        "taskMode": "scenario",
+        "targetUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+        "featureDescription": "business_create_list_verify fresh live evidence：在商机列表页完成真实新建商机、切换到“我创建的”并对真实新建记录执行严格状态验收，优先用结构化列表响应确认“商机进展”为“新入库”。",
+        "flowDefinition": {
+          "version": 1,
+          "entryUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+          "sharedVariables": [
+            "createdBusinessKey"
+          ],
+          "expectedOutcome": "在“我创建的”列表中稳定命中新建商机记录，并优先通过结构化列表响应确认其商机进展为“新入库”；仅在缺失时才回退到详情面的“商机进展 / 状态”字段。",
+          "cleanupNotes": "",
+          "steps": [
+            {
+              "stepUid": "step-1",
+              "stepType": "ui",
+              "title": "进入商机列表页",
+              "target": "https://uat-service.yikaiye.com/#/business/businesslist",
+              "instruction": "进入商机列表页并等待关键词搜索框、“新建商机”按钮和“商机进展”列表列头可见。",
+              "expectedResult": "商机列表页主表格和关键操作入口稳定可见"
+            },
+            {
+              "stepUid": "step-2",
+              "stepType": "ui",
+              "title": "打开新建商机入口",
+              "target": "商机列表页右上角“新建商机”按钮",
+              "instruction": "点击“新建商机”，等待新建商机表单或新建页面稳定出现；优先使用“商机联系人信息 / 商机来源”等真实可见锚点确认已进入创建上下文。",
+              "expectedResult": "已进入可填写的新建商机表单上下文"
+            },
+            {
+              "stepUid": "step-3",
+              "stepType": "ui",
+              "title": "填写并保存商机",
+              "target": "新建商机表单",
+              "instruction": "按页面真实最小必填项填写联系人、手机号、来源、企业名称和意向产品等信息，完成保存/提交，并等待返回商机列表上下文及创建响应可用。",
+              "expectedResult": "商机创建成功并返回或停留在商机列表上下文"
+            },
+            {
+              "stepUid": "step-4",
+              "stepType": "extract",
+              "title": "提取新建记录唯一标识",
+              "target": "创建响应或创建后可见回显",
+              "instruction": "优先从创建响应提取 businessId 作为 createdBusinessKey；若未提供 businessId，再回退到本次真实填写的唯一手机号或联系人标识，不要使用 toast、URL 或宽泛列表文本代替。",
+              "expectedResult": "createdBusinessKey 非空且可用于后续列表命中",
+              "extractVariable": "createdBusinessKey"
+            },
+            {
+              "stepUid": "step-5",
+              "stepType": "ui",
+              "title": "切换到“我创建的”Tab",
+              "target": "商机列表页顶部 Tab",
+              "instruction": "切换到“我创建的”Tab，并等待列表请求完成、关键词搜索框重新可用和结果表格稳定渲染。",
+              "expectedResult": "当前列表视图已切换到“我创建的”并完成加载"
+            },
+            {
+              "stepUid": "step-6",
+              "stepType": "ui",
+              "title": "校验新建记录及进展状态",
+              "target": "“我创建的”商机列表与可能的详情面",
+              "instruction": "使用 createdBusinessKey 或 businessId 在“我创建的”列表中稳定命中真实新建记录；优先使用结构化列表响应中的状态字段校验商机进展为“新入库”，仅当列表响应缺失状态证据时，才进入该记录详情面读取“商机进展 / 状态”字段做严格 fallback。",
+              "expectedResult": "真实新建商机记录已被命中，且最终业务状态明确校验为“新入库”"
+            }
+          ]
+        },
+        "successCriteria": [
+          "最终必须命中真实新建商机记录，而不是只凭 toast、URL 或任意列表文本判定通过",
+          "优先使用结构化列表响应中的状态证据；只有拿不到时才允许回退到详情面的“商机进展 / 状态”字段",
+          "最终业务状态必须明确校验为“新入库”"
+        ],
+        "visualAnchors": [
+          "我创建的",
+          "新建商机",
+          "商机联系人信息",
+          "商机来源",
+          "附件信息",
+          "商机进展"
+        ],
+        "notes": [
+          "前置条件：已登录后台系统。",
+          "新建商机所需字段按页面必填项最小集填写，不编造固定业务数据。",
+          "为避免数据冲突，需在创建后优先提取 businessId；若无 businessId，再回退到真实填写的唯一手机号或联系人标识。",
+          "进入创建商机页后，优先使用“商机联系人信息 / 关联产品意向信息 / 附件信息”等当前步骤标题或字段标签作为锚点，不要对裸“创建商机”文本做宽泛命中。",
+          "不要预设页面一定存在“商机名称输入框”；若页面未明确暴露该字段，优先围绕真实可见的联系人/手机号填写，并在最终提交后优先从响应提取 businessId。"
+        ]
+      },
+      "llmConfig": {
+        "selfHealRetries": 0,
+        "maxPlanSteps": 6
+      },
+      "runControl": {
+        "priority": "normal",
+        "timeoutMs": 720000,
+        "retryLimit": 0
+      }
+    }
+  ]
+}

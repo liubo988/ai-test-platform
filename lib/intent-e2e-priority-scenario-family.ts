@@ -70,6 +70,32 @@ function cloneStringArray(values: string[]): string[] {
   return values.map((item) => item.trim()).filter(Boolean);
 }
 
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return Array.from(
+    new Set(
+      values
+        .map((item) => (typeof item === 'string' ? item.trim() : ''))
+        .filter(Boolean)
+    )
+  );
+}
+
+const NARROW_PRIORITY_SCENARIO_FAMILIES = new Set<IntentTrackedE2EPriorityScenarioFamily>([
+  'business_create_list_verify',
+  'list_search_detail',
+  'modal_or_drawer_save',
+]);
+
+export function shouldNarrowToPriorityScenarioFamilyRoute(route?: IntentE2EPriorityScenarioFamilyRoute | null): boolean {
+  if (!route) return false;
+  if (route.family === 'untracked') return false;
+
+  return (
+    NARROW_PRIORITY_SCENARIO_FAMILIES.has(route.family) &&
+    !(route.textFamily !== 'untracked' && route.visualFamily !== 'untracked' && route.textFamily !== route.visualFamily)
+  );
+}
+
 const PRIORITY_SCENARIO_FAMILY_ASSET_PROFILES: Partial<
   Record<IntentTrackedE2EPriorityScenarioFamily, IntentE2EPriorityScenarioFamilyAssetProfile>
 > = {
@@ -145,10 +171,15 @@ const PRIORITY_SCENARIO_FAMILY_ASSET_PROFILES: Partial<
       'assert.read-detail-field',
       'ui.click-antd-row-action',
     ],
-    preferredRecipeSlugs: ['assert.antd-table-primary-key-search', 'intent.list-search-detail.primary-record'],
+    preferredRecipeSlugs: [
+      'assert.antd-table-primary-key-search',
+      'intent.list-search-detail.primary-record',
+      'intent.order-list-search-detail.derive-order-no',
+    ],
     executionRules: [
       '命中 family=list_search_detail 时，首轮优先沿“列表检索 -> 目标行命中 -> 进入对应详情 -> 字段级验收”固定骨架执行，不要搜索后直接点击第一条记录。',
       '如果已经拿到稳定标识，优先把它作为列表回查主值；只有主值为空时才退回联系人/手机号等 fallback identity。',
+      '如果请求只给了“待申请入账 / 待处理 / 某状态”这类集合筛选条件，不要把状态文本当唯一身份；先把它当筛选条件，再从筛选结果中提取 `orderNo / serialNo / customerCode / recordUid` 这类唯一值，后续详情入口和最终验收统一复用这个唯一值。',
     ],
     preferredPrimitives: [
       'resolve_primary_record(primaryValue, rowHasTexts?, detailEntry?): 统一处理列表搜索、命中目标行和详情回退',
@@ -197,10 +228,15 @@ const PRIORITY_SCENARIO_FAMILY_ASSET_PROFILES: Partial<
       'assert.watch-submit-state',
       'assert.read-detail-field',
     ],
-    preferredRecipeSlugs: ['ui.antd-modal-drawer-save', 'intent.modal-or-drawer-save.visible-container'],
+    preferredRecipeSlugs: [
+      'ui.antd-modal-drawer-save',
+      'intent.modal-or-drawer-save.visible-container',
+      'intent.intent-modal-or-drawer-save-visible-container',
+    ],
     executionRules: [
       '命中 family=modal_or_drawer_save 时，首轮优先沿“进入当前可见 modal/drawer -> scoped 填写 -> 保存 -> 收敛观察”固定骨架执行，不要在整页范围里猜输入框或保存按钮。',
       '保存后至少要观察弹层关闭、详情值保留、列表收敛或页面回到稳定态中的一种真实业务收敛证据，不能只看 toast。',
+      '若保存后需要跳转到列表页继续按主键验收，优先复用当前可见搜索面或 placeholder 锚点，不要把 `#form_in_modal_testKeyWord` 这类单一历史 id 当成唯一定位前提。',
     ],
     preferredPrimitives: [
       'scope_visible_container(titleIncludes?): 先定位当前可见 modal / drawer，再在容器内继续填写和保存',
@@ -334,6 +370,13 @@ function buildPriorityScenarioFamilyTextHaystack(input: {
   ].join('\n');
 }
 
+function buildPriorityScenarioFamilyRawRequestHaystack(input: {
+  requestInput: string;
+  targetUrl: string;
+}): string {
+  return [stripStructuredFamilySignalSections(input.requestInput), input.targetUrl].join('\n');
+}
+
 function buildPriorityScenarioFamilyVisualHaystack(input: {
   visualAnchors?: unknown;
   scenarioCard: unknown;
@@ -357,9 +400,9 @@ function classifyPriorityScenarioFamilyFromHaystack(haystack: string): IntentE2E
   const hasSearch = /(搜索|检索|查询|search)/i.test(normalizedHaystack);
   const hasListSurface = /(列表|表格|table|list)/i.test(normalizedHaystack);
   const hasModal = /(drawer|modal|抽屉|弹窗|弹框|弹层|对话框)/i.test(normalizedHaystack);
-  const hasSaveAction = /(保存|提交|确定|save|submit|confirm)/i.test(normalizedHaystack);
-  const hasCloseState = /(关闭|消失|closed|close)/i.test(normalizedHaystack);
-  const hasSuccessState = /(保存成功|提交成功|success)/i.test(normalizedHaystack);
+  const hasSaveAction = /(保\s*存|提\s*交|确\s*定|save|submit|confirm)/i.test(normalizedHaystack);
+  const hasCloseState = /(关\s*闭|消\s*失|closed|close)/i.test(normalizedHaystack);
+  const hasSuccessState = /(保\s*存成功|提\s*交成功|success)/i.test(normalizedHaystack);
   const hasBusinessCreateSurface =
     /(新建商机|创建商机|新增商机|createbusiness|create business|business create|商机创建页|商机创建|保存成功后|新建记录)/i.test(
       normalizedHaystack
@@ -433,13 +476,31 @@ export function resolveIntentE2EPriorityScenarioFamilyRoute(input: {
   description: string;
   visualAnchors?: unknown;
 }): IntentE2EPriorityScenarioFamilyRoute {
-  const textFamily = classifyPriorityScenarioFamilyFromHaystack(buildPriorityScenarioFamilyTextHaystack(input));
+  const rawRequestFamily = classifyPriorityScenarioFamilyFromHaystack(
+    buildPriorityScenarioFamilyRawRequestHaystack({
+      requestInput: input.requestInput,
+      targetUrl: input.targetUrl,
+    })
+  );
+  const expandedTextFamily = classifyPriorityScenarioFamilyFromHaystack(buildPriorityScenarioFamilyTextHaystack(input));
   const visualFamily = classifyPriorityScenarioFamilyFromHaystack(
     buildPriorityScenarioFamilyVisualHaystack({
       scenarioCard: input.scenarioCard,
       visualAnchors: input.visualAnchors,
     })
   );
+  const preferRawRequestFamily =
+    rawRequestFamily !== 'untracked' &&
+    rawRequestFamily !== expandedTextFamily &&
+    NARROW_PRIORITY_SCENARIO_FAMILIES.has(rawRequestFamily as IntentTrackedE2EPriorityScenarioFamily);
+  const textFamily = preferRawRequestFamily ? rawRequestFamily : expandedTextFamily;
+  const requestClarifySignals = preferRawRequestFamily
+    ? [
+        `原始请求更像“${formatIntentE2EPriorityScenarioFamilyLabel(rawRequestFamily)}”，但扩写后的场景卡更像“${formatIntentE2EPriorityScenarioFamilyLabel(
+          expandedTextFamily
+        )}”；当前优先沿原始请求 family 继续规划，避免扩写污染主路由。`,
+      ]
+    : [];
 
   if (textFamily !== 'untracked' && visualFamily !== 'untracked' && textFamily === visualFamily) {
     return {
@@ -447,7 +508,7 @@ export function resolveIntentE2EPriorityScenarioFamilyRoute(input: {
       textFamily,
       visualFamily,
       source: 'text_confirmed_by_visual',
-      clarifySignals: [],
+      clarifySignals: requestClarifySignals,
     };
   }
 
@@ -457,7 +518,7 @@ export function resolveIntentE2EPriorityScenarioFamilyRoute(input: {
       textFamily,
       visualFamily,
       source: 'visual_anchor_salvaged',
-      clarifySignals: [],
+      clarifySignals: requestClarifySignals,
     };
   }
 
@@ -467,11 +528,12 @@ export function resolveIntentE2EPriorityScenarioFamilyRoute(input: {
       textFamily,
       visualFamily,
       source: 'text_only',
-      clarifySignals: [
+      clarifySignals: uniqueStrings([
+        ...requestClarifySignals,
         `文本更像“${formatIntentE2EPriorityScenarioFamilyLabel(textFamily)}”，但视觉锚点更像“${formatIntentE2EPriorityScenarioFamilyLabel(
           visualFamily
         )}”；当前先按文本 family 继续规划，如需真正转成 needs_clarify，应由 launch decision 统一消费。`,
-      ],
+      ]),
     };
   }
 
@@ -480,7 +542,7 @@ export function resolveIntentE2EPriorityScenarioFamilyRoute(input: {
     textFamily,
     visualFamily,
     source: 'text_only',
-    clarifySignals: [],
+    clarifySignals: requestClarifySignals,
   };
 }
 

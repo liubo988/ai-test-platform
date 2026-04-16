@@ -22,7 +22,7 @@ import {
   type GenerateEvent,
 } from '@/lib/test-generator';
 import { getLLMRuntimeConfig } from '@/lib/llm/provider-config';
-import { buildGenerateInputFromScenarioCard, generateScenarioCard } from '@/lib/ai/scenario-card';
+import { buildGenerateInputFromScenarioCard, generateScenarioCard, normalizeScenarioCard } from '@/lib/ai/scenario-card';
 import { executeIntentE2EFixture } from '@/lib/intent-e2e-fixture-executor';
 import {
   readIntentE2ESharedSessionCache,
@@ -66,6 +66,7 @@ vi.mock('@/lib/llm/provider-config', () => ({
 vi.mock('@/lib/ai/scenario-card', () => ({
   generateScenarioCard: vi.fn(),
   buildGenerateInputFromScenarioCard: vi.fn(),
+  normalizeScenarioCard: vi.fn((card: unknown) => card),
 }));
 
 vi.mock('@/lib/intent-e2e-fixture-executor', () => ({
@@ -730,6 +731,7 @@ beforeEach(() => {
       },
     },
   });
+  vi.mocked(normalizeScenarioCard).mockImplementation((card: unknown) => card as any);
   vi.mocked(selectIntentRecipeRegistry).mockReturnValue({
     version: 1,
     items: [
@@ -1237,7 +1239,7 @@ describe('intent-e2e-service stream', () => {
       }
     );
 
-    expect(vi.mocked(listIntentE2ERunSnapshots)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(listIntentE2ERunSnapshots)).toHaveBeenCalledTimes(6);
     expect(vi.mocked(listIntentProjectKnowledgeAuditEntries)).toHaveBeenCalledTimes(1);
     expect(secondRunEvents).toEqual(
       expect.arrayContaining([
@@ -2845,6 +2847,610 @@ describe('intent-e2e-service stream', () => {
           log: expect.objectContaining({
             message: expect.stringContaining('intent-run-passed-reuse'),
           }),
+        }),
+      ])
+    );
+  });
+
+  it('temporarily disables recent successful-run reuse when the live-verify switch is enabled', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+    const successfulRunCode =
+      "test('reused-successful-run', async ({ page }) => { await page.goto('https://example.com/checkout'); await expect(page).toHaveURL('https://example.com/checkout'); });";
+    vi.stubEnv('INTENT_E2E_DISABLE_RECENT_SUCCESSFUL_RUN_REUSE', '1');
+    vi.mocked(listIntentE2ERunSnapshots).mockResolvedValue([
+      createPassedRunSnapshot({
+        runId: 'intent-run-passed-reuse',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        requestInput: '访问结算页并提交，最终看到成功页',
+        targetUrl: 'https://example.com/checkout',
+        code: successfulRunCode,
+      }),
+    ] as never);
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        prefilledScenarioCard: scenarioCard,
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(listIntentE2ERunSnapshots)).toHaveBeenCalledWith({
+      projectUid: 'proj_default',
+      moduleUid: 'mod_checkout',
+      status: 'passed',
+      limit: 12,
+    });
+    expect(vi.mocked(generateTest)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toBe(
+      "test('checkout-default', async ({ page }) => { await page.goto('https://example.com/checkout'); });"
+    );
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'generating',
+          message: expect.stringContaining('回退到当前生成链路'),
+        }),
+        expect.objectContaining({
+          type: 'attempt_log',
+          log: expect.objectContaining({
+            message: expect.stringContaining('已临时关闭最近一次成功运行脚本复用'),
+          }),
+        }),
+      ])
+    );
+  });
+
+  it('reuses an exact successful run without intentDraftUid by first reusing its ScenarioCard', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+    const successfulRunCode =
+      "test('reused-successful-run-no-draft', async ({ page }) => { await page.goto('https://example.com/checkout'); await expect(page).toHaveURL('https://example.com/checkout'); });";
+    vi.mocked(listIntentE2ERunSnapshots).mockImplementation(async (query) => {
+      if (query?.status === 'passed') {
+        return [
+          createPassedRunSnapshot({
+            runId: 'intent-run-passed-no-draft',
+            projectUid: 'proj_default',
+            moduleUid: 'mod_checkout',
+            intentDraftUid: 'idraft_existing_checkout',
+            requestInput: '访问结算页并提交，最终看到成功页',
+            targetUrl: 'https://example.com/checkout',
+            code: successfulRunCode,
+          }),
+        ] as never;
+      }
+      return [] as never;
+    });
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        targetUrl: 'https://example.com/checkout',
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(generateScenarioCard)).not.toHaveBeenCalled();
+    expect(vi.mocked(generateTest)).not.toHaveBeenCalled();
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toBe(successfulRunCode);
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'prefilled_plan_reuse',
+      prefilledPlanReuseSource: 'recent_successful_run',
+      reusedRunId: 'intent-run-passed-no-draft',
+    });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'planning',
+          message: expect.stringContaining('最近一次成功运行的 ScenarioCard'),
+        }),
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'generating',
+          message: expect.stringContaining('最近一次成功运行脚本'),
+        }),
+      ])
+    );
+  });
+
+  it('reuses an exact failed run without intentDraftUid by first reusing its ScenarioCard and progressed code', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+    vi.mocked(listIntentE2ERunSnapshots).mockImplementation(async (query) => {
+      if (query?.status === 'failed') {
+        return [
+          createFailedRunSnapshot({
+            runId: 'intent-run-progressed-no-draft',
+            projectUid: 'proj_default',
+            moduleUid: 'mod_checkout',
+            intentDraftUid: 'idraft_existing_checkout',
+            requestInput: '访问结算页并提交，最终看到成功页',
+            targetUrl: 'https://example.com/checkout',
+            attempts: [
+              {
+                attempt: 1,
+                kind: 'generate',
+                code: "test('failed-progressed-run', async ({ page }) => { await page.goto('https://example.com/checkout'); await page.getByText('step-4').click(); });",
+                failedStepTitle: 'Step 4: 提交失败',
+                progressedStepCount: 3,
+                error: '提交失败',
+              },
+            ],
+          }),
+        ] as never;
+      }
+      return [] as never;
+    });
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        targetUrl: 'https://example.com/checkout',
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(generateScenarioCard)).not.toHaveBeenCalled();
+    expect(vi.mocked(generateTest)).not.toHaveBeenCalled();
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toBe(
+      "test('failed-progressed-run', async ({ page }) => { await page.goto('https://example.com/checkout'); await page.getByText('step-4').click(); });"
+    );
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'prefilled_plan_reuse',
+      prefilledPlanReuseSource: 'recent_progressed_run',
+      reusedRunId: 'intent-run-progressed-no-draft',
+    });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'planning',
+          message: expect.stringContaining('最近一次推进更远的 ScenarioCard'),
+        }),
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'generating',
+          message: expect.stringContaining('推进更远的修复脚本'),
+        }),
+      ])
+    );
+  });
+
+  it('extends request-only successful-run reuse lookback beyond the recent 12 snapshots', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+    const successfulRunCode =
+      "test('reused-older-successful-run-no-draft', async ({ page }) => { await page.goto('https://example.com/checkout'); await expect(page).toHaveURL('https://example.com/checkout'); });";
+    const fillerSnapshots = Array.from({ length: 12 }, (_, index) =>
+      createPassedRunSnapshot({
+        runId: `intent-run-filler-passed-${index + 1}`,
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: `idraft_filler_${index + 1}`,
+        requestInput: `不同请求 ${index + 1}`,
+        targetUrl: 'https://example.com/checkout',
+        code: `test('filler-${index + 1}', async () => {});`,
+      })
+    );
+
+    vi.mocked(listIntentE2ERunSnapshots).mockImplementation(async (query) => {
+      if (query?.status === 'passed') {
+        if ((query.limit || 0) <= 12) {
+          return fillerSnapshots as never;
+        }
+        return [
+          ...fillerSnapshots,
+          createPassedRunSnapshot({
+            runId: 'intent-run-older-exact-passed-no-draft',
+            projectUid: 'proj_default',
+            moduleUid: 'mod_checkout',
+            intentDraftUid: 'idraft_existing_checkout',
+            requestInput: '访问结算页并提交，最终看到成功页',
+            targetUrl: 'https://example.com/checkout',
+            code: successfulRunCode,
+          }),
+        ] as never;
+      }
+      return [] as never;
+    });
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        targetUrl: 'https://example.com/checkout',
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(listIntentE2ERunSnapshots)).toHaveBeenCalledWith({
+      projectUid: 'proj_default',
+      moduleUid: 'mod_checkout',
+      status: 'passed',
+      limit: 48,
+    });
+    expect(vi.mocked(generateScenarioCard)).not.toHaveBeenCalled();
+    expect(vi.mocked(generateTest)).not.toHaveBeenCalled();
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toBe(successfulRunCode);
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'prefilled_plan_reuse',
+      prefilledPlanReuseSource: 'recent_successful_run',
+      reusedRunId: 'intent-run-older-exact-passed-no-draft',
+    });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'planning',
+          message: expect.stringContaining('最近一次成功运行的 ScenarioCard'),
+        }),
+      ])
+    );
+  });
+
+  it('extends request-only progressed-run reuse lookback beyond the recent 12 snapshots', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+    const fillerSnapshots = Array.from({ length: 12 }, (_, index) =>
+      createFailedRunSnapshot({
+        runId: `intent-run-filler-failed-${index + 1}`,
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: `idraft_failed_filler_${index + 1}`,
+        requestInput: `不同失败请求 ${index + 1}`,
+        targetUrl: 'https://example.com/checkout',
+        attempts: [
+          {
+            attempt: 1,
+            kind: 'generate',
+            code: `test('failed-filler-${index + 1}', async () => {});`,
+            failedStepTitle: 'Step 1: filler',
+            progressedStepCount: 1,
+            error: 'filler failed',
+          },
+        ],
+      })
+    );
+
+    vi.mocked(listIntentE2ERunSnapshots).mockImplementation(async (query) => {
+      if (query?.status === 'failed') {
+        if ((query.limit || 0) <= 12) {
+          return fillerSnapshots as never;
+        }
+        return [
+          ...fillerSnapshots,
+          createFailedRunSnapshot({
+            runId: 'intent-run-older-exact-progressed-no-draft',
+            projectUid: 'proj_default',
+            moduleUid: 'mod_checkout',
+            intentDraftUid: 'idraft_existing_checkout',
+            requestInput: '访问结算页并提交，最终看到成功页',
+            targetUrl: 'https://example.com/checkout',
+            attempts: [
+              {
+                attempt: 1,
+                kind: 'generate',
+                code: "test('failed-progressed-run-older', async ({ page }) => { await page.goto('https://example.com/checkout'); await page.getByText('step-4').click(); });",
+                failedStepTitle: 'Step 4: 提交失败',
+                progressedStepCount: 3,
+                error: '提交失败',
+              },
+            ],
+          }),
+        ] as never;
+      }
+      return [] as never;
+    });
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        targetUrl: 'https://example.com/checkout',
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(listIntentE2ERunSnapshots)).toHaveBeenCalledWith({
+      projectUid: 'proj_default',
+      moduleUid: 'mod_checkout',
+      status: 'passed',
+      limit: 48,
+    });
+    expect(vi.mocked(listIntentE2ERunSnapshots)).toHaveBeenCalledWith({
+      projectUid: 'proj_default',
+      moduleUid: 'mod_checkout',
+      status: 'failed',
+      limit: 48,
+    });
+    expect(vi.mocked(generateScenarioCard)).not.toHaveBeenCalled();
+    expect(vi.mocked(generateTest)).not.toHaveBeenCalled();
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toBe(
+      "test('failed-progressed-run-older', async ({ page }) => { await page.goto('https://example.com/checkout'); await page.getByText('step-4').click(); });"
+    );
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'prefilled_plan_reuse',
+      prefilledPlanReuseSource: 'recent_progressed_run',
+      reusedRunId: 'intent-run-older-exact-progressed-no-draft',
+    });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'planning',
+          message: expect.stringContaining('最近一次推进更远的 ScenarioCard'),
+        }),
+      ])
+    );
+  });
+
+  it('normalizes reused scenario cards before planning when exact-request no-draft reuse hits a historical modal batch-account run', async () => {
+    const reusedScenarioCard = {
+      version: 1,
+      title: '订单列表批量申请入账并在入账管理列表按订单号检索命中',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/order/list',
+      featureDescription:
+        '在订单列表发起批量申请入账：先从已勾选订单行提取订单号，再在当前可见的“批量申请入账”弹窗里点击“确定”提交，验证弹窗关闭并进入入账管理列表，然后按该订单号检索命中对应记录。',
+      successCriteria: ['在订单列表可识别到已勾选订单行，并成功提取至少一个订单号'],
+      visualAnchors: ['订单列表页包含订单表格与行勾选状态'],
+      notes: ['依赖前置状态：订单列表中已有至少一条已勾选订单，且当前弹窗已打开'],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/order/list',
+        sharedVariables: [],
+        expectedOutcome: '提交批量申请入账并检索到同一订单号记录',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step-1',
+            stepType: 'assert',
+            title: '确认订单列表页已就绪',
+            target: '订单列表页面',
+            instruction: '校验当前页面为订单列表，且订单表格区域可见',
+            expectedResult: 'URL 包含 /order/list，且订单表格锚点可见/可交互',
+            extractVariable: '',
+          },
+        ],
+      },
+    } as const;
+    const normalizedScenarioCard = {
+      ...reusedScenarioCard,
+      notes: [...reusedScenarioCard.notes, 'normalized-by-service'],
+    };
+    vi.mocked(normalizeScenarioCard).mockReturnValue(normalizedScenarioCard as any);
+    vi.mocked(buildGenerateInputFromScenarioCard).mockReturnValue({
+      targetUrl: 'https://example.com/#/order/list',
+      description: 'normalized modal flow',
+      context: {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://example.com/#/order/list',
+        scenarioSummary: 'normalized modal flow',
+        expectedOutcome: '按订单号检索命中记录',
+        sharedVariables: ['selectedOrderNo'],
+        cleanupNotes: '',
+        actionDsl: {
+          version: 1,
+          mode: 'scenario',
+          targetUrl: 'https://example.com/#/order/list',
+          summary: 'normalized modal flow',
+          globalRules: [],
+          preferredPrimitives: [],
+          outputContract: [],
+          steps: [],
+        },
+      },
+    } as never);
+    vi.mocked(listIntentE2ERunSnapshots).mockImplementation(async (query) => {
+      if (query?.status === 'failed') {
+        const snapshot = createFailedRunSnapshot({
+          runId: 'intent-run-modal-assert-extract-ui',
+          projectUid: 'proj_default',
+          moduleUid: 'mod_order',
+          intentDraftUid: 'idraft_old_modal',
+          requestInput:
+            '在订单列表发起批量申请入账：先从已勾选订单行提取订单号，再在当前可见的“批量申请入账”弹窗里点击“确定”提交，验证弹窗关闭并进入入账管理列表，然后按该订单号检索命中对应记录。',
+          targetUrl: 'https://example.com/#/order/list',
+          attempts: [
+            {
+              attempt: 1,
+              kind: 'generate',
+              code: "test('failed-progressed-run', async ({ page }) => { await page.goto('https://example.com/#/order/list'); await page.getByText('step-4').click(); });",
+              failedStepTitle: 'Step 4: 提交失败',
+              progressedStepCount: 3,
+              error: '提交失败',
+            },
+          ],
+        });
+        snapshot.state.result.scenarioCard = reusedScenarioCard;
+        return [snapshot] as never;
+      }
+      return [] as never;
+    });
+
+    await runIntentDrivenE2EStream({
+      input:
+        '在订单列表发起批量申请入账：先从已勾选订单行提取订单号，再在当前可见的“批量申请入账”弹窗里点击“确定”提交，验证弹窗关闭并进入入账管理列表，然后按该订单号检索命中对应记录。',
+      projectUid: 'proj_default',
+      moduleUid: 'mod_order',
+      targetUrl: 'https://example.com/#/order/list',
+    });
+
+    expect(vi.mocked(normalizeScenarioCard)).toHaveBeenCalledWith(reusedScenarioCard, 'https://example.com/#/order/list');
+    expect(vi.mocked(buildGenerateInputFromScenarioCard)).toHaveBeenCalledWith(normalizedScenarioCard);
+  });
+
+  it('skips stale progressed code reuse for modal batch-account scenarios and regenerates fresh code', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+    const requestInput =
+      '在订单列表发起批量申请入账：先从已勾选订单行提取订单号，再在当前可见的“批量申请入账”弹窗里点击“确定”提交，验证弹窗关闭并进入入账管理列表，然后按该订单号检索命中对应记录。';
+    const modalScenarioCard = {
+      version: 1,
+      title: '订单列表批量申请入账并在入账管理列表按订单号检索命中',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/order/list',
+      featureDescription:
+        '在订单列表发起批量申请入账；若当前还没有已勾选订单或“批量申请入账”弹窗尚未打开，先通过“展开”筛选入账状态为“待申请”，勾选一条真实订单并提取订单号，再打开当前可见的“批量申请入账”弹窗点击“确 定”提交，等待弹窗关闭并进入入账管理列表，最后按同一订单号检索命中对应记录。',
+      successCriteria: ['提交批量申请入账并按同一订单号检索命中记录'],
+      visualAnchors: ['订单列表页包含“展开”筛选入口', '弹窗标题为“批量申请入账”'],
+      notes: ['不要把“已勾选订单 / 已打开弹窗”当成硬前置'],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/order/list',
+        sharedVariables: ['selectedOrderNo'],
+        expectedOutcome: '批量申请入账提交成功，且在入账管理页可按同一订单号检索到记录',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step-1',
+            stepType: 'assert',
+            title: '确认订单列表页已就绪',
+            target: '订单列表页',
+            instruction: '确认当前页面为订单列表',
+            expectedResult: '页面位于订单列表上下文',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step-2',
+            stepType: 'extract',
+            title: '收敛目标订单并提取订单号',
+            target: '订单列表结果表格',
+            instruction: '先筛出待申请订单，再勾选并提取 selectedOrderNo',
+            expectedResult: '成功提取 selectedOrderNo',
+            extractVariable: 'selectedOrderNo',
+          },
+        ],
+      },
+    } as const;
+    const freshGeneratedCode =
+      "test('fresh-modal-generated', async ({ page }) => { await page.goto('https://example.com/#/order/list'); });";
+    const staleProgressedCode = `test("在订单列表基于已勾选订单发起“批量申请入账”", async ({ page }) => {
+  const shared = { selectedOrderNo: '' };
+  const checkedRows = page.locator('.ant-table-tbody tr[data-row-key]:visible').filter({
+    has: page.locator('.ant-checkbox-wrapper-checked, .ant-checkbox-checked'),
+  });
+  const checkedCount = await checkedRows.count();
+  if (!checkedCount) {
+    throw new Error('前置条件不满足：订单列表中未找到已勾选订单行');
+  }
+  await expect(shared.selectedOrderNo).not.toBe('');
+});`;
+
+    vi.mocked(generateScenarioCard).mockResolvedValue({
+      card: modalScenarioCard as any,
+      llmMeta: {
+        provider: 'openai',
+        model: 'chat-gpt5.4',
+        visionEnabled: false,
+        attachmentCount: 0,
+      },
+    });
+    vi.mocked(buildGenerateInputFromScenarioCard).mockReturnValue({
+      targetUrl: 'https://example.com/#/order/list',
+      description: 'normalized modal flow',
+      context: {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://example.com/#/order/list',
+        scenarioSummary: 'normalized modal flow',
+        expectedOutcome: '按订单号检索命中记录',
+        sharedVariables: ['selectedOrderNo'],
+        cleanupNotes: '',
+        actionDsl: {
+          version: 1,
+          mode: 'scenario',
+          targetUrl: 'https://example.com/#/order/list',
+          summary: 'normalized modal flow',
+          globalRules: [],
+          preferredPrimitives: [],
+          outputContract: [],
+          steps: [],
+        },
+      },
+    } as never);
+    vi.mocked(generateTest).mockReturnValue(
+      toAsyncGenerator([
+        {
+          type: 'complete',
+          content: freshGeneratedCode,
+        },
+      ])
+    );
+    vi.mocked(listIntentE2ERunSnapshots).mockImplementation(async (query) => {
+      if (query?.status === 'failed') {
+        return [
+          createFailedRunSnapshot({
+            runId: 'intent-run-modal-stale-progressed',
+            projectUid: 'proj_default',
+            moduleUid: 'mod_order',
+            intentDraftUid: 'idraft_modal',
+            requestInput,
+            targetUrl: 'https://example.com/#/order/list',
+            attempts: [
+              {
+                attempt: 1,
+                kind: 'generate',
+                code: staleProgressedCode,
+                failedStepTitle: 'Step 2: 从已勾选订单行提取订单号',
+                progressedStepCount: 2,
+                error: '前置条件不满足：订单列表中未找到已勾选订单行',
+              },
+            ],
+          }),
+        ] as never;
+      }
+      return [] as never;
+    });
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: requestInput,
+        projectUid: 'proj_default',
+        moduleUid: 'mod_order',
+        intentDraftUid: 'idraft_modal',
+        targetUrl: 'https://example.com/#/order/list',
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(generateScenarioCard)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(generateTest)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toBe(freshGeneratedCode);
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).not.toContain('const checkedRows');
+    expect(result.attempts[0]?.fallbackTelemetry?.prefilledPlanReuseSource).toBeUndefined();
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'generating',
+          message: expect.stringContaining('回退到当前生成链路'),
         }),
       ])
     );

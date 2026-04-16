@@ -1,0 +1,30 @@
+# Phase 3 First Cut Task Brief
+
+- 日期：2026-04-16
+- 目标：
+  - 只主攻 `modal_or_drawer_save` non-weak closure baseline 中的 `record_lookup_miss` residual bucket。
+  - 相对 `bench_711bbc557a86` 拿到至少一个 real improvement，同时不回退 official modal/list clean current-state。
+- 范围：
+  - 先基于 closure compare、run artifacts、verifier checks 做 root-cause。
+  - 只做最小、可验证、repo-native 修补。
+  - 不改 `proof-window non_weak`，不改 benchmark harness，不开新 runtime loop，不扩到其他 failure bucket。
+- 非目标：
+  - 不同时展开 `unknown / selector_drift / assertion_too_strict / runtime_syntax_damage`。
+  - 不回头重打 Phase 1/2 gate。
+  - 不做无关重构。
+- 验收标准：
+  - 相对 `bench_711bbc557a86` 的 latest non-weak compare 仍 `regressedCases=0`。
+  - 至少一个原先受 `record_lookup_miss` 主导的 modal non-weak case 从 `unchanged` 变为 `improved`，或 family-level `currentTerminalPassRate` 高于 `65.5`。
+  - official modal fresh rerun 仍 clean `3/3`。
+  - 若 touched shared path，则 official list fresh rerun 也仍 clean `3/3`。
+- 计划验证：
+  - 受影响单测
+  - `npm run build`
+  - `npm run build:web`
+  - `npm run test:e2e`
+  - `bash scripts/check-boundaries.sh`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+  - official modal rerun
+  - 如 touched shared path，再补 official list rerun
+  - modal non-weak replay / compare against `bench_711bbc557a86`

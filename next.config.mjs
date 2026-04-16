@@ -3,6 +3,9 @@ const distDir = process.env.NEXT_DIST_DIR?.trim();
 
 const nextConfig = {
   ...(distDir ? { distDir } : {}),
+  typescript: {
+    tsconfigPath: './tsconfig.next.json',
+  },
   webpack: (config, { isServer, dev }) => {
     if (isServer) {
       config.externals.push('playwright', '@playwright/test');

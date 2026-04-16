@@ -554,6 +554,151 @@ function isModalOrDrawerSaveStep(step: FlowDefinition['steps'][number]): boolean
   return isModalOrDrawerStep(step) && /(保存|提交|确定|save|submit|confirm)/i.test(haystack);
 }
 
+function looksLikeOrderBatchAccountingModalCard(card: ScenarioCard): boolean {
+  const flowDefinition = normalizeFlowDefinition(card.flowDefinition, card.targetUrl || card.flowDefinition.entryUrl);
+  const haystack = [
+    card.title,
+    card.targetUrl,
+    card.featureDescription,
+    ...card.successCriteria,
+    ...card.visualAnchors,
+    ...card.notes,
+    flowDefinition.entryUrl,
+    flowDefinition.expectedOutcome,
+    ...flowDefinition.steps.flatMap((step) => [step.title, step.target, step.instruction, step.expectedResult]),
+  ]
+    .join('\n')
+    .toLowerCase();
+
+  return /(订单列表|order\/list)/i.test(haystack) && /(批量申请入账|批量入账|入账管理|bookedmgmt)/i.test(haystack);
+}
+
+function needsOrderBatchAccountingPrereqNormalization(card: ScenarioCard): boolean {
+  if (!looksLikeOrderBatchAccountingModalCard(card)) {
+    return false;
+  }
+
+  const flowDefinition = normalizeFlowDefinition(card.flowDefinition, card.targetUrl || card.flowDefinition.entryUrl);
+  const haystack = [
+    card.title,
+    card.featureDescription,
+    ...card.successCriteria,
+    ...card.notes,
+    ...flowDefinition.steps.flatMap((step) => [step.title, step.target, step.instruction, step.expectedResult]),
+  ].join('\n');
+  const hasCheckedRowPrecondition = /已勾选/.test(haystack);
+  const hasPendingFilterStep = flowDefinition.steps.some((step) => /(展开|入账状态|待申请)/i.test(buildScenarioStepHaystack(step)));
+  const hasBatchOpenStep = flowDefinition.steps.some((step) => {
+    const stepHaystack = buildScenarioStepHaystack(step);
+    return /(批量入账|批量申请入账)/i.test(stepHaystack) && /(点击|打开|发起|展示|显示|出现|open)/i.test(stepHaystack);
+  });
+
+  return hasCheckedRowPrecondition && (!hasPendingFilterStep || !hasBatchOpenStep);
+}
+
+function rewriteOrderBatchAccountingPrereqCard(card: ScenarioCard): ScenarioCard {
+  const flowDefinition = normalizeFlowDefinition(card.flowDefinition, card.targetUrl || card.flowDefinition.entryUrl);
+  const targetUrl = card.targetUrl || flowDefinition.entryUrl;
+
+  return {
+    ...card,
+    featureDescription:
+      '在订单列表发起批量申请入账；若当前还没有已勾选订单或“批量申请入账”弹窗尚未打开，先通过“展开”筛选入账状态为“待申请”，勾选一条真实订单并提取订单号，再打开当前可见的“批量申请入账”弹窗点击“确 定”提交，等待弹窗关闭并进入入账管理列表，最后按同一订单号检索命中对应记录。',
+    successCriteria: normalizeStringArray([
+      '订单列表页已就绪，且存在“展开 / 搜 索 / 重 置”等检索区锚点',
+      '若当前尚无已勾选订单，则先将入账状态筛选为“待申请”，勾选一条真实订单并成功提取订单号',
+      '标题为“批量申请入账”的当前可见弹窗可成功提交，且提交后弹窗关闭并回到稳定态',
+      '进入入账管理页后，可按同一订单号检索并命中对应记录',
+    ]),
+    visualAnchors: normalizeStringArray([
+      ...card.visualAnchors,
+      '订单列表页包含“展开”筛选入口',
+      '表头区域存在“批量入账”按钮',
+      '弹窗标题为“批量申请入账”，弹窗内存在“确 定”按钮',
+      '入账管理页存在订单号检索输入框与结果表格',
+    ]),
+    notes: normalizeStringArray([
+      ...card.notes,
+      '“已勾选订单行 / 当前可见弹窗”这类描述只视为目标流中的期望中间态；若当前页面尚未形成该中间态，先通过筛选、勾选和打开弹窗把流程推进到该状态，不要直接判前置失败。',
+      '订单号必须来自本次勾选并提交的同一行；不要使用硬编码订单号，也不要把手机号或短 rowKey 当成 selectedOrderNo。',
+    ]),
+    flowDefinition: {
+      ...flowDefinition,
+      entryUrl: flowDefinition.entryUrl || targetUrl,
+      sharedVariables: normalizeStringArray([...flowDefinition.sharedVariables, 'selectedOrderNo']),
+      expectedOutcome: '批量申请入账提交成功，且在入账管理页可按同一订单号检索到记录',
+      cleanupNotes: flowDefinition.cleanupNotes || '无强制清理；如环境要求可在后续流程撤销该入账申请。',
+      steps: [
+        {
+          stepUid: 'step-1',
+          stepType: 'assert',
+          title: '确认订单列表页已就绪',
+          target: '订单列表页',
+          instruction: '确认当前页面为订单列表，且页面出现“展开 / 搜 索 / 重 置”等检索区锚点与主表格。',
+          expectedResult: 'URL包含#/order/list，订单列表主表格与检索区锚点可见。',
+          extractVariable: '',
+        },
+        {
+          stepUid: 'step-2',
+          stepType: 'extract',
+          title: '收敛目标订单并提取订单号',
+          target: '订单列表结果表格',
+          instruction:
+            '若当前没有已勾选订单，先点击“展开”，将“入账状态”设为“待申请”并执行查询；随后在结果中选择一条可勾选真实订单，勾选该行并从同一行提取订单号保存为 selectedOrderNo。',
+          expectedResult: '当前存在一条已勾选订单，且成功提取到非空 selectedOrderNo。',
+          extractVariable: 'selectedOrderNo',
+        },
+        {
+          stepUid: 'step-3',
+          stepType: 'ui',
+          title: '打开批量申请入账弹窗',
+          target: '表头操作区',
+          instruction:
+            '若标题为“批量申请入账”的当前可见弹窗尚未打开，则点击表头“批量入账”按钮打开；后续填写和点击都先 scope 到当前可见弹窗容器内。',
+          expectedResult: '页面出现当前可见且标题为“批量申请入账”的弹窗。',
+          extractVariable: '',
+        },
+        {
+          stepUid: 'step-4',
+          stepType: 'ui',
+          title: '在当前可见弹窗内确认提交',
+          target: '批量申请入账弹窗',
+          instruction: '仅在当前可见且标题为“批量申请入账”的弹窗内点击“确 定”提交。',
+          expectedResult: '提交动作触发，页面开始处理保存请求。',
+          extractVariable: '',
+        },
+        {
+          stepUid: 'step-5',
+          stepType: 'assert',
+          title: '校验弹窗关闭并进入入账管理列表',
+          target: '批量申请入账弹窗与入账管理页',
+          instruction: '等待并确认“批量申请入账”弹窗关闭，随后校验页面进入入账管理列表稳定态。',
+          expectedResult: '弹窗不可见，且页面位于入账管理列表上下文。',
+          extractVariable: '',
+        },
+        {
+          stepUid: 'step-6',
+          stepType: 'ui',
+          title: '按提取订单号执行检索',
+          target: '入账管理页检索区',
+          instruction: '在入账管理页使用 selectedOrderNo 填写订单号检索输入框并执行查询。',
+          expectedResult: '查询请求发起并完成，结果表格刷新。',
+          extractVariable: '',
+        },
+        {
+          stepUid: 'step-7',
+          stepType: 'assert',
+          title: '校验检索命中对应记录',
+          target: '入账管理结果表格',
+          instruction: '在结果表格中查找订单号等于 selectedOrderNo 的记录。',
+          expectedResult: '结果表格中存在至少一条订单号等于 selectedOrderNo 的记录。',
+          extractVariable: '',
+        },
+      ],
+    },
+  };
+}
+
 function sanitizeModalOrDrawerSaveSuccessCriterion(criterion: string): string {
   const value = toString(criterion);
   if (!value) return value;
@@ -583,13 +728,17 @@ function sanitizeModalOrDrawerSaveStep(step: FlowDefinition['steps'][number]): F
 }
 
 function stabilizeModalOrDrawerSaveCard(card: ScenarioCard): ScenarioCard {
-  const flowDefinition = normalizeFlowDefinition(card.flowDefinition, card.targetUrl || card.flowDefinition.entryUrl);
+  let nextCard = card;
+  if (needsOrderBatchAccountingPrereqNormalization(nextCard)) {
+    nextCard = rewriteOrderBatchAccountingPrereqCard(nextCard);
+  }
+  const flowDefinition = normalizeFlowDefinition(nextCard.flowDefinition, nextCard.targetUrl || nextCard.flowDefinition.entryUrl);
 
   return {
-    ...card,
-    successCriteria: normalizeStringArray(card.successCriteria.map((criterion) => sanitizeModalOrDrawerSaveSuccessCriterion(criterion))),
+    ...nextCard,
+    successCriteria: normalizeStringArray(nextCard.successCriteria.map((criterion) => sanitizeModalOrDrawerSaveSuccessCriterion(criterion))),
     notes: normalizeStringArray([
-      ...card.notes,
+      ...nextCard.notes,
       '不要只看 toast；弹层 / 抽屉保存后至少确认当前弹层关闭或页面回到稳定态。',
       '弹层 / 抽屉内的填写、按钮定位和断言都先 scope 到当前可见容器，再继续操作。',
     ]),

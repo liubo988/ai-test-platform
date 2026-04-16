@@ -1742,7 +1742,7 @@ describe('intent-e2e-run-registry', () => {
     expect(finished?.status).toBe('passed');
   });
 
-  it('forces workspace global retry limit even when the request provides retryLimit', async () => {
+  it('caps request retryLimit at the workspace default when the request asks for more retries', async () => {
     primeWorkspaceIntentE2EGlobalRunConfig({
       scopeUid: 'workspace_default',
       maxConcurrentRuns: 2,
@@ -1775,6 +1775,51 @@ describe('intent-e2e-run-registry', () => {
     startIntentE2ERun(created.runId, {
       input: '访问结算页并提交，最终看到成功页面',
       runControl: { retryLimit: 5 },
+    });
+
+    await waitForIntentE2ERunCompletion(created.runId);
+
+    const finished = getIntentE2ERun(created.runId);
+    expect(vi.mocked(runIntentDrivenE2EStream)).toHaveBeenCalledTimes(1);
+    expect(finished?.taskPlatform.retryLimit).toBe(0);
+    expect(finished?.taskPlatform.retryCount).toBe(0);
+    expect(finished?.status).toBe('failed');
+    expect(finished?.request.runControl?.retryLimit).toBe(0);
+  });
+
+  it('allows the request to lower retryLimit below the workspace default', async () => {
+    primeWorkspaceIntentE2EGlobalRunConfig({
+      scopeUid: 'workspace_default',
+      maxConcurrentRuns: 2,
+      defaultRetryLimit: 2,
+      updatedByUserUid: 'usr_1',
+      updatedByLabel: 'Owner',
+      createdAt: '2026-04-10T01:00:00.000Z',
+      updatedAt: '2026-04-10T01:00:00.000Z',
+    });
+
+    const retryableFailure = createRetryableFailureResult();
+
+    vi.mocked(runIntentDrivenE2EStream).mockImplementation(async (_request, listener) => {
+      await listener?.({
+        type: 'stage',
+        stage: 'completed',
+        message: '自动测试已结束，但暂未完全通过。',
+      });
+      await listener?.({
+        type: 'final_result',
+        result: retryableFailure,
+      });
+      return retryableFailure as never;
+    });
+
+    const created = createIntentE2ERun({
+      input: '访问结算页并提交，最终看到成功页面',
+      runControl: { retryLimit: 0 },
+    });
+    startIntentE2ERun(created.runId, {
+      input: '访问结算页并提交，最终看到成功页面',
+      runControl: { retryLimit: 0 },
     });
 
     await waitForIntentE2ERunCompletion(created.runId);

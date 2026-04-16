@@ -1,0 +1,25 @@
+# Phase 2 Closure Baseline Freeze Task Brief
+
+- 日期：2026-04-16
+- 目标：
+  - 把当前已经完成的 Phase 2 improved state 正式冻结成一份 repo-native 的 `modal_or_drawer_save` non-weak closure baseline。
+  - 为下一轮 Phase 3 提供可直接引用的 baseline / replay / compare 起点。
+- 范围：
+  - 仅使用现有 benchmark 主链执行 freeze / replay / compare。
+  - 仅补 brief 与 roadmap 收官回写。
+  - 不改 `proof-window non_weak`，不新增 harness，不实现 Phase 3 业务能力。
+- 非目标：
+  - 不继续做 Phase 2 功能刀。
+  - 不新造平行 runtime loop。
+  - 不在无 bug 证据前修改 `lib/**` 或 `scripts/**`。
+- 验收标准：
+  - 新的 Phase 2 closure baseline 成功冻结并落盘。
+  - 基于该 baseline 的 replay / compare 成功执行。
+  - compare 结果可作为“冻结后的 current-state closure proof”，预期接近 `unchanged` 且无回退。
+  - roadmap 明确记录 Phase 2 closure baseline 路径，以及 Phase 3 从哪份 artifact 起步。
+- 最低验证：
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+  - `npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --test-type browser_e2e --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --label phase2-closure-modal-non-weak-baseline --release-candidate phase2-closure-2026-04-16 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --compared-label phase2-closure-modal-non-weak-current-2026-04-16 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`

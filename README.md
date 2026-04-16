@@ -28,6 +28,7 @@ npm run test:all
 - `npm run intent:benchmark:freeze -- --project-uid <projectUid>`
 - `npm run intent:benchmark:replay -- --project-uid <projectUid>`
 - `npm run intent:benchmark:compare -- --project-uid <projectUid>`
+- `npm run intent:benchmark:rerun -- --project-uid <projectUid> --request-corpus <path>`
 
 ## 部署入口
 - Ubuntu 裸机部署：`docs/linux-deploy-super-test-yikaiye-net-2026-04-08.md`
@@ -216,15 +217,23 @@ npm run edge:generate
 
 ### Benchmark / Holdout
 - 当前 repo 已提供零依赖 CLI，用于冻结 `AI生成` holdout、回放和 compare：
-  - `npm run intent:benchmark:candidates -- --project-uid proj_default --module-uid <moduleUid> --test-type browser_e2e`
-  - `npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid <moduleUid> --test-type browser_e2e --max-cases 12 --release-candidate ai-holdout-2026-04-09`
+  - `npm run intent:benchmark:candidates -- --project-uid proj_default --module-uid <moduleUid> --test-type browser_e2e --proof-window non_weak`
+  - `npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid <moduleUid> --test-type browser_e2e --proof-window non_weak --max-cases 12 --release-candidate ai-holdout-2026-04-09`
   - `npm run intent:benchmark:replay -- --project-uid proj_default`
   - `npm run intent:benchmark:compare -- --project-uid proj_default --compared-label post-e1e2e3`
 - 命令默认读取最近 `200` 条 terminal runs，可用 `--run-limit` 覆盖。
+- `--proof-window non_weak` 会正式隔离 `taskMode=unknown` 或 `stepCount=0 / snapshotSignature=no_steps` 的 weak case；排除原因会写进 benchmark / replay / compare 结果，不再依赖人工挑 `evalCaseId`。
 - 如果需要手工挑选 holdout，可先跑 `candidates`，再把 `evalCaseId` 用 `--eval-case-id` 传给 `freeze`。
+- 如果某个 family 的 recent 窗口里混入了 `unknown|no_steps` 这类弱 case，优先直接用 `--proof-window non_weak` 建 non-weak baseline；只有在需要手工复核具体 case 时，再回退到 `--eval-case-id`。
 - family-scoped evidence 复用同一套 CLI，不额外新开 harness：
   - `--priority-scenario-family business_create_list_verify|list_search_detail|modal_or_drawer_save|...`
   - `freeze / replay / compare` 都会把该 family 写入 benchmark `scope.priorityScenarioFamily`，并在 case / report 里显式保留 `priorityScenarioFamily`。
+- 如果当前 family 还没有 recent terminal 样本，可先用同一套 CLI 补 tracked rerun：
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid <moduleUid> --priority-scenario-family list_search_detail --request-corpus artifacts/intent-e2e-family-evidence/proj_default.list-search-detail.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json`
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid <moduleUid> --priority-scenario-family modal_or_drawer_save --request-corpus artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json`
+- 这两份 tracked corpus 当前放在：
+  - `artifacts/intent-e2e-family-evidence/proj_default.list-search-detail.request-corpus.json`
+  - `artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json`
 - 显式 recipe asset 链路也复用这套 CLI：
   - `--recipe-asset-output <path>`：把当前项目 recipe profile 导出到显式路径，便于后续 family replay / compare 复核。
   - `--recipe-asset-input <path>`：先把显式 recipe profile 导回当前项目 registry，再执行 benchmark 命令。

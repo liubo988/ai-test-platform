@@ -30,6 +30,14 @@ function resolveBasePath(basePath) {
 }
 
 export async function resolve(specifier, context, nextResolve) {
+  if (specifier.startsWith('next/') && !path.extname(specifier)) {
+    try {
+      return await nextResolve(`${specifier}.js`, context);
+    } catch {
+      // Fall through to default resolution when the .js subpath is not present.
+    }
+  }
+
   if (specifier.startsWith('@/')) {
     const resolvedPath = resolveAliasPath(specifier);
     if (!resolvedPath) {

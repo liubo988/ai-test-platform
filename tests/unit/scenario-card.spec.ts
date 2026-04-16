@@ -359,6 +359,105 @@ describe('scenario-card', () => {
     expect(card.flowDefinition.steps[1]?.expectedResult).toContain('当前弹层/抽屉关闭或页面回到稳定态');
   });
 
+  it('rewrites batch-account modal cards that over-assume checked rows and open modals into a deterministic assert-extract-ui flow', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '订单列表批量申请入账并在入账管理列表按订单号检索命中',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/order/list',
+      featureDescription:
+        '在订单列表发起批量申请入账：先从已勾选订单行提取订单号，再在当前可见的“批量申请入账”弹窗里点击“确定”提交，验证弹窗关闭并进入入账管理列表，然后按该订单号检索命中对应记录。',
+      successCriteria: [
+        '在订单列表可识别到已勾选订单行，并成功提取至少一个订单号',
+        '“批量申请入账”弹窗点击“确定”后关闭',
+        '页面进入入账管理列表',
+        '在入账管理列表使用提取的订单号检索后，结果列表命中对应订单号记录',
+      ],
+      visualAnchors: ['订单列表页包含订单表格与行勾选状态', '可见“批量申请入账”弹窗，含“确定”按钮'],
+      notes: ['依赖前置状态：订单列表中已有至少一条已勾选订单，且当前弹窗已打开'],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/order/list',
+        sharedVariables: [],
+        expectedOutcome: '提交批量申请入账并检索到同一订单号记录',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step-1',
+            stepType: 'assert',
+            title: '确认订单列表页已就绪',
+            target: '订单列表页面',
+            instruction: '校验当前页面为订单列表，且订单表格区域可见',
+            expectedResult: 'URL 包含 /order/list，且订单表格锚点可见/可交互',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step-2',
+            stepType: 'extract',
+            title: '从已勾选订单行提取订单号',
+            target: '订单表格已勾选行',
+            instruction: '定位已勾选的订单行，读取该行订单号字段并保存',
+            expectedResult: '成功提取到非空订单号',
+            extractVariable: 'selectedOrderNo',
+          },
+          {
+            stepUid: 'step-3',
+            stepType: 'assert',
+            title: '确认批量申请入账弹窗可见',
+            target: '批量申请入账弹窗',
+            instruction: '校验当前可见弹窗标题为“批量申请入账”，且包含“确定”按钮',
+            expectedResult: '弹窗可见，且包含“确定”按钮',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step-4',
+            stepType: 'ui',
+            title: '提交批量申请入账',
+            target: '批量申请入账弹窗',
+            instruction: '在当前可见弹窗点击“确定”提交',
+            expectedResult: '提交动作触发，页面开始处理并进入后续流转',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step-5',
+            stepType: 'assert',
+            title: '校验弹窗关闭并进入入账管理列表',
+            target: '批量申请入账弹窗与入账管理列表',
+            instruction: '校验弹窗关闭，且页面进入入账管理列表',
+            expectedResult: '弹窗不可见，且 URL 或页面锚点显示为入账管理列表',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step-6',
+            stepType: 'ui',
+            title: '按提取订单号执行检索',
+            target: '入账管理页检索区',
+            instruction: '在入账管理页输入提取的订单号并执行查询',
+            expectedResult: '查询请求发起并返回结果列表',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step-7',
+            stepType: 'assert',
+            title: '校验检索命中对应记录',
+            target: '入账管理结果表格',
+            instruction: '结果表格至少存在一条订单号为 selectedOrderNo 的记录',
+            expectedResult: '结果表格中存在目标订单号记录',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    expect(card.flowDefinition.sharedVariables).toContain('selectedOrderNo');
+    expect(card.flowDefinition.steps.map((step) => step.stepType)).toEqual(['assert', 'extract', 'ui', 'ui', 'assert', 'ui', 'assert']);
+    expect(card.flowDefinition.steps[1]?.instruction).toContain('若当前没有已勾选订单');
+    expect(card.flowDefinition.steps[1]?.instruction).toContain('入账状态”设为“待申请”');
+    expect(card.flowDefinition.steps[2]?.instruction).toContain('点击表头“批量入账”按钮打开');
+    expect(card.notes.some((note) => note.includes('不要直接判前置失败'))).toBe(true);
+    expect(card.successCriteria.join('\n')).toContain('若当前尚无已勾选订单');
+  });
+
   it('stabilizes list-search-detail cards with refresh and detail-field guidance', () => {
     const card = normalizeScenarioCard({
       version: 1,

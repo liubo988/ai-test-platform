@@ -18206,3 +18206,1405 @@
 - 下一步：
   - 若用户继续要求把批量入账总时长再往下压，下一刀优先考虑 worker 级的 `resolvePrimaryRecord(...)` 执行顺序优化，例如“可选列表响应不再先阻塞，再去扫表”。
   - 在 smoke 环境恢复稳定前，继续以 unit + targeted runtime evidence 为主，不把当前 UI smoke 波动误判成生成器回归。
+
+## 2026-04-14 第二百七十八次更新（Phase 1 样本补齐与 family 证据闭环）
+
+- 本轮目标：
+  - 不进入 Phase 2，只补 `list_search_detail` 与 `modal_or_drawer_save` 的 fresh terminal 样本、family-scoped benchmark baseline、replay、compare 证据闭环。
+  - 复用现有 benchmark CLI，不新造平行 harness。
+- 已完成：
+  - 新增本轮 brief：[docs/intent-e2e-phase1-family-sample-closure-task-brief-2026-04-14.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase1-family-sample-closure-task-brief-2026-04-14.md)。
+  - 在 [scripts/ts-alias-loader.mjs](/Users/xiaolongbao/Workspace/ai-test/scripts/ts-alias-loader.mjs) 补了 `next/* -> next/*.js` 的 CLI 解析兼容，修复 `intent:benchmark:rerun` 在 Node CLI 下导入 `next/server` 失败。
+  - 在 [artifacts/intent-e2e-family-evidence/proj_default.list-search-detail.request-corpus.json](/Users/xiaolongbao/Workspace/ai-test/artifacts/intent-e2e-family-evidence/proj_default.list-search-detail.request-corpus.json) 与 [artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json](/Users/xiaolongbao/Workspace/ai-test/artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json) 固定 tracked corpus，并把 `llmConfig.selfHealRetries=1` 落到请求级，避免 family 取证再被长 repair 链拖死。
+  - 根因盘点已确认：`proj_default + mod_1773303139537_c84d8476 + browser_e2e + recent-200 terminal runs` 之前对这两个 family 都是 `0` 样本，不是 compare/filter 失灵。
+  - fresh rerun 结果：
+    - `list_search_detail`：已拿到 4 条 terminal failed run，family 候选已从 `0` 提升到 `3` 个 case。
+    - `modal_or_drawer_save`：已拿到 4 条 terminal run（`2 failed + 2 canceled`），family 候选已从 `0` 提升到 `1` 个 case。
+  - family-scoped 产物：
+    - list rerun 报告：[2026-04-14T06-35-32-410Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-14T06-35-32-410Z-family-list_search_detail-fresh-rerun.json)
+    - modal rerun 报告：[2026-04-14T06-44-46-003Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-14T06-44-46-003Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - list baseline archive：[2026-04-14T06-49-49-559Z-bench_7a678523cede.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-14T06-49-49-559Z-bench_7a678523cede.json)
+    - list compare 报告：[2026-04-14T06-51-16-863Z-bench_7a678523cede-phase1-list-sample-closure-current-2026-04-14.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-14T06-51-16-863Z-bench_7a678523cede-phase1-list-sample-closure-current-2026-04-14.json)
+    - modal baseline archive：[2026-04-14T06-52-46-678Z-bench_abd024d53d3f.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-14T06-52-46-678Z-bench_abd024d53d3f.json)
+    - modal compare 报告：[2026-04-14T06-54-31-350Z-bench_abd024d53d3f-phase1-modal-sample-closure-current-2026-04-14.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-14T06-54-31-350Z-bench_abd024d53d3f-phase1-modal-sample-closure-current-2026-04-14.json)
+  - 为避免把当前默认 benchmark 覆盖成单 family 基线，已把 full-project 当前 benchmark 备份到 [artifacts/intent-e2e-family-evidence/proj_default.full-project-benchmark.before-family-sample-closure.json](/Users/xiaolongbao/Workspace/ai-test/artifacts/intent-e2e-family-evidence/proj_default.full-project-benchmark.before-family-sample-closure.json)，并在取证后恢复 `reports/.../intent-e2e.benchmark.json`。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-benchmark.spec.ts`
+    - 通过，`7/7`。
+  - family terminal 计数复核：
+    - `list_search_detail`: `4` terminal runs，`candidateCount=3`
+    - `modal_or_drawer_save`: `4` terminal runs，`candidateCount=1`
+  - `npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --test-type browser_e2e --priority-scenario-family list_search_detail --max-cases 5 --release-candidate phase1-list-sample-closure-2026-04-14 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过。
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family list_search_detail --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过。
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family list_search_detail --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --compared-label phase1-list-sample-closure-current-2026-04-14 --json`
+    - 通过，结论 `unchanged`。
+  - `npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --test-type browser_e2e --priority-scenario-family modal_or_drawer_save --max-cases 5 --release-candidate phase1-modal-sample-closure-2026-04-14 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过。
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过。
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --compared-label phase1-modal-sample-closure-current-2026-04-14 --json`
+    - 通过，结论 `unchanged`。
+- 当前阶段状态：
+  - Phase 1 family-scoped benchmark / replay / compare：已完成（本轮）
+  - `list_search_detail` 非 0-case 证据：已完成（本轮）
+  - `modal_or_drawer_save` 非 0-case 证据：已完成（本轮）
+  - 本轮仍然只是 Phase 1 证据闭环，不是 Phase 2。
+- 风险 / 未完成：
+  - `modal_or_drawer_save` 当前只有 `1` 个 benchmark case，而且 case 形态还是 `unknown|no_steps`，说明它虽然已非 `0-case`，但结构化质量仍然弱，不能把这份证据包装成“family 已健康工业化”。
+  - modal family 的 terminal 样本里当前有 `2` 条 `canceled`；这与 workspace 级 whole-run retry 仍会覆盖 request 侧低预算控制有关，本轮没有越权修改该平台契约。
+  - list family 虽然已有 `3` 个 case，但当前全部 terminal 都是 failed，结论只能是“已可复核且当前 unchanged”，不能宣称收益提升。
+- 下一步：
+  - 在进入 Phase 2 之前，先继续把 `modal_or_drawer_save` 的样本从 `unknown/no_steps` 提升成带明确 step signature 的 case，并减少 canceled/whole-run retry 对 family 证据的污染。
+  - 对 `list_search_detail`，下一步优先收口当前 `data_missing / unknown` 这两个主失败桶，再追加 fresh rerun，看能否把 family compare 从纯 `unchanged@0 pass` 推到更有价值的结论。
+
+## 2026-04-14 第二百七十九次更新（批量入账 Step 3 错主键守卫与 modal 订单号纠偏）
+
+- 本轮目标：
+  - 收口 fresh-path live run `intent-run-40449b10-29d1-4deb-8853-3c55d2854249` 暴露出的新 blocker：
+    - Step 3 把 `H202600056` 这类短字母前缀码误当成 `selectedOrderNo`；
+    - Step 7 搜索动作本身已执行，但 Step 8 最终按错主键回查失败。
+  - 保持最小改动，只修 batch-account 的错主键守卫与 modal 纠偏，不扩散到通用 worker/helper 语义。
+- 已完成：
+  - 新增 [docs/intent-e2e-batch-account-orderno-guard-and-modal-override-task-brief-2026-04-14.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-batch-account-orderno-guard-and-modal-override-task-brief-2026-04-14.md)，固定这轮目标、边界与验证命令。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 收紧 batch-account `selectedOrderNo` guard：
+    - 新增对 `H202600056` 这类“短字母前缀 + 数字”短码的拦截；
+    - 保留对真实长数字订单号的接受，不再被 `short numeric / amount` 逻辑误杀。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 扩展 Step 3 sanitizer 命中范围，覆盖 live run 里这类旧生成变体：
+    - `linkNo && !/^1\\d{10}$/` 的直接赋值分支；
+    - `tokens.find((t) => !phone && !numeric)` 的 `filtered` 分支。
+    - 这样即使 structured slot patch 超时回退到 legacy 自由代码生成，这类旧块也会被收口到新的 orderNo guard。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 为 modal fallback 增加订单号同步逻辑：
+    - 不再只在 `selectedOrderNo` 为空时回填；
+    - 当当前值无效，或 modal 读到的是更强的长数字订单号时，允许覆盖旧值；
+    - 覆盖时把前后值写入 `artifacts['selectedOrderNo_modal_override']`，便于后续诊断。
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 新增 / 更新回归，直接复刻：
+    - live run 的 `linkNo / filtered` Step 3 变体；
+    - modal fallback 纠偏逻辑。
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+    - 通过，`132/132` 测试通过。
+  - `npm run build`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 待本轮 roadmap 落盘后执行。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 待本轮 roadmap 落盘后执行。
+- 当前阶段状态：
+  - 批量入账执行期 row artifact 复用：已完成
+  - 批量入账 Step 7 lookup timeout / retry tuning：已完成
+  - 批量入账 Step 3 错主键守卫：已完成（本轮）
+  - 批量入账 modal 订单号纠偏：已完成（本轮）
+- 风险 / 未完成：
+  - 这轮还没有补 fresh live rerun；当前结论依赖已有 run 证据和 unit regression，而不是新的真人工验证。
+  - 目前只覆盖已观测到的 batch-account 错主键形态；如果后续出现别的短码模式，还要继续扩 targeted sanitizer。
+  - 这轮没有改 `resolvePrimaryRecord(...)` 或 worker 侧的通用主键判定，其他 family 的主键误提取问题仍要各自处理。
+- 下一步：
+  - 如果用户继续要求验证闭环，优先重跑 fresh-path live verify，确认 `selectedOrderNo` 不再落成 `H202600056` 这类短码，且 Step 8 能直接命中 bookedMgmt 记录。
+  - 若 rerun 后仍失败，再继续下钻 bookedMgmt 回查的剩余问题；但在这之前，不要回到“Step 7 没执行搜索动作”的老方向。
+
+## 2026-04-14 第二百八十次更新（批量入账 rowKey fallback 与 verifier placeholder 漂移闭环）
+
+- 本轮目标：
+  - 收口前一轮 fresh live verify 暴露出的两个后继 blocker：
+    - `intent-run-80534304-274b-4fea-9f0b-d985f49db482` 中 Step 3 另一类旧 fallback 把 `461815` 这类短数字 `rowKey/orderId` 写进 `selectedOrderNo`，导致 Step 4 按错主键回查失败；
+    - 在这个问题修好后，`intent-run-03331758-b378-4c04-9098-fe4613b3cbfd` 已让 Step 1-8 全过，但 Verification 仍被 `getByPlaceholder('请输入关键词').first()` 的隐藏节点漂移打断。
+  - 继续保持最小改动，只修 batch-account 生成器 sanitizer 与 verifier surface check，不扩散到通用 worker/helper。
+- 已完成：
+  - 新增 [docs/intent-e2e-batch-account-rowkey-verifier-closure-task-brief-2026-04-14.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-batch-account-rowkey-verifier-closure-task-brief-2026-04-14.md)，固定 continuation 的目标、范围和验证命令。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 扩展 batch-account Step 3 sanitizer：
+    - 新增 `buildBatchAccountOrderNoConditionalAssignmentBlock(...)`，把 `if (await orderLink.count()) { selectedOrderNo = ... }` 这类直接赋值变体也纳入统一 orderNo guard；
+    - 覆盖 `rowKey/orderId` 直接赋值、`tokens.find(...) || ''` 直接回填等旧生成形态；
+    - 现在 `461815` 这类短数字行键会被拒绝，真实长数字订单号继续保留。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 补齐 Step 3 失败降级规则，把 `提取订单号失败：未获得非空 selectedOrderNo` 的单行 / 块级 throw 统一改写成 `artifacts['selectedOrderNo_missing_before_modal']`，继续给 modal fallback 让路。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 扩展 bookedMgmt surface sanitizer：
+    - `await expect(page.getByPlaceholder('请输入关键词').first()).toBeVisible();`
+    - 以及相关 `keywordInputByPlaceholder` 分支的 `toBeVisible(...)`
+    - 现在无论是否显式带 timeout，这类隐藏 placeholder 可见性断言都会被移除。
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 新增 / 更新回归，直接覆盖：
+    - fresh live run 的 `rowKey/orderId` fallback 变体；
+    - awaited truthy guard 改写；
+    - bookedMgmt hidden surface drift；
+    - verifier 阶段无 timeout 的 placeholder 可见性断言。
+  - fresh live verify 结果：
+    - `intent-run-03331758-b378-4c04-9098-fe4613b3cbfd`：Step 1-8 全过，Verification 失败点已收敛成 placeholder 漂移；
+    - `intent-run-92b352fb-fe84-4f67-8d5b-15b19ad0e889`：`attempt-1-response-summary.json` 显示 `success: true`，Step 1-8 与 Verification 全部 passed，batch-account fresh-path 闭环重新打通。
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts -t "rewrites fresh live-run rowKey/orderId fallback variants|rewrites live-run linkNo/filter step3 extraction|allows modal fallback to override short letter-prefixed selectedOrderNo values with stronger order numbers|rewrites awaited batch-account truthy guards without corrupting comments or syntax"`
+    - 通过，`4/4`。
+  - `npx vitest run tests/unit/test-generator.spec.ts -t "drops brittle bookedMgmt surface anchors and hidden placeholder fallbacks|drops bare bookedMgmt placeholder visibility assertions without explicit timeout|forces helper-driven bookedMgmt search actions when the prompt explicitly requires placeholder search|adds bookedMgmt goto fallback after submit when observeSubmitState does not land on bookedMgmt url"`
+    - 通过，`4/4`。
+  - `INTENT_E2E_DISABLE_RECENT_SUCCESSFUL_RUN_REUSE=1 node --env-file-if-exists=.env --experimental-strip-types --import ./scripts/register-ts-alias-loader.mjs ./tmp/intent-e2e-live-verify-successful-run-bypass.mjs`
+    - 第一次 fresh rerun 产物：[intent-run-03331758-b378-4c04-9098-fe4613b3cbfd/attempt-1-response-summary.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/runs/intent-run-03331758-b378-4c04-9098-fe4613b3cbfd/attempt-1-response-summary.json)
+      - Step 1-8 全通过，Verification 失败于隐藏 `getByPlaceholder('请输入关键词').first()`。
+    - 第二次 fresh rerun 产物：[intent-run-92b352fb-fe84-4f67-8d5b-15b19ad0e889/attempt-1-response-summary.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/runs/intent-run-92b352fb-fe84-4f67-8d5b-15b19ad0e889/attempt-1-response-summary.json)
+      - 通过，`success: true`。
+  - `npm run build`
+    - 未通过，但失败点位于仓库内其他进行中改动：[scripts/intent-e2e-benchmark.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-benchmark.ts):797
+      - 缺少 `IntentE2EBenchmarkRerunEntryResult` 需要的 `terminal / timedOut` 字段；
+      - 这不是本轮 batch-account 修复引入的错误，先如实记录，不在本轮扩散处理。
+  - `node scripts/check-doc-links.mjs`
+    - 待本轮 roadmap / brief 落盘后执行。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 待本轮 roadmap / brief 落盘后执行。
+- 当前阶段状态：
+  - 批量入账 Step 3 错主键守卫：已完成
+  - 批量入账 modal 订单号纠偏：已完成
+  - 批量入账 rowKey/orderId fallback 收口：已完成（本轮）
+  - 批量入账 Verification placeholder drift 收口：已完成（本轮）
+  - batch-account fresh-path live verify：已重新通过（本轮）
+- 风险 / 未完成：
+  - 当前 closure 仍然是 batch-account 定向 sanitizer，不是通用 worker 主键提取与 surface readiness 的统一治理；其他 family 仍可能存在类似漂移点。
+  - `npm run build` 仍被仓库里其他进行中的 benchmark 类型收敛改动阻断；在那条线收口前，本轮只能以 targeted unit + fresh live evidence 给结论。
+  - live verify 成功依赖 UAT 当前仍有可勾选的“待申请入账”记录；后续如果数据面变化，还可能出现新的非代码 blocker。
+- 下一步：
+  - 如果用户继续要求把 batch-account 的稳定性再往上提，下一刀优先考虑把这类主键候选过滤与 bookedMgmt surface readiness 收敛到更通用的 helper / family 规则，而不是继续堆单点 regex。
+  - 在仓库里其他 `intent-e2e-benchmark` 类型改动收口后，再补一次完整 `npm run build` / 更大范围回归，把当前“targeted green + live green”提升成更完整的仓库级验证。
+
+## 2026-04-14 第二百八十一次更新（Phase 1.8 family 质量硬化与 non-weak family baseline）
+
+- 本轮目标：
+  - 继续停留在 Phase 1.8，不进入 Phase 2。
+  - 把 `list_search_detail` 从 family 漂移 / `unknown` 收口成可复核的 deterministic blocker，至少不再让 fresh rerun 混进 `modal_or_drawer_save` 或 `untracked`。
+  - 把 `modal_or_drawer_save` 从“专用 recipe 已存在但证据弱”推进到“fresh rerun 3/3 recipeHit + non-weak family baseline / replay / compare 可复核”。
+  - 收紧 rerun 证据质量：只统计 terminal 结果，不把 pending / timeout 伪装成稳定样本。
+- 已完成：
+  - 在 [lib/intent-e2e-priority-scenario-family.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-priority-scenario-family.ts) 补了 raw-request family 护栏：
+    - 当原始请求已经高置信命中 `business_create_list_verify / list_search_detail / modal_or_drawer_save` 之一时，优先沿原始请求 family 继续规划，避免 scenario card / promptContext 扩写把主路由污染到别的 family。
+  - 在 [artifacts/intent-e2e-family-evidence/proj_default.list-search-detail.request-corpus.json](/Users/xiaolongbao/Workspace/ai-test/artifacts/intent-e2e-family-evidence/proj_default.list-search-detail.request-corpus.json) 收紧 list family wording：
+    - 去掉会把 live route 往 modal 拉偏的“详情抽屉”措辞；
+    - 明确“下拉选项 = 待申请，结果状态文本 = 待申请入账”。
+  - 在 [artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json](/Users/xiaolongbao/Workspace/ai-test/artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json) 更新 `intent.order-list-search-detail.derive-order-no`：
+    - 把 `/order/list` 的 deterministic recipe 语义改成“先选待申请，再取唯一订单号，再二次搜索详情”；
+    - 显式记录不要把结果行状态 `待申请入账` 直接拿去选下拉。
+  - 在 [lib/ai/intent-e2e-failure-triage.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-failure-triage.ts) 扩展 failure bucket：
+    - `未找到可勾选真实订单行` -> `record_lookup_miss`
+    - `未找到下拉选项：待申请入账` -> `data_missing`
+    - `未能从已勾选订单行提取订单号 / selectedOrderNo` -> `record_lookup_miss`
+    - `toHaveURL(/#\\/payment\\//)` 但仍停在 `#/order/list` -> `workflow_gap`
+  - fresh list rerun 结果：
+    - [2026-04-14T09-06-44-450Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-14T09-06-44-450Z-family-list_search_detail-fresh-rerun.json)
+    - `3/3` terminal、`0` pending、`0` timedOut、`0` pass；
+    - 但已不再掉到 `modal_or_drawer_save` 或 `untracked`，主失败已收敛为 `record_lookup_miss` / `data_missing`。
+  - fresh modal rerun 结果：
+    - [2026-04-14T09-29-38-921Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-14T09-29-38-921Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - `3/3` terminal、`0` pending、`0` timedOut、`3/3` recipeHit、`3/3` playbookHit；
+    - modal 专用 recipe `intent.intent-modal-or-drawer-save-visible-container` 已被 fresh rerun 稳定消费。
+  - 建立 non-weak family baseline / replay / compare：
+    - list baseline: [2026-04-14T09-35-08-701Z-bench_d553760753a6.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-14T09-35-08-701Z-bench_d553760753a6.json)
+    - list compare: [2026-04-14T09-37-14-185Z-bench_d553760753a6-phase1-8-list-nonweak-current-2026-04-14.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-14T09-37-14-185Z-bench_d553760753a6-phase1-8-list-nonweak-current-2026-04-14.json)
+    - modal baseline: [2026-04-14T09-38-19-260Z-bench_e08d159d2c03.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-14T09-38-19-260Z-bench_e08d159d2c03.json)
+    - modal compare: [2026-04-14T09-40-32-368Z-bench_e08d159d2c03-phase1-8-modal-nonweak-current-2026-04-14.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-14T09-40-32-368Z-bench_e08d159d2c03-phase1-8-modal-nonweak-current-2026-04-14.json)
+    - 两个 family 的 compare 结论都还是 `unchanged`，本轮只能宣称“证据链闭环 + non-weak baseline 已建立”，不能宣称收益提升。
+- 验证：
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `npx vitest run tests/unit/intent-e2e-benchmark.spec.ts tests/unit/intent-project-recipe-registry.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-priority-scenario-family.spec.ts tests/unit/intent-e2e-failure-triage.spec.ts tests/unit/intent-e2e-run-registry.spec.ts`
+    - 通过。
+  - `npm run test:e2e`
+    - 通过，`9 passed / 1 skipped`。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family list_search_detail --request-corpus artifacts/intent-e2e-family-evidence/proj_default.list-search-detail.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 通过，产出 fresh list report。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family modal_or_drawer_save --request-corpus artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 通过，产出 fresh modal report。
+- 当前阶段状态：
+  - `list_search_detail` family route 漂移收口：已完成（本轮）
+  - `list_search_detail` deterministic blocker 显式化：已完成（本轮）
+  - `modal_or_drawer_save` 专用 recipe fresh hit：已完成（本轮）
+  - `modal_or_drawer_save` non-weak baseline / replay / compare：已完成（本轮）
+  - 本轮仍然只是 Phase 1.8 family 质量硬化，不是 Phase 2。
+- 风险 / 未完成：
+  - `list_search_detail` 仍无 terminal pass；当前主 blocker 是：
+    - 真实订单行只收窄到集合，`selectedOrderNo / primaryValue` 还会对应多条记录；
+    - 部分样本仍依赖历史窗口中的 `unknown / data_missing` 失败簇。
+  - `modal_or_drawer_save` 虽然已经 `3/3 recipeHit` 且 baseline 非弱，但仍无 terminal pass；当前主 blocker 是：
+    - bookedMgmt 搜索面仍会落到隐藏 placeholder input，表现为 `selector_drift`；
+    - 某些 repair 分支仍会生成 `keywordInput` 重复声明，表现为 `runtime_syntax_damage`；
+    - `selectedOrderNo` 的提取仍有一条样本落成 `unknown`，说明“已定位目标行但未提取到有效订单号”这类前置主键问题还没有完全 industrialize。
+  - 两个 family 的 compare 当前都只是 `unchanged`，而且 `terminalPassRate = 0`；本轮不能把“有 baseline / 有 report”包装成“family 已提升”。
+- 下一步：
+  - 先继续收口 `modal_or_drawer_save` 的两个真实工程缺口：
+    - 消除 bookedMgmt hidden placeholder drift；
+    - 消除 `keywordInput` 重复声明导致的 runtime_syntax_damage。
+  - 再收口 `list_search_detail` 的唯一标识提取链，把“手机号 / rowKey 命中多条订单”继续推进到真正的唯一订单号或结构化详情回退。
+  - 只有在至少一个 family 出现 fresh terminal pass，且 compare 不再只是 `unchanged@0 pass` 之后，才有资格再讨论是否进入 Phase 2。
+
+## 2026-04-14 第二百八十二次更新（Phase 1.9 modal_or_drawer_save first-pass breakthrough）
+
+- 本轮目标：
+  - 继续停留在 Phase 1.9，不进入 Phase 2。
+  - 只攻 `modal_or_drawer_save` 的 first-pass breakthrough，不双打 `list_search_detail`。
+  - 修掉 fresh modal 闭环里的 3 个 blocker：
+    - `runtime_syntax_damage`：`keywordInput` 重复声明；
+    - bookedMgmt 搜索框 hidden input / placeholder drift；
+    - `selectedOrderNo` 提取后仍落成弱 token 或 existence check 过严。
+  - 拿到至少 1 条 fresh terminal pass，并让 modal family compare 不再停在 `unchanged@0 pass`。
+- 已完成：
+  - 复用并落地本轮 brief：[docs/intent-e2e-phase1-9-modal-first-pass-breakthrough-task-brief-2026-04-14.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase1-9-modal-first-pass-breakthrough-task-brief-2026-04-14.md)。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 继续收紧 batch-account 生成链：
+    - 扩展 Step 3 sanitizer，覆盖 live run 中 `row.innerText().catch(() => '')` 的旧变体，并把“未能从已勾选行提取有效订单号”统一改写到真实主键提取块；
+    - modal 订单号同步不再只在空值时回填，只要 modal 读到更强的订单号就允许覆盖旧值，并把覆盖前后写进 `artifacts['selectedOrderNo_modal_override']`；
+    - `sanitizeBatchAccountOrderExistenceLookups(...)` 现在也覆盖 bare-object 形态的 `hasTexts / rowHasTexts: [shared.selectedOrderNo]`，统一补上 `allowMultipleUniqueMatches: true`，不再要求 bookedMgmt 的同订单号结果必须唯一。
+  - 在 [lib/ai/intent-e2e-failure-triage.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-failure-triage.ts) 补了 `未能从已勾选行提取订单号 / 有效订单号` -> `record_lookup_miss` 的结构化归类。
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 与 [tests/unit/intent-e2e-failure-triage.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-failure-triage.spec.ts) 增加回归，锁住：
+    - Step 3 live 变体改写；
+    - modal 更强订单号覆盖旧 token；
+    - bookedMgmt bare-object existence lookup 也会补 `allowMultipleUniqueMatches: true`；
+    - `selectedOrderNo` 缺失类错误会落到 `record_lookup_miss`。
+  - fresh modal rerun 结果：
+    - 报告：[2026-04-14T17-14-25-634Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-14T17-14-25-634Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - `3/3` terminal、`0` pending、`0` timedOut、`2/3` pass、`2/3` recipeHit。
+    - 第一条 fresh terminal pass：`intent-run-3a34fed0-2065-4d16-bd40-4eba540a6a25`
+    - 第二条 fresh terminal pass：`intent-run-7eda7c72-4f28-4756-9111-7b03624c948a`
+    - 通过样本里 `selectedOrderNo` 已稳定落到 modal 强主键 `202604141126437251`，见：
+      - [intent-run-3a34fed0-2065-4d16-bd40-4eba540a6a25/attempt-1-logs.txt](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/runs/intent-run-3a34fed0-2065-4d16-bd40-4eba540a6a25/attempt-1-logs.txt)
+      - [intent-run-a5639011-260a-4208-b148-c64096deebb7/attempt-2-logs.txt](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/runs/intent-run-a5639011-260a-4208-b148-c64096deebb7/attempt-2-logs.txt)
+  - 重新 freeze / replay / compare modal family，且显式避开 `unknown|no_steps` 弱 case：
+    - baseline archive：[2026-04-14T17-16-33-073Z-bench_05459d9b2a51.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-14T17-16-33-073Z-bench_05459d9b2a51.json)
+    - replay（同口径 `run-limit=12`）：见 `bench_05459d9b2a51` 的 `runCount=10 / terminalPassRate=40`
+    - compare（同口径 `run-limit=12`）：[2026-04-14T17-18-20-367Z-bench_05459d9b2a51-phase1-9-modal-first-pass-breakthrough-current-2026-04-14-runlimit12.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-14T17-18-20-367Z-bench_05459d9b2a51-phase1-9-modal-first-pass-breakthrough-current-2026-04-14-runlimit12.json)
+    - 结论：`unchanged`，但已是 `terminalPassRate=40 / firstPassPassRate=30` 的 non-zero compare，不再是 `unchanged@0 pass`。
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+    - 通过，`150/150`。
+  - `npx vitest run tests/unit/intent-e2e-failure-triage.spec.ts`
+    - 通过，`22/22`。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family modal_or_drawer_save --request-corpus artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 通过，见 fresh rerun 报告 [2026-04-14T17-14-25-634Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-14T17-14-25-634Z-family-modal_or_drawer_save-fresh-rerun.json)。
+  - `npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --test-type browser_e2e --priority-scenario-family modal_or_drawer_save --run-limit 12 --eval-case-id eval_complex_enterprise_flow_scenario_ui_extract_assert --label phase1-9-modal-first-pass-breakthrough-baseline --release-candidate phase1-9-2026-04-14 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，冻结出 `1` 个 non-weak case，`stepCount=8`。
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --run-limit 12 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过。
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --run-limit 12 --compared-label phase1-9-modal-first-pass-breakthrough-current-2026-04-14-runlimit12 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，结论 `unchanged`，但不是 `unchanged@0 pass`。
+- 当前阶段状态：
+  - `modal_or_drawer_save` first terminal pass：已完成（本轮）
+  - `modal_or_drawer_save` non-weak family baseline：已完成（本轮）
+  - `modal_or_drawer_save` same-window family compare：已完成（本轮）
+  - 本轮仍然只是 Phase 1.9 modal breakthrough，不是 Phase 2。
+- 风险 / 未完成：
+  - specialized recipe 当前仍只是 `2/3` hit；fresh rerun 的 `order-batch-accounting-specialized-recipe-submit` 这一条仍会掉到无 recipe 的弱路径，说明 request wording / matcher ranking 还没做到 `3/3` 稳定。
+  - `runtime_syntax_damage` 已经没有再出现在这轮 fresh rerun 里，但仓库历史 run 里仍能搜到旧样本；只能说明当前闭环已收敛，不能说整库历史已清零。
+  - bookedMgmt hidden input 在 first-pass 主路径上已被 `:visible` 绑定替代，但另一条通过样本仍保留 `locator(...:visible).or(page.getByPlaceholder('请输入关键词').first())` 这种旧 fallback，说明“完全消灭隐藏 placeholder drift”还没覆盖所有 prompt 形态。
+  - 若把 compare 放宽到默认 recent window，会重新卷入更早的旧失败并出现 `regressed`；因此当前 Phase 1.9 的可信结论依赖同口径 `run-limit=12` family window，而不是全历史窗口。
+  - `list_search_detail` 这轮没有主攻，仍保持上一轮 blocker 结论。
+- 下一步：
+  - 先把 `order-batch-accounting-specialized-recipe-submit` 的 wording / matcher 对齐到 specialized recipe，争取把 recipeHit 从 `2/3` 提到 `3/3`。
+  - 再把 bookedMgmt 搜索框的 `.or(page.getByPlaceholder('请输入关键词').first())` 旧 fallback 收口成统一的 visible-only helper，减少剩余 selector drift 面。
+  - 只有在 modal family 做到 `3/3` specialized recipe 命中、fresh rerun 稳定出现 pass、且更宽窗口 compare 不再被旧失败主导后，才有资格重新讨论是否进入 Phase 2。
+
+## 2026-04-15 第二百八十三次更新（Phase 1.10 list_search_detail first-pass breakthrough）
+
+- 本轮目标：
+  - 继续停留在 Phase 1.10，不进入 Phase 2。
+  - 主攻 `list_search_detail` first-pass breakthrough，逼出至少 1 条 fresh terminal pass。
+  - 把 list 主链从“模糊状态文本/详情入口碰运气”收口成“唯一订单号 -> 结构化列表响应/行字段 -> 必要时详情 fallback”。
+  - 若改到 shared generator，`modal_or_drawer_save` 只能做回归基线，不能回退。
+- 已完成：
+  - 复用并落地本轮 brief：[docs/intent-e2e-phase1-10-list-first-pass-breakthrough-task-brief-2026-04-15.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase1-10-list-first-pass-breakthrough-task-brief-2026-04-15.md)。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 收紧 `list_search_detail` Step 5：
+    - 先补 `statusEvidenceRecordCheck`，在 `recordCheck.response` 为空时强制做一次 `requireListResponse: true` 的订单号精确回查；
+    - 优先从 `listPayload -> pickJsonRecord(selectedOrderNo/rowKey)` 提取联系人、手机号、入账状态；
+    - 再用 `__e2e.readAntdTableCellByHeader(...)` 从已命中的目标行按表头读取 `联系人 / 手机号 / 入账状态`；
+    - 只有结构化列表响应和目标行字段都不足时，才回退 `orderLink / 查看` 详情入口。
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 补回归，锁住 Step 5 的 `JSON-first + row-header fallback + detail fallback` 骨架。
+  - 在 [lib/ai/intent-e2e-failure-triage.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-failure-triage.ts) 与 [tests/unit/intent-e2e-failure-triage.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-failure-triage.spec.ts) 补齐 failure bucket：
+    - `最终验收失败：未进入该订单对应详情页/详情抽屉` 不再落成 `unknown`，而是归到 `response_missing`。
+  - 在 [tests/e2e/scenario-task-smoke.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/e2e/scenario-task-smoke.spec.ts) 把 smoke server ready 预算从 `120s/180s` 提到 `240s/300s`，覆盖 `.next-e2e` 的 `next build + TypeScript + page data` 真实耗时，恢复 `npm run test:e2e` 的可重复通过。
+  - fresh list rerun 结果：
+    - 报告：[2026-04-15T03-07-59-350Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T03-07-59-350Z-family-list_search_detail-fresh-rerun.json)
+    - `3/3` terminal、`0` pending、`0` timedOut、`1/3` pass、`3/3` recipeHit、`3/3` playbookHit。
+    - 第一条 fresh terminal pass：`intent-run-be6e9448-6dd3-4835-b684-c45850cb280e`
+    - 旧主 blocker `待申请入账` 模糊多匹配已消失；剩余两条失败收敛成 `Verification` 仍在二次硬要求详情入口。
+  - 复用旧 list baseline 做 family compare：
+    - compare 报告：[2026-04-15T03-12-42-141Z-bench_d553760753a6-phase1-10-current-2026-04-15.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T03-12-42-141Z-bench_d553760753a6-phase1-10-current-2026-04-15.json)
+    - 结论已不再是 `unchanged@0 pass`，而是 `improved`；当前窗口对 `phase1-8-list-nonweak-baseline` 的 `blockedRate / recipeHit / playbookHit` 更优。
+  - 冻结这轮新的 list baseline：
+    - baseline archive：[2026-04-15T03-13-44-187Z-bench_8e027c6023ce.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-15T03-13-44-187Z-bench_8e027c6023ce.json)
+    - active benchmark 已切到 `phase1-10-list-first-pass-breakthrough-baseline`，其中 `scenario|ui+extract` case 已记录 `runCount=15 / firstPassPassRate=6.7 / terminalPassRate=6.7`。
+  - modal 回归基线结果：
+    - 报告：[2026-04-15T03-26-13-072Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T03-26-13-072Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - `3/3` terminal、`2/3` pass、`2/3` recipeHit。
+    - 通过样本：
+      - `intent-run-e8af2de4-860e-4f86-a86f-e142e44aa958`
+      - `intent-run-66ace223-7e96-4312-9bd5-de69700808a5`
+    - 说明本轮 list shared-path 修改没有把 modal breakthrough 打回 `0 pass`。
+- 验证：
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `npx vitest run tests/unit/intent-e2e-benchmark.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-failure-triage.spec.ts`
+    - 通过，`290/290`。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family list_search_detail --request-corpus artifacts/intent-e2e-family-evidence/proj_default.list-search-detail.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 通过，见 fresh list rerun 报告 [2026-04-15T03-07-59-350Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T03-07-59-350Z-family-list_search_detail-fresh-rerun.json)。
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family list_search_detail --run-limit 200 --json`
+    - 通过。
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family list_search_detail --run-limit 200 --compared-label phase1-10-current-2026-04-15 --json`
+    - 通过，见 compare 报告 [2026-04-15T03-12-42-141Z-bench_d553760753a6-phase1-10-current-2026-04-15.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T03-12-42-141Z-bench_d553760753a6-phase1-10-current-2026-04-15.json)。
+  - `npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --test-type browser_e2e --priority-scenario-family list_search_detail --run-limit 200 --label phase1-10-list-first-pass-breakthrough-baseline --release-candidate phase1-10-2026-04-15 --json`
+    - 通过，冻结出新 list baseline。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family modal_or_drawer_save --request-corpus artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 通过，见 modal regression 报告 [2026-04-15T03-26-13-072Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T03-26-13-072Z-family-modal_or_drawer_save-fresh-rerun.json)。
+  - `npm run test:e2e`
+    - 通过，`9 passed / 1 skipped`。
+- 当前阶段状态：
+  - `list_search_detail` first terminal pass：已完成（本轮）
+  - `list_search_detail` 旧模糊主键 blocker：已完成（本轮）
+  - `list_search_detail` 新 baseline 冻结：已完成（本轮）
+  - `modal_or_drawer_save` 回归基线：通过（本轮）
+  - 本轮仍然只是 Phase 1.10 list breakthrough，不是 Phase 2。
+- 风险 / 未完成：
+  - list 剩余两条 fresh fail 现在不再是主键歧义，而是 `Verification` 还会二次硬要求“进入详情页/详情抽屉”；这类失败现在会被正确归到 `response_missing`，但主链本身还没有把 verification 复用 Step 5 的非详情证据完全 industrialize。
+  - 旧 `phase1-8` compare 报告虽然已从 `unchanged@0 pass` 变成 `improved`，但它主要吃到了 `blockedRate/recipeHit/playbookHit` 改善；真正记录这轮 first-pass 的正式 baseline 还是新冻结的 [bench_8e027c6023ce.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-15T03-13-44-187Z-bench_8e027c6023ce.json)。
+  - modal 这轮没有回退，但 fresh rerun 仍是 `2/3` pass、`2/3` recipeHit，不应把它包装成“modal 已完全稳定”。
+- 下一步：
+  - 先把 list 的 `Verification` 复用逻辑补齐，让它在 Step 5 已经拿到 `list_record / table_row` 证据时，不再强制第二次开详情；目标是把当前 `1/3` pass 提到更高，而不是继续容忍 verification 尾部硬失败。
+  - 再把 `phase1-10` 新 baseline 跑一次同口径 replay/compare，确认 first-pass 样本能稳定留在 family benchmark case 里，而不是只停留在 fresh rerun report。
+  - 只有在 list family 至少形成更稳定的 non-zero pass compare，且 modal 不回退的前提下，才有资格继续讨论是否接近 Phase 2。
+
+## 2026-04-15 第二百八十四次更新（Phase 1.11 list verification evidence reuse + curated non-weak baseline）
+
+- 本轮目标：
+  - 继续停留在 Phase 1.11，不进入 Phase 2。
+  - 主攻 `list_search_detail` verification evidence reuse，让 list family 在 Step 5 已拿到 `list_record / table_row / field evidence` 时，不再把“进入详情页/详情抽屉”当成唯一合法证据。
+  - 把 list fresh rerun 从 `1/3` pass 提升到至少 `2/3` pass，并冻结 curated non-weak baseline，排除 `unknown|no_steps` 弱 case。
+  - 若触及 shared generator path，补做 `modal_or_drawer_save` rerun 作为回归保护，但不把 modal 当本轮主战场。
+- 已完成：
+  - 落地本轮 brief：[docs/intent-e2e-phase1-11-list-verification-evidence-reuse-task-brief-2026-04-15.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase1-11-list-verification-evidence-reuse-task-brief-2026-04-15.md)。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 新增 `buildListSearchDetailVerificationSlot(...)`、`sanitizeListSearchDetailVerificationSlot(...)` 与 `sanitizeListSearchDetailVerification(...)`，并挂到 `sanitizeGeneratedCode(...)` 的 `listSearchDetail` 分支：
+    - verification 先复用 `artifacts['plan_step_5']`、`artifacts['plan_step_5_record_check']`、`artifacts['plan_step_5_row']` 的结构化证据；
+    - 如果联系人 / 手机号 / 状态字段仍不全，先做一次 `requireListResponse: true` 的订单号精确回查，再从 `list_response + row headers` 补字段；
+    - 只有这些结构化证据仍不足时，才回退 `orderLink / 查看 -> detail surface`；
+    - `artifacts['verification']` 现在会显式写入 `selectedOrderNo / detailScope / detailEntry / recordSource / contactText / phoneText / statusText`，不再用 `if (!detail || !detail.detailScope)` 作为硬 gate。
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 增加回归，锁住“verification 优先复用 `plan_step_5` lookup evidence，而不是先强制开详情”的生成结果。
+  - fresh list rerun 结果：
+    - 报告：[2026-04-15T04-15-17-831Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T04-15-17-831Z-family-list_search_detail-fresh-rerun.json)
+    - `3/3` terminal、`0` pending、`0` timedOut、`3/3` pass、`3/3` recipeHit、`3/3` playbookHit。
+    - 本轮 fresh pass run：
+      - `intent-run-e1195dfb-b501-4049-bbe6-99f350d9b9fd`
+      - `intent-run-cd92eedd-5dfd-44fb-a198-0c7511cbdff4`
+      - `intent-run-ca1cf11f-0643-43ce-b735-e52648b565a3`
+  - 先用 candidates 缩小到 non-weak main path，再冻结 curated baseline：
+    - candidate 检查确认 `eval_complex_enterprise_flow_unknown_no_steps` 是弱 case，应排除；
+    - 选中的 main-path case 是 `eval_complex_enterprise_flow_scenario_ui_extract`，`taskMode=scenario`、`stepCount=5`。
+    - curated baseline archive：[2026-04-15T04-17-46-254Z-bench_5681c74f619b.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-15T04-17-46-254Z-bench_5681c74f619b.json)
+    - baseline `caseCount=1`，只保留 `eval_complex_enterprise_flow_scenario_ui_extract`，不再混入 `unknown|no_steps`。
+  - 用 curated baseline 重新 replay/compare：
+    - replay 结果沿用同口径 recent window，`runCount=18 / passedRuns=4 / terminalPassRate=22.2`，说明 non-zero pass 已进入 benchmark case，而不只是 fresh rerun 偶然通过。
+    - compare 报告：[2026-04-15T04-19-53-372Z-bench_5681c74f619b-phase1-11-list-verification-evidence-reuse-current-2026-04-15.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T04-19-53-372Z-bench_5681c74f619b-phase1-11-list-verification-evidence-reuse-current-2026-04-15.json)
+    - compare 同口径结果是 `unchanged`，但已经保住 `currentTerminalPassRate=22.2 / currentFirstPassPassRate=22.2` 的 non-zero pass，不再是 `unchanged@0 pass`。
+  - 补做 modal 回归保护 rerun，但本轮没有把 modal 恢复到旧基线：
+    - fresh rerun 报告：[2026-04-15T04-34-54-641Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T04-34-54-641Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - `3/3` terminal、`0/3` pass、`3/3` recipeHit、`3/3` playbookHit；
+    - 失败 run 分别落在 `record_lookup_miss / selector_drift / unknown`，对应：
+      - `intent-run-f40f5f8c-6d04-4198-b0bb-07ac633e6984`
+      - `intent-run-c89f55a0-4636-4209-93e1-2db6e58e6454`
+      - `intent-run-d1212522-51ae-47f1-94c6-03844e5944a4`
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+    - 通过，`162/162`。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `npx vitest run tests/unit/intent-e2e-benchmark.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-failure-triage.spec.ts`
+    - 通过，`291/291`。
+  - `npm run test:e2e`
+    - 通过，`9 passed / 1 skipped`。
+  - `npm run intent:benchmark:candidates -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --test-type browser_e2e --priority-scenario-family list_search_detail --run-limit 200 --json`
+    - 通过，确认 `unknown|no_steps` 弱 case 需要显式排除。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family list_search_detail --request-corpus artifacts/intent-e2e-family-evidence/proj_default.list-search-detail.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 通过，见 fresh list rerun 报告 [2026-04-15T04-15-17-831Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T04-15-17-831Z-family-list_search_detail-fresh-rerun.json)。
+  - `npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --test-type browser_e2e --priority-scenario-family list_search_detail --run-limit 200 --eval-case-id eval_complex_enterprise_flow_scenario_ui_extract --label phase1-11-list-verification-evidence-reuse-curated-baseline --release-candidate phase1-11-2026-04-15 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，冻结出不含 `unknown|no_steps` 的 curated baseline。
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family list_search_detail --run-limit 200 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，沿用同口径 current window 保住 `4/18` terminal pass。
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family list_search_detail --run-limit 200 --compared-label phase1-11-list-verification-evidence-reuse-current-2026-04-15 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，见 compare 报告 [2026-04-15T04-19-53-372Z-bench_5681c74f619b-phase1-11-list-verification-evidence-reuse-current-2026-04-15.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T04-19-53-372Z-bench_5681c74f619b-phase1-11-list-verification-evidence-reuse-current-2026-04-15.json)。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family modal_or_drawer_save --request-corpus artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 通过，见 modal 回归报告 [2026-04-15T04-34-54-641Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T04-34-54-641Z-family-modal_or_drawer_save-fresh-rerun.json)。
+- 当前阶段状态：
+  - `list_search_detail` verification evidence reuse：已完成（本轮）。
+  - `list_search_detail` fresh rerun 提升到 `3/3` pass：已完成（本轮）。
+  - `list_search_detail` curated non-weak baseline：已完成（本轮）。
+  - `list_search_detail` curated replay/compare 保住 non-zero pass：已完成（本轮）。
+  - 本轮仍然只是 Phase 1.11 list verification evidence reuse，不是 Phase 2。
+- 风险 / 未完成：
+  - modal 回归保护没有维持住 Phase 1.10 的 `2/3` pass 基线。本轮 fresh modal rerun 是 `0/3` pass；虽然这次代码改动被明确限制在 `listSearchDetail` family-gated sanitizer，不直接修改 modal 生成链，但 live modal 证据已走弱，不能宣称“modal 未回退”。
+  - list curated compare 虽然已经保住 non-zero pass，但同口径结果仍是 `unchanged`，说明本轮主要是把 fresh pass 样本稳定写回 benchmark case，并没有把 list family 的更宽窗口整体抬升到新的 improved 档位。
+  - curated baseline 当前只有 `1` 个 main-path case，代表性足够支撑本轮结论，但距离“足够宽的 family baseline”仍有样本厚度缺口。
+- 下一步：
+  - 先单独回到 `modal_or_drawer_save` 做回归硬化，把当前 fresh rerun 中的 `record_lookup_miss / selector_drift / unknown` 收口回单一 blocker，再重新拿到不弱于 Phase 1.10 的 modal fresh evidence。
+  - 再视 modal 回归是否收稳，决定是继续扩 list curated baseline 的 case 厚度，还是开始补更宽 family window 下的 list compare 证据。
+  - 只有在 list non-zero pass 能在更宽窗口保持、且 modal breakthrough 不再回退的前提下，才有资格重新讨论是否接近 Phase 2。
+
+## 2026-04-15 第二百八十五次更新（Phase 1.12 modal recovery to Phase 1.9 floor）
+
+- 本轮目标：
+  - 继续停留在 Phase 1.12，不进入 Phase 2。
+  - 只主攻 `modal_or_drawer_save` recovery，把 modal fresh rerun 从 `0/3 passed` 拉回到不弱于 Phase 1.9 的 `2/3 passed` floor，同时保持 `recipeHit=3/3`。
+  - 若触及 shared generator / sanitizer 路径，严格补做 `list_search_detail` fresh rerun 回归保护，不能把 list 的 `3/3 passed` 打回去。
+- 已完成：
+  - 落地本轮 brief：[docs/intent-e2e-phase1-12-modal-recovery-to-phase1-9-floor-task-brief-2026-04-15.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase1-12-modal-recovery-to-phase1-9-floor-task-brief-2026-04-15.md)。
+  - 在 [next.config.mjs](/Users/xiaolongbao/Workspace/ai-test/next.config.mjs)、[tsconfig.json](/Users/xiaolongbao/Workspace/ai-test/tsconfig.json) 与新增的 [tsconfig.next.json](/Users/xiaolongbao/Workspace/ai-test/tsconfig.next.json) 固化 Next build 专用 tsconfig，避免 `build:web` 再把 `.next/dev/types` 写回主编译链，保持 `npm run build` / `npm run build:web` 可重复通过。
+  - 在 [lib/intent-e2e-priority-scenario-family.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-priority-scenario-family.ts) 放宽 modal family classifier 的中文按钮文案匹配，兼容 `确 定 / 保 存 / 提 交 / 关 闭` 这类 UI 中间空格写法，修复 modal request corpus preflight 被错误打成 `untracked` 的问题。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 继续收口 modal shared 生成链：
+    - 扩大 Step 3 `selectedOrderNo` deterministic rewrite 覆盖面，收掉旧的 `artifacts.plan_step_2_row + orderLink / rowKey / tokens` 抽取变体；
+    - 删除勾选后对 `.ant-checkbox-wrapper-checked / .ant-checkbox-checked` 的脆弱可见性断言，继续只信任 `__e2e.clickAntdRowCheckbox(...)`；
+    - 把 Step 6 弱 `waitForURL(...)` / 单一 `#form_in_modal_testKeyWord` 路径重写回 `BOOKED_URL + goto fallback + visible keywordInput` 主链；
+    - 修掉 Step 1 `keywordInput.or(searchBtn).or(expandBtn)` 未声明变量变体。
+  - 同时补了一条非常窄的 list regression fix：在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 让 `list_search_detail` sanitizer 识别 `__e2e.findAntdTableRow(...)` 与 `artifacts.plan_step_5` 这类旧模板变体，避免 shared reuse 时漏掉 Step 3 订单号收口和 Verification evidence reuse。
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 与 [tests/unit/intent-e2e-priority-scenario-family.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-priority-scenario-family.spec.ts) 补回归：
+    - classifier 兼容 `确 定 / 关 闭` 空格写法；
+    - modal Step 1 / Step 3 / Step 6 sanitizer 回归；
+    - list Step 3 `__e2e.findAntdTableRow` 旧抽取变体；
+    - list Verification dot-notation `artifacts.plan_step_5` 旧模板。
+  - fresh modal rerun 已恢复到 Phase 1.9 floor：
+    - 报告：[2026-04-15T06-04-30-539Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T06-04-30-539Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - `3/3` terminal、`2/3` pass、`3/3` recipeHit、`3/3` playbookHit。
+    - 通过 run：
+      - `intent-run-239f5f07-1222-46c2-b0f0-8bb5c45496cf`
+      - `intent-run-7fba121f-0eb6-454a-a284-311e2a2225c8`
+    - 剩余失败 run：
+      - `intent-run-3dbf3e59-9431-4a43-b857-c80360c9b4a5`
+      - 失败类型已收敛为单点 `selector_drift`，且根因固定在 Step 2 “按待申请状态筛选订单”的可见筛选锚点断言。
+  - fresh list rerun 回归保护已恢复：
+    - 报告：[2026-04-15T06-24-18-450Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T06-24-18-450Z-family-list_search_detail-fresh-rerun.json)
+    - `3/3` terminal、`3/3` pass、`3/3` recipeHit、`3/3` playbookHit。
+    - 通过 run：
+      - `intent-run-6ff1ff72-2a09-4081-9154-3879edaa7a7d`
+      - `intent-run-774f95c6-29c7-4595-af9a-94b8c38a7784`
+      - `intent-run-a3f0fc52-5c17-461f-a28f-8c0b93d6bb1d`
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-priority-scenario-family.spec.ts tests/unit/intent-e2e-benchmark.spec.ts`
+    - 通过，`11/11`。
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+    - 通过，`170/170`。
+  - `npx vitest run tests/unit/intent-e2e-benchmark.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/test-generator.spec.ts tests/unit/test-worker-source.spec.ts tests/unit/intent-e2e-failure-triage.spec.ts tests/unit/intent-e2e-priority-scenario-family.spec.ts`
+    - 通过，`306/306`。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过，且继续使用 `./tsconfig.next.json`。
+  - `npm run test:e2e`
+    - 通过，`9 passed / 1 skipped`。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family modal_or_drawer_save --request-corpus artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 通过，见 modal fresh rerun 报告 [2026-04-15T06-04-30-539Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T06-04-30-539Z-family-modal_or_drawer_save-fresh-rerun.json)。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family list_search_detail --request-corpus artifacts/intent-e2e-family-evidence/proj_default.list-search-detail.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 通过，见 list 回归保护报告 [2026-04-15T06-24-18-450Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T06-24-18-450Z-family-list_search_detail-fresh-rerun.json)。
+- 当前阶段状态：
+  - `modal_or_drawer_save` fresh rerun floor recovery：已完成（本轮）。
+  - `modal_or_drawer_save` recipeHit 保持 `3/3`：已完成（本轮）。
+  - modal 混合失败类型已收敛为单点 blocker：已完成（本轮）。
+  - `list_search_detail` 回归保护恢复到 `3/3` pass：已完成（本轮）。
+  - 本轮仍然只是 Phase 1.12 modal recovery，不是 Phase 2。
+- 风险 / 未完成：
+  - modal 虽已恢复到 Phase 1.9 floor，但仍不是 `3/3` 稳定。剩余唯一 blocker 是 `intent-run-3dbf3e59-9431-4a43-b857-c80360c9b4a5` 在 Step 2 对“入账状态=待申请”的可见筛选断言过脆，当前仍会落成 `selector_drift`。
+  - 本轮只恢复了 modal fresh rerun floor，没有追加新的 modal freeze/replay/compare 证据；因此不能把这轮包装成“modal family 已完全稳定”或“已经满足进入 Phase 2 的证据闭环”。
+  - list 当前 fresh rerun 已恢复，但 broader benchmark window 的 family compare 没有在本轮重跑；本轮结论仍以回归保护为主，不是新的 Phase 2 readiness 证明。
+- 下一步：
+  - 先把 modal 剩余的 Step 2 `selector_drift` 做成和 Step 1 / Step 6 同等级别的 deterministic visible-filter helper，不再依赖 `.ant-form-item:visible` / `.ant-select-selection-item` 这类脆弱局部断言。
+  - 在 modal fresh rerun 稳定到 `>=2/3` 且单点 blocker 持续收敛后，再补一轮 modal baseline/replay/compare，证明 floor recovery 已进入 benchmark case，而不是只停留在 fresh rerun。
+  - 在 modal benchmark 证据补齐前，仍不能进入 Phase 2。
+
+## 2026-04-15 第二百八十六次更新（Phase 1.13 modal deterministic visible-filter helper + benchmark proof）
+
+- 本轮目标：
+  - 继续停留在 Phase 1.13，不进入 Phase 2。
+  - 主攻 `modal_or_drawer_save` Step 2 “待申请状态筛选”单点 `selector_drift`，把它收口成 deterministic visible-filter helper。
+  - 在修完后补齐 modal family 的 fresh rerun + freeze/replay/compare 证据，并确认 `list_search_detail` 不回退。
+- 已完成：
+  - 落地本轮 brief：[docs/intent-e2e-phase1-13-modal-deterministic-visible-filter-helper-task-brief-2026-04-15.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase1-13-modal-deterministic-visible-filter-helper-task-brief-2026-04-15.md)。
+  - 在 [lib/test-worker.mjs](/Users/xiaolongbao/Workspace/ai-test/lib/test-worker.mjs) 新增 modal Step 2 visible-filter helper：
+    - `buildVisibleAntdFilterRootCandidates(...)`
+    - `buildVisibleAntdFilterSourceCandidates(...)`
+    - `waitForDeterministicVisibleFilterResults(...)`
+    - `applyDeterministicVisibleAntdFilter(...)`
+    - helper 现在会先锁定可见筛选容器和真实 select source，再复用 `selectAntdOption(...)` 选择“待申请”，随后触发搜索并等待列表刷新 / placeholder / busy settle，把“结果收敛”而不是“selectedText 可见”当作成功证据。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 把 modal Step 2 selected-value drift 重写到 `__e2e.applyDeterministicVisibleAntdFilter(...)`，并挂到 batch-account sanitizer 主链。
+  - 在 [tests/unit/test-worker-source.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-worker-source.spec.ts) 和 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 补回归，锁住 helper 暴露和 Step 2 rewrite。
+  - 在后续 live rerun 暴露出新的共享旧模板后，又做了两条最小追加修复，仍保持在 Phase 1.13 范围内：
+    - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 收掉 Step 1 `keywordInput.or(page.locator('.ant-table-wrapper:visible').first())` 的未声明变量变体；
+    - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 把旧版 Step 2 “勾选后订单号提取”模板也接回 clone-safe `selectedOrderNo` 提取块，避免 modal live rerun 再掉回 `record_lookup_miss`。
+  - 最终 post-fix modal fresh rerun 已恢复到强于 Phase 1.9 floor 的状态：
+    - 报告：[2026-04-15T07-59-36-279Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T07-59-36-279Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - `3/3` terminal、`3/3` passed、`3/3` recipeHit、`3/3` playbookHit。
+    - fresh pass run：
+      - `intent-run-368e58df-1bcc-4158-a366-29969646321f`
+      - `intent-run-23b67e6b-c086-4ff3-aabd-ffa5b1a6eeb9`
+      - `intent-run-01bfd501-fe72-4bcd-9eea-3903f680f20a`
+    - `selector_drift` 没有在这轮 fresh rerun 里复现。
+  - 补齐 modal benchmark 证据链：
+    - freeze archive：[2026-04-15T08-01-01-216Z-bench_9e078a19f097.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-15T08-01-01-216Z-bench_9e078a19f097.json)
+    - compare report：[2026-04-15T08-02-28-387Z-bench_9e078a19f097-phase1-13-modal-deterministic-filter-current-2026-04-15.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T08-02-28-387Z-bench_9e078a19f097-phase1-13-modal-deterministic-filter-current-2026-04-15.json)
+    - compare 结论是 `unchanged`，说明这版当前窗口和刚冻结的 modal family baseline 同口径持平，没有新回退。
+  - list 回归保护仍保持全绿：
+    - 报告：[2026-04-15T08-04-46-458Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T08-04-46-458Z-family-list_search_detail-fresh-rerun.json)
+    - `3/3` terminal、`3/3` passed、`3/3` recipeHit、`3/3` playbookHit。
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts tests/unit/test-worker-source.spec.ts`
+    - 通过，早期 helper 接线回归已锁住。
+  - `npx vitest run tests/unit/intent-e2e-benchmark.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/test-generator.spec.ts tests/unit/test-worker-source.spec.ts tests/unit/intent-e2e-failure-triage.spec.ts tests/unit/intent-e2e-priority-scenario-family.spec.ts`
+    - 通过，`308/308`。
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+    - 最终补丁后再次通过，`174/174`。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过，继续使用 `./tsconfig.next.json`。
+  - `npm run test:e2e`
+    - 通过，`9 passed / 1 skipped`。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family modal_or_drawer_save --request-corpus artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 最终通过，见 fresh modal rerun 报告 [2026-04-15T07-59-36-279Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T07-59-36-279Z-family-modal_or_drawer_save-fresh-rerun.json)。
+  - `npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --test-type browser_e2e --priority-scenario-family modal_or_drawer_save --run-limit 200 --label phase1-13-modal-deterministic-filter-floor --release-candidate phase1-13-2026-04-15 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，冻结出新的 modal family baseline。
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --run-limit 200 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过。
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --run-limit 200 --compared-label phase1-13-modal-deterministic-filter-current-2026-04-15 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，见 compare 报告 [2026-04-15T08-02-28-387Z-bench_9e078a19f097-phase1-13-modal-deterministic-filter-current-2026-04-15.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T08-02-28-387Z-bench_9e078a19f097-phase1-13-modal-deterministic-filter-current-2026-04-15.json)。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family list_search_detail --request-corpus artifacts/intent-e2e-family-evidence/proj_default.list-search-detail.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 通过，见 list regression 报告 [2026-04-15T08-04-46-458Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T08-04-46-458Z-family-list_search_detail-fresh-rerun.json)。
+- 当前阶段状态：
+  - `modal_or_drawer_save` deterministic visible-filter helper：已完成（本轮）。
+  - modal fresh rerun 已恢复并超过 Phase 1.9 floor：已完成（本轮）。
+  - modal benchmark freeze/replay/compare 证据：已完成（本轮）。
+  - `list_search_detail` 回归保护保持 `3/3` pass：已完成（本轮）。
+  - 本轮仍然只是 Phase 1.13 helper + benchmark proof，不是 Phase 2。
+- 风险 / 未完成：
+  - 本轮 compare 是“当前窗口 vs 当前窗口刚冻结的 baseline”，所以它证明的是“这版 recovery 已经能被 benchmark harness 稳定承载”，不是“相对于更早历史窗口已经继续提升”。
+  - modal family 的 wider benchmark 仍混有 `eval_complex_enterprise_flow_unknown_no_steps` 这类弱 case；虽然本轮 fresh rerun 已经 `3/3`，但 broader family window 的 summary 仍被历史弱样本拖着，compare 因而是 `unchanged`。
+  - `intent-run-23b67e6b-c086-4ff3-aabd-ffa5b1a6eeb9` 在 fresh rerun 汇总里虽然是 `passed`，但 `failureClass` 仍写成了空值以外的旧残留字段；这说明 run summary 序列化还有历史字段噪声，不过不影响 terminal verdict。
+- 下一步：
+  - 如果继续留在 Phase 1，而不是进入 Phase 2，下一步最值钱的是把 modal family benchmark 从“fresh rerun 已强、broader window 仍混历史弱 case”推进到“curated non-weak modal baseline”，至少把 `unknown|no_steps` 类 case 从 modal 主证明链里显式隔离。
+  - 只有当 modal 和 list 都不仅有 fresh rerun `3/3`，而且 broader family benchmark 也不再被历史弱 case 主导时，才有资格讨论是否接近 Phase 2。
+
+## 2026-04-15 第二百八十六次更新（Phase 1.13 business_create_list_verify Step 6 stale-row latency fix）
+
+- 本轮目标：
+  - 继续停留在 Phase 1.13，不进入 Phase 2/3/4。
+  - 只收口 `business_create_list_verify` 的 Step 6 异常长等待：根据 `intent-run-2f2900d2-b56e-4f8c-ab12-b515ecb7f0cb` 与其复用来源 `intent-run-c23d6981-e30f-4219-8403-576fe32af5a6` 的 run artifact，定位并去掉“列表响应补证后继续读取旧 row handle”导致的约 30s stale-row 等待。
+  - 保持当前业务验收语义不回退：仍然优先结构化列表响应状态，拿不到时再走详情面的 `商机进展 / 状态`，不允许退化成只看列表文本。
+- 已完成：
+  - 落地本轮 brief：[docs/intent-e2e-phase1-13-business-create-step6-latency-fix-task-brief-2026-04-15.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase1-13-business-create-step6-latency-fix-task-brief-2026-04-15.md)。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 新增 `looksLikeBusinessCreateListVerify(...)`、`sanitizeBusinessCreateListVerifyStep6Slot(...)` 与 `sanitizeBusinessCreateListVerifyStep6(...)`，并挂到 `sanitizeGeneratedCode(...)`：
+    - 这条修法落在 generator deterministic sanitizer，而不是 worker helper；
+    - recent successful-run reuse 也会经过同一条 sanitizer，因此复用旧成功脚本时同样会吃到这次修补。
+  - Step 6 rewrite 现在会显式注入 `const statusEvidenceRow = statusEvidenceRecordCheck?.row || recordCheck.row || null;`：
+    - `matchedRecord` 已从 `listJson` 命中时，不再继续为了派生 `derivedBusinessId` 去读旧的 `recordCheck.row.innerText()` / `getAttribute('data-row-key')`；
+    - 必须继续读行文本 / 行键时，优先读 fresh `statusEvidenceRow`；
+    - detail fallback 若发生，`clickAntdRowAction(...)` 也改为复用 fresh `statusEvidenceRow`；
+    - `artifacts['plan_step_6'].recordCheck` 会优先写回 `statusEvidenceRecordCheck || recordCheck`，避免后续再把旧 row artifact 当主证据。
+  - 在 [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 新增 business Step 6 回归，直接锁住：
+    - fresh row 注入；
+    - `matchedRecord` guard；
+    - detail fallback 改用 fresh row。
+  - 本轮没有改 [lib/test-worker.mjs](/Users/xiaolongbao/Workspace/ai-test/lib/test-worker.mjs)，因为当前根因已经由 run artifact 与 reuse-path sanitizer 证据收敛到 generator 侧“旧 row handle 继续被复用”，generator-only fix 足以覆盖 fresh generate 与 successful-run reuse。
+  - live rerun 证据本轮未追加：当前仓库没有已提交的 `business_create_list_verify` tracked request corpus，本轮按约束不新造 corpus / benchmark harness；因此 live 结论仍以现有 run artifact + unit/build/e2e 为主。
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+    - 通过，`173/173`。
+  - `npx vitest run tests/unit/intent-e2e-benchmark.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-failure-triage.spec.ts tests/unit/test-worker-source.spec.ts tests/unit/intent-e2e-priority-scenario-family.spec.ts`
+    - 通过，`311/311`。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `npm run test:e2e`
+    - 通过，`9 passed / 1 skipped`。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 待本轮 roadmap 落盘后执行。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 待本轮 roadmap 落盘后执行。
+- 当前阶段状态：
+  - `business_create_list_verify` Step 6 stale-row latency fix：已完成（本轮）。
+  - 当前修法仍然只覆盖 Phase 1.13 的 business Step 6 性能/稳定性收口，不是 Phase 2。
+- 风险 / 未完成：
+  - 这轮没有补 safe live rerun，所以还没有新的 before/after 实测 Step 6 时延样本；当前“30s 空档已定位并去掉”的结论来自既有 run artifact 与 deterministic unit regression，不是新的线上复跑。
+  - sanitizer 仍是对当前 business Step 6 代码形态的 targeted rewrite；如果后续模型产出完全绕开 `statusEvidenceRecordCheck / listJson / recordCheck.row` 这条骨架，可能还需要继续扩同 family 的 deterministic pattern。
+  - 本轮没有改 worker 侧 `resolvePrimaryRecord(...)` 执行顺序；若未来仍有别的 Step 6 延迟来源落在 helper 内部等待，本轮不会覆盖。
+- 下一步：
+  - 若后续还要补 business family 证据，优先寻找现有仓库能力内可安全复跑的同类 `business_create_list_verify` 路径，补 before/after live 佐证；在没有 tracked corpus 前，不新造 benchmark harness。
+  - 若 rerun 后仍出现 Step 6 长等待，再继续用 run artifact 判断是否还有新的 deterministic stale-row / detail fallback 变体；在这之前，不扩到 Phase 2。
+
+## 2026-04-15 第二百八十七次更新（Phase 1.14 business_create_list_verify live evidence closure）
+
+- 本轮目标：
+  - 继续停留在 Phase 1，不进入 Phase 2/3/4。
+  - 不再主攻 runtime 新逻辑；先补 `business_create_list_verify` 的 tracked corpus，并用现有 benchmark rerun 入口拿 fresh live evidence。
+  - 明确回答一件事：Phase 1.13 的 Step 6 stale-row latency fix 是否已经在 fresh live 样本里消掉旧的约 `30s` `json record not found` 空档。
+- 已完成：
+  - 落地本轮 brief：[docs/intent-e2e-phase1-14-business-step6-live-evidence-task-brief-2026-04-15.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase1-14-business-step6-live-evidence-task-brief-2026-04-15.md)。
+  - 新增 tracked corpus：[artifacts/intent-e2e-family-evidence/proj_default.business-create-list-verify.request-corpus.json](/Users/xiaolongbao/Workspace/ai-test/artifacts/intent-e2e-family-evidence/proj_default.business-create-list-verify.request-corpus.json)：
+    - 固定 `projectUid=proj_default`、`moduleUid=mod_1773303139537_c84d8476`、`priorityScenarioFamily=business_create_list_verify`；
+    - 三条 request 分别为 `anchor-a / anchor-b / anchor-c`；
+    - 每条都使用真实业务目标与 6 步骨架：进入商机列表页 -> 打开新建商机入口 -> 填写并保存商机 -> 提取新建记录唯一标识 -> 切换到“我创建的”Tab -> 校验新建记录及进展状态；
+    - `successCriteria` 保持严格语义：必须命中真实新建商机记录，优先结构化列表响应状态，只有缺失时才回退详情面的 `商机进展 / 状态`，最终状态必须是 `新入库`。
+  - 执行 fresh rerun：
+    - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family business_create_list_verify --request-corpus artifacts/intent-e2e-family-evidence/proj_default.business-create-list-verify.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 产出 fresh rerun 报告：[2026-04-15T08-36-00-911Z-family-business_create_list_verify-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T08-36-00-911Z-family-business_create_list_verify-fresh-rerun.json)。
+  - fresh rerun 逐条结论：
+    - `anchor-a -> intent-run-d9d47cec-6f61-402e-b6b1-96abfa0d7586`
+      - `status=passed`
+      - `recipeHit=yes`
+      - `playbookHit=yes`
+      - `family=business_create_list_verify`
+      - Step 6 `5497ms`；Verification `1170ms`
+      - `attempt-1-logs.txt` 中不再出现任何 `json record not found`
+      - 仍会走 `row action open attempt -> row action clicked -> ant-modal resolved -> detail field resolved`，但已没有旧的约 `30s` 空档
+      - 相比旧 floor `36652ms`，Step 6 下降到 `5497ms`，缩短 `31155ms`（约 `85.0%`）
+    - `anchor-b -> intent-run-fa104d6a-84c9-4fd8-b12a-b7ae2bc83a13`
+      - `status=failed`
+      - `recipeHit=yes`
+      - `playbookHit=yes`
+      - `family=business_create_list_verify`
+      - Step 6 `2897ms`；Verification `12241ms`
+      - Step 6 阶段没有出现 `json record not found`，也没有旧的 `30s` stale-row gap
+      - 失败点移动到了 Verification：`未找到行操作：查看`；日志里能看到 Verification 阶段重复 `row action open attempt`，这是新的 selector drift / verifier 失败面，不是旧的 Step 6 stale-row 等待
+    - `anchor-c -> intent-run-ea70dee7-6b13-4eba-9a39-d91990644ada`
+      - `status=failed`
+      - `recipeHit=no`
+      - `playbookHit=no`
+      - `family=business_create_list_verify`
+      - 失败原因为 `LLM 调用失败: LLM 请求超时 (60000ms)`
+      - 没有生成成功 attempt，也没有本地 `attempt-1-response-summary.json / logs.txt` artifact；因此这条不是可用于 Step 6 latency 判断的 live 样本
+  - before / after 结论：
+    - 旧基线 `intent-run-2f2900d2-b56e-4f8c-ab12-b515ecb7f0cb` 与 `intent-run-c23d6981-e30f-4219-8403-576fe32af5a6` 的共同特征仍是：
+      - Step 6 `36652ms / 36675ms`
+      - Verification `16ms / 17ms`
+      - 两次 `json record not found` 相隔约 `30142ms / 30149ms`
+      - gap 后立刻进入 `row action clicked -> ant-modal resolved -> detail field resolved`
+    - fresh passed run `intent-run-d9d47cec-6f61-402e-b6b1-96abfa0d7586` 已明确不再复现这条模式：
+      - Step 6 `5497ms`
+      - Verification `1170ms`
+      - `json record not found` 次数 `0`
+      - 不存在旧的约 `30s` 空档
+    - fresh failed run `intent-run-fa104d6a-84c9-4fd8-b12a-b7ae2bc83a13` 也没有再把 Step 6 卡在旧 stale-row 模式里；它的 Step 6 已在 `2897ms` 内结束，后续失败发生在 Verification。
+  - 本轮没有继续改 runtime 代码：
+    - fresh live evidence 已经足够证明 Phase 1.13 的 stale-row latency fix 在至少 1 条 terminal pass 样本里生效；
+    - 另外 1 条带 Step 6 的失败样本也没有回到旧的 `30s` stale-row 空档；
+    - 因此本轮按约束停在“tracked corpus + live evidence + roadmap 回写”，不再扩成 follow-up patch。
+- 验证：
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family business_create_list_verify --request-corpus artifacts/intent-e2e-family-evidence/proj_default.business-create-list-verify.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 命令执行完成，见 fresh rerun 报告 [2026-04-15T08-36-00-911Z-family-business_create_list_verify-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T08-36-00-911Z-family-business_create_list_verify-fresh-rerun.json)。
+  - `node scripts/check-doc-links.mjs`
+    - 待本轮 roadmap 落盘后执行。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 待本轮 roadmap 落盘后执行。
+- 当前阶段状态：
+  - `business_create_list_verify` tracked corpus：已完成（本轮）。
+  - Phase 1.13 Step 6 stale-row latency fix 的 fresh live evidence：已完成（本轮）。
+  - business family 的 broader 稳定性并未因此一并关闭：当前 fresh rerun 仍是 `1/3` passed，另外两条失败点分别落在 Verification selector drift 与 LLM timeout。
+  - 本轮仍然只是 Phase 1.14 business Step 6 live evidence closure，不是 Phase 2。
+- 风险 / 未完成：
+  - `anchor-b` 暴露出新的 Verification 失败面：`未找到行操作：查看`。它不是旧 stale-row gap，但会继续拖累 family pass rate。
+  - `anchor-c` 因 LLM 超时没有生成成功 attempt，本轮无法把它计入 Step 6 latency 样本。
+  - 本轮没有补 `freeze / replay / compare`；当前结论明确只针对 Step 6 stale-row live evidence，不把 family benchmark 健康度与 step-latency 证据混写。
+- 下一步：
+  - 如果继续留在 Phase 1，下一步应优先把 `anchor-b` 的 Verification selector drift 与 `anchor-c` 的 generation timeout 分开处理；不要再回到已完成 live closure 的 Step 6 stale-row 问题上做重复修补。
+  - 在没有新的反证之前，`business_create_list_verify` 的 Step 6 stale-row latency fix 可以视为已拿到 fresh live closure；后续若还要继续推进，应聚焦剩余失败面，而不是把这轮误扩成 Phase 2。
+
+## 2026-04-15 第二百八十八次更新（Phase 1 收口：modal latest current-state timeout closure）
+
+- 本轮目标：
+  - 继续停留在 Phase 1，不进入 Phase 2/3/4。
+  - 只主攻 `modal_or_drawer_save` latest current-state blocker，把 latest modal rerun 从 `1 passed / 2 failed / 1 recipeHit / 1 playbookHit` 拉回 clean current-state，再判断是否具备 Phase 2 讨论资格。
+  - 不扩 benchmark harness，不开新的 runtime loop；只做 current-state 证明链所需的最小收口。
+- 已完成：
+  - 落地本轮 brief：[docs/intent-e2e-phase1-13-modal-current-state-timeout-closure-task-brief-2026-04-15.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase1-13-modal-current-state-timeout-closure-task-brief-2026-04-15.md)。
+  - 直接复核 latest failed modal run 的 DB snapshot / event timeline，明确把两条 60s timeout 钉到不同调用点：
+    - `intent-run-aff212f2-7063-4db1-bca0-d1623bcc61eb`
+      - 先进入 generate attempt；
+      - `structured slot patch` 已返回；
+      - 但合并后命中 `slot patch 合并后脚本存在语法错误: Unexpected token ')'`；
+      - 随后显式回退到 `legacy free generate`；
+      - 最终在 free generate 的 LLM 调用上超时，落成 `LLM 调用失败: LLM 请求超时 (60000ms)`。
+    - `intent-run-5604b8e1-092c-4bad-8643-b296d1d1f967`
+      - 直接卡在 `planning -> ScenarioCard`；
+      - 事件只到 `正在把自然语言整理成 ScenarioCard…`；
+      - 最终直接落成 `LLM 请求超时 (60000ms)`。
+  - 同时确认 latest rerun 的 `recipeHit/playbookHit` 掉到 `1/3` 不是 matcher 漂移：
+    - 这两条 run 都在 recipe / final result 持久化之前就失败；
+    - terminal snapshot 里没有 `matchedRecipeSlugs`、`finalFailureTriage`、`attempts`；
+    - rerun summary 因而只能记成 `recipeHit=false / playbookHit=false`；
+    - 单独诊断 run 仍能命中 `intent.intent-modal-or-drawer-save-visible-container`，说明 specialized recipe 本身没有坏。
+  - 这轮最小收口没有继续放宽 shared service 规则，而是把 deterministic asset 正式补回 tracked modal corpus：
+    - 在 [artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json](/Users/xiaolongbao/Workspace/ai-test/artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json) 为 3 条 modal tracked request 全部补齐同一份 `prefilledScenarioCard`；
+    - 因而 latest current-state rerun 不再把第 2/3 条请求暴露给 avoidable 的 ScenarioCard planning LLM / generate LLM 路径；
+    - 这次收口保持在 Phase 1 asset 层，不新增 runtime loop，也不改 benchmark CLI。
+  - 先用临时 corpus 验证，再用正式 corpus 复跑，最终拿回 latest modal current-state clean rerun：
+    - 临时验证报告：[2026-04-15T09-37-54-443Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T09-37-54-443Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - 正式 current-state 报告：[2026-04-15T09-47-56-951Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T09-47-56-951Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - 最新正式结果恢复为：
+      - `3 terminal`
+      - `3 passed`
+      - `0 failed`
+      - `3 recipeHit`
+      - `3 playbookHit`
+      - 不再由 `LLM 请求超时 (60000ms)` 主导 latest current-state 证明链
+  - 在 latest rerun clean 的前提下补 fresh modal benchmark proof：
+    - fresh baseline：`bench_34e674082994`
+    - fresh replay：已执行
+    - fresh compare：已执行
+    - 这次 proof 证明的是“修补后的 final current-state 已能被 benchmark harness 正式承载”，不是“broader modal family 已经摆脱历史弱 case”。
+  - 本轮没有补 fresh list rerun：
+    - 这次没有再改 shared generator / worker / service 主代码，只补了 modal tracked corpus 与 roadmap/brief；
+    - 因此按边界保留 list 最新 current-state 基线 [2026-04-15T08-58-52-232Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T08-58-52-232Z-family-list_search_detail-fresh-rerun.json) 作为回归保护，不伪造 fresh rerun。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-benchmark.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/test-generator.spec.ts tests/unit/test-worker-source.spec.ts tests/unit/intent-e2e-failure-triage.spec.ts tests/unit/intent-e2e-priority-scenario-family.spec.ts`
+    - 已在本 turn 同一工作区通过，`312/312`；本轮随后未再改主代码。
+  - `npm run build`
+    - 已在本 turn 同一工作区通过。
+  - `npm run build:web`
+    - 已在本 turn 同一工作区通过。
+  - `npm run test:e2e`
+    - 已在本 turn 同一工作区通过，`9 passed / 1 skipped`。
+  - `bash scripts/check-boundaries.sh`
+    - 已在本 turn 同一工作区通过。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family modal_or_drawer_save --request-corpus artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 通过，见正式 current-state 报告 [2026-04-15T09-47-56-951Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-15T09-47-56-951Z-family-modal_or_drawer_save-fresh-rerun.json)。
+  - `npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --test-type browser_e2e --priority-scenario-family modal_or_drawer_save --run-limit 200 --label phase1-closure-modal-current-state-clean --release-candidate phase1-closure-2026-04-15 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，冻结出 fresh modal baseline。
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --run-limit 200 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过。
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --run-limit 200 --compared-label phase1-closure-modal-current-state-clean-current-2026-04-15 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，compare 结论为 `unchanged`。
+- 当前阶段状态：
+  - `modal_or_drawer_save` latest current-state timeout closure：已完成（本轮）。
+  - modal latest rerun 已恢复为 clean `3/3 passed / 3 recipeHit / 3 playbookHit`：已完成（本轮）。
+  - latest modal freeze / replay / compare：已完成（本轮）。
+  - `list_search_detail` 仍只作为回归保护对象，本轮未触碰 shared path：保持不变。
+  - 本轮仍然只是 Phase 1 收口，不是 Phase 2。
+- 风险 / 未完成：
+  - 这轮修掉的是 “latest modal current-state proof 被 avoidable LLM 调用暴露出来” 这一层问题，不是 broader modal family benchmark 的历史弱 case 问题。
+  - fresh baseline / replay / compare 仍清楚表明：`modal_or_drawer_save` broader family window 里还混有 `eval_complex_enterprise_flow_unknown_no_steps` 这类弱 case；因此 overall compare 仍是 `unchanged`，这不是工具坏了，而是 broader family 仍被历史弱样本主导。
+  - 正式 rerun 的 `intent-run-dd72b698-74b3-4894-ad23-8d5909066618` 虽然 terminal verdict 为 `passed`，但 summary 里仍带了 `failureClass=unknown` 的历史字段噪声；这不影响 pass/fail 结论，但说明 run summary 序列化还有残余噪声。
+  - 下一步：
+  - 如果继续留在 Phase 1，下一步最小闭环不再是 modal current-state timeout，而是把 broader modal family benchmark 从“fresh rerun 已 clean、但 wider window 仍混 `unknown|no_steps`”推进到“non-weak modal proof window”。
+  - 只有当 `modal` 和 `list` 都不仅维持 fresh rerun `3/3`，而且 broader family benchmark 也不再被历史弱 case 主导时，才有资格讨论是否接近 Phase 2。
+
+## 2026-04-16 第二百八十九次更新（Phase 1 最后收口：repo-native non-weak modal proof window + Phase 2 gate closure）
+
+- 本轮目标：
+  - 继续先停留在 Phase 1，不预设已经进入 Phase 2。
+  - 只用现有 benchmark / replay / compare / candidates 链路，把 `modal_or_drawer_save` 的 broader proof window 从历史 weak case 主导推进到 repo-native `non_weak` proof window。
+  - 只有在 `modal` 与 `list` 都维持 clean fresh rerun，且 modal broader proof window 已正式摆脱 `unknown|no_steps` 主导时，才允许判定是否可以开启 Phase 2。
+- 已完成：
+  - 落地本轮 brief：[docs/intent-e2e-phase1-non-weak-modal-proof-window-gate-closure-task-brief-2026-04-16.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase1-non-weak-modal-proof-window-gate-closure-task-brief-2026-04-16.md)。
+  - 在 [lib/intent-e2e-benchmark.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-benchmark.ts) 正式引入 `non_weak` proof window：
+    - 新增 benchmark weak-case 判定，当前显式隔离：
+      - `taskMode=unknown`
+      - `stepCount=0 / snapshotSignature=no_steps`
+    - `freeze / replay / compare` 结果都会保留 `proofWindow` 元数据，显式写出：
+      - `mode`
+      - `excludedWeakCaseCount`
+      - `excludedWeakCases`
+      - 每条 weak case 的 `reasonCodes / note`
+    - 旧 benchmark 文件仍向后兼容；缺少 `proofWindow` 时会归一为 `default`。
+  - 在 [scripts/intent-e2e-benchmark.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-benchmark.ts) 增加 `--proof-window non_weak`：
+    - `candidates` 现在可直接预览 non-weak proof window，而不是只靠人工挑 `evalCaseId`；
+    - `freeze` 可正式冻结 non-weak baseline；
+    - CLI 摘要输出会显式打印 `proof-window` 与被隔离的 weak case 数量。
+  - 在 [tests/unit/intent-e2e-benchmark.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-benchmark.spec.ts) 新增回归：
+    - 直接造 `taskMode=unknown + steps=[]` 的 weak case；
+    - 锁住它在 `non_weak` proof window 下被正式排除，而不是 compare 后再人工解释；
+    - 同时锁住 replay / compare 会继承同一份 `proofWindow` 元数据。
+  - 稳定文档已同步更新：
+    - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md)
+    - [docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md)
+  - 先用 `candidates --proof-window non_weak` 预览，再冻结 fresh modal non-weak baseline，确认 repo-native 方案确实会把 `eval_complex_enterprise_flow_unknown_no_steps` 从主证明链显式隔离：
+    - 预览里 `excludedWeakCaseCount=1`
+    - 被隔离 case：
+      - `eval_complex_enterprise_flow_unknown_no_steps`
+      - `reasonCodes=["unknown_task_mode","no_steps"]`
+  - fresh modal current-state 这轮没有拿旧报告充数，而是重新复核：
+    - 第一次 rerun 报告 [2026-04-16T01-33-39-795Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T01-33-39-795Z-family-modal_or_drawer_save-fresh-rerun.json) 曾出现 `2 passed / 1 failed`，失败落为 `selector_drift`；
+    - 未把这条噪声忽略掉，而是立刻再跑一次确认；
+    - 最新 final current-state rerun 报告 [2026-04-16T01-40-12-698Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T01-40-12-698Z-family-modal_or_drawer_save-fresh-rerun.json) 已恢复为：
+      - `3 terminal`
+      - `3 passed`
+      - `3 recipeHit`
+      - `3 playbookHit`
+  - 为避免用“昨天的 list clean rerun”强推 gate，本轮也补跑 fresh list rerun：
+    - fresh list 报告 [2026-04-16T01-46-10-658Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T01-46-10-658Z-family-list_search_detail-fresh-rerun.json)
+    - 结果保持：
+      - `3 terminal`
+      - `3 passed`
+      - `3 recipeHit`
+      - `3 playbookHit`
+  - final modal non-weak proof window 也已正式落盘：
+    - baseline：[2026-04-16T01-41-53-555Z-bench_31f86673ef8f.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-16T01-41-53-555Z-bench_31f86673ef8f.json)
+    - compare：[2026-04-16T01-43-58-437Z-bench_31f86673ef8f-phase1-gate-closure-modal-non-weak-current-2026-04-16.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T01-43-58-437Z-bench_31f86673ef8f-phase1-gate-closure-modal-non-weak-current-2026-04-16.json)
+    - compare 虽然是 `unchanged`，但当前真正要证明的是：
+      - final proof window 已从 `5 cases + 1 weak unknown/no_steps` 收敛到 `4 cases + excludedWeakCaseCount=1`
+      - `modal_or_drawer_save` broader proof 不再由历史 weak case 主导
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-benchmark.spec.ts`
+    - 通过，新增 `non_weak proof window` 回归已锁住。
+  - `npm run intent:benchmark:candidates -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --test-type browser_e2e --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --json`
+    - 通过，预览明确输出 `excludedWeakCaseCount=1` 与 `eval_complex_enterprise_flow_unknown_no_steps`。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family modal_or_drawer_save --request-corpus artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 执行两次；第一次暴露 `selector_drift` 噪声，第二次最新报告恢复为 clean `3/3`，以最新报告作为 final current-state 证据。
+  - `npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --test-type browser_e2e --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --label phase1-gate-closure-modal-non-weak-window --release-candidate phase1-gate-closure-2026-04-16 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，冻结出 fresh modal non-weak baseline。
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --run-limit 200 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，replay 结果继承同一份 `proofWindow` 元数据。
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --run-limit 200 --compared-label phase1-gate-closure-modal-non-weak-current-2026-04-16 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，报告显示：
+      - `proofWindow.mode=non_weak`
+      - `excludedWeakCaseCount=1`
+      - `priorityScenarioFamily.modal_or_drawer_save.totalCases=4`
+      - `matchedCases=4`
+      - `conclusion=unchanged`
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family list_search_detail --request-corpus artifacts/intent-e2e-family-evidence/proj_default.list-search-detail.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 通过，fresh list current-state 仍为 clean `3/3`。
+- 当前阶段状态：
+  - `modal_or_drawer_save` latest fresh rerun：已完成，latest final current-state 为 clean `3/3`。
+  - `list_search_detail` latest fresh rerun：已完成，same-turn 仍为 clean `3/3`。
+  - modal broader proof window：已完成，从历史 weak-case 主导推进为 repo-native `non_weak` proof window。
+  - Phase 1 gate closure：已完成（本轮）。
+  - 下一阶段可进入 Phase 2；但这不等于已经宣称全项目成功率达成 90%+，也不等于 Phase 3/4 准备完成。
+- 风险 / 未完成：
+  - `modal` first confirmation rerun 曾短暂落回一次 `selector_drift`，虽然 latest final rerun 已恢复 clean，但说明 current-state 仍存在少量操作噪声；进入 Phase 2 后要优先用更结构化的 normalizer / adapter 收口这类噪声，而不是把它继续停留在 Phase 1 gate blocker 层。
+  - modal non-weak proof window 里仍有真实低通过 case；本轮结论只是“weak case 不再主导 Phase 2 gate”，不是“modal broader benchmark 已经整体高通过”。
+- 下一步：
+  - 正式进入 Phase 2，但只围绕：
+    - 结构化 normalizer / deterministic adapter
+    - family current-state 的 remaining noise 收口
+    - wider window 的真实通过率提升
+  - 不回头再把 `unknown|no_steps` 当成 Phase 1 gate blocker 重开一轮 parallel 方案。
+
+## 2026-04-16 第二百九十次更新（Phase 2 第一刀：modal non-weak low-pass exact-request reuse lift）
+
+- 本轮目标：
+  - 在不回退 Phase 1 已过 gate 的前提下，只主攻 `modal_or_drawer_save` non-weak proof window 内的 zero-pass / low-pass case。
+  - 先把 latest low-pass diagnostic run 的最小公共根因钉住，再用 repo-native、可测试的最小一致修补减少 avoidable 的 modal LLM planning / generate timeout。
+  - 相对于 non-weak baseline [2026-04-16T01-41-53-555Z-bench_31f86673ef8f.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-16T01-41-53-555Z-bench_31f86673ef8f.json) 拿到真实 improvement，同时保持 `modal` / `list` latest fresh rerun clean。
+- 已完成：
+  - 落地本轮 brief：[docs/intent-e2e-phase2-first-cut-modal-non-weak-lift-task-brief-2026-04-16.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase2-first-cut-modal-non-weak-lift-task-brief-2026-04-16.md)。
+  - 对 low-pass diagnostic run 做 current-code-path 复核，确认这轮优先要收的不是 recipe matcher，而是 “无 `intentDraftUid` 的 exact request 在 modal family 上没有吃到 repo-native reuse，导致重新暴露给 avoidable LLM 调用”：
+    - `intent-run-c9ae8391-11b7-4df2-bcab-e4cde70ed56a`
+      - terminal `failed`
+      - DB / events 显示只到 `planning -> ScenarioCard`，随后直接落成 `LLM 请求超时 (60000ms)`。
+    - `intent-run-60b7c511-7c1b-41c9-91c2-baaef57a4850`
+      - ScenarioCard、analyze 与 support-data 已完成；
+      - 但 reuse 仍显示 `successful=miss; progressed=miss`，随后在 generate / repair LLM 链上超时，落成 `LLM 调用失败: LLM 请求超时 (60000ms)`。
+    - 因此 latest low-pass blocker 的最小公共根因是：
+      - modal representative wording 在“无 draft、但 request + targetUrl 实际完全相同”的情况下，没有正式复用历史 successful / progressed ScenarioCard 与代码，导致 recipe / playbook 产物在 timeout 前根本来不及稳定落盘。
+  - 在 [lib/ai/intent-e2e-service.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-service.ts) 正式补上 no-draft exact-request reuse：
+    - 新增 exact request + `targetUrl` 匹配逻辑，允许在当前 request 没有 `intentDraftUid` 时，仍可从历史 snapshot / run 中复用：
+      - ScenarioCard
+      - successful code
+      - progressed code
+    - `runIntentDrivenE2EStream(...)` 在 fresh generate 前会先尝试 exact-request ScenarioCard reuse；
+    - `buildPrefilledScenarioCardOutput(...)` 现在可写出 reused source 与 `reusedRunId`，保证 reuse 来源可追踪，而不是静默兜底。
+  - 在 [tests/unit/intent-e2e-service.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-service.spec.ts) 新增回归：
+    - 锁住 no-draft exact successful-run reuse；
+    - 锁住 no-draft exact failed-run progressed-code reuse；
+    - 同步修正新增 snapshot lookup 后的调用次数断言。
+  - 用 tracked diagnostic corpus 验证 patch 的直接效果：
+    - fix 前诊断 rerun：[2026-04-16T02-46-33-090Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T02-46-33-090Z-family-modal_or_drawer_save-fresh-rerun.json)
+      - `3 terminal / 1 passed / 2 failed / 1 recipeHit / 1 playbookHit`
+    - fix 后诊断 rerun：[2026-04-16T03-29-27-930Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T03-29-27-930Z-family-modal_or_drawer_save-fresh-rerun.json)
+      - `3 terminal / 2 passed / 1 failed / 3 recipeHit / 3 playbookHit`
+    - 这证明修补确实优先改善了 zero-pass / low-pass case 上的 recipe/playbook miss 与 avoidable timeout，而不是只把 official corpus“跑好看”。
+  - official modal current-state fresh rerun 也保持 clean：
+    - [2026-04-16T03-32-44-001Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T03-32-44-001Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - 结果为 `3 terminal / 3 passed / 3 recipeHit / 3 playbookHit`
+  - 因为这轮触碰了 shared service path，也补做 list 回归保护：
+    - [2026-04-16T03-40-59-394Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T03-40-59-394Z-family-list_search_detail-fresh-rerun.json)
+    - 结果保持 `3 terminal / 3 passed / 3 recipeHit / 3 playbookHit`
+  - 相对于 non-weak baseline `bench_31f86673ef8f` 的 fresh compare 已拿到真实 improvement：
+    - compare：[2026-04-16T03-39-03-966Z-bench_31f86673ef8f-phase2-modal-non-weak-current-2026-04-16.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T03-39-03-966Z-bench_31f86673ef8f-phase2-modal-non-weak-current-2026-04-16.json)
+    - family-level：
+      - `conclusion=improved`
+      - `frozenTerminalPassRate=48`
+      - `currentTerminalPassRate=51.2`
+      - `improvedCases=2`
+      - `regressedCases=0`
+    - 当前 improvement 不是靠重定义 gate 获得，而是来自修补后的 final current-state run 被正式吸收到 broader non-weak proof window。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-benchmark.spec.ts tests/unit/intent-project-recipe-registry.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/test-generator.spec.ts tests/unit/test-worker-source.spec.ts tests/unit/intent-e2e-failure-triage.spec.ts tests/unit/intent-e2e-priority-scenario-family.spec.ts`
+    - 通过。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `npm run test:e2e`
+    - 通过。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family modal_or_drawer_save --request-corpus artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 通过，official modal current-state 维持 clean `3/3`。
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，replay 摘要为：
+      - `benchmarkUid=bench_31f86673ef8f`
+      - `proofWindow.mode=non_weak`
+      - `excludedWeakCaseCount=1`
+      - `runCount=82`
+      - `passedRuns=42`
+      - `terminalPassRate=51.2`
+      - `recipeHitRate=96.3`
+      - `playbookHitRate=96.3`
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --compared-label phase2-modal-non-weak-current-2026-04-16 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，family-level compare 为 `improved`。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family list_search_detail --request-corpus artifacts/intent-e2e-family-evidence/proj_default.list-search-detail.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 通过，list current-state 仍为 clean `3/3`。
+- 当前阶段状态：
+  - Phase 1 gate 不回退：
+    - `modal` latest fresh rerun：clean `3/3`
+    - `list` latest fresh rerun：clean `3/3`
+    - non-weak proof window：继续保持为 benchmark 主链正式机制
+  - Phase 2 第一刀：已达成（本轮）。
+    - 证据不是“fresh rerun 好看”而已；
+    - 而是同一份修补后的 final state 已在 non-weak compare 里相对 `bench_31f86673ef8f` 拿到 repo-native `improved`。
+- 风险 / 未完成：
+  - `eval_complex_enterprise_flow_scenario_assert_extract_ui` 仍然是 zero-pass case：
+    - 当前 `runCount=4 / terminalPassRate=0`
+    - 但 `recipeHitRate / playbookHitRate` 已从 baseline 提升到 `75`
+    - 说明这轮已把它从“前置 timeout / 无命中”推进到“主链可执行但 terminal verdict 仍未穿透”的下一阶段问题。
+  - `eval_complex_enterprise_flow_scenario_ui_assert_extract` 仍是历史单例 zero-pass case，当前没有被本轮修补直接覆盖。
+  - 因而这轮结论是 “Phase 2 第一刀已达成”，不是 “modal non-weak 所有低通过 case 已被全部打穿”。
+- 下一步：
+  - 继续留在 Phase 2，不扩到 Phase 3/4。
+  - 下一刀应聚焦 remaining modal zero-pass case 的 terminal blocker 去 unknown / 去严格断言噪声：
+    - 优先 `eval_complex_enterprise_flow_scenario_assert_extract_ui`
+    - 再看 `eval_complex_enterprise_flow_scenario_ui_assert_extract`
+  - 继续沿用当前 non-weak compare 链路对 `bench_31f86673ef8f` 或其后续 Phase 2 baseline 做 improvement 证明，不回头重开 Phase 1 gate 方案。
+
+## 2026-04-16 第二百九十一次更新（Phase 2 第二刀：modal scenario_assert_extract_ui zero-pass breakthrough）
+
+- 本轮目标：
+  - 只主攻 `modal_or_drawer_save` non-weak proof window 里剩余的单个 zero-pass case `eval_complex_enterprise_flow_scenario_assert_extract_ui`。
+  - 在不回退 official `modal` / `list` clean fresh rerun、也不改 `proof-window non_weak` gate 定义的前提下，把这条 case 从 `terminalPassRate=0` 推到 non-zero，并继续沿用同一个 non-weak baseline `bench_31f86673ef8f` 取得 repo-native improvement 证据。
+  - 把 blocker 收敛在最小 shared / family-aware 缺口，不扩到新的 runtime loop、平行 harness 或 corpus cosmetic 修补。
+- 已完成：
+  - 落地本轮 brief：[docs/intent-e2e-phase2-second-cut-modal-zero-pass-breakthrough-task-brief-2026-04-16.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase2-second-cut-modal-zero-pass-breakthrough-task-brief-2026-04-16.md)。
+  - 复核 target zero-pass case 的历史失败 run，确认这轮最小公共根因不是 recipe route，而是两层 shared reuse / generation 缺口叠加：
+    - 历史 batch-account modal ScenarioCard 曾把“已勾选订单行”“当前弹窗已打开”编码成硬前置条件，而不是 canonical modal flow；
+    - benchmark replay 在部分历史 run 上仍会直接复用 stale progressed code，绕过新的 canonical planning；
+    - 即使跳过 stale code，fresh `plan_step_2` 仍可能从原始行文本里错误提取日期类 token（例如 `2026-04-15`）充当 `selectedOrderNo`，导致后续 record lookup 偏移。
+  - 在 [lib/ai/scenario-card.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/scenario-card.ts) 加入 modal batch-account ScenarioCard normalizer：
+    - 把 precondition-heavy card 重写为 canonical deterministic `assert / extract / ui` modal flow；
+    - 保证 reused / prefilled ScenarioCard 也先进入同一条 family-aware normalizer，而不是把历史脏形态直接喂给 planning。
+  - 在 [lib/ai/intent-e2e-service.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-service.ts) 收口 shared reuse 链：
+    - reused / prefilled ScenarioCard 会先做 normalization；
+    - 当 historical progressed code 仍保留“已勾选订单行”为硬前置条件时，modal batch-account family 会显式跳过这类 stale code reuse，避免 benchmark replay 继续吃到旧坏代码。
+  - 在 [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 扩展 `plan_step_2` sanitizer：
+    - 覆盖仍会用 `rowText.match(...)` 抽取任意 token 的 selected-row 变体；
+    - 统一重写为已有的 clone-safe / date-safe canonical `selectedOrderNo` 提取块，明确拒绝日期样式 pseudo orderNo。
+  - 补上回归测试：
+    - [tests/unit/scenario-card.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/scenario-card.spec.ts)：锁住 precondition-heavy modal batch-account card normalization。
+    - [tests/unit/intent-e2e-service.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-service.spec.ts)：锁住 reused ScenarioCard normalization 与 stale progressed code skip。
+    - [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts)：锁住 `plan_step_2` 日期类 pseudo orderNo 拒绝。
+  - 拿到 target case 的 fresh breakthrough run：
+    - [2026-04-16T05-16-24-918Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T05-16-24-918Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - diagnostic requestCount `1 / passedRuns 1`
+    - breakthrough runId：`intent-run-4efd987d-dc88-4d64-adfd-06b0fda80e50`
+  - official modal current-state fresh rerun 维持 clean：
+    - [2026-04-16T05-20-19-632Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T05-20-19-632Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - 结果：`3 terminal / 3 passed / 3 recipeHit / 3 playbookHit`
+  - 因为这轮触碰了 shared service / generator path，也补做 list 回归保护：
+    - [2026-04-16T05-23-01-837Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T05-23-01-837Z-family-list_search_detail-fresh-rerun.json)
+    - 结果保持：`3 terminal / 3 passed / 3 recipeHit / 3 playbookHit`
+  - 相对于同一份 non-weak baseline [2026-04-16T01-41-53-555Z-bench_31f86673ef8f.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-16T01-41-53-555Z-bench_31f86673ef8f.json) 的 latest compare 已进一步抬高：
+    - [2026-04-16T05-32-41-575Z-bench_31f86673ef8f-phase2-second-cut-modal-non-weak-current-2026-04-16.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T05-32-41-575Z-bench_31f86673ef8f-phase2-second-cut-modal-non-weak-current-2026-04-16.json)
+    - family-level：
+      - `conclusion=improved`
+      - `frozenTerminalPassRate=48`
+      - `currentTerminalPassRate=56.3`
+      - `improvedCases=2`
+      - `regressedCases=0`
+    - target case：
+      - `eval_complex_enterprise_flow_scenario_assert_extract_ui`
+      - `comparisonStatus=improved`
+      - `currentRunCount=5`
+      - `currentTerminalPassRate=20`
+      - 已正式脱离 zero-pass。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-benchmark.spec.ts tests/unit/intent-project-recipe-registry.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/test-generator.spec.ts tests/unit/test-worker-source.spec.ts tests/unit/intent-e2e-failure-triage.spec.ts tests/unit/intent-e2e-priority-scenario-family.spec.ts`
+    - 通过（`9` files / `333` tests）。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `npm run test:e2e`
+    - 通过（`9 passed / 1 skipped`）。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过。
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，replay 摘要：
+      - `benchmarkUid=bench_31f86673ef8f`
+      - `proofWindow.mode=non_weak`
+      - `excludedWeakCaseCount=1`
+      - `currentRunCount=87`
+      - `terminalPassRate=56.3`
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --compared-label phase2-second-cut-modal-non-weak-current-2026-04-16 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，family-level compare 为 `improved`，target case 也为 `improved`。
+- 当前阶段状态：
+  - Phase 1 gate 不回退：
+    - `modal` latest official fresh rerun：clean `3/3`
+    - `list` latest fresh rerun：clean `3/3`
+    - `proof-window non_weak`：继续为 benchmark 主链正式机制
+  - Phase 2 第二刀：已达成（本轮）。
+    - 证据不是只靠 fresh rerun；
+    - 而是同一基线 `bench_31f86673ef8f` 下，target zero-pass case 已在 broader non-weak compare 里转成 non-zero `terminalPassRate=20`，且 case-level `comparisonStatus=improved`。
+- 风险 / 未完成：
+  - `eval_complex_enterprise_flow_scenario_ui_assert_extract` 仍是剩余单样本 zero-pass case，当前 `comparisonStatus=unchanged`，尚未被本轮修补覆盖。
+  - family-level top failure 里仍有历史 `selector_drift / record_lookup_miss / unknown` 存量；这轮解决的是 target zero-pass 分支，不是一次性清空整个 modal non-weak window。
+  - 因而这轮结论是 “Phase 2 第二刀已达成”，不是 “modal non-weak 所有剩余低通过分支已全部清零”。
+- 下一步：
+  - 继续留在 Phase 2，不扩到 Phase 3/4。
+  - 下一刀优先收 `eval_complex_enterprise_flow_scenario_ui_assert_extract` 是否与当前 modal batch-account reuse / verifier 链同源；若不同，再把它收敛成单点 family-specific blocker。
+  - 继续沿用 `bench_31f86673ef8f` 或其后续 Phase 2 baseline 的 non-weak compare 作为 improvement 证明链，不回退到 Phase 1 gate 口径。
+
+## 2026-04-16 第二百九十二次更新（Phase 2 第三刀：modal scenario_ui_assert_extract zero-pass breakthrough）
+
+- 本轮目标：
+  - 只主攻 `modal_or_drawer_save` non-weak proof window 中剩余的单样本 zero-pass case `eval_complex_enterprise_flow_scenario_ui_assert_extract`。
+  - 在不回退 official `modal` clean rerun、也不重开 Phase 1 gate / Phase 2 前两刀的前提下，把该 case 从 `terminalPassRate=0` 推到 non-zero，并在相对 `bench_31f86673ef8f` 的 compare 中拿到 case-level `improved`。
+  - 若不触 shared path，则不额外扰动 `list_search_detail` current-state。
+- 已完成：
+  - 落地本轮 brief：[docs/intent-e2e-phase2-third-cut-modal-ui-assert-extract-breakthrough-task-brief-2026-04-16.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase2-third-cut-modal-ui-assert-extract-breakthrough-task-brief-2026-04-16.md)。
+  - 复核历史 zero-pass run `intent-run-3240df59-8401-4fc0-9794-300b1e323654`，确认它的单点根因不是 recipe / playbook / proof-window，而是 2026-04-14 的 legacy free-generate fallback 在 Step 1 生成了带 strict-mode 冲突的入口锚点：
+    - `getByRole('button', { name: '展开' }).first().or(getByRole('button', { name: /搜\\s*索/ }).first())`
+    - 该 run 在进入订单列表页后即因 strict mode violation 失败，属于历史 fallback 代码形态，而不是 current recipe route 失效。
+  - 进一步核对 current generator，确认仓库当前已存在 order-list ready union locator sanitizer；因此本轮真正缺的不是继续修 shared code，而是用 repo-native tracked evidence 把 `ui+assert+extract` 这个 benchmark 分支重新刷新到 current-state：
+    - 当前 official modal corpus 的 representative request 已会自然落到别的 non-weak signature；
+    - `ui_assert_extract` 这条 case 因此一直只剩 1 条历史失败样本，未被 current rerun 刷新。
+  - 新增最小 tracked diagnostic corpus：[proj_default.modal-phase2-ui-assert-extract-diagnostic.request-corpus.json](/Users/xiaolongbao/Workspace/ai-test/artifacts/intent-e2e-family-evidence/proj_default.modal-phase2-ui-assert-extract-diagnostic.request-corpus.json)
+    - 只服务 `scenario_ui_assert_extract`；
+    - 不改 official current-state corpus；
+    - 用 prefilled ScenarioCard 显式保留 `ui -> assert -> extract` 的 step signature，同时保持业务语义不变：先筛选、提取并提交，再确认弹窗关闭，最后按订单号搜索并校验命中。
+  - official modal current-state fresh rerun 仍 clean：
+    - [2026-04-16T05-56-21-317Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T05-56-21-317Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - 结果：`3 terminal / 3 passed / 3 recipeHit / 3 playbookHit / 0 timeout`
+  - targeted `ui_assert_extract` diagnostic rerun 已拿到 terminal pass：
+    - [2026-04-16T06-02-41-143Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T06-02-41-143Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - breakthrough runId：`intent-run-af2a7de8-974e-489e-b4f2-f521e54cbd4a`
+    - 结果：`1 terminal / 1 passed / 1 recipeHit / 1 playbookHit / 0 timeout`
+  - fresh replay 已证明该 run 确实落入 target case，而不是被别的 modal branch 吸走：
+    - replay 时间：`2026-04-16T06:04:32.315Z`
+    - `eval_complex_enterprise_flow_scenario_ui_assert_extract`
+      - `runCount=2`
+      - `passedRuns=1`
+      - `terminalPassRate=50`
+      - `latestRunIds` 包含 `intent-run-af2a7de8-974e-489e-b4f2-f521e54cbd4a`
+  - 相对于同一份 baseline [2026-04-16T01-41-53-555Z-bench_31f86673ef8f.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-16T01-41-53-555Z-bench_31f86673ef8f.json) 的 latest compare 已进一步提升：
+    - [2026-04-16T06-05-47-412Z-bench_31f86673ef8f-phase2-third-cut-modal-ui-assert-extract-current-2026-04-16.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T06-05-47-412Z-bench_31f86673ef8f-phase2-third-cut-modal-ui-assert-extract-current-2026-04-16.json)
+    - family-level：
+      - `conclusion=improved`
+      - `frozenTerminalPassRate=48`
+      - `currentTerminalPassRate=60.9`
+      - `improvedCases=3`
+      - `regressedCases=0`
+    - target case：
+      - `eval_complex_enterprise_flow_scenario_ui_assert_extract`
+      - `comparisonStatus=improved`
+      - `currentRunCount=2`
+      - `currentTerminalPassRate=50`
+      - 已正式脱离 zero-pass。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-benchmark.spec.ts tests/unit/intent-project-recipe-registry.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/test-generator.spec.ts tests/unit/test-worker-source.spec.ts tests/unit/intent-e2e-failure-triage.spec.ts tests/unit/intent-e2e-priority-scenario-family.spec.ts`
+    - 通过（`9` files / `333` tests）。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `npm run test:e2e`
+    - 通过（`9 passed / 1 skipped`）。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family modal_or_drawer_save --request-corpus artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 通过，official modal current-state 仍为 clean `3/3`。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family modal_or_drawer_save --request-corpus artifacts/intent-e2e-family-evidence/proj_default.modal-phase2-ui-assert-extract-diagnostic.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 1 --wait-timeout-ms 420000 --json`
+    - 通过，targeted `ui_assert_extract` diagnostic run 终态为 passed。
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，target case 在 replay 中已变成 `runCount=2 / terminalPassRate=50`。
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --compared-label phase2-third-cut-modal-ui-assert-extract-current-2026-04-16 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，family-level 继续 `improved`，target case 也为 `improved`。
+- 当前阶段状态：
+  - Phase 1 gate 不回退：
+    - `modal` latest official fresh rerun：clean `3/3`
+    - `list` latest shared-path baseline：仍维持 [2026-04-16T05-23-01-837Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T05-23-01-837Z-family-list_search_detail-fresh-rerun.json) 的 clean `3/3`
+    - 本轮未触 shared code，因此未额外重跑 list rerun
+  - Phase 2 第三刀：已达成（本轮）。
+    - 证据不是只多了一条 fresh pass；
+    - 而是 `ui_assert_extract` 这条 benchmark case 已在同一 baseline 的 non-weak compare 里从 `zero-pass / unchanged` 变成 `non-zero / improved`。
+- 风险 / 未完成：
+  - 当前 modal non-weak window 仍有一个未新增 improvement 的 case：`eval_complex_enterprise_flow_scenario_ui_extract`，其状态本轮保持 `unchanged`。
+  - 本轮通过的是 repo-native tracked diagnostic corpus，而不是改写 gate；后续若要继续提升 broader modal family，还需要继续沿 Phase 2 路径扩大非 zero-pass 覆盖，而不是回头重开 Phase 1 闭环。
+- 下一步：
+  - 继续留在 Phase 2，不扩到 Phase 3/4。
+  - 若继续做 Phase 2 第四刀，优先围绕 `scenario_ui_extract` 这条剩余未新增 improvement 的 non-weak branch 收口，而不是重打已突破的 `ui_assert_extract` / `assert_extract_ui`。
+  - 继续沿用 `bench_31f86673ef8f` 或其后续 Phase 2 baseline 的 non-weak compare 作为 improvement 证明链。
+
+## 2026-04-16 第二百九十三次更新（Phase 2 第四刀：modal scenario_ui_extract compare improvement closure）
+
+- 本轮目标：
+  - 只主攻 `modal_or_drawer_save` non-weak proof window 中最后一个仍未新增 improvement 的 branch `eval_complex_enterprise_flow_scenario_ui_extract`。
+  - 在不回退 official `modal` / `list` clean rerun、也不改 `proof-window non_weak` 定义的前提下，把该 branch 从 `comparisonStatus=unchanged` 推到 `comparisonStatus=improved`。
+  - 如果 latest compare 中 4 个 non-weak modal cases 都不再是 `unchanged@no-new-improvement`，则把 Phase 2 收尾判断明确化。
+- 已完成：
+  - 落地本轮 brief：[docs/intent-e2e-phase2-fourth-cut-modal-ui-extract-improvement-task-brief-2026-04-16.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase2-fourth-cut-modal-ui-extract-improvement-task-brief-2026-04-16.md)。
+  - 复核 `scenario_ui_extract` 的历史通过 run `intent-run-5d3d840c-f01b-4e25-ae80-2ef7f2b3a7c6`，确认同一句目标 request 在 benchmark 里真正对应的 step signature 是：
+    - `ui, ui, extract, ui, ui, ui`
+    - 归一化后为 `ui+extract`
+  - 复核本轮 earlier targeted run `intent-run-69ec4324-056c-4e90-a67b-efd0ba2a433a`，确认它虽然通过，但复用了带 `assert` 的 progressed ScenarioCard，signature 为 `ui, ui, extract, ui, ui, ui, assert`；因此它没有刷新 `scenario_ui_extract`，而是落到了别的 branch。
+  - 因而本轮最小一致方案不是继续改 shared runtime，而是把 `ui_extract` 的 tracked diagnostic asset 明确对齐到历史 pass signature：
+    - 更新 [proj_default.modal-phase2-ui-extract-diagnostic.request-corpus.json](/Users/xiaolongbao/Workspace/ai-test/artifacts/intent-e2e-family-evidence/proj_default.modal-phase2-ui-extract-diagnostic.request-corpus.json)
+    - 保持 exact historical request wording 不变；
+    - 补回历史 pass 对应的 `prefilledScenarioCard`，显式固定 `ui -> ui -> extract -> ui -> ui -> ui`；
+    - 不改 official modal current-state corpus，不改 benchmark harness，不改 `proof-window non_weak`。
+  - 保留并沿用本 turn 已完成的两处 shared 主链修补，它们是本轮 diagnostic branch 能稳定刷新的前置条件：
+    - [lib/ai/intent-e2e-service.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-service.ts)
+      - request-only no-draft reuse lookback 从 recent `12` 扩到 `48`，避免 exact modal diagnostic request 因最近窗口里缺少成功/更远推进样本而重新落回 planning timeout。
+    - [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts)
+      - 新增对 reused successful-run `plan_step_3` token-first order extraction 旧形态的 sanitizer，避免 official modal 第三条 request 因 `selectedOrderNo` 被提空而回退。
+  - 相关回归测试已补齐：
+    - [tests/unit/intent-e2e-service.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-service.spec.ts)
+    - [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts)
+  - targeted `ui_extract` diagnostic rerun 已拿到 terminal pass：
+    - [2026-04-16T07-57-42-840Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T07-57-42-840Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - breakthrough runId：`intent-run-c35f7cf5-941c-4dcc-ae05-d1a6c5222172`
+    - 结果：`1 terminal / 1 passed / 1 recipeHit / 1 playbookHit / 0 timeout`
+    - 该 run 的 ScenarioCard 签名已回到 `ui,ui,extract,ui,ui,ui`，provider=`prefilled` / model=`intent-draft`，不再被 `ui+extract+assert` branch 吸走。
+  - fresh replay 已证明 target branch 真正被刷新到主证明链：
+    - replay 时间：`2026-04-16T07:59:25.350Z`
+    - `eval_complex_enterprise_flow_scenario_ui_extract`
+      - `runCount=5`
+      - `passedRuns=2`
+      - `terminalPassRate=40`
+      - `firstPassPassRate=40`
+      - `latestRunIds` 包含 `intent-run-c35f7cf5-941c-4dcc-ae05-d1a6c5222172`
+  - 相对于同一份 baseline [2026-04-16T01-41-53-555Z-bench_31f86673ef8f.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-16T01-41-53-555Z-bench_31f86673ef8f.json) 的 latest compare 已完成第四刀 closure：
+    - [2026-04-16T08-00-31-283Z-bench_31f86673ef8f-phase2-fourth-cut-modal-ui-extract-current-2026-04-16.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T08-00-31-283Z-bench_31f86673ef8f-phase2-fourth-cut-modal-ui-extract-current-2026-04-16.json)
+    - family-level：
+      - `conclusion=improved`
+      - `frozenTerminalPassRate=48`
+      - `currentTerminalPassRate=65.5`
+      - `improvedCases=4`
+      - `unchangedCases=0`
+      - `regressedCases=0`
+    - target case：
+      - `eval_complex_enterprise_flow_scenario_ui_extract`
+      - `comparisonStatus=improved`
+      - `currentRunCount=5`
+      - `currentTerminalPassRate=40`
+      - `firstPassPassRate=40`
+      - 已从 `unchanged` 推进为 `improved`
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-benchmark.spec.ts tests/unit/intent-project-recipe-registry.spec.ts tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-insights.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/test-generator.spec.ts tests/unit/test-worker-source.spec.ts tests/unit/intent-e2e-failure-triage.spec.ts tests/unit/intent-e2e-priority-scenario-family.spec.ts`
+    - 通过（`9` files / `336` tests）。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `npm run test:e2e`
+    - 通过（`9 passed / 1 skipped`）。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family modal_or_drawer_save --request-corpus artifacts/intent-e2e-family-evidence/proj_default.modal-phase2-ui-extract-diagnostic.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 1 --wait-timeout-ms 420000 --json`
+    - 通过，targeted `ui_extract` diagnostic run 为 passed，runId=`intent-run-c35f7cf5-941c-4dcc-ae05-d1a6c5222172`。
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，target case 已提升到 `runCount=5 / terminalPassRate=40`。
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --compared-label phase2-fourth-cut-modal-ui-extract-current-2026-04-16 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，family-level 仍为 `improved`，target case 正式为 `improved`。
+- 当前阶段状态：
+  - official modal current-state 仍 clean：
+    - [2026-04-16T07-30-46-906Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T07-30-46-906Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - `3 terminal / 3 passed / 3 recipeHit / 3 playbookHit`
+  - shared-path list regression protection 仍 clean：
+    - [2026-04-16T07-39-37-332Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T07-39-37-332Z-family-list_search_detail-fresh-rerun.json)
+    - `3 terminal / 3 passed / 3 recipeHit / 3 playbookHit`
+  - Phase 2 第四刀：已达成（本轮）。
+  - Phase 2 是否可视为完成：
+    - 可以。
+    - 支撑证据链不是单条 fresh rerun，而是同一 baseline `bench_31f86673ef8f` 下 latest non-weak compare 已达到：
+      - `improvedCases=4`
+      - `unchangedCases=0`
+      - `regressedCases=0`
+      - `eval_complex_enterprise_flow_scenario_ui_extract` 从 `unchanged` 推到 `improved`
+      - 4 个 non-weak modal branches 全部不再是 “no new improvement” 状态。
+- 风险 / 未完成：
+  - 本轮没有再 freeze 一个新的 Phase 2 收官 baseline；如果下一轮要正式切换到 Phase 3，建议先决定是否把当前 improved state 冻结为新的收官 baseline，避免后续 compare 仍长期锚定在 `bench_31f86673ef8f`。
+  - official modal corpus 仍服务 current-state clean proof；`ui_extract` 的 branch refresh 仍依赖单独 tracked diagnostic corpus。如果后续要持续回归这一支，可再决定是否把它纳入更正式的长期 corpus 资产。
+- 下一步：
+  - 不在本轮扩到 Phase 3/4。
+  - 如果下一轮正式开启 Phase 3，先以 [2026-04-16T08-00-31-283Z-bench_31f86673ef8f-phase2-fourth-cut-modal-ui-extract-current-2026-04-16.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T08-00-31-283Z-bench_31f86673ef8f-phase2-fourth-cut-modal-ui-extract-current-2026-04-16.json) 作为 Phase 2 closure proof，再决定是否补 freeze 一个新的 Phase 2 收官 baseline。
+
+## 2026-04-16 第二百九十四次更新（Phase 2 收官 baseline 冻结）
+
+- 本轮目标：
+  - 不继续打 Phase 2 功能刀，也不直接进入 Phase 3 实现。
+  - 只用现有 benchmark 主链，把当前已经完成的 improved state 正式冻结成一份 Phase 2 closure baseline。
+  - 用 baseline 自己的 replay / compare 证明它可复放、可复核、可作为下一轮 Phase 3 的干净起点。
+- 已完成：
+  - 落地本轮 brief：[docs/intent-e2e-phase2-closure-baseline-freeze-task-brief-2026-04-16.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase2-closure-baseline-freeze-task-brief-2026-04-16.md)。
+  - 复核 existing current-state proof，确认本轮在不改代码前提下无需重复 rerun：
+    - modal latest official clean rerun 继续沿用 [2026-04-16T07-30-46-906Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T07-30-46-906Z-family-modal_or_drawer_save-fresh-rerun.json)，结果 `3 terminal / 3 passed / 3 recipeHit / 3 playbookHit`。
+    - list latest clean rerun 继续沿用 [2026-04-16T07-39-37-332Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T07-39-37-332Z-family-list_search_detail-fresh-rerun.json)，结果 `3 terminal / 3 passed / 3 recipeHit / 3 playbookHit`。
+    - Phase 2 完成态 proof 继续沿用 [2026-04-16T08-00-31-283Z-bench_31f86673ef8f-phase2-fourth-cut-modal-ui-extract-current-2026-04-16.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T08-00-31-283Z-bench_31f86673ef8f-phase2-fourth-cut-modal-ui-extract-current-2026-04-16.json)，其中：
+      - `improvedCases=4`
+      - `unchangedCases=0`
+      - `regressedCases=0`
+      - `currentTerminalPassRate=65.5`
+  - 正式冻结新的 Phase 2 closure baseline：
+    - [2026-04-16T08-18-10-905Z-bench_711bbc557a86.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-16T08-18-10-905Z-bench_711bbc557a86.json)
+    - `benchmarkUid=bench_711bbc557a86`
+    - `label=phase2-closure-modal-non-weak-baseline`
+    - `releaseCandidate=phase2-closure-2026-04-16`
+    - `proofWindow.mode=non_weak`
+    - `excludedWeakCaseCount=1`
+    - `runCount=87`
+    - `terminalPassRate=65.5`
+    - `selectedEvalCaseIds=4`，覆盖当前 modal non-weak 主证明链的全部 4 个 branch。
+  - 用新 baseline 做 closure replay：
+    - replay 时间：`2026-04-16T08:19:29.417Z`
+    - 所有 4 个 non-weak cases 都成功匹配；summary 与 frozen baseline 一致：
+      - `runCount=87`
+      - `terminalPassRate=65.5`
+      - `firstPassPassRate=56.3`
+      - `blockedRate=1.1`
+  - 用新 baseline 做 closure compare：
+    - [2026-04-16T08-20-57-033Z-bench_711bbc557a86-phase2-closure-modal-non-weak-current-2026-04-16.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T08-20-57-033Z-bench_711bbc557a86-phase2-closure-modal-non-weak-current-2026-04-16.json)
+    - family-level：
+      - `conclusion=unchanged`
+      - `frozenTerminalPassRate=65.5`
+      - `currentTerminalPassRate=65.5`
+      - `regressedCases=0`
+    - summary：
+      - `improvedCases=0`
+      - `unchangedCases=4`
+      - `regressedCases=0`
+    - 这说明新的 closure baseline 已经稳定对齐当前 improved state，本身可直接作为下一轮 Phase 3 起点。
+- 验证：
+  - `npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --test-type browser_e2e --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --label phase2-closure-modal-non-weak-baseline --release-candidate phase2-closure-2026-04-16 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，冻结出 `bench_711bbc557a86`。
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，replay summary 与 frozen baseline 对齐。
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --compared-label phase2-closure-modal-non-weak-current-2026-04-16 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，compare 收敛为 `unchanged / regressedCases=0`。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过。
+- 当前阶段状态：
+  - Phase 2 capability closure：已完成，并已拥有正式 closure baseline。
+  - official family current-state 仍 clean：
+    - modal：`3/3 passed / 3 recipeHit / 3 playbookHit`
+    - list：`3/3 passed / 3 recipeHit / 3 playbookHit`
+  - Phase 2 closure benchmark 资产：已完成（本轮）。
+    - 当前 Phase 2 起点/终点口径已从 “对旧 baseline 的 improvement compare” 过渡到 “对新 closure baseline 的 unchanged compare”。
+  - 因而从 repo-native 证据链看，Phase 2 现在可以正式收官。
+- 风险 / 未完成：
+  - 本轮没有额外为 list 冻结 benchmark baseline；当前 closure 口径仍是 “modal non-weak baseline + list clean family rerun proof”。这符合本轮边界，但如果后续希望把 list 也纳入更厚的长期 baseline，需要在 Phase 3 之外单独规划。
+  - 当前 `reports/intent-e2e/projects/proj_default/intent-e2e.benchmark.json` 已指向新的 closure baseline；后续做 Phase 3 compare 时，应明确说明是相对 `bench_711bbc557a86`，避免误回到 `bench_31f86673ef8f`。
+- 下一步：
+  - 若下一轮开启 Phase 3，优先以 [2026-04-16T08-18-10-905Z-bench_711bbc557a86.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-16T08-18-10-905Z-bench_711bbc557a86.json) 作为新的 baseline。
+  - Phase 3 的 first compare 应优先引用 [2026-04-16T08-20-57-033Z-bench_711bbc557a86-phase2-closure-modal-non-weak-current-2026-04-16.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T08-20-57-033Z-bench_711bbc557a86-phase2-closure-modal-non-weak-current-2026-04-16.json) 作为 “Phase 2 收官、Phase 3 起跑前无回退” 证明。
+  - 本轮不继续扩到 Phase 3/4 实现。
+
+## 2026-04-16 第二百九十五次更新（Phase 3 第一刀：modal `record_lookup_miss`）
+
+- 本轮目标：
+  - 只主攻 Phase 3 closure baseline `bench_711bbc557a86` 下 `modal_or_drawer_save` non-weak proof window 的 `record_lookup_miss` residual bucket。
+  - 不碰 `unknown / selector_drift / assertion_too_strict / runtime_syntax_damage`，不改 `proof-window non_weak`、benchmark harness 或 runtime loop。
+  - 在不回退 official modal/list clean current-state proof 的前提下，相对 `bench_711bbc557a86` 拿到至少一条 repo-native real improvement。
+- 已完成：
+  - 落地本轮 brief：[docs/intent-e2e-phase3-first-cut-modal-record-lookup-miss-task-brief-2026-04-16.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase3-first-cut-modal-record-lookup-miss-task-brief-2026-04-16.md)。
+  - 先基于 Phase 2 closure compare [2026-04-16T08-20-57-033Z-bench_711bbc557a86-phase2-closure-modal-non-weak-current-2026-04-16.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T08-20-57-033Z-bench_711bbc557a86-phase2-closure-modal-non-weak-current-2026-04-16.json) 做 root-cause 收敛：
+    - `record_lookup_miss=8`，与 `unknown=8` 同量级，但更 deterministic，适合作为 Phase 3 第一刀的最小闭环。
+    - 通过 recent terminal run 复核可见：`record_lookup_miss` 并未分散在 4 个 non-weak modal branches，而是集中在 `eval_complex_enterprise_flow_scenario_ui_extract_assert`。
+    - 共性失败不是 route / recipe / playbook 问题，而是历史样本里 `plan_step_3` 未建立唯一主键，导致 `selectedOrderNo` 缺失或非唯一，最终在 record lookup / verifier 上落到 `record_lookup_miss`。
+  - 复核 official modal tracked corpus 后确认，本轮无需新增 diagnostic harness：
+    - [proj_default.modal-or-drawer-save.request-corpus.json](/Users/xiaolongbao/Workspace/ai-test/artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json) 的 3 条 current-state request 都是“列表 UI -> 提取订单号 -> 入账管理校验”的同一业务主链；
+    - 这正好覆盖 `ui_extract_assert` branch，因此优先选择“用 official rerun 刷新 baseline current window”，而不是先改代码或去碰 `unknown`。
+  - 本轮没有新增实现代码修改；沿用前序已在 current code path 中生效的两处 shared 修补：
+    - [lib/ai/intent-e2e-service.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-service.ts)：request-only no-draft reuse lookback 扩窗。
+    - [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts)：legacy token-first `plan_step_3` order extraction sanitizer。
+  - official modal fresh rerun 已刷新当前窗口：
+    - [2026-04-16T09-13-29-029Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T09-13-29-029Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - 结果：`3 terminal / 3 passed / 3 recipeHit / 3 playbookHit / 0 timeout`
+    - latest runIds：
+      - `intent-run-d08ad9d4-e630-455b-9439-6f549efd0236`
+      - `intent-run-72086a80-0cd6-443b-8d4d-a4c911a5b28c`
+      - `intent-run-63b168c6-b25e-400f-a9bf-2b036b57be6e`
+  - 针对同一份 baseline `bench_711bbc557a86` 的 fresh replay / compare 已证明本轮拿到 real improvement：
+    - replay：`2026-04-16T09:14:32.646Z`
+    - compare：[2026-04-16T09-15-25-154Z-bench_711bbc557a86-phase3-first-cut-modal-record-lookup-miss-current-2026-04-16.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T09-15-25-154Z-bench_711bbc557a86-phase3-first-cut-modal-record-lookup-miss-current-2026-04-16.json)
+    - family-level：
+      - `conclusion=improved`
+      - `frozenTerminalPassRate=65.5`
+      - `currentTerminalPassRate=73.2`
+      - `improvedCases=2`
+      - `unchangedCases=2`
+      - `regressedCases=0`
+    - target branch：
+      - `eval_complex_enterprise_flow_scenario_ui_extract_assert`
+      - `comparisonStatus=improved`
+      - `terminalPassRate=74.7`
+      - `firstPassPassRate=66.7`
+      - `passedRuns=56 / runCount=75`
+      - `delta.terminalPassRate=+6.8pt`
+    - top failure bucket 也同步收敛：
+      - `record_lookup_miss` 从 `8` 降到 `7`
+      - `unknown` 从 `8` 降到 `7`
+      - `selector_drift` 从 `7` 降到 `3`
+  - 本轮未 touched shared path，因此没有重跑 list fresh rerun；继续沿用 official clean proof：
+    - [2026-04-16T07-39-37-332Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T07-39-37-332Z-family-list_search_detail-fresh-rerun.json)
+    - `3 terminal / 3 passed / 3 recipeHit / 3 playbookHit`
+- 验证：
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `npm run test:e2e`
+    - 通过（`9 passed / 1 skipped`）。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family modal_or_drawer_save --request-corpus artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 通过，official modal current-state 仍 clean `3/3`。
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，current window `terminalPassRate=73.2`。
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --compared-label phase3-first-cut-modal-record-lookup-miss-current-2026-04-16 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，family-level `conclusion=improved / regressedCases=0`，target branch 正式为 `improved`。
+- 当前阶段状态：
+  - 当前仍停留在 Phase 3 第一刀，不扩到 Phase 4。
+  - `record_lookup_miss` 之所以优先于 `unknown`，是因为它已收敛到单一 non-weak modal branch，且 blocker 明确落在唯一主键 / record lookup 证据链，比 `unknown` 更适合做 deterministic 最小闭环。
+  - 相对 `bench_711bbc557a86`，本轮已拿到 real improvement；而且 improvement 不是靠改 gate / proof-window / harness“做漂亮结果”，而是用 official current-state rerun 把 current code path 已经修好的 `ui_extract_assert` branch 刷进主证明链。
+  - official modal current-state 仍 clean `3/3`；list current-state clean proof 继续有效。
+- 风险 / 未完成：
+  - 本轮没有新增代码修改，因此只是证明 `record_lookup_miss` 的 current-state 改善已经存在并可复现；并未同时清理 `unknown / selector_drift / assertion_too_strict / runtime_syntax_damage` 的全部 Phase 3 存量。
+  - `record_lookup_miss` 目前只是 `8 -> 7`，说明 historical backlog 里仍有旧样本；后续若继续沿 Phase 3 主链推进，需要决定是继续刷该 branch 的 fresh evidence，还是转向 `unknown` 这个同量级但更不稳定的 bucket。
+- 下一步：
+  - 若继续推进 Phase 3，保持当前 baseline 仍锚定 [2026-04-16T08-18-10-905Z-bench_711bbc557a86.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-16T08-18-10-905Z-bench_711bbc557a86.json)。
+  - 下一刀仍应选单一 failure bucket 做最小闭环；如果要继续围绕 deterministic blocker 推进，可优先考虑继续压缩 `record_lookup_miss` 存量，否则再单独开 `unknown`。
+  - 本轮到此为止，不扩到 Phase 4。

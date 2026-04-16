@@ -558,7 +558,7 @@ export function classifyIntentE2EFailure(
   }
 
   if (
-    /状态证据缺失|未读取到详情字段|详情字段缺失：|列表响应未返回状态|列表响应未命中状态|列表响应、详情抽屉与详情页都未返回状态|列表响应和详情字段都未返回状态|列表响应未命中记录且未提供详情入口|无法从列表响应或详情获取状态|未出现可用详情弹层或详情页/i.test(
+    /状态证据缺失|未读取到详情字段|详情字段缺失：|列表响应未返回状态|列表响应未命中状态|列表响应、详情抽屉与详情页都未返回状态|列表响应和详情字段都未返回状态|列表响应未命中记录且未提供详情入口|无法从列表响应或详情获取状态|未出现可用详情弹层或详情页|未进入该订单对应详情页\/详情抽屉/i.test(
       source
     )
   ) {
@@ -570,12 +570,108 @@ export function classifyIntentE2EFailure(
         '状态证据缺失',
         /fallback 行已命中/i.test(source) ? 'fallback 行已命中' : '',
         /未读取到详情字段|详情字段缺失/i.test(source) ? '详情字段缺失' : '',
-        /未出现可用详情弹层或详情页/i.test(source) ? '详情入口缺失' : '',
+        /未出现可用详情弹层或详情页|未进入该订单对应详情页\/详情抽屉/i.test(source) ? '详情入口缺失' : '',
         /列表响应未返回状态|列表响应未命中状态|列表响应和详情字段都未返回状态|列表响应、详情抽屉与详情页都未返回状态/i.test(source)
           ? '列表响应未返回状态'
           : '',
         /列表响应未命中记录且未提供详情入口/i.test(source) ? '列表响应未命中记录且未提供详情入口' : '',
         /列表响应和详情字段都未返回状态/i.test(source) ? '列表响应和详情字段都未返回状态' : '',
+      ]),
+      diagnosis: null,
+    };
+    return {
+      ...triage,
+      diagnosis: buildIntentE2EFailureDiagnosis(triage, result, context),
+    };
+  }
+
+  if (/表格目标行匹配到多条真实记录|匹配到多条真实记录|multiple unique records/i.test(source)) {
+    const triage: IntentE2EFailureTriage = {
+      failureClass: 'record_lookup_miss',
+      repairable: true,
+      summary: '判定为结构化记录回查非唯一：当前脚本只收窄到了结果集合，还没有拿到唯一业务主键，继续自动修复脚本。',
+      matchedSignals: uniqueStrings([
+        /表格目标行匹配到多条真实记录|匹配到多条真实记录/i.test(source) ? 'record lookup ambiguous_multiple_matches' : '',
+        /hasTexts=/.test(source) ? '列表结果仍停留在集合筛选文本' : '',
+      ]),
+      diagnosis: null,
+    };
+    return {
+      ...triage,
+      diagnosis: buildIntentE2EFailureDiagnosis(triage, result, context),
+    };
+  }
+
+  if (/未找到可勾选真实订单行|未找到可供勾选的真实订单行/i.test(source)) {
+    const triage: IntentE2EFailureTriage = {
+      failureClass: 'record_lookup_miss',
+      repairable: true,
+      summary: '判定为订单候选记录未稳定收敛：当前脚本还没有拿到可操作的唯一订单行，继续自动修复脚本。',
+      matchedSignals: uniqueStrings([
+        'order list actionable row missing',
+        looksLikeOrderListContext(context) ? 'order list context' : '',
+      ]),
+      diagnosis: null,
+    };
+    return {
+      ...triage,
+      diagnosis: buildIntentE2EFailureDiagnosis(triage, result, context),
+    };
+  }
+
+  if (
+    /未能从已勾选订单行提取订单号|未能从已勾选订单行提取有效订单号|未能从已勾选行提取订单号|未能从已勾选行提取有效订单号|不存在已勾选订单行，无法提取 selectedOrderNo|selectedOrderNo 为空|已定位目标行但未提取到有效订单号|已勾选目标行，但未能提取订单号 selectedOrderNo|未找到已勾选订单行[:：]/i.test(
+      source
+    )
+  ) {
+    const triage: IntentE2EFailureTriage = {
+      failureClass: 'record_lookup_miss',
+      repairable: true,
+      summary: '判定为批量入账前置主键未建立：当前脚本还没有从真实已选订单行提取出唯一订单号，继续自动修复脚本。',
+      matchedSignals: uniqueStrings([
+        'selectedOrderNo missing before modal submit',
+        /未能从已勾选行提取(?:有效)?订单号/i.test(source) ? 'selectedOrderNo missing from checked row extraction' : '',
+        /已定位目标行但未提取到有效订单号/i.test(source) ? 'selectedOrderNo missing after selected row capture' : '',
+        /未找到已勾选订单行[:：]/i.test(source) ? 'checked row missing during modal handoff' : '',
+        looksLikeOrderListContext(context) ? 'order list context' : '',
+      ]),
+      diagnosis: null,
+    };
+    return {
+      ...triage,
+      diagnosis: buildIntentE2EFailureDiagnosis(triage, result, context),
+    };
+  }
+
+  if (/未找到下拉选项[:：]|dropdown option not found/i.test(source)) {
+    const triage: IntentE2EFailureTriage = {
+      failureClass: 'data_missing',
+      repairable: true,
+      summary: '判定为业务筛选值未命中：当前脚本请求的下拉选项在真实页面中不存在或未加载完成，继续自动修复脚本。',
+      matchedSignals: uniqueStrings([
+        'dropdown option missing',
+        /待申请入账/i.test(source) ? 'filter option mismatch: 待申请入账' : '',
+      ]),
+      diagnosis: null,
+    };
+    return {
+      ...triage,
+      diagnosis: buildIntentE2EFailureDiagnosis(triage, result, context),
+    };
+  }
+
+  if (
+    /toHaveURL\(expected\) failed/i.test(source) &&
+    /payment/i.test(source) &&
+    /order\/list|#\/order\/list/i.test(source)
+  ) {
+    const triage: IntentE2EFailureTriage = {
+      failureClass: 'workflow_gap',
+      repairable: true,
+      summary: '判定为提交后业务流转未发生：预期的入账管理页跳转没有出现，继续自动修复脚本。',
+      matchedSignals: uniqueStrings([
+        'post-submit payment redirect missing',
+        /Step 6|入账管理/i.test(source) ? 'payment transition verification step' : '',
       ]),
       diagnosis: null,
     };

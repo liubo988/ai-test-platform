@@ -42,6 +42,26 @@ const DEFAULT_BENCHMARK_REPORT_DIR = path.join(process.cwd(), 'reports', 'intent
 const DEFAULT_RUN_LIMIT = 200;
 const MIN_EVIDENCE_RUN_COUNT = 3;
 
+export type IntentE2EBenchmarkProofWindow = 'default' | 'non_weak';
+export type IntentE2EBenchmarkWeakCaseReasonCode = 'unknown_task_mode' | 'no_steps';
+
+export interface IntentE2EBenchmarkWeakCase {
+  evalCaseId: string;
+  snapshotSignature: string;
+  priorityScenarioFamily: IntentE2EPriorityScenarioFamily;
+  taskMode: IntentE2EEvaluationBaselineCandidate['taskMode'];
+  stepCount: number;
+  reasonCodes: IntentE2EBenchmarkWeakCaseReasonCode[];
+  note: string;
+}
+
+export interface IntentE2EBenchmarkProofWindowMetadata {
+  mode: IntentE2EBenchmarkProofWindow;
+  note: string;
+  excludedWeakCaseCount: number;
+  excludedWeakCases: IntentE2EBenchmarkWeakCase[];
+}
+
 export interface IntentE2EBenchmarkScope {
   projectUid: string;
   moduleUid: string;
@@ -119,6 +139,7 @@ export interface IntentE2EBenchmarkSuite {
   releaseCandidate: string;
   frozenAt: string;
   scope: IntentE2EBenchmarkScope;
+  proofWindow: IntentE2EBenchmarkProofWindowMetadata;
   source: {
     runLimit: number;
     generatedFromRuns: number;
@@ -144,6 +165,7 @@ export interface FreezeIntentE2EBenchmarkOptions {
   label?: string;
   releaseCandidate?: string;
   frozenAt?: string;
+  proofWindow?: IntentE2EBenchmarkProofWindow;
 }
 
 export interface FreezeIntentE2EBenchmarkResult {
@@ -179,6 +201,7 @@ export interface IntentE2EBenchmarkReplayResult {
   releaseCandidate: string;
   replayedAt: string;
   scope: IntentE2EBenchmarkScope;
+  proofWindow: IntentE2EBenchmarkProofWindowMetadata;
   summary: IntentE2EBenchmarkReplaySummary;
   cases: IntentE2EBenchmarkReplayCase[];
 }
@@ -237,6 +260,7 @@ export interface IntentE2EBenchmarkCompareReport {
   comparedAt: string;
   scope: IntentE2EBenchmarkScope;
   benchmarkPath: string;
+  proofWindow: IntentE2EBenchmarkProofWindowMetadata;
   priorityScenarioFamilies: IntentE2EBenchmarkPriorityScenarioFamilySummary[];
   summary: {
     totalCases: number;
@@ -611,7 +635,121 @@ function normalizeMaxCases(value: unknown, fallback: number): number {
   return Math.max(1, Math.floor(parsed));
 }
 
-function buildBenchmarkUid(scope: IntentE2EBenchmarkScope, frozenAt: string, evalCaseIds: string[]): string {
+function normalizeBenchmarkProofWindow(value: unknown): IntentE2EBenchmarkProofWindow {
+  return value === 'non_weak' ? 'non_weak' : 'default';
+}
+
+type BenchmarkWeakCaseSource = Pick<
+  IntentE2EEvaluationBaselineCandidate | IntentE2EBenchmarkSuiteCase,
+  'evalCaseId' | 'snapshotSignature' | 'priorityScenarioFamily' | 'taskMode' | 'stepCount'
+>;
+
+function collectBenchmarkWeakCaseReasonCodes(source: BenchmarkWeakCaseSource): IntentE2EBenchmarkWeakCaseReasonCode[] {
+  const reasons: IntentE2EBenchmarkWeakCaseReasonCode[] = [];
+  if (source.taskMode === 'unknown') {
+    reasons.push('unknown_task_mode');
+  }
+  if (source.stepCount <= 0 || source.snapshotSignature.includes('|no_steps')) {
+    reasons.push('no_steps');
+  }
+  return uniqueStrings(reasons) as IntentE2EBenchmarkWeakCaseReasonCode[];
+}
+
+function describeBenchmarkWeakCaseReasonCodes(reasonCodes: IntentE2EBenchmarkWeakCaseReasonCode[]): string {
+  const parts = uniqueStrings(
+    reasonCodes.map((reasonCode) => {
+      if (reasonCode === 'unknown_task_mode') {
+        return 'taskMode=unknown';
+      }
+      if (reasonCode === 'no_steps') {
+        return 'stepCount=0 / snapshotSignature=no_steps';
+      }
+      return '';
+    })
+  );
+  return parts.join('；');
+}
+
+function buildBenchmarkWeakCase(source: BenchmarkWeakCaseSource): IntentE2EBenchmarkWeakCase | null {
+  const reasonCodes = collectBenchmarkWeakCaseReasonCodes(source);
+  if (reasonCodes.length === 0) return null;
+
+  return {
+    evalCaseId: source.evalCaseId,
+    snapshotSignature: source.snapshotSignature,
+    priorityScenarioFamily: source.priorityScenarioFamily,
+    taskMode: source.taskMode,
+    stepCount: source.stepCount,
+    reasonCodes,
+    note: `该 case 被视为 weak case：${describeBenchmarkWeakCaseReasonCodes(reasonCodes)}。`,
+  };
+}
+
+function buildBenchmarkProofWindowMetadata(
+  mode: IntentE2EBenchmarkProofWindow,
+  excludedWeakCases: IntentE2EBenchmarkWeakCase[] = []
+): IntentE2EBenchmarkProofWindowMetadata {
+  const uniqueExcludedWeakCases = excludedWeakCases.filter((item, index, items) => {
+    return items.findIndex(
+      (candidate) =>
+        candidate.evalCaseId === item.evalCaseId &&
+        candidate.snapshotSignature === item.snapshotSignature &&
+        candidate.priorityScenarioFamily === item.priorityScenarioFamily
+    ) === index;
+  });
+
+  return {
+    mode,
+    note:
+      mode === 'non_weak'
+        ? 'non_weak proof window 仅纳入 taskMode 明确且 stepCount > 0 的 benchmark cases；unknown taskMode / no_steps case 会被显式隔离，不主导 family gate。'
+        : 'default proof window 保留当前 scope 下的全部 benchmark cases，包括 weak case。',
+    excludedWeakCaseCount: uniqueExcludedWeakCases.length,
+    excludedWeakCases: uniqueExcludedWeakCases.map((item) => ({
+      ...item,
+      reasonCodes: [...item.reasonCodes],
+    })),
+  };
+}
+
+function applyBenchmarkProofWindowToCandidates(
+  candidates: IntentE2EEvaluationBaselineCandidate[],
+  proofWindow: IntentE2EBenchmarkProofWindow
+): {
+  candidates: IntentE2EEvaluationBaselineCandidate[];
+  excludedWeakCases: IntentE2EBenchmarkWeakCase[];
+} {
+  if (proofWindow === 'default') {
+    return {
+      candidates,
+      excludedWeakCases: [],
+    };
+  }
+
+  const keptCandidates: IntentE2EEvaluationBaselineCandidate[] = [];
+  const excludedWeakCases: IntentE2EBenchmarkWeakCase[] = [];
+
+  for (const candidate of candidates) {
+    const weakCase = buildBenchmarkWeakCase(candidate);
+    if (weakCase) {
+      excludedWeakCases.push(weakCase);
+      continue;
+    }
+    keptCandidates.push(candidate);
+  }
+
+  return {
+    candidates: keptCandidates,
+    excludedWeakCases,
+  };
+}
+
+function buildBenchmarkUid(
+  scope: IntentE2EBenchmarkScope,
+  frozenAt: string,
+  evalCaseIds: string[],
+  proofWindow: IntentE2EBenchmarkProofWindow
+): string {
   const digest = createHash('sha1')
     .update(
       [
@@ -620,6 +758,7 @@ function buildBenchmarkUid(scope: IntentE2EBenchmarkScope, frozenAt: string, eva
         scope.testTypes.join(','),
         scope.runnerTypes.join(','),
         scope.priorityScenarioFamily,
+        proofWindow,
         frozenAt,
         evalCaseIds.join(','),
       ].join('|')
@@ -629,9 +768,14 @@ function buildBenchmarkUid(scope: IntentE2EBenchmarkScope, frozenAt: string, eva
   return `bench_${digest}`;
 }
 
-function buildDefaultBenchmarkLabel(scope: IntentE2EBenchmarkScope, frozenAt: string, releaseCandidate: string): string {
+function buildDefaultBenchmarkLabel(
+  scope: IntentE2EBenchmarkScope,
+  frozenAt: string,
+  releaseCandidate: string,
+  proofWindow: IntentE2EBenchmarkProofWindow
+): string {
   if (releaseCandidate) {
-    return `${releaseCandidate} benchmark`;
+    return proofWindow === 'non_weak' ? `${releaseCandidate} non-weak benchmark` : `${releaseCandidate} benchmark`;
   }
 
   const scopeParts = uniqueStrings([
@@ -640,6 +784,7 @@ function buildDefaultBenchmarkLabel(scope: IntentE2EBenchmarkScope, frozenAt: st
     scope.testTypes.join('+'),
     scope.runnerTypes.join('+'),
     scope.priorityScenarioFamily,
+    proofWindow === 'non_weak' ? 'non_weak' : '',
   ]);
   const datePart = frozenAt.slice(0, 10) || 'benchmark';
   return scopeParts.length > 0 ? `${scopeParts.join(' / ')} @ ${datePart}` : `benchmark @ ${datePart}`;
@@ -979,6 +1124,66 @@ function normalizeBenchmarkCase(raw: unknown): IntentE2EBenchmarkSuiteCase | nul
   };
 }
 
+function normalizeBenchmarkWeakCase(raw: unknown): IntentE2EBenchmarkWeakCase | null {
+  const source = asRecord(raw);
+  if (!source) return null;
+
+  const evalCaseId = normalizeString(source.evalCaseId);
+  const snapshotSignature = normalizeString(source.snapshotSignature);
+  if (!evalCaseId || !snapshotSignature) return null;
+
+  const reasonCodes = uniqueStrings(
+    Array.isArray(source.reasonCodes) ? (source.reasonCodes as string[]) : []
+  ).filter((item): item is IntentE2EBenchmarkWeakCaseReasonCode => item === 'unknown_task_mode' || item === 'no_steps');
+  const fallbackWeakCase = buildBenchmarkWeakCase({
+    evalCaseId,
+    snapshotSignature,
+    priorityScenarioFamily: normalizeIntentE2EPriorityScenarioFamily(source.priorityScenarioFamily) || 'untracked',
+    taskMode: source.taskMode === 'page' || source.taskMode === 'scenario' ? source.taskMode : 'unknown',
+    stepCount: normalizeNumber(source.stepCount),
+  });
+  const normalizedReasonCodes = reasonCodes.length > 0 ? reasonCodes : fallbackWeakCase?.reasonCodes || [];
+
+  if (normalizedReasonCodes.length === 0) return null;
+
+  return {
+    evalCaseId,
+    snapshotSignature,
+    priorityScenarioFamily: normalizeIntentE2EPriorityScenarioFamily(source.priorityScenarioFamily) || 'untracked',
+    taskMode: source.taskMode === 'page' || source.taskMode === 'scenario' ? source.taskMode : 'unknown',
+    stepCount: normalizeNumber(source.stepCount),
+    reasonCodes: normalizedReasonCodes,
+    note:
+      normalizeString(source.note) ||
+      `该 case 被视为 weak case：${describeBenchmarkWeakCaseReasonCodes(normalizedReasonCodes)}。`,
+  };
+}
+
+function normalizeBenchmarkProofWindowMetadata(
+  raw: unknown,
+  fallbackCases: BenchmarkWeakCaseSource[] = []
+): IntentE2EBenchmarkProofWindowMetadata {
+  const source = asRecord(raw);
+  const mode = normalizeBenchmarkProofWindow(source?.mode);
+  const excludedWeakCases =
+    mode === 'non_weak'
+      ? (
+          Array.isArray(source?.excludedWeakCases)
+            ? (source?.excludedWeakCases as unknown[]).map(normalizeBenchmarkWeakCase).filter((item): item is IntentE2EBenchmarkWeakCase => Boolean(item))
+            : fallbackCases.map((item) => buildBenchmarkWeakCase(item)).filter((item): item is IntentE2EBenchmarkWeakCase => Boolean(item))
+        )
+      : [];
+
+  const metadata = buildBenchmarkProofWindowMetadata(mode, excludedWeakCases);
+  const customNote = normalizeString(source?.note);
+  return customNote
+    ? {
+        ...metadata,
+        note: customNote,
+      }
+    : metadata;
+}
+
 function normalizeBenchmarkSuite(raw: unknown): IntentE2EBenchmarkSuite | null {
   const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
   if (!source) return null;
@@ -1005,6 +1210,7 @@ function normalizeBenchmarkSuite(raw: unknown): IntentE2EBenchmarkSuite | null {
   const sourceMeta = source.source && typeof source.source === 'object' && !Array.isArray(source.source)
     ? (source.source as Record<string, unknown>)
     : {};
+  const proofWindow = normalizeBenchmarkProofWindowMetadata(source.proofWindow, cases);
 
   return {
     version: 1,
@@ -1013,6 +1219,7 @@ function normalizeBenchmarkSuite(raw: unknown): IntentE2EBenchmarkSuite | null {
     releaseCandidate: normalizeString(source.releaseCandidate),
     frozenAt,
     scope,
+    proofWindow,
     source: {
       runLimit: normalizeNumber(sourceMeta.runLimit),
       generatedFromRuns: normalizeNumber(sourceMeta.generatedFromRuns),
@@ -1077,6 +1284,13 @@ function buildScopedBenchmarkSuite(
       : {}),
   });
   const cases = benchmark.cases.filter((item) => matchesBenchmarkCaseScope(item, scope));
+  const proofWindow = buildBenchmarkProofWindowMetadata(
+    benchmark.proofWindow.mode,
+    benchmark.proofWindow.excludedWeakCases.filter((item) => {
+      if (scope.priorityScenarioFamily && item.priorityScenarioFamily !== scope.priorityScenarioFamily) return false;
+      return true;
+    })
+  );
 
   return {
     ...benchmark,
@@ -1084,6 +1298,7 @@ function buildScopedBenchmarkSuite(
       ...benchmark.scope,
       priorityScenarioFamily: scope.priorityScenarioFamily,
     },
+    proofWindow,
     source: {
       ...benchmark.source,
       selectedEvalCaseIds: cases.map((item) => item.evalCaseId),
@@ -1115,20 +1330,33 @@ export function buildIntentE2EBenchmarkSuiteFromData(
   options: FreezeIntentE2EBenchmarkOptions = {}
 ): IntentE2EBenchmarkSuite {
   const scope = normalizeScope(options);
+  const proofWindowMode = normalizeBenchmarkProofWindow(options.proofWindow);
   const runLimit = normalizeRunLimit(options.runLimit);
   const normalizedRuns = runSnapshots
     .map((snapshot) => normalizeIntentE2ETerminalRunSnapshot(snapshot))
     .filter((item): item is IntentE2EInsightRunRecord => Boolean(item))
     .filter((run) => matchesScope(run, scope));
   const baseline = buildIntentE2EEvaluationBaselineFromRuns(normalizedRuns);
+  const proofWindowCandidates = applyBenchmarkProofWindowToCandidates(baseline.candidates, proofWindowMode);
   const selectedCandidates = selectBenchmarkCandidates(
-    baseline,
+    {
+      ...baseline,
+      candidates: proofWindowCandidates.candidates,
+      recommendedCount:
+        proofWindowMode === 'non_weak'
+          ? Math.min(baseline.recommendedCount, proofWindowCandidates.candidates.length)
+          : baseline.recommendedCount,
+    },
     options.evalCaseIds || [],
-    normalizeMaxCases(options.maxCases, baseline.recommendedCount || baseline.candidates.length || 1)
+    normalizeMaxCases(options.maxCases, baseline.recommendedCount || proofWindowCandidates.candidates.length || 1)
   );
 
   if (selectedCandidates.length === 0) {
-    throw new Error('当前 scope 下没有可冻结的 benchmark candidate');
+    throw new Error(
+      proofWindowMode === 'non_weak'
+        ? '当前 scope 下没有可冻结的 non-weak benchmark candidate'
+        : '当前 scope 下没有可冻结的 benchmark candidate'
+    );
   }
 
   const clusterMap = buildClusterMap(normalizedRuns);
@@ -1143,23 +1371,36 @@ export function buildIntentE2EBenchmarkSuiteFromData(
   const benchmarkUid = buildBenchmarkUid(
     benchmarkScope,
     frozenAt,
-    cases.map((item) => item.evalCaseId)
+    cases.map((item) => item.evalCaseId),
+    proofWindowMode
   );
 
   return {
     version: 1,
     benchmarkUid,
-    label: normalizeString(options.label) || buildDefaultBenchmarkLabel(benchmarkScope, frozenAt, normalizeString(options.releaseCandidate)),
+    label:
+      normalizeString(options.label) ||
+      buildDefaultBenchmarkLabel(benchmarkScope, frozenAt, normalizeString(options.releaseCandidate), proofWindowMode),
     releaseCandidate: normalizeString(options.releaseCandidate),
     frozenAt,
     scope: benchmarkScope,
+    proofWindow: buildBenchmarkProofWindowMetadata(proofWindowMode, proofWindowCandidates.excludedWeakCases),
     source: {
       runLimit,
       generatedFromRuns: baseline.generatedFromRuns,
       candidateClusters: baseline.candidateClusters,
-      recommendedCount: baseline.recommendedCount,
-      recommendedFamilies: [...baseline.recommendedFamilies],
-      selectionNote: baseline.selectionNote,
+      recommendedCount:
+        proofWindowMode === 'non_weak'
+          ? Math.min(baseline.recommendedCount, proofWindowCandidates.candidates.length)
+          : baseline.recommendedCount,
+      recommendedFamilies:
+        proofWindowMode === 'non_weak'
+          ? (uniqueStrings(proofWindowCandidates.candidates.map((item) => item.scenarioFamily)) as IntentE2EScenarioFamily[])
+          : [...baseline.recommendedFamilies],
+      selectionNote:
+        proofWindowMode === 'non_weak'
+          ? `${baseline.selectionNote} 当前冻结显式启用了 non_weak proof window，会隔离 taskMode=unknown 或 stepCount=0 的 weak case。`
+          : baseline.selectionNote,
       selectedEvalCaseIds: cases.map((item) => item.evalCaseId),
     },
     summary: {
@@ -1262,6 +1503,7 @@ export function buildIntentE2EBenchmarkReplayFromData(
     releaseCandidate: benchmark.releaseCandidate,
     replayedAt: replayedAt || nowIso(),
     scope: { ...benchmark.scope },
+    proofWindow: buildBenchmarkProofWindowMetadata(benchmark.proofWindow.mode, benchmark.proofWindow.excludedWeakCases),
     summary: {
       ...summaryMetrics,
       caseCount: cases.length,
@@ -1508,6 +1750,7 @@ export function buildIntentE2EBenchmarkCompareReport(
     comparedAt,
     scope: { ...benchmark.scope },
     benchmarkPath: normalizeString(options.benchmarkPath) || getIntentE2EBenchmarkPath(benchmark.scope.projectUid),
+    proofWindow: buildBenchmarkProofWindowMetadata(benchmark.proofWindow.mode, benchmark.proofWindow.excludedWeakCases),
     priorityScenarioFamilies: summarizePriorityScenarioFamilyComparisons(benchmark, cases),
     summary: {
       totalCases: cases.length,

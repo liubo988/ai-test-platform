@@ -26,6 +26,7 @@
 - 冻结 benchmark：`npm run intent:benchmark:freeze -- --project-uid <projectUid>`
 - 回放 benchmark：`npm run intent:benchmark:replay -- --project-uid <projectUid>`
 - 对比当前 benchmark：`npm run intent:benchmark:compare -- --project-uid <projectUid>`
+- 用 tracked corpus 发起 fresh family rerun：`npm run intent:benchmark:rerun -- --project-uid <projectUid> --request-corpus <path>`
 
 ## 推荐工作流
 ### 改 AI / 业务逻辑
@@ -36,18 +37,27 @@
 ### 冻结 AI 生成 holdout
 1. 若要先把历史成功 run 的 `playbookCandidates` 回填成项目 recipe，可执行：
    `npm run intent:playbook:promote -- --project-uid <projectUid> --module-uid <moduleUid> --run-limit 200`
-2. `npm run intent:benchmark:candidates -- --project-uid <projectUid> --module-uid <moduleUid> --test-type browser_e2e`
+2. 先列出当前 scope 的 benchmark candidates；如果你要正式建立 non-weak proof window，直接带上：
+   `npm run intent:benchmark:candidates -- --project-uid <projectUid> --module-uid <moduleUid> --test-type browser_e2e --proof-window non_weak`
 3. 视需要用 `--eval-case-id` 明确挑选 case，或直接按推荐候选冻结：
    `npm run intent:benchmark:freeze -- --project-uid <projectUid> --module-uid <moduleUid> --test-type browser_e2e --max-cases 12 --release-candidate <label>`
-4. 改完策略后跑：
+4. 如果你这次只想建立 non-weak family baseline，优先用正式 proof window：
+   `npm run intent:benchmark:freeze -- --project-uid <projectUid> --module-uid <moduleUid> --test-type browser_e2e --proof-window non_weak --release-candidate <label>`
+   这会显式隔离 `taskMode=unknown` 或 `stepCount=0 / snapshotSignature=no_steps` 的 weak case，并把排除原因写进 benchmark / replay / compare 结果。
+5. 改完策略后跑：
    `npm run intent:benchmark:compare -- --project-uid <projectUid> --compared-label <label>`
-5. 如果只想复核某个 tracked family，直接复用同一套 CLI：
+6. 如果只想复核某个 tracked family，直接复用同一套 CLI：
    `npm run intent:benchmark:freeze -- --project-uid <projectUid> --module-uid <moduleUid> --test-type browser_e2e --priority-scenario-family list_search_detail --release-candidate <label>`
-6. 如果需要把当前项目 recipe 资产显式落盘，补上：
+7. 如果需要把当前项目 recipe 资产显式落盘，补上：
    `--recipe-asset-output <tracked-path>`
-7. 如果要按同一份 recipe 资产复核，先导回当前项目 registry 再 replay / compare：
+8. 如果要按同一份 recipe 资产复核，先导回当前项目 registry 再 replay / compare：
    `npm run intent:benchmark:compare -- --project-uid <projectUid> --priority-scenario-family list_search_detail --recipe-asset-input <tracked-path> --compared-label <label>`
-8. family compare 的 `priorityScenarioFamilies` 汇总如果显示 `insufficient_evidence`，表示冻结窗口或当前窗口的 terminal 样本少于 3；此时只能继续补样本，不能宣称收益。
+9. family compare 的 `priorityScenarioFamilies` 汇总如果显示 `insufficient_evidence`，表示冻结窗口或当前窗口的 terminal 样本少于 3；此时只能继续补样本，不能宣称收益。
+10. 如果某个 family 在 recent window 里还是 `0-case`，先补 tracked corpus rerun，再 freeze / replay / compare：
+   `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid <moduleUid> --priority-scenario-family modal_or_drawer_save --request-corpus artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json`
+11. 当前 repo 已跟踪的 family request corpus：
+   `artifacts/intent-e2e-family-evidence/proj_default.list-search-detail.request-corpus.json`
+   `artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json`
 
 ### 改前端工作台
 1. `npm run build`

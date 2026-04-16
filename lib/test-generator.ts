@@ -37,6 +37,7 @@ import {
 import {
   resolveIntentE2EPriorityScenarioFamilyRoute,
   getIntentE2EPriorityScenarioFamilyAssetProfile,
+  shouldNarrowToPriorityScenarioFamilyRoute,
   type IntentE2EPriorityScenarioFamilyRoute,
   type IntentE2EPriorityScenarioFamily,
 } from './intent-e2e-priority-scenario-family';
@@ -181,9 +182,46 @@ const ROOT = process.cwd();
 const BUSINESS_ID_JSON_PATHS = buildIntentSharedVariableJsonPaths('businessId');
 const BUSINESS_STATUS_JSON_PATHS = ['status', 'statusName', 'statusText', 'state', 'stateName', 'stateText', 'displayStatus', 'progress.displayStatus'];
 const ORDER_ID_JSON_PATHS = buildIntentSharedVariableJsonPaths('orderId');
+const SELECTED_ORDER_NO_JSON_PATHS = buildIntentSharedVariableJsonPaths('selectedOrderNo');
+const LIST_SEARCH_DETAIL_CONTACT_JSON_PATHS = [
+  'contactName',
+  'contact',
+  'contactPerson',
+  'contactUser',
+  'contactUserName',
+  'linkman',
+  'name',
+  'customerName',
+  'customer',
+];
+const LIST_SEARCH_DETAIL_PHONE_JSON_PATHS = [
+  'mobile',
+  'phone',
+  'telephone',
+  'tel',
+  'contactPhone',
+  'contactMobile',
+  'mobilePhone',
+  'customerPhone',
+  'customerMobile',
+];
+const LIST_SEARCH_DETAIL_STATUS_JSON_PATHS = uniqueStrings([
+  'accountStatus',
+  'accountStatusName',
+  'accountStatusText',
+  'orderStatus',
+  'orderStatusName',
+  'orderStatusText',
+  ...BUSINESS_STATUS_JSON_PATHS,
+]);
+const LIST_SEARCH_DETAIL_ROW_KEY_JSON_PATHS = ['rowKey', 'id', 'orderId', 'recordUid', 'uid'];
 
 function renderJsStringArray(items: string[]): string {
   return `[${items.map((item) => JSON.stringify(item)).join(', ')}]`;
+}
+
+function escapeForRegExp(value: string): string {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 async function loadEdgeCases(_url: string): Promise<any[]> {
@@ -595,6 +633,7 @@ export function resolveIntentPromptPlanningContext(
     auth: options.auth,
     snapshot,
     priorityScenarioFamily,
+    narrowToPriorityScenarioFamily: shouldNarrowToPriorityScenarioFamilyRoute(priorityScenarioFamilyRoute),
     preferredCapabilitySlugs: [
       ...knowledge.capabilitySlugs,
       ...collectIntentStarterAssetCapabilitySlugs(starterHelpers),
@@ -3069,13 +3108,66 @@ function replaceIntentExecutionSlotCode(
   });
 }
 
+function replaceIntentExecutionSlotsCode(
+  code: string,
+  slotUids: string[],
+  rewrite: (slotCode: string, slotUid: string) => string
+): string {
+  let nextCode = code;
+  for (const slotUid of slotUids) {
+    if (!hasIntentExecutionSlotMarkers(nextCode, slotUid)) {
+      continue;
+    }
+    const slotCode = extractIntentExecutionSlotCode(nextCode, slotUid);
+    const nextSlotCode = rewrite(slotCode, slotUid);
+    if (nextSlotCode === slotCode) {
+      continue;
+    }
+    nextCode = applyIntentExecutionSlotPatch(nextCode, {
+      version: 1,
+      slots: [{ slotUid, code: nextSlotCode }],
+    });
+  }
+  return nextCode;
+}
+
+function getIntentExecutionPlanStepNumber(slotUid: string): number | null {
+  const match = /^plan_step_(\d+)$/.exec(String(slotUid || '').trim());
+  if (!match) {
+    return null;
+  }
+  const stepNumber = Number.parseInt(match[1] || '', 10);
+  return Number.isFinite(stepNumber) ? stepNumber : null;
+}
+
+function getRelativeIntentExecutionPlanStepUid(slotUid: string, delta: number): string | null {
+  const stepNumber = getIntentExecutionPlanStepNumber(slotUid);
+  if (stepNumber == null) {
+    return null;
+  }
+  const nextStepNumber = stepNumber + delta;
+  if (nextStepNumber < 1) {
+    return null;
+  }
+  return `plan_step_${nextStepNumber}`;
+}
+
 function normalizeBatchAccountAmountAlias(code: string): string {
   return code.replace(/\bselectedBookedAmount\b/g, 'selectedAmount');
+}
+
+function normalizeBatchAccountIdentityAliases(code: string): string {
+  return code.replace(/\bshared\.orderNo\b/g, 'shared.selectedOrderNo');
 }
 
 function looksLikeBatchAccountPendingStatusHasTexts(hasTextsRaw: string): boolean {
   const hasTexts = String(hasTextsRaw || '');
   return hasTexts.includes("'待申请入账'") && (hasTexts.includes("'服务中'") || hasTexts.includes("'未确认'"));
+}
+
+function looksLikeAmbiguousPendingStatusHasTexts(hasTextsRaw: string): boolean {
+  const hasTexts = String(hasTextsRaw || '');
+  return /(待申请入账|待申请)/.test(hasTexts) && /(服务中|未确认)/.test(hasTexts);
 }
 
 function buildBatchAccountSelectableRowResolveBlock(indent: string, rowVar: string): string {
@@ -3170,6 +3262,183 @@ function sanitizeBatchAccountRowSelection(code: string): string {
   return next;
 }
 
+function sanitizeBatchAccountOrderListReadyAnchorSlot(slotCode: string): string {
+  let next = slotCode.replace(
+    /^(\s*)const\s+(\w+)\s*=\s*page\.getByRole\('button',\s*\{\s*name:\s*\/搜\\s\*索\/\s*\}\)\.first\(\);\n\1const\s+(\w+)\s*=\s*page\.getByRole\('button',\s*\{\s*name:\s*'展开'\s*\}\)\.first\(\);\n(?:\1const\s+keywordInput\s*=\s*page\.locator\(['"]#form_in_modal_testKeyWord:visible['"]\)\.first\(\);\n)?\1await expect\(keywordInput\.or\(\2\)\.or\(\3\)\.first\(\)\)\.toBeVisible\(\{\s*timeout:\s*(\d+)\s*\}\);\s*$/gm,
+    (_full, indent: string, searchVar: string, expandVar: string, timeout: string) =>
+      [
+        `${indent}const ${searchVar} = page.getByRole('button', { name: /搜\\s*索/ }).first();`,
+        `${indent}const ${expandVar} = page.getByRole('button', { name: '展开' }).first();`,
+        `${indent}const ${expandVar}Visible = await ${expandVar}.isVisible().catch(() => false);`,
+        `${indent}if (${expandVar}Visible) {`,
+        `${indent}  await expect(${expandVar}).toBeVisible({ timeout: ${timeout} });`,
+        `${indent}} else {`,
+        `${indent}  await expect(${searchVar}).toBeVisible({ timeout: ${timeout} });`,
+        `${indent}}`,
+      ].join('\n')
+  );
+
+  next = next.replace(
+    /^(\s*)const\s+(\w+)\s*=\s*page\.getByRole\('button',\s*\{\s*name:\s*'展开'\s*\}\)\.first\(\);\n\1const\s+(\w+)\s*=\s*page\.getByRole\('button',\s*\{\s*name:\s*\/搜\\s\*索\/\s*\}\)\.first\(\);\n\1await expect\(\2\.or\(\3\)\)\.toBeVisible\(\{\s*timeout:\s*(\d+)\s*\}\);/gm,
+    (full, indent: string, expandVar: string, searchVar: string, timeout: string) =>
+      [
+        `${indent}const ${expandVar} = page.getByRole('button', { name: '展开' }).first();`,
+        `${indent}const ${searchVar} = page.getByRole('button', { name: /搜\\s*索/ }).first();`,
+        `${indent}const ${expandVar}Visible = await ${expandVar}.isVisible().catch(() => false);`,
+        `${indent}if (${expandVar}Visible) {`,
+        `${indent}  await expect(${expandVar}).toBeVisible({ timeout: ${timeout} });`,
+        `${indent}} else {`,
+        `${indent}  await expect(${searchVar}).toBeVisible({ timeout: ${timeout} });`,
+        `${indent}}`,
+      ].join('\n')
+  );
+
+  next = next.replace(
+    /^(\s*)await expect\(keywordInput\.or\(page\.locator\('\.ant-table-wrapper:visible'\)\.first\(\)\)\.first\(\)\)\.toBeVisible\(\{\s*timeout:\s*(\d+)\s*\}\);\s*$/gm,
+    (_full, indent: string, timeout: string) =>
+      `${indent}await expect(page.locator('.ant-table-wrapper:visible').first()).toBeVisible({ timeout: ${timeout} });`
+  );
+
+  next = next.replace(
+    /^(\s*)await expect\(keywordInput\.or\(page\.locator\('\.ant-table-wrapper:visible'\)\.first\(\)\)\.first\(\)\)\.toBeVisible\(\);\s*$/gm,
+    (_full, indent: string) => `${indent}await expect(page.locator('.ant-table-wrapper:visible').first()).toBeVisible();`
+  );
+
+  return next;
+}
+
+function sanitizeBatchAccountOrderListReadyAnchors(code: string): string {
+  return replaceIntentExecutionSlotCode(code, 'plan_step_1', sanitizeBatchAccountOrderListReadyAnchorSlot);
+}
+
+function sanitizeBatchAccountPendingRowAssertionsSlot(slotCode: string): string {
+  const hasPendingRowLoop =
+    /const\s+candidates\s*=\s*page\.locator\('\.ant-table-tbody tr\[data-row-key\]:visible'\);/.test(slotCode) &&
+    /clickAntdRowCheckbox\(page,\s*row\)/.test(slotCode);
+  const rowLocatorVars = new Set(
+    Array.from(
+      slotCode.matchAll(
+        /const\s+(\w+)\s*=\s*page\.locator\((['"])\.ant-table-tbody tr\[data-row-key\]:visible\2\);/g
+      ),
+      (match) => match[1]
+    )
+  );
+
+  let next = slotCode.replace(
+    /^(\s*)const\s+\w+\s*=\s*page\.getByText\('待申请入账'\)\.first\(\);\n\1await expect\(\w+\)\.toBeVisible\(\{ timeout: \d+ \}\);\n?/gm,
+    ''
+  );
+
+  next = next.replace(
+    /^\s*await expect\(page\.getByText\('待申请入账'\)\.first\(\)\)\.toBeVisible\(\{ timeout: \d+ \}\);\s*$/gm,
+    ''
+  );
+
+  next = next.replace(
+    /^(\s*)await expect\((\w+)\.first\(\)\)\.toBeVisible\(\{ timeout: \d+ \}\);\s*$/gm,
+    (full, _indent: string, rowVar: string) => (rowLocatorVars.has(rowVar) ? '' : full)
+  );
+
+  next = next.replace(
+    /^\s*await expect\(page\.locator\((['"])\.ant-table-tbody tr\[data-row-key\]:visible\1\)\.first\(\)\)\.toBeVisible\(\{ timeout: \d+ \}\);\s*$/gm,
+    ''
+  );
+
+  if (!hasPendingRowLoop) {
+    return next;
+  }
+
+  next = next.replace(
+    /^(\s*)await expect\(candidates\.first\(\)\)\.toBeVisible\(\{ timeout: \d+ \}\);\s*$/gm,
+    ''
+  );
+
+  return next;
+}
+
+function sanitizeBatchAccountPendingRowAssertions(code: string): string {
+  return replaceIntentExecutionSlotCode(code, 'plan_step_2', sanitizeBatchAccountPendingRowAssertionsSlot);
+}
+
+function sanitizeBatchAccountStatusCandidateVisibilitySlot(slotCode: string): string {
+  if (!/const\s+statusCandidates\s*=\s*\[/.test(slotCode) || !/let\s+statusSource\s*=\s*null;/.test(slotCode)) {
+    return slotCode;
+  }
+
+  return slotCode.replace(
+    /await candidate\.count\(\)\.catch\(\(\)\s*=>\s*0\)/g,
+    'await candidate.isVisible().catch(() => false)'
+  );
+}
+
+function sanitizeBatchAccountStatusCandidateVisibility(code: string): string {
+  return replaceIntentExecutionSlotCode(code, 'plan_step_2', sanitizeBatchAccountStatusCandidateVisibilitySlot);
+}
+
+function looksLikeBatchAccountVisiblePendingFilterDriftSlot(slotCode: string): boolean {
+  if (!/待申请/.test(slotCode) || !/selectAntdOption/.test(slotCode)) {
+    return false;
+  }
+
+  const hasOrderSearchSignals =
+    /urlIncludes:\s*['"]\/order['"]/.test(slotCode) ||
+    /candidateRows\s*=\s*page\.locator\('\.ant-table-tbody tr\[data-row-key\]:visible'\)/.test(slotCode) ||
+    /const\s+searchBtn\s*=\s*page\.getByRole\('button',\s*\{\s*name:\s*['"]搜\s*索['"]/.test(slotCode);
+  if (!hasOrderSearchSignals) {
+    return false;
+  }
+
+  return (
+    /selectedValue|selectedItem|selectedText/.test(slotCode) ||
+    /ant-select-selection-selected-value|ant-select-selection-item/.test(slotCode) ||
+    /toContainText\(['"]待申请['"]/.test(slotCode) ||
+    /page\.locator\('body'\)\)\.toContainText\(['"]待申请['"]/.test(slotCode)
+  );
+}
+
+function buildBatchAccountDeterministicPendingFilterSlot(indent: string): string {
+  return [
+    `${indent}const pendingFilter = await __e2e.applyDeterministicVisibleAntdFilter(page, {`,
+    `${indent}  expandButton: page.getByRole('button', { name: '展开' }).first(),`,
+    `${indent}  searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(),`,
+    `${indent}  label: '待申请',`,
+    `${indent}  fieldLabelPattern: /入账状态|订单状态/,`,
+    `${indent}  summary: '入账状态=待申请',`,
+    `${indent}  listResponse: { urlIncludes: '/order', method: 'GET' },`,
+    `${indent}  rowSelector: '.ant-table-tbody tr[data-row-key]:visible',`,
+    `${indent}  placeholderSelector: '.ant-table-placeholder:visible',`,
+    `${indent}  resultTimeoutMs: 15000,`,
+    `${indent}  busyTimeoutMs: 2200,`,
+    `${indent}  busyObserveWindowMs: 360,`,
+    `${indent}});`,
+    `${indent}artifacts['plan_step_2'] = pendingFilter;`,
+    `${indent}const hasRows = Number(pendingFilter.resultRowCount || 0);`,
+    `${indent}if (hasRows === 0) {`,
+    `${indent}  test.skip(true, '前置数据不足：筛选“待申请”后无可用订单数据');`,
+    `${indent}}`,
+  ].join('\n');
+}
+
+function sanitizeBatchAccountDeterministicPendingFilterSlot(slotCode: string): string {
+  if (!looksLikeBatchAccountVisiblePendingFilterDriftSlot(slotCode)) {
+    return slotCode;
+  }
+  if (/applyDeterministicVisibleAntdFilter\(/.test(slotCode)) {
+    return slotCode;
+  }
+
+  const indent = slotCode.split('\n').find((line) => line.trim())?.match(/^\s*/)?.[0] || '    ';
+  return buildBatchAccountDeterministicPendingFilterSlot(indent);
+}
+
+function sanitizeBatchAccountDeterministicPendingFilter(code: string): string {
+  return replaceIntentExecutionSlotCode(
+    code,
+    'plan_step_2',
+    sanitizeBatchAccountDeterministicPendingFilterSlot
+  );
+}
+
 function sanitizeBatchAccountPostClickCheckboxAssertions(code: string): string {
   let next = code.replace(
     /^(\s*)await __e2e\.clickAntdRowCheckbox\(page,\s*(\w+)\);\n\1const rowKey = \(\(await \2\.getAttribute\('data-row-key'\)\) \|\| ''\)\.trim\(\);\n\1if \(rowKey\) \{\n\1\s*const \w+ = page\.locator\(`tr\[data-row-key="\$\{rowKey\}"\] \.ant-checkbox-checked:visible`\)\.first\(\);\n\1\s*await expect\(\w+\)\.toBeVisible\(\{ timeout: \d+ \}\);\n\1\}\s*$/gm,
@@ -3179,6 +3448,27 @@ function sanitizeBatchAccountPostClickCheckboxAssertions(code: string): string {
   next = next.replace(
     /^(\s*)await __e2e\.clickAntdRowCheckbox\(page,\s*(\w+)\);\n\1const rowKey = \(\(await \2\.getAttribute\('data-row-key'\)\) \|\| ''\)\.trim\(\);\n\1const \w+ = rowKey\n\1\s*\? page\.locator\(`tr\[data-row-key="\$\{rowKey\}"\]:visible \.ant-checkbox-wrapper-checked, tr\[data-row-key="\$\{rowKey\}"\]:visible \.ant-checkbox-checked`\)\n\1\s*: \2\.locator\('\.ant-checkbox-wrapper-checked, \.ant-checkbox-checked'\);\n\1await expect\(\w+\.first\(\)\)\.toBeVisible\(\{ timeout: \d+ \}\);\s*$/gm,
     '$1await __e2e.clickAntdRowCheckbox(page, $2);'
+  );
+  next = next.replace(
+    /^(\s*)const\s+(\w+)Key\s*=\s*\(\(await\s+(\w+)\.getAttribute\('data-row-key'\)\)\s*\|\|\s*''\)\.trim\(\);\n\1if\s*\(\2Key\)\s*\{\n\1\s*const\s+\w+\s*=\s*page\.locator\(`tr\[data-row-key="\$\{\2Key\}"\]\s+\.ant-checkbox-wrapper-checked,\s*tr\[data-row-key="\$\{\2Key\}"\]\s+\.ant-checkbox-checked`\);\n\1\s*await expect\(\w+\.first\(\)\)\.toBeVisible\(\{ timeout: \d+ \}\);\n\1\}\s*else\s*\{\n\1\s*const\s+\w+\s*=\s*page\.locator\('\.ant-checkbox-wrapper-checked,\s*\.ant-checkbox-checked'\);\n\1\s*await expect\(\w+\.first\(\)\)\.toBeVisible\(\{ timeout: \d+ \}\);\n\1\}\s*$/gm,
+    '$1const $2Key = ((await $3.getAttribute(\'data-row-key\')) || \'\').trim();'
+  );
+
+  next = next.replace(
+    /^\s*await expect(?:\.soft)?\(page\.locator\('\.ant-checkbox-checked'\)\.first\(\)\)\.toBeVisible\((?:\{[^)]*\})?\);\s*$/gm,
+    ''
+  );
+  next = next.replace(
+    /^\s*await expect(?:\.soft)?\(page\.locator\('\.ant-checkbox-wrapper-checked, \.ant-checkbox-checked'\)\.first\(\)\)\.toBeVisible\((?:\{[^)]*\})?\);\s*$/gm,
+    ''
+  );
+  next = next.replace(
+    /^\s*await expect(?:\.soft)?\(\w+\.locator\('\.ant-checkbox-wrapper-checked, \.ant-checkbox-checked'\)(?:\.first\(\))?\)\.to(?:BeVisible|HaveCount)\((?:[^)]*)\);\s*$/gm,
+    ''
+  );
+  next = next.replace(
+    /^\s*await expect(?:\.soft)?\(\w+\.locator\('\.ant-checkbox-checked'\)(?:\.first\(\))?\)\.to(?:BeVisible|HaveCount)\((?:[^)]*)\);\s*$/gm,
+    ''
   );
 
   return next;
@@ -3229,9 +3519,14 @@ function buildBatchAccountOrderNoCandidateAssignmentBlock(
     `${indent}const ${targetVar}LooksLikeDate = /^(?:19|20)\\d{2}[-/.](?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\\d|3[01])$/.test(${targetVar}Candidate) || /^(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])$/.test(${targetVar}Normalized);`,
     `${indent}const ${targetVar}LooksLikeShortNumeric = /^\\d+$/.test(${targetVar}Normalized) && ${targetVar}Normalized.length < 12;`,
     `${indent}const ${targetVar}LooksLikeAmount = /^\\d+(?:\\.\\d{1,2})?$/.test(${targetVar}Normalized) && (${targetVar}Normalized.includes('.') || ${targetVar}Normalized.length <= 8);`,
+    `${indent}const ${targetVar}LooksLikeLetterPrefixedShortCode = /^[A-Za-z]\\d{7,11}$/.test(${targetVar}Normalized);`,
     `${indent}const ${targetVar}IsStructuredId = /^(?:[A-Za-z0-9_-]{6,64}|\\d{12,64})$/.test(${targetVar}Normalized);`,
-    `${indent}const ${targetVar} = ${targetVar}IsStructuredId && !${targetVar}LooksLikePhone && !${targetVar}LooksLikeDate && !${targetVar}LooksLikeShortNumeric && !${targetVar}LooksLikeAmount ? ${targetVar}Normalized : '';`,
+    `${indent}const ${targetVar} = ${targetVar}IsStructuredId && !${targetVar}LooksLikePhone && !${targetVar}LooksLikeDate && !${targetVar}LooksLikeShortNumeric && !${targetVar}LooksLikeAmount && !${targetVar}LooksLikeLetterPrefixedShortCode ? ${targetVar}Normalized : '';`,
   ].join('\n');
+}
+
+function buildBatchAccountOrderNoTokenFindExpression(tokensExpression: string, tokenVar = 't'): string {
+  return `${tokensExpression}.find((${tokenVar}) => { const raw = String(${tokenVar} || '').trim(); const normalized = raw.replace(/\\s+/g, ''); if (!/^(?:[A-Za-z0-9_-]{6,64}|\\d{12,64})$/.test(normalized)) return false; if (/^1\\d{10}$/.test(normalized)) return false; if (/^(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])$/.test(normalized)) return false; if (/^\\d+$/.test(normalized) && normalized.length < 12) return false; if (/^\\d+(?:\\.\\d{1,2})?$/.test(normalized) && (normalized.includes('.') || normalized.length <= 8)) return false; if (/^[A-Za-z]\\d{7,11}$/.test(normalized)) return false; return true; }) || ''`;
 }
 
 function buildBatchAccountOrderNoExtractedAssignmentBlock(
@@ -3250,6 +3545,18 @@ function buildBatchAccountOrderNoExtractedAssignmentBlock(
   ].join('\n');
 }
 
+function buildBatchAccountOrderNoConditionalAssignmentBlock(
+  indent: string,
+  candidateVar: string,
+  candidateExpression: string,
+  targetVar: string
+): string {
+  return [
+    buildBatchAccountOrderNoCandidateAssignmentBlock(`${indent}  `, candidateVar, candidateExpression),
+    `${indent}  if (${candidateVar}) ${targetVar} = ${candidateVar};`,
+  ].join('\n');
+}
+
 function buildCloneSafeVisibleTextAggregationBlock(indent: string, textVar: string, sourceExpr: string): string {
   return [
     `${indent}const ${textVar}RowKey = ((await ${sourceExpr}.getAttribute('data-row-key')) || '').trim();`,
@@ -3265,15 +3572,26 @@ function buildCloneSafeVisibleTextAggregationBlock(indent: string, textVar: stri
   ].join('\n');
 }
 
+function buildBatchAccountModalOrderNoSyncBlock(indent: string): string {
+  return [
+    buildBatchAccountOrderNoCandidateAssignmentBlock(indent, 'nextOrderNo', 'modalOrderNo.trim() || modalOrderNoText'),
+    buildBatchAccountOrderNoCandidateAssignmentBlock(indent, 'currentSelectedOrderNo', 'shared.selectedOrderNo'),
+    `${indent}const shouldAdoptModalOrderNo = Boolean(nextOrderNo) && (!currentSelectedOrderNo || currentSelectedOrderNo !== nextOrderNo);`,
+    `${indent}if (shouldAdoptModalOrderNo) {`,
+    `${indent}  if (currentSelectedOrderNoCandidate && currentSelectedOrderNoCandidate !== nextOrderNo) {`,
+    `${indent}    artifacts['selectedOrderNo_modal_override'] = { previous: currentSelectedOrderNoCandidate, next: nextOrderNo };`,
+    `${indent}  }`,
+    `${indent}  shared.selectedOrderNo = nextOrderNo;`,
+    `${indent}}`,
+  ].join('\n');
+}
+
 function buildBatchAccountModalFieldFallbackBlock(indent: string, modalVar: string): string {
   return [
     `${indent}const modalText = await ${modalVar}.innerText().catch(() => '');`,
     `${indent}const modalOrderNo = (await __e2e.readDetailField(page, { label: '订单号', scope: ${modalVar}, titleIncludes: '批量申请入账', required: false })) || (await __e2e.readDetailField(page, { label: '订单编号', scope: ${modalVar}, titleIncludes: '批量申请入账', required: false })) || '';`,
     `${indent}const modalOrderNoText = (((modalText.match(/订单号[：:\\s]*([A-Za-z0-9_-]+)/) || [])[1] || '')).trim();`,
-    `${indent}if (!shared.selectedOrderNo) {`,
-    `${indent}  const nextOrderNo = modalOrderNo.trim() || modalOrderNoText;`,
-    `${indent}  if (nextOrderNo && !/^1\\d{10}$/.test(nextOrderNo)) shared.selectedOrderNo = nextOrderNo;`,
-    `${indent}}`,
+    buildBatchAccountModalOrderNoSyncBlock(indent),
     `${indent}const modalServiceItem = (await __e2e.readDetailField(page, { label: '服务项', scope: ${modalVar}, titleIncludes: '批量申请入账', required: false })) || (await __e2e.readDetailField(page, { label: '服务项目', scope: ${modalVar}, titleIncludes: '批量申请入账', required: false })) || '';`,
     `${indent}const modalServiceItemText = (((modalText.match(/服务项[：:\\s]*([^\\n]+)/) || [])[1] || (modalText.match(/服务项目[：:\\s]*([^\\n]+)/) || [])[1] || '').replace(/(?:应收款)?入账金额.*$/, '').trim());`,
     `${indent}if (!shared.selectedServiceItem) {`,
@@ -3419,6 +3737,66 @@ function buildBatchAccountSelectedServiceItemAssignmentBlock(indent: string, can
     `${indent}  shared.selectedServiceItem = selectedServiceItemCandidateText && !selectedServiceItemCandidateLooksLikeStatus && !selectedServiceItemCandidateLooksLikeAmount && !selectedServiceItemCandidateLooksLikePhone && !selectedServiceItemCandidateLooksLikeLabel ? normalizedSelectedServiceItemCandidateText : '';`,
     `${indent}}`,
   ].join('\n');
+}
+
+function buildBatchAccountSelectedRowOrderExtractionBlock(
+  indent: string,
+  rowVar: string,
+  stepArtifactKey = 'plan_step_3'
+): string {
+  const targetRowArtifact =
+    stepArtifactKey === 'plan_step_3' ? 'artifacts.plan_step_3_targetRow' : `artifacts.${stepArtifactKey}_targetRow`;
+  return [
+    `${indent}artifacts['${stepArtifactKey}_row'] = ${rowVar};`,
+    `${indent}${targetRowArtifact} = ${rowVar};`,
+    `${indent}const rowKey = ((await ${rowVar}.getAttribute('data-row-key')) || '').trim();`,
+    `${indent}const linkNodes = ${rowVar}.locator('a:visible');`,
+    `${indent}const linkTexts = [];`,
+    `${indent}const linkCount = await linkNodes.count().catch(() => 0);`,
+    `${indent}for (let linkIndex = 0; linkIndex < linkCount; linkIndex += 1) {`,
+    `${indent}  const linkText = ((await linkNodes.nth(linkIndex).textContent().catch(() => '')) || '').replace(/\\s+/g, '').trim();`,
+    `${indent}  if (linkText && !linkTexts.includes(linkText)) linkTexts.push(linkText);`,
+    `${indent}}`,
+    buildCloneSafeVisibleTextAggregationBlock(indent, 'rowText', rowVar),
+    buildBatchAccountOrderNoCandidateAssignmentBlock(
+      indent,
+      'selectedOrderNoFromLink',
+      buildBatchAccountOrderNoTokenFindExpression('linkTexts', 'item')
+    ),
+    buildBatchAccountOrderNoCandidateAssignmentBlock(indent, 'selectedOrderNoFromRowKey', 'rowKey'),
+    `${indent}const rowTextTokens = rowText.match(/\\b[A-Za-z0-9_-]{6,64}\\b/g) || [];`,
+    buildBatchAccountOrderNoCandidateAssignmentBlock(
+      indent,
+      'selectedOrderNoFromTokens',
+      buildBatchAccountOrderNoTokenFindExpression('rowTextTokens', 'item')
+    ),
+    `${indent}const selectedOrderNo = selectedOrderNoFromLink || selectedOrderNoFromRowKey || selectedOrderNoFromTokens;`,
+    `${indent}shared.selectedOrderNo = selectedOrderNo;`,
+    `${indent}if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = { rowKey, rowText, linkTexts };`,
+    `${indent}artifacts['${stepArtifactKey}'] = { row: ${rowVar}, rowText, rowKey, linkTexts, selectedOrderNo: shared.selectedOrderNo || '' };`,
+  ].join('\n');
+}
+
+function expandBatchAccountCloneSafeRowTextAggregationStart(
+  lines: string[],
+  rowVar: string,
+  startIndex: number,
+  textVar = 'rowText'
+): number {
+  if (startIndex <= 0) {
+    return startIndex;
+  }
+
+  const rowKeyPattern = new RegExp(
+    `const\\s+${textVar}RowKey\\s*=\\s*\\(\\(await\\s+${rowVar}\\.getAttribute\\('data-row-key'\\)\\)\\s*\\|\\|\\s*''\\)\\.trim\\(\\);`
+  );
+  for (let index = startIndex - 1; index >= 0; index -= 1) {
+    if (rowKeyPattern.test(lines[index] || '')) {
+      return index;
+    }
+  }
+
+  return startIndex;
 }
 
 function normalizeBatchAccountServiceItemAssignmentGuards(code: string): string {
@@ -3734,17 +4112,326 @@ function sanitizeBatchAccountServiceItemHandling(code: string): string {
 function sanitizeBatchAccountOrderExtraction(code: string): string {
   let next = replaceIntentExecutionSlotCode(
     code,
+    'plan_step_2',
+    (slotCode) => {
+      if (
+        !/let\s+targetRow\s*=\s*null;/.test(slotCode) ||
+        !/shared\.selectedOrderNo/.test(slotCode) ||
+        !/已定位目标行但未提取到有效订单号/.test(slotCode)
+      ) {
+        return slotCode;
+      }
+
+      const lines = slotCode.split('\n');
+      const startIndex = lines.findIndex((line) => /await targetRow\.scrollIntoViewIfNeeded/.test(line));
+      if (startIndex < 0) {
+        return slotCode;
+      }
+
+      const endIndex = lines.findIndex(
+        (line, index) => index >= startIndex && /artifacts\[['"]plan_step_2['"]\]\s*=/.test(line)
+      );
+      const indent = lines[startIndex]?.match(/^\s*/)?.[0] || '    ';
+      const replacement = [
+        `${indent}await targetRow.scrollIntoViewIfNeeded().catch(() => {});`,
+        `${indent}artifacts['plan_step_2_row'] = targetRow;`,
+        `${indent}artifacts.plan_step_2_targetRow = targetRow;`,
+        `${indent}const rowKey = ((await targetRow.getAttribute('data-row-key')) || '').trim();`,
+        `${indent}const linkNodes = targetRow.locator('a:visible');`,
+        `${indent}const linkTexts = [];`,
+        `${indent}const linkCount = await linkNodes.count().catch(() => 0);`,
+        `${indent}for (let linkIndex = 0; linkIndex < linkCount; linkIndex += 1) {`,
+        `${indent}  const linkText = ((await linkNodes.nth(linkIndex).textContent().catch(() => '')) || '').replace(/\\s+/g, '').trim();`,
+        `${indent}  if (linkText && !linkTexts.includes(linkText)) linkTexts.push(linkText);`,
+        `${indent}}`,
+        buildCloneSafeVisibleTextAggregationBlock(indent, 'rowText', 'targetRow'),
+        buildBatchAccountOrderNoCandidateAssignmentBlock(
+          indent,
+          'selectedOrderNoFromLink',
+          buildBatchAccountOrderNoTokenFindExpression('linkTexts', 'item')
+        ),
+        buildBatchAccountOrderNoCandidateAssignmentBlock(indent, 'selectedOrderNoFromRowKey', 'rowKey'),
+        `${indent}const tokens = rowText.match(/\\b[A-Za-z0-9_-]{6,64}\\b/g) || [];`,
+        buildBatchAccountOrderNoCandidateAssignmentBlock(
+          indent,
+          'selectedOrderNoFromTokens',
+          buildBatchAccountOrderNoTokenFindExpression('tokens')
+        ),
+        `${indent}const selectedOrderNo = selectedOrderNoFromLink || selectedOrderNoFromRowKey || selectedOrderNoFromTokens;`,
+        `${indent}shared.selectedOrderNo = selectedOrderNo;`,
+        `${indent}if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = { rowKey, rowText, linkTexts };`,
+        `${indent}artifacts['plan_step_2'] = { row: targetRow, rowText, rowKey, linkTexts, selectedOrderNo: shared.selectedOrderNo || '' };`,
+      ];
+
+      lines.splice(startIndex, endIndex >= startIndex ? endIndex - startIndex + 1 : lines.length - startIndex, ...replacement);
+      return lines.join('\n');
+    }
+  );
+
+  next = replaceIntentExecutionSlotCode(
+    next,
+    'plan_step_2',
+    (slotCode) => {
+      if (
+        !/let\s+targetRow\s*=\s*null;/.test(slotCode) ||
+        !/await __e2e\.clickAntdRowCheckbox\(page,\s*row\);/.test(slotCode) ||
+        !/const\s+orderLink\s*=\s*targetRow\.locator\('a'\)\.first\(\);/.test(slotCode) ||
+        !/shared\.selectedOrderNo\s*=\s*selectedOrderNo;/.test(slotCode)
+      ) {
+        return slotCode;
+      }
+
+      const lines = slotCode.split('\n');
+      const startIndex = lines.findIndex((line) => /const\s+orderLink\s*=\s*targetRow\.locator\('a'\)\.first\(\);/.test(line));
+      if (startIndex < 0) {
+        return slotCode;
+      }
+
+      const indent = lines[startIndex]?.match(/^\s*/)?.[0] || '    ';
+      const replacement = buildBatchAccountSelectedRowOrderExtractionBlock(indent, 'targetRow', 'plan_step_2').split('\n');
+      lines.splice(startIndex, lines.length - startIndex, ...replacement);
+      return lines.join('\n');
+    }
+  );
+
+  next = replaceIntentExecutionSlotCode(
+    next,
+    'plan_step_2',
+    (slotCode) => {
+      const rowVar = slotCode.match(/let\s+(\w+)\s*=\s*null;/)?.[1] || '';
+      if (
+        !rowVar ||
+        !/await __e2e\.clickAntdRowCheckbox\(page,\s*row\);/.test(slotCode) ||
+        !/const\s+tokens\s*=\s*rowText\.match\(\/\[A-Za-z0-9_-\]\{6,\}\/g\)\s*\|\|\s*\[\];/.test(slotCode) ||
+        !/shared\.selectedOrderNo\s*=\s*orderNo;/.test(slotCode)
+      ) {
+        return slotCode;
+      }
+
+      const lines = slotCode.split('\n');
+      const tokenIndex = lines.findIndex((line) =>
+        /const\s+tokens\s*=\s*rowText\.match\(\/\[A-Za-z0-9_-\]\{6,\}\/g\)\s*\|\|\s*\[\];/.test(line)
+      );
+      if (tokenIndex < 0) {
+        return slotCode;
+      }
+
+      const startIndex = expandBatchAccountCloneSafeRowTextAggregationStart(lines, rowVar, tokenIndex, 'rowText');
+      const indent = lines[startIndex]?.match(/^\s*/)?.[0] || '    ';
+      const replacement = buildBatchAccountSelectedRowOrderExtractionBlock(indent, rowVar, 'plan_step_2').split('\n');
+      lines.splice(startIndex, lines.length - startIndex, ...replacement);
+      return lines.join('\n');
+    }
+  );
+
+  next = replaceIntentExecutionSlotCode(
+    next,
     'plan_step_3',
     (slotCode) => {
+      if (
+        /artifacts\[['"]plan_step_2_selectable_row['"]\]/.test(slotCode) &&
+        /shared\.selectedOrderNo/.test(slotCode) &&
+        !/artifacts\.plan_step_3_targetRow/.test(slotCode)
+      ) {
+        const rowVar =
+          slotCode.match(/const\s+(\w+)\s*=\s*artifacts\[['"]plan_step_2_selectable_row['"]\];/)?.[1] ||
+          slotCode.match(/const\s+(\w+)\s*=\s*artifacts\[['"]plan_step_2_row['"]\];/)?.[1] ||
+          '';
+        if (!rowVar) {
+          return slotCode;
+        }
+
+        const lines = slotCode.split('\n');
+        const rowDeclarationIndex = lines.findIndex((line) =>
+          new RegExp(`const\\s+${rowVar}\\s*=\\s*artifacts\\[['"]plan_step_2_(?:selectable_row|row)['"]\\];`).test(line)
+        );
+        const missingGuardIndex =
+          rowDeclarationIndex >= 0
+            ? lines.findIndex(
+                (line, index) => index > rowDeclarationIndex && new RegExp(`if\\s*\\(!${rowVar}\\)`).test(line)
+              )
+            : -1;
+        const replacementStartIndex =
+          missingGuardIndex >= 0
+            ? missingGuardIndex
+            : rowDeclarationIndex >= 0
+              ? rowDeclarationIndex + 1
+              : lines.findIndex((line) =>
+                  new RegExp(
+                    [
+                      `const\\s+${rowVar}Key\\s*=\\s*\\(\\(await\\s+${rowVar}\\.getAttribute\\('data-row-key'\\)\\)\\s*\\|\\|\\s*''\\)\\.trim\\(\\);`,
+                      `const\\s+rowText\\s*=\\s*\\(?\\(?await\\s+${rowVar}\\.innerText\\(`,
+                      `let\\s+selectedOrderNo\\s*=\\s*'';`,
+                    ].join('|')
+                  ).test(line)
+                );
+        if (replacementStartIndex < 0) {
+          return slotCode;
+        }
+
+        const normalizedStartIndex = expandBatchAccountCloneSafeRowTextAggregationStart(
+          lines,
+          rowVar,
+          replacementStartIndex
+        );
+        const indent = lines[normalizedStartIndex]?.match(/^\s*/)?.[0] || '    ';
+        const replacement = [
+          ...(missingGuardIndex >= 0
+            ? [
+                `${indent}if (!${rowVar}) {`,
+                `${indent}  throw new Error('前置失败：缺少已勾选订单行，无法提取订单号');`,
+                `${indent}}`,
+              ]
+            : []),
+          ...buildBatchAccountSelectedRowOrderExtractionBlock(indent, rowVar, 'plan_step_3').split('\n'),
+        ];
+        lines.splice(normalizedStartIndex, lines.length - normalizedStartIndex, ...replacement);
+        return lines.join('\n');
+      }
+
+      if (
+        /await __e2e\.clickAntdRowCheckbox\(page,\s*\w+\);/.test(slotCode) &&
+        /shared\.selectedOrderNo/.test(slotCode) &&
+        /const\s+orderLink\s*=\s*\w+\.locator\('a'/.test(slotCode)
+      ) {
+        const rowVar =
+          slotCode.match(/let\s+(\w+)\s*=\s*null;/)?.[1] ||
+          slotCode.match(/const\s+(\w+)\s*=\s*await __e2e\.findAntdTableRow\(/)?.[1] ||
+          '';
+        if (!rowVar) {
+          return slotCode;
+        }
+
+        const lines = slotCode.split('\n');
+        const startIndex = lines.findIndex((line) =>
+          new RegExp(`const\\s+orderLink\\s*=\\s*${rowVar}\\.locator\\('a(?:[:]visible)?'`).test(line)
+        );
+        if (startIndex < 0) {
+          return slotCode;
+        }
+
+        const normalizedStartIndex = expandBatchAccountCloneSafeRowTextAggregationStart(lines, rowVar, startIndex);
+        const indent = lines[normalizedStartIndex]?.match(/^\s*/)?.[0] || '    ';
+        const replacement = buildBatchAccountSelectedRowOrderExtractionBlock(indent, rowVar, 'plan_step_3').split('\n');
+        lines.splice(normalizedStartIndex, lines.length - normalizedStartIndex, ...replacement);
+        return lines.join('\n');
+      }
+
+      if (
+        /let\s+\w+\s*=\s*null;/.test(slotCode) &&
+        /let\s+\w*OrderNo\s*=\s*'';/.test(slotCode) &&
+        /await __e2e\.clickAntdRowCheckbox\(page,\s*\w+\);/.test(slotCode) &&
+        /订单号提取失败：未能从已勾选行提取有效订单号/.test(slotCode)
+      ) {
+        const rowVar = slotCode.match(/let\s+(\w+)\s*=\s*null;/)?.[1] || '';
+        const rowsVar =
+          slotCode.match(/const\s+(\w+)\s*=\s*page\.locator\('\.ant-table-tbody tr\[data-row-key\]:visible'\);/)?.[1] ||
+          '';
+        const countVar =
+          rowVar && rowsVar
+            ? slotCode.match(new RegExp(`const\\s+(\\w+)\\s*=\\s*await\\s+${rowsVar}\\.count\\(\\);`))?.[1] || ''
+            : '';
+        if (!rowVar || !rowsVar || !countVar) {
+          return slotCode;
+        }
+
+        const lines = slotCode.split('\n');
+        const startIndex = lines.findIndex((line) => new RegExp(`let\\s+${rowVar}\\s*=\\s*null;`).test(line));
+        if (startIndex < 0) {
+          return slotCode;
+        }
+
+        const indent = lines[startIndex]?.match(/^\s*/)?.[0] || '    ';
+        const replacement = [
+          `${indent}let ${rowVar} = null;`,
+          `${indent}for (let i = 0; i < Math.min(${countVar}, 12); i += 1) {`,
+          `${indent}  const row = ${rowsVar}.nth(i);`,
+          `${indent}  try {`,
+          `${indent}    await __e2e.clickAntdRowCheckbox(page, row);`,
+          `${indent}    ${rowVar} = row;`,
+          `${indent}    break;`,
+          `${indent}  } catch {}`,
+          `${indent}}`,
+          `${indent}if (!${rowVar}) throw new Error('前置数据不足：未找到可勾选订单行');`,
+          buildBatchAccountSelectedRowOrderExtractionBlock(indent, rowVar, 'plan_step_3'),
+        ].join('\n').split('\n');
+        lines.splice(startIndex, lines.length - startIndex, ...replacement);
+        return lines.join('\n');
+      }
+
+      if (
+        /let\s+\w+\s*=\s*null;/.test(slotCode) &&
+        /await __e2e\.clickAntdRowCheckbox\(page,\s*\w+\);/.test(slotCode) &&
+        /const\s+rowText\s*=\s*await\s+\w+\.innerText\(\);/.test(slotCode) &&
+        /const\s+tokens\s*=\s*\(rowText\.match\(\/\[A-Za-z0-9_-\]\{6,\}\/g\)\s*\|\|\s*\[\]\)\.filter\(/.test(slotCode) &&
+        /shared\.selectedOrderNo\s*=\s*\(tokens\[0\]\s*\|\|\s*''\)\.trim\(\);/.test(slotCode)
+      ) {
+        const rowVar = slotCode.match(/let\s+(\w+)\s*=\s*null;/)?.[1] || '';
+        if (!rowVar) {
+          return slotCode;
+        }
+
+        const lines = slotCode.split('\n');
+        const startIndex = lines.findIndex((line) => new RegExp(`const\\s+rowText\\s*=\\s*await\\s+${rowVar}\\.innerText\\(\\);`).test(line));
+        const endIndex = lines.findIndex(
+          (line, index) => index >= startIndex && /artifacts\[['"]plan_step_3['"]\]\s*=/.test(line)
+        );
+        if (startIndex < 0 || endIndex < startIndex) {
+          return slotCode;
+        }
+
+        const indent = lines[startIndex]?.match(/^\s*/)?.[0] || '    ';
+        const replacement = buildBatchAccountSelectedRowOrderExtractionBlock(indent, rowVar, 'plan_step_3').split('\n');
+        lines.splice(startIndex, endIndex - startIndex + 1, ...replacement);
+        return lines.join('\n');
+      }
+
+      if (
+        /let\s+\w+\s*=\s*null;/.test(slotCode) &&
+        /shared\.selectedOrderNo/.test(slotCode) &&
+        /未能从已勾选(?:订单)?行提取(?:有效)?订单号/.test(slotCode)
+      ) {
+        const rowVar =
+          slotCode.match(/let\s+(\w+)\s*=\s*null;/)?.[1] ||
+          slotCode.match(/const\s+rowText\s*=\s*\(?await\s+(\w+)\.innerText\(\)/)?.[1] ||
+          '';
+        if (!rowVar) {
+          return slotCode;
+        }
+
+        const lines = slotCode.split('\n');
+        const startIndex = lines.findIndex((line) =>
+          new RegExp(
+            [
+              `const\\s+${rowVar}Key\\s*=\\s*\\(\\(await\\s+${rowVar}\\.getAttribute\\('data-row-key'\\)\\)\\s*\\|\\|\\s*''\\)\\.trim\\(\\);`,
+              `let\\s+selectedOrderNo\\s*=\\s*'';`,
+              `const\\s+orderNoCell\\s*=\\s*${rowVar}\\.locator\\('td'\\)`,
+              `const\\s+rowText\\s*=\\s*\\(?\\(?await\\s+${rowVar}\\.innerText\\(`,
+            ].join('|')
+          ).test(line)
+        );
+        if (startIndex < 0) {
+          return slotCode;
+        }
+
+        const normalizedStartIndex = expandBatchAccountCloneSafeRowTextAggregationStart(lines, rowVar, startIndex);
+        const indent = lines[normalizedStartIndex]?.match(/^\s*/)?.[0] || '    ';
+        const replacement = buildBatchAccountSelectedRowOrderExtractionBlock(indent, rowVar, 'plan_step_3').split('\n');
+        lines.splice(normalizedStartIndex, lines.length - normalizedStartIndex, ...replacement);
+        return lines.join('\n');
+      }
+
       const lines = slotCode.split('\n');
       const startIndex = lines.findIndex((line) =>
-        /const\s+rowText\s*=\s*await\s+\w+\.innerText\(\)(?:\.catch\(\(\)\s*=>\s*''\))?;/.test(line)
+        /const\s+rowText\s*=\s*(?:\(await\s+\w+\.innerText\(\)\.catch\(\(\)\s*=>\s*''\)\)\s*\|\|\s*''|await\s+\w+\.innerText\(\)(?:\.catch\(\(\)\s*=>\s*''\))?);/.test(
+          line
+        )
       );
       if (startIndex < 0) {
         return slotCode;
       }
 
-      const rowVar = lines[startIndex]?.match(/const\s+rowText\s*=\s*await\s+(\w+)\.innerText\(\)/)?.[1];
+      const rowVar = lines[startIndex]?.match(/const\s+rowText\s*=\s*\(?await\s+(\w+)\.innerText\(\)/)?.[1];
       if (!rowVar) {
         return slotCode;
       }
@@ -3757,7 +4444,7 @@ function sanitizeBatchAccountOrderExtraction(code: string): string {
       }
 
       const endIndex = lines.findIndex(
-        (line, index) => index >= startIndex && /shared\.selectedOrderNo\s*=\s*orderNo;/.test(line)
+        (line, index) => index >= startIndex && /shared\.selectedOrderNo\s*=/.test(line)
       );
       if (endIndex < 0) {
         return slotCode;
@@ -3773,7 +4460,7 @@ function sanitizeBatchAccountOrderExtraction(code: string): string {
         buildBatchAccountOrderNoCandidateAssignmentBlock(
           indent,
           'orderFromTokens',
-          "tokens.find((t) => { const raw = String(t || '').trim(); const normalized = raw.replace(/\\s+/g, ''); if (!/^(?:[A-Za-z0-9_-]{6,64}|\\d{12,64})$/.test(normalized)) return false; if (/^1\\d{10}$/.test(normalized)) return false; if (/^(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])$/.test(normalized)) return false; if (/^\\d+$/.test(normalized) && normalized.length < 12) return false; if (/^\\d+(?:\\.\\d{1,2})?$/.test(normalized) && (normalized.includes('.') || normalized.length <= 8)) return false; return true; }) || ''"
+          buildBatchAccountOrderNoTokenFindExpression('tokens')
         ),
         `${indent}const orderNo = orderFromLink || orderFromTokens;`,
         `${indent}shared.selectedOrderNo = orderNo;`,
@@ -3795,8 +4482,22 @@ function sanitizeBatchAccountOrderExtraction(code: string): string {
       buildBatchAccountOrderNoCandidateAssignmentBlock(
         indent,
         targetVar,
-        "tokens.find((t) => { const raw = String(t || '').trim(); const normalized = raw.replace(/\\s+/g, ''); if (!/^(?:[A-Za-z0-9_-]{6,64}|\\d{12,64})$/.test(normalized)) return false; if (/^1\\d{10}$/.test(normalized)) return false; if (/^(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])$/.test(normalized)) return false; if (/^\\d+$/.test(normalized) && normalized.length < 12) return false; if (/^\\d+(?:\\.\\d{1,2})?$/.test(normalized) && (normalized.includes('.') || normalized.length <= 8)) return false; return true; }) || ''"
+        buildBatchAccountOrderNoTokenFindExpression('tokens')
       )
+  );
+  next = next.replace(
+    /^(\s*)if \(await (\w+)\.count\(\)\) \{\n\1\s*(\w+)\s*=\s*\(await \2\.innerText\(\)\.catch\(\(\)\s*=>\s*''\)\)\.trim\(\);\n\1\}\s*$/gm,
+    (_full, indent: string, linkVar: string, targetVar: string) =>
+      [
+        `${indent}if (await ${linkVar}.count()) {`,
+        buildBatchAccountOrderNoConditionalAssignmentBlock(
+          indent,
+          `${targetVar}FromLink`,
+          `(await ${linkVar}.innerText().catch(() => '')).trim()`,
+          targetVar
+        ),
+        `${indent}}`,
+      ].join('\n')
   );
   next = next.replace(
     /^(\s*)if \((\w+) && !\/\^1\\d\{10\}\$\/\.test\(\2\) && !\/\^\\d\+\(\?:\\\.\\d\{1,2\}\)\?\$\/\.test\(\2\) && \/[^/]+\/\.test\(\2\)\) \{\n\1\s*(\w+)\s*=\s*\2;\n\1\s*break;\n\1\}\s*$/gm,
@@ -3804,14 +4505,43 @@ function sanitizeBatchAccountOrderExtraction(code: string): string {
       buildBatchAccountOrderNoExtractedAssignmentBlock(indent, `${sourceVar}OrderNo`, sourceVar, targetVar)
   );
   next = next.replace(
+    /^(\s*)if \((\w+) && !\/\^1\\d\{10\}\$\/\.test\(\2\)\) \{\n\1\s*(\w+)\s*=\s*\2;\n\1\s*break;\n\1\}\s*$/gm,
+    (_full, indent: string, sourceVar: string, targetVar: string) =>
+      buildBatchAccountOrderNoExtractedAssignmentBlock(indent, `${sourceVar}OrderNo`, sourceVar, targetVar)
+  );
+  next = next.replace(
+    /^(\s*)if \((\w+) && !\/\^1\\d\{10\}\$\/\.test\(\2\)\)\s*(\w+)\s*=\s*\2;\s*$/gm,
+    (_full, indent: string, sourceVar: string, targetVar: string) =>
+      buildBatchAccountOrderNoExtractedAssignmentBlock(indent, `${sourceVar}OrderNo`, sourceVar, targetVar, false)
+  );
+  next = next.replace(
     /^(\s*)const\s+\w+\s*=\s*tokens\.filter\(\(t\)\s*=>\s*\/\^\[A-Za-z0-9_-\]\{6,\}\$\/\.test\(t\)\s*&&\s*!\/\^1\\d\{10\}\$\/\.test\(t\)\s*&&\s*!\/\^\\d\+\(\?:\\\.\\d\{1,2\}\)\?\$\/\.test\(t\)\);\n\1if \(\w+\.length\) \{\n\1\s*(\w+)\s*=\s*\w+\[0\];\n\1\s*break;\n\1\}\s*$/gm,
     (_full, indent: string, targetVar: string) =>
       buildBatchAccountOrderNoExtractedAssignmentBlock(
         indent,
         'orderToken',
-        "tokens.find((t) => { const raw = String(t || '').trim(); const normalized = raw.replace(/\\s+/g, ''); if (!/^(?:[A-Za-z0-9_-]{6,64}|\\d{12,64})$/.test(normalized)) return false; if (/^1\\d{10}$/.test(normalized)) return false; if (/^(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])$/.test(normalized)) return false; if (/^\\d+$/.test(normalized) && normalized.length < 12) return false; if (/^\\d+(?:\\.\\d{1,2})?$/.test(normalized) && (normalized.includes('.') || normalized.length <= 8)) return false; return true; }) || ''",
+        buildBatchAccountOrderNoTokenFindExpression('tokens'),
         targetVar
       )
+  );
+  next = next.replace(
+    /^(\s*)const\s+(\w+)\s*=\s*tokens\.find\(\(\w+\)\s*=>\s*!\/\^1\\d\{10\}\$\/\.test\(\w+\)\s*&&\s*!\/\^\\d\+.*?\$\/\.test\(\w+\)\)(?:\s*\|\|\s*''\s*)?;\s*\n\1if \(\2\) \{\n\1\s*(\w+)\s*=\s*\2;\n\1\s*break;\n\1\}\s*$/gm,
+    (_full, indent: string, sourceVar: string, targetVar: string) =>
+      [
+        `${indent}const ${sourceVar} = ${buildBatchAccountOrderNoTokenFindExpression('tokens')};`,
+        `${indent}if (${sourceVar}) {`,
+        `${indent}  ${targetVar} = ${sourceVar};`,
+        `${indent}  break;`,
+        `${indent}}`,
+      ].join('\n')
+  );
+  next = next.replace(
+    /^(\s*)(\w+)\s*=\s*tokens\.find\(\(t\)\s*=>\s*!\/\^1\\d\{10\}\$\/\.test\(t\)\s*&&\s*!\/\^\\d\+.*?\$\/\.test\(t\)\)\s*\|\|\s*'';\s*$/gm,
+    (_full, indent: string, targetVar: string) =>
+      [
+        `${indent}const ${targetVar}Token = ${buildBatchAccountOrderNoTokenFindExpression('tokens')};`,
+        `${indent}${targetVar} = ${targetVar}Token;`,
+      ].join('\n')
   );
   next = next.replace(
     /^(\s*)if \((\w+) && !\/\^1\\d\{10\}\$\/\.test\(\2\) && !\/\^\\d\+\(\?:\\\.\\d\{1,2\}\)\?\$\/\.test\(\2\)\)\s*(\w+)\s*=\s*\2;\s*$/gm,
@@ -3839,16 +4569,32 @@ function sanitizeBatchAccountOrderExtraction(code: string): string {
     "if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = true;"
   );
   next = next.replace(
-    /expect\(shared\.selectedOrderNo\)\.toBeTruthy\(\);/g,
+    /if\s*\(!shared\.selectedOrderNo\)\s*throw new Error\(['"]提取订单号失败：selectedOrderNo 为空['"]\);/g,
     "if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = true;"
   );
   next = next.replace(
-    /expect\(shared\.selectedServiceItem\)\.toBeTruthy\(\);/g,
-    "if (!shared.selectedServiceItem) artifacts['selectedServiceItem_missing_before_modal'] = true;"
+    /if\s*\(!(\w+)\)\s*throw new Error\(['"]提取订单号失败：未获得非空 selectedOrderNo['"]\);/g,
+    "if (!$1) artifacts['selectedOrderNo_missing_before_modal'] = true;"
   );
   next = next.replace(
-    /expect\(shared\.selectedAmount\)\.toBeTruthy\(\);/g,
-    "if (!shared.selectedAmount) artifacts['selectedAmount_missing_before_modal'] = true;"
+    /^(\s*)if \(!(\w+)\) \{\n\1\s*throw new Error\(['"]提取订单号失败：未获得非空 selectedOrderNo['"]\);\n\1\}\s*$/gm,
+    "$1if (!$2) artifacts['selectedOrderNo_missing_before_modal'] = true;"
+  );
+  next = next.replace(
+    /^(\s*)if \(!(\w+)\) \{\n\1\s*throw new Error\(['"]未能从[“"]待申请入账[”"]记录中提取到有效订单号['"]\);\n\1\}\s*$/gm,
+    '$1if (!$2) artifacts[\'selectedOrderNo_missing_before_modal\'] = true;'
+  );
+  next = next.replace(
+    /^(\s*)(?:await\s+)?expect\(shared\.selectedOrderNo\)\.toBeTruthy\(\);\s*$/gm,
+    "$1if (!shared.selectedOrderNo) artifacts['selectedOrderNo_missing_before_modal'] = true;"
+  );
+  next = next.replace(
+    /^(\s*)(?:await\s+)?expect\(shared\.selectedServiceItem\)\.toBeTruthy\(\);\s*$/gm,
+    "$1if (!shared.selectedServiceItem) artifacts['selectedServiceItem_missing_before_modal'] = true;"
+  );
+  next = next.replace(
+    /^(\s*)(?:await\s+)?expect\(shared\.selectedAmount\)\.toBeTruthy\(\);\s*$/gm,
+    "$1if (!shared.selectedAmount) artifacts['selectedAmount_missing_before_modal'] = true;"
   );
   return next;
 }
@@ -3923,9 +4669,9 @@ function buildBatchAccountVisibleKeywordInputBindingLines(indent: string, variab
   const placeholderVar = `${variableName}ByPlaceholder`;
   const idVar = `${variableName}ById`;
   return [
-    `${indent}const ${placeholderVar} = ${BATCH_ACCOUNT_VISIBLE_KEYWORD_INPUT_BY_PLACEHOLDER};`,
     `${indent}const ${idVar} = ${BATCH_ACCOUNT_VISIBLE_KEYWORD_INPUT_BY_ID};`,
-    `${indent}const ${variableName} = (await ${placeholderVar}.count()) ? ${placeholderVar} : ${idVar};`,
+    `${indent}const ${placeholderVar} = ${BATCH_ACCOUNT_VISIBLE_KEYWORD_INPUT_BY_PLACEHOLDER};`,
+    `${indent}const ${variableName} = (await ${idVar}.count()) ? ${idVar} : ${placeholderVar};`,
   ];
 }
 
@@ -3941,7 +4687,7 @@ function resolveBatchAccountLookupUrlIncludes(block: string): string {
 function sanitizeBatchAccountAccountListLookupSlot(slotCode: string): string {
   const lines = slotCode.split('\n');
   let startIndex = lines.findIndex((line) =>
-    /page\.(?:locator\(['"](?:input)?#(?:form_in_modal_testKeyWord|service-data-item_keyWord)(?::visible)?['"]\)(?:\.first\(\))?|getByPlaceholder\(['"]请输入关键词['"]\)(?:\.first\(\))?)/.test(
+    /page\.(?:locator\([^\n]*(?:form_in_modal_testKeyWord|service-data-item_keyWord|请输入关键词)[^\n]*\)(?:\.first\(\))?|getByPlaceholder\(['"]请输入关键词['"]\)(?:\.first\(\))?)/.test(
       line
     )
   );
@@ -4034,15 +4780,129 @@ function sanitizeBatchAccountAccountListLookup(code: string): string {
   return next;
 }
 
+function looksLikeBatchAccountBookedMgmtLookupSlot(slotCode: string): boolean {
+  return (
+    /shared\.selectedOrderNo/.test(slotCode) &&
+    /(?:fill\(\s*shared\.selectedOrderNo\s*\)|resolvePrimaryRecord\(|listResponse:\s*\{\s*urlIncludes:\s*['"]\/(?:payment|booked|account)['"])/.test(
+      slotCode
+    ) &&
+    /(?:搜\s*索|查\s*询|请输入关键词|form_in_modal_testKeyWord|service-data-item_keyWord)/.test(slotCode) &&
+    !/observeSubmitState\(/.test(slotCode)
+  );
+}
+
+function buildBatchAccountStep6LookupResolveBlock(
+  indent: string,
+  rowVar = 'recordRow',
+  recordVar = 'recordCheck',
+  listUrlIncludes = '/payment'
+): string {
+  return [
+    `${indent}if (!shared.selectedOrderNo) throw new Error('selectedOrderNo 为空，无法执行检索');`,
+    `${indent}const BOOKED_URL = /#\\/payment\\/bookedMgmt/i;`,
+    `${indent}if (!BOOKED_URL.test(page.url())) {`,
+    `${indent}  await page.goto('https://uat-service.yikaiye.com/#/payment/bookedMgmt', { waitUntil: 'domcontentloaded' });`,
+    `${indent}}`,
+    `${indent}await expect(page).toHaveURL(BOOKED_URL, { timeout: 30000 });`,
+    ...buildBatchAccountVisibleKeywordInputBindingLines(indent),
+    `${indent}await expect(keywordInput).toBeVisible({ timeout: 20000 });`,
+    `${indent}const searchBtn = page.getByRole('button', { name: /搜\\s*索|查\\s*询/i }).first();`,
+    `${indent}await expect(searchBtn).toBeVisible({ timeout: 10000 });`,
+    `${indent}const ${recordVar} = await __e2e.resolvePrimaryRecord(page, {`,
+    `${indent}  primaryValue: shared.selectedOrderNo,`,
+    `${indent}  keywordInput,`,
+    `${indent}  searchButton: searchBtn,`,
+    `${indent}  preferCurrentVisibleRow: false,`,
+    `${indent}  listResponse: { urlIncludes: '${listUrlIncludes}', method: 'GET' },`,
+    `${indent}  listResponseTimeoutMs: 900,`,
+    `${indent}  rowHasTexts: [shared.selectedOrderNo],`,
+    `${indent}  allowMultipleUniqueMatches: true,`,
+    `${indent}  timeoutMs: 9000,`,
+    `${indent}  surfaceTimeoutMs: 1800,`,
+    `${indent}  inputTimeoutMs: 900,`,
+    `${indent}  searchButtonTimeoutMs: 500,`,
+    `${indent}  postFillSettleMs: 80,`,
+    `${indent}  busyTimeoutMs: 1200,`,
+    `${indent}  busyObserveWindowMs: 240,`,
+    `${indent}  rowTimeoutMs: 2200,`,
+    `${indent}  relaxedRowTimeoutMs: 1200,`,
+    `${indent}  maxLookupAttempts: 2,`,
+    `${indent}  retryIntervalMs: 250,`,
+    `${indent}});`,
+    `${indent}artifacts['plan_step_6'] = ${recordVar}.response;`,
+    `${indent}if (!${recordVar}.row) throw new Error(\`入账列表未找到订单号=\${shared.selectedOrderNo} 的记录\`);`,
+    `${indent}const ${rowVar} = ${recordVar}.row;`,
+    `${indent}artifacts['plan_step_6_record'] = ${recordVar};`,
+    `${indent}artifacts['plan_step_6_row'] = ${rowVar};`,
+    `${indent}if (!artifacts['plan_step_7']) artifacts['plan_step_7'] = ${recordVar}.response;`,
+    `${indent}if (!artifacts['plan_step_7_record']) artifacts['plan_step_7_record'] = ${recordVar};`,
+    `${indent}if (!artifacts['plan_step_7_row']) artifacts['plan_step_7_row'] = ${rowVar};`,
+  ].join('\n');
+}
+
+function sanitizeBatchAccountBookedMgmtLookupStep6Slot(slotCode: string): string {
+  if (!looksLikeBatchAccountBookedMgmtLookupSlot(slotCode)) {
+    return slotCode;
+  }
+  if (
+    /const BOOKED_URL = \/#[\\/]payment[\\/]bookedMgmt\/i;/.test(slotCode) &&
+    /\bkeywordInputById\b/.test(slotCode) &&
+    /artifacts\['plan_step_6_record'\]\s*=/.test(slotCode)
+  ) {
+    return slotCode;
+  }
+
+  const lines = slotCode.split('\n');
+  let startIndex = lines.findIndex((line) =>
+    /page\.(?:locator\([^\n]*(?:form_in_modal_testKeyWord|service-data-item_keyWord|请输入关键词)[^\n]*\)(?:\.first\(\))?|getByPlaceholder\(['"]请输入关键词['"]\)(?:\.first\(\))?)/.test(
+      line
+    )
+  );
+  if (startIndex < 0) {
+    startIndex = lines.findIndex((line) => /fill\(\s*shared\.selectedOrderNo\s*\)/.test(line));
+  }
+  if (startIndex < 0) {
+    return slotCode;
+  }
+  const preludeIndex = lines.findIndex(
+    (line, index) =>
+      index < startIndex &&
+      /if\s*\(!shared\.selectedOrderNo\)|const BOOKED_URL = \/#[\\/]payment[\\/]bookedMgmt\/i;|if\s*\(!page\.url\(\)\.includes\('#\/payment\/bookedMgmt'\)\)|await expect\(page\)\.toHaveURL\(/.test(
+        line
+      )
+  );
+  if (preludeIndex >= 0) {
+    startIndex = preludeIndex;
+  }
+
+  const indent = lines[startIndex]?.match(/^\s*/)?.[0] || '    ';
+  const listUrlIncludes = resolveBatchAccountLookupUrlIncludes(slotCode);
+  const replacement = buildBatchAccountStep6LookupResolveBlock(indent, 'recordRow', 'recordCheck', listUrlIncludes).split(
+    '\n'
+  );
+  lines.splice(startIndex, lines.length - startIndex, ...replacement);
+  return lines.join('\n');
+}
+
+function sanitizeBatchAccountBookedMgmtLookupStep6(code: string): string {
+  return replaceIntentExecutionSlotCode(
+    code,
+    'plan_step_6',
+    sanitizeBatchAccountBookedMgmtLookupStep6Slot
+  );
+}
+
 function sanitizeBatchAccountOrderExistenceLookups(code: string): string {
   let next = code.replace(
-    /\browHasTexts:\s*\[shared\.selectedOrderNo\],(\s*)(?!allowMultipleUniqueMatches\s*:)/g,
-    'rowHasTexts: [shared.selectedOrderNo],$1allowMultipleUniqueMatches: true,$1'
+    /\browHasTexts:\s*\[shared\.selectedOrderNo\](\s*,)?(\s*)(?!allowMultipleUniqueMatches\s*:)/g,
+    (_full, comma: string | undefined, whitespace: string) =>
+      `rowHasTexts: [shared.selectedOrderNo],${whitespace}allowMultipleUniqueMatches: true${comma ? ',' : ''}${whitespace}`
   );
 
   next = next.replace(
-    /\bhasTexts:\s*\[shared\.selectedOrderNo\],(\s*)(?!allowMultipleUniqueMatches\s*:)/g,
-    'hasTexts: [shared.selectedOrderNo],$1allowMultipleUniqueMatches: true,$1'
+    /\bhasTexts:\s*\[shared\.selectedOrderNo\](\s*,)?(\s*)(?!allowMultipleUniqueMatches\s*:)/g,
+    (_full, comma: string | undefined, whitespace: string) =>
+      `hasTexts: [shared.selectedOrderNo],${whitespace}allowMultipleUniqueMatches: true${comma ? ',' : ''}${whitespace}`
   );
 
   next = next.replace(
@@ -4116,19 +4976,41 @@ function sanitizeBatchAccountOrderExistenceRowReuse(code: string): string {
 }
 
 function sanitizeBatchAccountBookedMgmtStep6TransitionSlot(slotCode: string): string {
+  if (
+    looksLikeBatchAccountBookedMgmtLookupSlot(slotCode) ||
+    slotCode.includes("artifacts['plan_step_6_record']") ||
+    /const\s+\w+\s*=\s*await __e2e\.resolvePrimaryRecord\(page,\s*\{/.test(slotCode)
+  ) {
+    return slotCode;
+  }
+
   const hasBookedMgmtTarget =
-    /(?:#\\\/payment\\\/bookedMgmt|https:\/\/uat-service\.yikaiye\.com\/#\/payment\/bookedMgmt)/.test(slotCode);
+    /(?:#\\\/payment\\\/bookedMgmt|https:\/\/uat-service\.yikaiye\.com\/#\/payment\/bookedMgmt|bookedMgmt|入账管理|入账确认)/.test(
+      slotCode
+    );
   const hasTransitionCheck =
     /page\.waitForURL\(|expect\(page\)\.toHaveURL\(|page\.url\(\)\.includes\('#\/payment\/bookedMgmt'\)/.test(slotCode);
   const hasUrlArtifact =
     /artifacts(?:\[['"]plan_step_6['"]\]|\.plan_step_6)\s*=\s*\{[\s\S]*?url:\s*page\.url\(\)/.test(slotCode);
+  const hasStep6Artifact = /artifacts(?:\[['"]plan_step_6['"]\]|\.plan_step_6)\s*=/.test(slotCode);
+  const hasSearchSurface =
+    /请输入关键词|form_in_modal_testKeyWord|service-data-item_keyWord|getByRole\('button', \{ name: \/搜\\s\*索|查\\s\*询/.test(
+      slotCode
+    );
   const hasSubmitInteraction =
     /waitForApiResponse\(|observeSubmitState\(|waitForVisibleAntdModal\(|titleIncludes:\s*['"]批量申请入账['"]|confirmBtn|submitBtn/.test(
       slotCode
     );
   const alreadyHardened = /const BOOKED_URL = \/#[\\/]payment[\\/]bookedMgmt\/i;/.test(slotCode);
 
-  if (!hasBookedMgmtTarget || !hasTransitionCheck || !hasUrlArtifact || hasSubmitInteraction || alreadyHardened) {
+  if (
+    !hasBookedMgmtTarget ||
+    !hasTransitionCheck ||
+    !hasStep6Artifact ||
+    (!hasSearchSurface && !hasUrlArtifact) ||
+    hasSubmitInteraction ||
+    alreadyHardened
+  ) {
     return slotCode;
   }
 
@@ -4143,6 +5025,8 @@ function sanitizeBatchAccountBookedMgmtStep6TransitionSlot(slotCode: string): st
     `${indent}await expect(keywordInput).toBeVisible({ timeout: 20000 });`,
     `${indent}const searchBtn = page.getByRole('button', { name: /搜\\s*索/i }).first();`,
     `${indent}await expect(searchBtn).toBeVisible({ timeout: 10000 });`,
+    `${indent}const clearBtn = page.getByRole('button', { name: '全部清除' }).first();`,
+    `${indent}await expect(clearBtn).toBeVisible({ timeout: 10000 });`,
     `${indent}artifacts['plan_step_6'] = {`,
     `${indent}  url: page.url(),`,
     `${indent}  ready: true,`,
@@ -4160,16 +5044,23 @@ function sanitizeBatchAccountBookedMgmtStep6Transition(code: string): string {
 }
 
 function sanitizeBatchAccountBookedMgmtSubmitUrlFallbackSlot(slotCode: string): string {
+  const hasBookedMgmtUrlAssertion =
+    /await expect\(page\)\.toHaveURL\(\/#\\\/payment\\\/bookedMgmt\/[dgimsuvy]*,\s*\{\s*timeout:\s*\d+\s*\}\);/.test(
+      slotCode
+    );
+  const hasStableKeywordBinding = /\bkeywordInputByPlaceholder\b/.test(slotCode) && /\bkeywordInputById\b/.test(slotCode);
+  const hasKeywordInputDeclaration = /\bconst\s+keywordInput\s*=/.test(slotCode);
+  const hasSearchButtonDeclaration = /\bconst\s+searchBtn\s*=/.test(slotCode);
   if (
     !/observeSubmitState\(page,\s*\{[\s\S]*urlIncludes:\s*['"]#\/payment\/bookedMgmt['"][\s\S]*\}\);/.test(slotCode) ||
-    !/await expect\(page\)\.toHaveURL\(\/#\\\/payment\\\/bookedMgmt\/i,\s*\{\s*timeout:\s*30000\s*\}\);/.test(slotCode) ||
+    !hasBookedMgmtUrlAssertion ||
     /page\.goto\('https:\/\/uat-service\.yikaiye\.com\/#\/payment\/bookedMgmt'/.test(slotCode)
   ) {
     return slotCode;
   }
 
   return slotCode.replace(
-    /^(\s*)await expect\(page\)\.toHaveURL\(\/#\\\/payment\\\/bookedMgmt\/i,\s*\{\s*timeout:\s*30000\s*\}\);\s*$/m,
+    /^(\s*)await expect\(page\)\.toHaveURL\(\/#\\\/payment\\\/bookedMgmt\/[dgimsuvy]*,\s*\{\s*timeout:\s*\d+\s*\}\);\s*$/m,
     [
       `$1if (!page.url().includes('#/payment/bookedMgmt')) {`,
       `$1  const bookedMgmtAnchor = page.getByRole('tab', { name: /入账确认|入账历史/i }).first();`,
@@ -4178,12 +5069,16 @@ function sanitizeBatchAccountBookedMgmtSubmitUrlFallbackSlot(slotCode: string): 
       `$1  }`,
       `$1}`,
       `$1await expect(page).toHaveURL(/#\\/payment\\/bookedMgmt/i, { timeout: 30000 });`,
-      `$1const keywordInputByPlaceholder = ${BATCH_ACCOUNT_VISIBLE_KEYWORD_INPUT_BY_PLACEHOLDER};`,
-      `$1const keywordInputById = ${BATCH_ACCOUNT_VISIBLE_KEYWORD_INPUT_BY_ID};`,
-      `$1const keywordInput = (await keywordInputByPlaceholder.count()) ? keywordInputByPlaceholder : keywordInputById;`,
-      `$1await expect(keywordInput).toBeVisible({ timeout: 20000 });`,
-      `$1const searchBtn = page.getByRole('button', { name: /搜\\s*索/i }).first();`,
-      `$1await expect(searchBtn).toBeVisible({ timeout: 10000 });`,
+      ...(hasStableKeywordBinding || hasKeywordInputDeclaration
+        ? []
+        : [
+            `$1const keywordInputById = ${BATCH_ACCOUNT_VISIBLE_KEYWORD_INPUT_BY_ID};`,
+            `$1const keywordInputByPlaceholder = ${BATCH_ACCOUNT_VISIBLE_KEYWORD_INPUT_BY_PLACEHOLDER};`,
+            `$1const keywordInput = (await keywordInputById.count()) ? keywordInputById : keywordInputByPlaceholder;`,
+          ]),
+      ...(hasKeywordInputDeclaration ? [] : [`$1await expect(keywordInput).toBeVisible({ timeout: 20000 });`]),
+      ...(hasSearchButtonDeclaration ? [] : [`$1const searchBtn = page.getByRole('button', { name: /搜\\s*索/i }).first();`]),
+      ...(hasSearchButtonDeclaration ? [] : [`$1await expect(searchBtn).toBeVisible({ timeout: 10000 });`]),
     ].join('\n')
   );
 }
@@ -4203,27 +5098,198 @@ function sanitizeBatchAccountPlanStep7ArtifactAliases(code: string): string {
   );
 }
 
-function sanitizeBatchAccountBookedMgmtSurfaceChecks(code: string): string {
-  let next = code.replace(
+function sanitizeBatchAccountPrematureBookedMgmtSurfaceChecksSlot(slotCode: string): string {
+  const referencesBookedMgmtSurface =
+    /#\/payment\/bookedMgmt|BOOKED_URL|service-data-item_keyWord|form_in_modal_testKeyWord|请输入关键词/.test(slotCode);
+  const alreadyEnteredBookedMgmt =
+    /#\\\/payment\\\/bookedMgmt|page\.goto\('https:\/\/uat-service\.yikaiye\.com\/#\/payment\/bookedMgmt'|page\.url\(\)\.includes\('#\/payment\/bookedMgmt'\)|await expect\(page\)\.toHaveURL\(\/#\\\/payment\\\/bookedMgmt/.test(
+      slotCode
+    );
+  if (!referencesBookedMgmtSurface || alreadyEnteredBookedMgmt) {
+    return slotCode;
+  }
+
+  const blockedVarNames = new Set<string>();
+  let next = slotCode.replace(
+    /^(\s*)const\s+(\w+)\s*=\s*page\.locator\(['"][^'"\n]*(?:form_in_modal_testKeyWord|service-data-item_keyWord)[^'"\n]*['"]\)\.first\(\);\n\1await expect\(\2\)\.toBeVisible\((?:\{ timeout: \d+ \})?\);\n?/gm,
+    (_full, _indent: string, keywordVar: string) => {
+      blockedVarNames.add(keywordVar);
+      return '';
+    }
+  );
+
+  next = next.replace(
+    /^(\s*)const\s+(\w+)\s*=\s*page\.locator\(['"][^'"\n]*(?:form_in_modal_testKeyWord|service-data-item_keyWord)[^'"\n]*['"]\)\.first\(\);\s*$/gm,
+    (_full, _indent: string, keywordVar: string) => {
+      blockedVarNames.add(keywordVar);
+      return '';
+    }
+  );
+
+  next = next.replace(
+    /^\s*await expect\(page\.locator\(['"][^'"\n]*(?:form_in_modal_testKeyWord|service-data-item_keyWord)[^'"\n]*['"]\)(?:\.first\(\))?\)\.toBeVisible\((?:\{ timeout: \d+ \})?\);\s*$/gm,
+    ''
+  );
+
+  next = next.replace(
+    /^(\s*)const\s+(\w+)\s*=\s*page\.getByPlaceholder\('请输入关键词'\)\.first\(\);\n\1await expect\(\2\)\.toBeVisible\((?:\{ timeout: \d+ \})?\);\n?/gm,
+    (_full, _indent: string, keywordVar: string) => {
+      blockedVarNames.add(keywordVar);
+      return '';
+    }
+  );
+
+  next = next.replace(
+    /^(\s*)const\s+(\w+)\s*=\s*page\.getByPlaceholder\('请输入关键词'\)\.first\(\);\s*$/gm,
+    (_full, _indent: string, keywordVar: string) => {
+      blockedVarNames.add(keywordVar);
+      return '';
+    }
+  );
+
+  next = next.replace(
+    /^\s*await expect\(page\.getByPlaceholder\('请输入关键词'\)\.first\(\)\)\.toBeVisible\((?:\{ timeout: \d+ \})?\);\s*$/gm,
+    ''
+  );
+
+  next = next.replace(
+    /^(\s*)await expect\((?:page\.locator\(['"][^'"\n]*(?:form_in_modal_testKeyWord|service-data-item_keyWord)[^'"\n]*['"]\)(?:\.first\(\))?|page\.getByPlaceholder\('请输入关键词'\)\.first\(\))\.or\(([^)\n]+)\)\)\.toBeVisible\(\{\s*timeout:\s*(\d+)\s*\}\);\s*$/gm,
+    '$1await expect($2).toBeVisible({ timeout: $3 });'
+  );
+
+  next = next.replace(
+    /^(\s*)await expect\(([^)\n]+)\.or\((?:page\.locator\(['"][^'"\n]*(?:form_in_modal_testKeyWord|service-data-item_keyWord)[^'"\n]*['"]\)(?:\.first\(\))?|page\.getByPlaceholder\('请输入关键词'\)\.first\(\))\)\)\.toBeVisible\(\{\s*timeout:\s*(\d+)\s*\}\);\s*$/gm,
+    '$1await expect($2).toBeVisible({ timeout: $3 });'
+  );
+
+  for (const blockedVarName of blockedVarNames) {
+    const blockedVarPattern = escapeForRegExp(blockedVarName);
+    next = next.replace(
+      new RegExp(
+        `^(\\s*)await expect\\(${blockedVarPattern}\\.or\\((\\w+)\\)\\)\\.toBeVisible\\(\\{\\s*timeout:\\s*(\\d+)\\s*\\}\\);\\s*$`,
+        'gm'
+      ),
+      '$1await expect($2).toBeVisible({ timeout: $3 });'
+    );
+    next = next.replace(
+      new RegExp(
+        `^(\\s*)await expect\\((\\w+)\\.or\\(${blockedVarPattern}\\)\\)\\.toBeVisible\\(\\{\\s*timeout:\\s*(\\d+)\\s*\\}\\);\\s*$`,
+        'gm'
+      ),
+      '$1await expect($2).toBeVisible({ timeout: $3 });'
+    );
+    next = next.replace(
+      new RegExp(`^(\\s*)await expect\\(${blockedVarPattern}\\)\\.toBeVisible\\((?:\\{ timeout: \\d+ \\})?\\);\\s*$`, 'gm'),
+      ''
+    );
+  }
+
+  return next;
+}
+
+function sanitizeBatchAccountPrematureBookedMgmtSurfaceChecks(code: string): string {
+  let next = replaceIntentExecutionSlotCode(
+    code,
+    'plan_step_1',
+    sanitizeBatchAccountPrematureBookedMgmtSurfaceChecksSlot
+  );
+  next = replaceIntentExecutionSlotCode(
+    next,
+    'plan_step_2',
+    sanitizeBatchAccountPrematureBookedMgmtSurfaceChecksSlot
+  );
+  next = replaceIntentExecutionSlotCode(
+    next,
+    'plan_step_3',
+    sanitizeBatchAccountPrematureBookedMgmtSurfaceChecksSlot
+  );
+  next = replaceIntentExecutionSlotCode(
+    next,
+    'plan_step_4',
+    sanitizeBatchAccountPrematureBookedMgmtSurfaceChecksSlot
+  );
+  return next;
+}
+
+function sanitizeBatchAccountBookedMgmtSurfaceChecksSlot(slotCode: string): string {
+  let next = slotCode.replace(
     /^\s*const\s+\w+\s*=\s*page\.getByText\('管帮手服务中心'\)\.first\(\);\n\s*await expect\(\w+\)\.toBeVisible\(\{ timeout: \d+ \}\);\s*$/gm,
     ''
   );
 
   next = next.replace(
-    /^\s*await expect\(page\.getByPlaceholder\('请输入关键词'\)\.first\(\)\)\.toBeVisible\(\{ timeout: \d+ \}\);\s*$/gm,
+    /^\s*await expect\(page\.getByPlaceholder\('请输入关键词'\)\.first\(\)\)\.toBeVisible\((?:\{ timeout: \d+ \})?\);\s*$/gm,
     ''
   );
 
   next = next.replace(
-    /^(\s*)const\s+\w+\s*=\s*page\.locator\('input#form_in_modal_testKeyWord:visible'\)\.first\(\);\n\1if \(await \w+\.count\(\)\) \{\n\1\s*await expect\(\w+\)\.toBeVisible\(\{ timeout: \d+ \}\);\n\1\} else \{\n\1\s*await expect\(page\.getByRole\('button', \{ name: \/搜\\s\*索\/i \}\)\.first\(\)\)\.toBeVisible\(\{ timeout: \d+ \}\);\n\1\}\s*$/gm,
+    /^(\s*)const\s+(\w+)\s*=\s*page\.getByPlaceholder\('请输入关键词'\)\.first\(\);\s*$/gm,
+    (full, indent: string, keywordVar: string) =>
+      /By(?:Id|Placeholder)$/.test(keywordVar)
+        ? full
+        : buildBatchAccountVisibleKeywordInputBindingLines(indent, keywordVar).join('\n')
+  );
+
+  next = next.replace(
+    /^(\s*)const\s+(\w+)\s*=\s*page\.locator\(['"][^'"\n]*(?:form_in_modal_testKeyWord|service-data-item_keyWord)[^'"\n]*['"]\)\.first\(\);\s*$/gm,
+    (full, indent: string, keywordVar: string) =>
+      /By(?:Id|Placeholder)$/.test(keywordVar)
+        ? full
+        : buildBatchAccountVisibleKeywordInputBindingLines(indent, keywordVar).join('\n')
+  );
+
+  next = next.replace(
+    /^\s*await expect\(page\.locator\(['"][^'"\n]*(?:form_in_modal_testKeyWord|service-data-item_keyWord)[^'"\n]*['"]\)\.first\(\)\)\.toBeVisible\((?:\{ timeout: \d+ \})?\);\s*$/gm,
+    ''
+  );
+
+  if (looksLikeBatchAccountBookedMgmtLookupSlot(next)) {
+    return next;
+  }
+
+  next = next.replace(
+    /^(\s*)const\s+\w+\s*=\s*page\.locator\('input#form_in_modal_testKeyWord:visible'\)\.first\(\);\n\1if \(await \w+\.count\(\)\) \{\n\1\s*await expect\(\w+\)\.toBeVisible\((?:\{ timeout: \d+ \})?\);\n\1\} else \{\n\1\s*await expect\(page\.getByRole\('button', \{ name: \/搜\\s\*索\/i \}\)\.first\(\)\)\.toBeVisible\((?:\{ timeout: \d+ \})?\);\n\1\}\s*$/gm,
     ''
   );
 
   next = next.replace(
-    /^(\s*)const\s+\w+\s*=\s*page\.locator\('input#form_in_modal_testKeyWord:visible'\)\.first\(\);\n\1const\s+\w+\s*=\s*page\.getByPlaceholder\('请输入关键词'\)\.first\(\);\n\1if \(await \w+\.count\(\)\) \{\n\1\s*await expect\(\w+\)\.toBeVisible\(\{ timeout: \d+ \}\);\n\1\} else \{\n\1\s*await expect\(\w+\)\.toBeVisible\(\{ timeout: \d+ \}\);\n\1\}\s*$/gm,
+    /^(\s*)const\s+\w+\s*=\s*page\.locator\('input#form_in_modal_testKeyWord:visible'\)\.first\(\);\n\1const\s+\w+\s*=\s*page\.getByPlaceholder\('请输入关键词'\)\.first\(\);\n\1if \(await \w+\.count\(\)\) \{\n\1\s*await expect\(\w+\)\.toBeVisible\((?:\{ timeout: \d+ \})?\);\n\1\} else \{\n\1\s*await expect\(\w+\)\.toBeVisible\((?:\{ timeout: \d+ \})?\);\n\1\}\s*$/gm,
     ''
   );
 
+  next = next.replace(
+    /^(\s*)const\s+keywordInput\s*=\s*page\.locator\('input#(?:form_in_modal_testKeyWord|service-data-item_keyWord):visible(?:,\s*input#(?:form_in_modal_testKeyWord|service-data-item_keyWord):visible)?'\)\.first\(\);\n\1await expect\(keywordInput\)\.toBeVisible\((?:\{ timeout: \d+ \})?\);\s*$/gm,
+    ''
+  );
+  next = next.replace(
+    /^\s*await expect\(page\.locator\('input#(?:form_in_modal_testKeyWord|service-data-item_keyWord):visible(?:,\s*input#(?:form_in_modal_testKeyWord|service-data-item_keyWord):visible)?'\)\.first\(\)\)\.toBeVisible\((?:\{ timeout: \d+ \})?\);\s*$/gm,
+    ''
+  );
+
+  return next;
+}
+
+function sanitizeBatchAccountBookedMgmtSurfaceChecks(code: string): string {
+  let next = replaceIntentExecutionSlotCode(
+    code,
+    'plan_step_5',
+    sanitizeBatchAccountBookedMgmtSurfaceChecksSlot
+  );
+  next = replaceIntentExecutionSlotCode(
+    next,
+    'plan_step_6',
+    sanitizeBatchAccountBookedMgmtSurfaceChecksSlot
+  );
+  next = replaceIntentExecutionSlotCode(
+    next,
+    'plan_step_7',
+    sanitizeBatchAccountBookedMgmtSurfaceChecksSlot
+  );
+  next = replaceIntentExecutionSlotCode(
+    next,
+    'verification',
+    sanitizeBatchAccountBookedMgmtSurfaceChecksSlot
+  );
   return next;
 }
 
@@ -4293,32 +5359,854 @@ function sanitizeBatchAccountSubmitAndSearchWaits(code: string): string {
   return next;
 }
 
+function looksLikeListSearchDetail(code: string): boolean {
+  const looksLikeOrderListSurface = /order(?:\\\/|\/)list|订单列表/.test(code);
+  return (
+    !/批量申请入账|批量入账/.test(code) &&
+    (looksLikeOrderListSurface || /priorityScenarioFamily['"]?\s*:\s*['"]list_search_detail['"]/.test(code)) &&
+    (/selectedOrderNo/.test(code) || /订单号|订单编号/.test(code)) &&
+    (/resolvePrimaryRecord|readDetailField|findAntdTableRow/.test(code) || /进入对应订单详情页|进入订单详情页|待申请/.test(code))
+  );
+}
+
+function buildListSearchDetailPendingStatusFilterSlot(indent: string): string {
+  return [
+    `${indent}await expect(page).toHaveURL(/#\\/order\\/list/);`,
+    `${indent}const expandBtn = page.getByRole('button', { name: '展开' }).first();`,
+    `${indent}if (await expandBtn.isVisible().catch(() => false)) {`,
+    `${indent}  await expandBtn.click();`,
+    `${indent}}`,
+    `${indent}const searchButton = page.getByRole('button', { name: /搜\\s*索/i }).first();`,
+    `${indent}await expect(searchButton).toBeVisible({ timeout: 10000 });`,
+    `${indent}const filterRoot = page.locator('.ant-form:visible, form:visible, .search:visible, .ant-card:visible').filter({ has: searchButton }).first();`,
+    `${indent}const statusCandidates = [`,
+    `${indent}  filterRoot.locator('.ant-form-item:visible').filter({ hasText: /订单状态|入账状态/ }).first(),`,
+    `${indent}  page.locator('.ant-form-item:visible').filter({ hasText: /订单状态|入账状态/ }).first(),`,
+    `${indent}  filterRoot.locator('.ant-form-item:visible').filter({ has: page.locator('.ant-select:visible') }).first(),`,
+    `${indent}  page.locator('.ant-form-item:visible').filter({ has: page.locator('.ant-select:visible') }).nth(0),`,
+    `${indent}  page.locator('.ant-form-item:visible').filter({ has: page.locator('.ant-select:visible') }).nth(1),`,
+    `${indent}];`,
+    `${indent}let statusSource = null;`,
+    `${indent}for (const candidate of statusCandidates) {`,
+    `${indent}  if (await candidate.isVisible().catch(() => false)) {`,
+    `${indent}    statusSource = candidate;`,
+    `${indent}    break;`,
+    `${indent}  }`,
+    `${indent}}`,
+    `${indent}if (!statusSource) {`,
+    `${indent}  throw new Error('未找到可用的入账状态筛选控件');`,
+    `${indent}}`,
+    `${indent}await __e2e.selectAntdOption(page, statusSource, { label: '待申请' });`,
+    `${indent}const listRespPromise = __e2e.waitForApiResponse(page, { urlIncludes: '/order', method: 'GET' });`,
+    `${indent}await searchButton.click();`,
+    `${indent}const listResp = await listRespPromise.catch(() => null);`,
+    `${indent}await page.locator('.ant-spin-spinning').first().waitFor({ state: 'hidden', timeout: 20000 }).catch(() => {});`,
+    `${indent}const rows = page.locator('.ant-table-tbody tr[data-row-key]:visible');`,
+    `${indent}const resultRowCount = await rows.count().catch(() => 0);`,
+    `${indent}if (resultRowCount > 0) {`,
+    `${indent}  await expect(rows.first()).toBeVisible({ timeout: 15000 });`,
+    `${indent}} else {`,
+    `${indent}  const placeholder = page.locator('.ant-table-placeholder:visible').first();`,
+    `${indent}  await expect(placeholder).toBeVisible({ timeout: 15000 });`,
+    `${indent}}`,
+    `${indent}artifacts['plan_step_2'] = {`,
+    `${indent}  filteredBy: '入账状态=待申请',`,
+    `${indent}  searchTriggered: true,`,
+    `${indent}  listResponseObserved: Boolean(listResp),`,
+    `${indent}  resultRowCount,`,
+    `${indent}};`,
+  ].join('\n');
+}
+
+function buildListSearchDetailOrderListReadySlot(indent: string): string {
+  return [
+    `${indent}if (!page.url().includes('#/order/list')) {`,
+    `${indent}  await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });`,
+    `${indent}}`,
+    `${indent}await expect(page).toHaveURL(/#\\/order\\/list/, { timeout: 20000 });`,
+    `${indent}const searchButton = page.getByRole('button', { name: /搜\\s*索/i }).first();`,
+    `${indent}await expect(searchButton).toBeVisible({ timeout: 10000 });`,
+    `${indent}const expandBtn = page.getByRole('button', { name: '展开' }).first();`,
+    `${indent}const expandVisible = await expandBtn.isVisible().catch(() => false);`,
+    `${indent}if (expandVisible) {`,
+    `${indent}  await expect(expandBtn).toBeVisible({ timeout: 10000 });`,
+    `${indent}}`,
+    `${indent}const keywordInput = page.locator('input#form_in_modal_testKeyWord:visible').first();`,
+    `${indent}await expect(keywordInput).toBeVisible({ timeout: 15000 });`,
+    `${indent}await page.locator('.ant-spin-spinning').first().waitFor({ state: 'hidden', timeout: 15000 }).catch(() => {});`,
+    `${indent}const rows = page.locator('.ant-table-tbody tr[data-row-key]:visible');`,
+    `${indent}const rowCount = await rows.count().catch(() => 0);`,
+    `${indent}if (rowCount > 0) {`,
+    `${indent}  await expect(rows.first()).toBeVisible({ timeout: 15000 });`,
+    `${indent}} else {`,
+    `${indent}  const placeholder = page.locator('.ant-table-placeholder:visible').first();`,
+    `${indent}  await expect(placeholder).toBeVisible({ timeout: 15000 });`,
+    `${indent}}`,
+    `${indent}artifacts['plan_step_1'] = { ready: true, rowCount };`,
+  ].join('\n');
+}
+
+function sanitizeListSearchDetailOrderListReadySlot(slotCode: string): string {
+  const hasOrderListReadySignals =
+    /(TARGET_URL|#\/order\/list|form_in_modal_testKeyWord|管帮手服务中心|请选择入账状态|订单状态|联系人|手机号)/.test(
+      slotCode
+    ) && /(searchButton|getByRole\(['"]button['"],\s*\{\s*name:\s*\/搜\\s\*索|goto\()/i.test(slotCode);
+  if (!hasOrderListReadySignals) {
+    return slotCode;
+  }
+
+  const alreadyDeterministic =
+    /const keywordInput = page\.locator\('input#form_in_modal_testKeyWord:visible'\)\.first\(\);/.test(slotCode) &&
+    /artifacts\['plan_step_1'\] = \{ ready: true, rowCount \};/.test(slotCode);
+  if (alreadyDeterministic) {
+    return slotCode;
+  }
+
+  const indent = slotCode.split('\n').find((line) => line.trim())?.match(/^\s*/)?.[0] || '    ';
+  return buildListSearchDetailOrderListReadySlot(indent);
+}
+
+function sanitizeListSearchDetailOrderListReady(code: string): string {
+  return replaceIntentExecutionSlotCode(
+    code,
+    'plan_step_1',
+    sanitizeListSearchDetailOrderListReadySlot
+  );
+}
+
+function sanitizeListSearchDetailPendingStatusFilterSlot(slotCode: string): string {
+  const hasPendingFilterSignals =
+    /待申请/.test(slotCode) && /(入账状态|订单状态|selectAntdOption|statusField|statusCandidates)/.test(slotCode);
+  if (!hasPendingFilterSignals) {
+    return slotCode;
+  }
+
+  const alreadyDeterministic =
+    /filteredBy:\s*'入账状态=待申请'/.test(slotCode) &&
+    /listResponseObserved:\s*Boolean\(listResp\)/.test(slotCode);
+  if (alreadyDeterministic) {
+    return slotCode;
+  }
+
+  const indent = slotCode.split('\n').find((line) => line.trim())?.match(/^\s*/)?.[0] || '    ';
+  return buildListSearchDetailPendingStatusFilterSlot(indent);
+}
+
+function sanitizeListSearchDetailPendingStatusFilter(code: string): string {
+  return replaceIntentExecutionSlotCode(
+    code,
+    'plan_step_2',
+    sanitizeListSearchDetailPendingStatusFilterSlot
+  );
+}
+
+function buildListSearchDetailSelectedRowOrderExtractionBlock(
+  indent: string,
+  rowVar: string,
+  stepArtifactKey = 'plan_step_3'
+): string {
+  return [
+    `${indent}artifacts['${stepArtifactKey}_row'] = ${rowVar};`,
+    buildBatchAccountSelectedRowOrderExtractionBlock(indent, rowVar, stepArtifactKey),
+  ].join('\n');
+}
+
+function buildListSearchDetailDeterministicOrderExtractionSlot(
+  indent: string,
+  stepArtifactKey = 'plan_step_3'
+): string {
+  return [
+    `${indent}const candidateRows = page.locator('.ant-table-tbody tr[data-row-key]:visible');`,
+    `${indent}const candidateCount = await candidateRows.count();`,
+    `${indent}if (candidateCount < 1) throw new Error('筛选后无可提取订单号的数据行');`,
+    `${indent}let targetRow = null;`,
+    `${indent}for (let candidateIndex = 0; candidateIndex < Math.min(candidateCount, 10); candidateIndex += 1) {`,
+    `${indent}  const candidateRow = candidateRows.nth(candidateIndex);`,
+    `${indent}  const candidateRowKey = ((await candidateRow.getAttribute('data-row-key')) || '').trim();`,
+    `${indent}  const candidateRowScopes = candidateRowKey ? page.locator(\`tr[data-row-key="\${candidateRowKey}"]\`) : candidateRow;`,
+    `${indent}  const candidateRowTextParts = [];`,
+    `${indent}  const candidateRowScopeCount = candidateRowKey ? await candidateRowScopes.count() : 1;`,
+    `${indent}  for (let candidateScopeIndex = 0; candidateScopeIndex < candidateRowScopeCount; candidateScopeIndex += 1) {`,
+    `${indent}    const candidateRowScope = candidateRowKey ? candidateRowScopes.nth(candidateScopeIndex) : candidateRow;`,
+    `${indent}    const candidateRowTextPart = (await candidateRowScope.innerText().catch(() => '')).replace(/\\s+/g, ' ').trim();`,
+    `${indent}    if (candidateRowTextPart && !candidateRowTextParts.includes(candidateRowTextPart)) candidateRowTextParts.push(candidateRowTextPart);`,
+    `${indent}  }`,
+    `${indent}  const candidateRowText = candidateRowTextParts.join(' ').trim();`,
+    `${indent}  if (!candidateRowText || !/待申请入账|待申请/.test(candidateRowText)) continue;`,
+    `${indent}  const candidateLinkNodes = candidateRowKey ? page.locator(\`tr[data-row-key="\${candidateRowKey}"] a:visible\`) : candidateRow.locator('a:visible');`,
+    `${indent}  const candidateLinkTexts = [];`,
+    `${indent}  const candidateLinkCount = await candidateLinkNodes.count().catch(() => 0);`,
+    `${indent}  for (let linkIndex = 0; linkIndex < candidateLinkCount; linkIndex += 1) {`,
+    `${indent}    const linkText = ((await candidateLinkNodes.nth(linkIndex).textContent().catch(() => '')) || '').replace(/\\s+/g, '').trim();`,
+    `${indent}    if (linkText && !candidateLinkTexts.includes(linkText)) candidateLinkTexts.push(linkText);`,
+    `${indent}  }`,
+    `${indent}  const candidateRowTokens = candidateRowText.match(/\\b[A-Za-z0-9_-]{6,64}\\b/g) || [];`,
+    buildBatchAccountOrderNoCandidateAssignmentBlock(
+      `${indent}  `,
+      'candidateOrderNoFromLink',
+      buildBatchAccountOrderNoTokenFindExpression('candidateLinkTexts', 'item')
+    ),
+    buildBatchAccountOrderNoCandidateAssignmentBlock(`${indent}  `, 'candidateOrderNoFromRowKey', 'candidateRowKey'),
+    buildBatchAccountOrderNoCandidateAssignmentBlock(
+      `${indent}  `,
+      'candidateOrderNoFromTokens',
+      buildBatchAccountOrderNoTokenFindExpression('candidateRowTokens', 'item')
+    ),
+    `${indent}  const candidateSelectedOrderNo = candidateOrderNoFromLink || candidateOrderNoFromRowKey || candidateOrderNoFromTokens;`,
+    `${indent}  if (candidateSelectedOrderNo) {`,
+    `${indent}    targetRow = candidateRow;`,
+    `${indent}    break;`,
+    `${indent}  }`,
+    `${indent}}`,
+    `${indent}if (!targetRow) {`,
+    `${indent}  for (let candidateIndex = 0; candidateIndex < Math.min(candidateCount, 10); candidateIndex += 1) {`,
+    `${indent}    const candidateRow = candidateRows.nth(candidateIndex);`,
+    `${indent}    const candidateRowText = (await candidateRow.innerText().catch(() => '')).replace(/\\s+/g, ' ').trim();`,
+    `${indent}    if (!candidateRowText) continue;`,
+    `${indent}    if (/待申请入账|待申请/.test(candidateRowText)) {`,
+    `${indent}      targetRow = candidateRow;`,
+    `${indent}      break;`,
+    `${indent}    }`,
+    `${indent}  }`,
+    `${indent}}`,
+    `${indent}if (!targetRow) targetRow = candidateRows.first();`,
+    `${indent}await targetRow.scrollIntoViewIfNeeded().catch(() => {});`,
+    buildListSearchDetailSelectedRowOrderExtractionBlock(indent, 'targetRow', stepArtifactKey),
+    `${indent}if (!shared.selectedOrderNo) {`,
+    `${indent}  throw new Error('前置失败：selectedOrderNo 为空，无法执行二次检索');`,
+    `${indent}}`,
+  ].join('\n');
+}
+
+function sanitizeListSearchDetailOrderExtractionSlot(slotCode: string, slotUid = 'plan_step_3'): string {
+  const hasAmbiguousPendingRowLookup = Array.from(
+    slotCode.matchAll(/(?:__e2e\.)?findAntdTableRow\(page,\s*\{\s*hasTexts:\s*\[([^\]]+)\][^}]*\}\)/g)
+  ).some((match) => looksLikeAmbiguousPendingStatusHasTexts(match[1]));
+  const hasOrderExtractionSignals =
+    (/(candidateRows|rows|tableRows|firstDataRow)\s*=/.test(slotCode) ||
+      /locator\(['"]tr\[data-row-key\]:visible['"]\)\.first\(\)/.test(slotCode) ||
+      hasAmbiguousPendingRowLookup) &&
+    (/(locator\((['"])a(?::visible)?\2\)|linkCandidates|orderNoLink)/.test(slotCode) ||
+      (hasAmbiguousPendingRowLookup && /(candidateRow|orderLink|rowKey|tokens)/.test(slotCode))) &&
+    (/(pickedOrderNo|orderNo|selectedOrderNo)/.test(slotCode) ||
+      (hasAmbiguousPendingRowLookup &&
+        /(let\s+selectedOrderNo|shared\.selectedOrderNo\s*=|artifacts(?:\[['"](?:plan_step_3|plan_step_4)['"]\]|\.plan_step_[34])\s*=\s*\{\s*selectedOrderNo)/.test(
+          slotCode
+        )));
+  if (!/shared\.selectedOrderNo/.test(slotCode) || /__e2e\.clickAntdRowCheckbox/.test(slotCode) || !hasOrderExtractionSignals) {
+    return slotCode;
+  }
+
+  if (slotCode.includes(`artifacts['${slotUid}_row']`) && /selectedOrderNoFromRowKeyCandidate/.test(slotCode)) {
+    return slotCode;
+  }
+
+  const indent = slotCode.split('\n').find((line) => line.trim())?.match(/^\s*/)?.[0] || '    ';
+  return buildListSearchDetailDeterministicOrderExtractionSlot(indent, slotUid);
+}
+
+function sanitizeListSearchDetailOrderExtraction(code: string): string {
+  return replaceIntentExecutionSlotsCode(code, ['plan_step_3', 'plan_step_4'], sanitizeListSearchDetailOrderExtractionSlot);
+}
+
+function buildListSearchDetailPrimaryRecordLookupSlot(
+  indent: string,
+  stepArtifactKey = 'plan_step_4'
+): string {
+  const selectedOrderSlotUid = getRelativeIntentExecutionPlanStepUid(stepArtifactKey, -1) || 'plan_step_3';
+  return [
+    `${indent}if (!shared.selectedOrderNo) {`,
+    `${indent}  throw new Error('前置失败：selectedOrderNo 为空，无法执行二次检索');`,
+    `${indent}}`,
+    `${indent}await expect(page).toHaveURL(/#\\/order\\/list/);`,
+    ...buildBatchAccountVisibleKeywordInputBindingLines(indent),
+    `${indent}await expect(keywordInput).toBeVisible({ timeout: 15000 });`,
+    `${indent}const searchButton = page.getByRole('button', { name: /搜\\s*索/i }).first();`,
+    `${indent}await expect(searchButton).toBeVisible({ timeout: 10000 });`,
+    `${indent}const cachedTargetRow = artifacts['${selectedOrderSlotUid}_row'] || artifacts.${selectedOrderSlotUid}_targetRow || artifacts['${selectedOrderSlotUid}']?.row || null;`,
+    `${indent}const currentVisibleRow = shared.selectedOrderNo ? await (async () => {`,
+    `${indent}  if (cachedTargetRow) {`,
+    `${indent}    const cachedRowText = (await cachedTargetRow.innerText().catch(() => '')).replace(/\\s+/g, ' ').trim();`,
+    `${indent}    if (cachedRowText && cachedRowText.includes(shared.selectedOrderNo)) return cachedTargetRow;`,
+    `${indent}  }`,
+    `${indent}  try {`,
+    `${indent}    return await __e2e.findAntdTableRow(page, { hasTexts: [shared.selectedOrderNo], timeoutMs: 1200 });`,
+    `${indent}  } catch {`,
+    `${indent}    return null;`,
+    `${indent}  }`,
+    `${indent}})() : null;`,
+    `${indent}const recordCheck = currentVisibleRow`,
+    `${indent}  ? { primaryValue: shared.selectedOrderNo, mode: 'table_row', row: currentVisibleRow, response: null }`,
+    `${indent}  : await __e2e.resolvePrimaryRecord(page, {`,
+    `${indent}      primaryValue: shared.selectedOrderNo,`,
+    `${indent}      keywordInput,`,
+    `${indent}      searchButton,`,
+    `${indent}      listResponse: { urlIncludes: '/order', method: 'GET' },`,
+    `${indent}      rowHasTexts: [shared.selectedOrderNo],`,
+    `${indent}      preferCurrentVisibleRow: false,`,
+    `${indent}      maxLookupAttempts: 2,`,
+    `${indent}      retryIntervalMs: 400,`,
+    `${indent}    });`,
+    `${indent}if (recordCheck.mode !== 'table_row' || !recordCheck.row) {`,
+    `${indent}  throw new Error(\`未命中目标记录：订单号=\${shared.selectedOrderNo}，mode=\${recordCheck.mode}\`);`,
+    `${indent}}`,
+    `${indent}artifacts['${stepArtifactKey}_record_check'] = recordCheck;`,
+    `${indent}artifacts['${stepArtifactKey}_row'] = recordCheck.row;`,
+    `${indent}artifacts['${stepArtifactKey}'] = recordCheck.response || null;`,
+    `${indent}const rowText = (await recordCheck.row.innerText().catch(() => '')).replace(/\\s+/g, ' ').trim();`,
+    `${indent}if (!rowText || !rowText.includes(shared.selectedOrderNo)) {`,
+    `${indent}  throw new Error(\`二次检索失败：目标行未包含订单号 \${shared.selectedOrderNo}\`);`,
+    `${indent}}`,
+  ].join('\n');
+}
+
+function sanitizeListSearchDetailPrimaryRecordLookupSlot(slotCode: string, slotUid = 'plan_step_4'): string {
+  const looksLikeOrderExtractionSlot =
+    /(candidateRows|tableRows|rows)\s*=/.test(slotCode) &&
+    /(selectedOrderNoFromLink|candidateOrderNoFromLink|linkCandidates|linkTexts)/.test(slotCode);
+  if (looksLikeOrderExtractionSlot) {
+    return slotCode;
+  }
+
+  if (
+    !/shared\.selectedOrderNo/.test(slotCode) ||
+    !/(resolvePrimaryRecord|二次搜索|二次检索|rowHasTexts|keywordInput|searchButton|waitForApiResponse)/.test(
+      slotCode
+    )
+  ) {
+    return slotCode;
+  }
+
+  const hasDuplicateLookup =
+    /await\s+\w+\.fill\(shared\.selectedOrderNo\)/.test(slotCode) ||
+    /waitForApiResponse\(page,\s*\{\s*urlIncludes:\s*['"]\/order['"],\s*method:\s*['"]GET['"]/.test(slotCode) ||
+    /matchedPhone\s*\|\|\s*['"]待申请['"]/.test(slotCode) ||
+    /rowHasTexts:\s*\[shared\.selectedOrderNo,\s*\w+/.test(slotCode) ||
+    /findAntdTableRow\(page,\s*\{\s*hasTexts:\s*rowHasTexts/.test(slotCode);
+  const alreadyDeterministic =
+    slotCode.includes(`artifacts['${slotUid}_record_check']`) &&
+    /const currentVisibleRow = shared\.selectedOrderNo \? await \(async \(\) => \{/.test(slotCode) &&
+    /rowHasTexts:\s*\[shared\.selectedOrderNo\]/.test(slotCode) &&
+    /preferCurrentVisibleRow:\s*false/.test(slotCode);
+  if (!hasDuplicateLookup && alreadyDeterministic) {
+    return slotCode;
+  }
+
+  const indent = slotCode.split('\n').find((line) => line.trim())?.match(/^\s*/)?.[0] || '    ';
+  return buildListSearchDetailPrimaryRecordLookupSlot(indent, slotUid);
+}
+
+function sanitizeListSearchDetailPrimaryRecordLookup(code: string): string {
+  return replaceIntentExecutionSlotsCode(
+    code,
+    ['plan_step_4', 'plan_step_5'],
+    sanitizeListSearchDetailPrimaryRecordLookupSlot
+  );
+}
+
+function buildListSearchDetailDetailEntrySlot(
+  indent: string,
+  stepArtifactKey = 'plan_step_5'
+): string {
+  const lookupSlotUid = getRelativeIntentExecutionPlanStepUid(stepArtifactKey, -1) || 'plan_step_4';
+  return [
+    `${indent}await expect(page).toHaveURL(/#\\/order\\/list/);`,
+    `${indent}const targetRow = artifacts['${lookupSlotUid}_row'] || await __e2e.findAntdTableRow(page, { hasTexts: [shared.selectedOrderNo] });`,
+    `${indent}artifacts['${stepArtifactKey}_row'] = targetRow;`,
+    `${indent}const targetRowText = (await targetRow.innerText().catch(() => '')).replace(/\\s+/g, ' ').trim();`,
+    `${indent}const targetRowKey = ((await targetRow.getAttribute('data-row-key')) || '').trim();`,
+    `${indent}let statusEvidenceRecordCheck = artifacts['${lookupSlotUid}_record_check'] || null;`,
+    `${indent}if (!statusEvidenceRecordCheck?.response) {`,
+    `${indent}  try {`,
+    `${indent}    statusEvidenceRecordCheck = await __e2e.resolvePrimaryRecord(page, {`,
+    `${indent}      primaryValue: shared.selectedOrderNo,`,
+    `${indent}      keywordInput: page.locator('input#form_in_modal_testKeyWord:visible').first(),`,
+    `${indent}      searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(),`,
+    `${indent}      listResponse: { urlIncludes: '/order', method: 'GET' },`,
+    `${indent}      rowHasTexts: [shared.selectedOrderNo],`,
+    `${indent}      preferCurrentVisibleRow: false,`,
+    `${indent}      requireListResponse: true,`,
+    `${indent}      maxLookupAttempts: 2,`,
+    `${indent}      retryIntervalMs: 400,`,
+    `${indent}    });`,
+    `${indent}  } catch (error) {`,
+    `${indent}    artifacts['${stepArtifactKey}_list_response_retry_error'] = error instanceof Error ? error.message : String(error || '');`,
+    `${indent}  }`,
+    `${indent}}`,
+    `${indent}artifacts['${stepArtifactKey}_record_check'] = statusEvidenceRecordCheck || artifacts['${lookupSlotUid}_record_check'] || null;`,
+    `${indent}const listPayload = statusEvidenceRecordCheck?.response`,
+    `${indent}  ? await __e2e.readJsonResponse(statusEvidenceRecordCheck.response, { required: false })`,
+    `${indent}  : null;`,
+    `${indent}const matchedRecordByOrderNo = listPayload`,
+    `${indent}  ? __e2e.pickJsonRecord(listPayload, {`,
+    `${indent}      label: 'selectedOrderNo',`,
+    `${indent}      value: shared.selectedOrderNo,`,
+    `${indent}      paths: ${renderJsStringArray(SELECTED_ORDER_NO_JSON_PATHS)},`,
+    `${indent}      required: false,`,
+    `${indent}      exact: true,`,
+    `${indent}    })`,
+    `${indent}  : null;`,
+    `${indent}const matchedRecordByRowKey = !matchedRecordByOrderNo && listPayload && targetRowKey`,
+    `${indent}  ? __e2e.pickJsonRecord(listPayload, {`,
+    `${indent}      label: 'targetRowKey',`,
+    `${indent}      value: targetRowKey,`,
+    `${indent}      paths: ${renderJsStringArray(LIST_SEARCH_DETAIL_ROW_KEY_JSON_PATHS)},`,
+    `${indent}      required: false,`,
+    `${indent}      exact: true,`,
+    `${indent}    })`,
+    `${indent}  : null;`,
+    `${indent}const matchedRecord = matchedRecordByOrderNo || matchedRecordByRowKey;`,
+    `${indent}const listContactText = matchedRecord`,
+    `${indent}  ? __e2e.pickJsonValue(matchedRecord, { label: '联系人', paths: ${renderJsStringArray(LIST_SEARCH_DETAIL_CONTACT_JSON_PATHS)}, required: false })`,
+    `${indent}  : '';`,
+    `${indent}const listPhoneText = matchedRecord`,
+    `${indent}  ? __e2e.pickJsonValue(matchedRecord, { label: '手机号', paths: ${renderJsStringArray(LIST_SEARCH_DETAIL_PHONE_JSON_PATHS)}, required: false })`,
+    `${indent}  : '';`,
+    `${indent}const listStatusText = matchedRecord`,
+    `${indent}  ? __e2e.pickJsonValue(matchedRecord, { label: '入账状态', paths: ${renderJsStringArray(LIST_SEARCH_DETAIL_STATUS_JSON_PATHS)}, required: false })`,
+    `${indent}  : '';`,
+    `${indent}const rowContactText = await __e2e.readAntdTableCellByHeader(page, targetRow, {`,
+    `${indent}  headerLabels: ['联系人', '联系人姓名', '客户姓名'],`,
+    `${indent}  required: false,`,
+    `${indent}});`,
+    `${indent}const rowPhoneText = await __e2e.readAntdTableCellByHeader(page, targetRow, {`,
+    `${indent}  headerLabels: ['手机号', '手机号码', '联系电话', '电话'],`,
+    `${indent}  required: false,`,
+    `${indent}});`,
+    `${indent}const rowStatusText = await __e2e.readAntdTableCellByHeader(page, targetRow, {`,
+    `${indent}  headerLabels: ['入账状态', '订单状态', '状态'],`,
+    `${indent}  required: false,`,
+    `${indent}});`,
+    `${indent}const orderLinkNodes = targetRowKey ? page.locator(\`tr[data-row-key="\${targetRowKey}"] a:visible\`) : targetRow.locator('a:visible');`,
+    `${indent}const orderLink = orderLinkNodes.filter({ hasText: shared.selectedOrderNo }).first();`,
+    `${indent}const orderLinkVisible = await orderLink.isVisible().catch(() => false);`,
+    `${indent}let detailScope = null;`,
+    `${indent}let detailEntry = '';`,
+    `${indent}let contactText = listContactText || rowContactText || '';`,
+    `${indent}let phoneText = listPhoneText || rowPhoneText || '';`,
+    `${indent}let statusText = listStatusText || rowStatusText || '';`,
+    `${indent}const detailUrlPattern = /#\\/(?:order\\/)?(?:detail|view)|#\\/.*order.*(?:detail|view|info)/i;`,
+    `${indent}let onDetailUrl = detailUrlPattern.test(page.url());`,
+    `${indent}if (!contactText || !phoneText || !statusText) {`,
+    `${indent}  if (orderLinkVisible) {`,
+    `${indent}    await orderLink.click();`,
+    `${indent}    detailEntry = 'order_link';`,
+    `${indent}    await page.waitForLoadState('domcontentloaded').catch(() => {});`,
+    `${indent}    detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '详情', timeoutMs: 3000, required: false });`,
+    `${indent}    if (!detailScope) {`,
+    `${indent}      detailScope = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '详情', timeoutMs: 2500, required: false });`,
+    `${indent}    }`,
+    `${indent}  }`,
+    `${indent}  onDetailUrl = detailUrlPattern.test(page.url());`,
+    `${indent}  if (!detailScope && !onDetailUrl) {`,
+    `${indent}    await __e2e.clickAntdRowAction(page, targetRow, '查看');`,
+    `${indent}    detailEntry = detailEntry ? \`\${detailEntry}_fallback_row_action\` : 'row_action';`,
+    `${indent}    await page.waitForLoadState('domcontentloaded').catch(() => {});`,
+    `${indent}    detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '详情', timeoutMs: 5000, required: false });`,
+    `${indent}    if (!detailScope) {`,
+    `${indent}      detailScope = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '详情', timeoutMs: 4000, required: false });`,
+    `${indent}    }`,
+    `${indent}    onDetailUrl = detailUrlPattern.test(page.url());`,
+    `${indent}  }`,
+    `${indent}  if (!detailScope && !onDetailUrl) {`,
+    `${indent}    throw new Error('状态证据缺失：唯一订单号已命中，但列表响应/结果行字段不足，且订单号链接和“查看”入口都未进入可用详情面');`,
+    `${indent}  }`,
+    `${indent}  const detailContactText = detailScope`,
+    `${indent}    ? await __e2e.readDetailField(page, { label: '联系人', scope: detailScope, required: false })`,
+    `${indent}    : await __e2e.readDetailField(page, { label: '联系人', required: false });`,
+    `${indent}  const detailPhoneText = detailScope`,
+    `${indent}    ? await __e2e.readDetailField(page, { label: '手机号', scope: detailScope, required: false })`,
+    `${indent}    : await __e2e.readDetailField(page, { label: '手机号', required: false });`,
+    `${indent}  const detailStatusText = detailScope`,
+    `${indent}    ? (await __e2e.readDetailField(page, { label: '入账状态', scope: detailScope, required: false }) || await __e2e.readDetailField(page, { label: '订单状态', scope: detailScope, required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailScope, required: false }))`,
+    `${indent}    : (await __e2e.readDetailField(page, { label: '入账状态', required: false }) || await __e2e.readDetailField(page, { label: '订单状态', required: false }) || await __e2e.readDetailField(page, { label: '状态', required: false }));`,
+    `${indent}  contactText = contactText || detailContactText || '';`,
+    `${indent}  phoneText = phoneText || detailPhoneText || '';`,
+    `${indent}  statusText = statusText || detailStatusText || '';`,
+    `${indent}}`,
+    `${indent}if (!contactText || !phoneText || !statusText) {`,
+    `${indent}  throw new Error('详情字段缺失：列表响应、结果行字段与详情字段都未提供完整的联系人/手机号/入账状态');`,
+    `${indent}}`,
+    `${indent}const evidenceScope = detailScope || (matchedRecord ? 'list_record' : (rowContactText || rowPhoneText || rowStatusText) ? 'table_row' : (onDetailUrl ? 'page_detail' : ''));`,
+    `${indent}artifacts['${stepArtifactKey}'] = {`,
+    `${indent}  detailScope: evidenceScope || (onDetailUrl ? 'page_detail' : ''),`,
+    `${indent}  detailEntry: detailEntry || (matchedRecord ? 'list_response' : (rowContactText || rowPhoneText || rowStatusText) ? 'table_row_headers' : (onDetailUrl ? 'detail_url' : '')),`,
+    `${indent}  detailUrl: page.url(),`,
+    `${indent}  rowKey: targetRowKey,`,
+    `${indent}  rowText: targetRowText,`,
+    `${indent}  contactText,`,
+    `${indent}  phoneText,`,
+    `${indent}  statusText,`,
+    `${indent}  recordSource: matchedRecord ? 'list_response' : detailScope ? 'detail_surface' : 'table_row',`,
+    `${indent}};`,
+  ].join('\n');
+}
+
+function sanitizeListSearchDetailDetailEntrySlot(slotCode: string, slotUid = 'plan_step_5'): string {
+  const hasGenericDetailEntrySignals =
+    /shared\.selectedOrderNo/.test(slotCode) &&
+    /clickAntdRowAction\(page,\s*\w+,\s*'查看'\)/.test(slotCode) &&
+    /readDetailField\(page,\s*\{\s*label:\s*'联系人'/.test(slotCode) &&
+    /readDetailField\(page,\s*\{\s*label:\s*'手机号'/.test(slotCode);
+  if (!hasGenericDetailEntrySignals) {
+    return slotCode;
+  }
+
+  const alreadyDeterministic =
+    /statusEvidenceRecordCheck\s*=\s*artifacts\['plan_step_4_record_check'\]\s*\|\|\s*null;/.test(slotCode) &&
+    /readAntdTableCellByHeader\(page,\s*targetRow,\s*\{/.test(slotCode) &&
+    /detailScope:\s*evidenceScope\s*\|\|\s*\(onDetailUrl\s*\?\s*'page_detail'\s*:\s*''\)/.test(slotCode);
+  if (alreadyDeterministic) {
+    return slotCode;
+  }
+
+  const indent = slotCode.split('\n').find((line) => line.trim())?.match(/^\s*/)?.[0] || '    ';
+  return buildListSearchDetailDetailEntrySlot(indent, slotUid);
+}
+
+function sanitizeListSearchDetailDetailEntry(code: string): string {
+  return replaceIntentExecutionSlotsCode(code, ['plan_step_5'], sanitizeListSearchDetailDetailEntrySlot);
+}
+
+function buildListSearchDetailVerificationSlot(indent: string): string {
+  return [
+    `${indent}expect(shared.selectedOrderNo).toBeTruthy();`,
+    ``,
+    `${indent}const step3 = artifacts['plan_step_3'];`,
+    `${indent}if (step3 && step3.selectedOrderNo) {`,
+    `${indent}  expect(shared.selectedOrderNo).toBe(step3.selectedOrderNo);`,
+    `${indent}}`,
+    ``,
+    `${indent}let detail = artifacts['plan_step_5'] || null;`,
+    `${indent}const detailLooksLikeStructuredEvidence = Boolean(`,
+    `${indent}  detail &&`,
+    `${indent}  typeof detail === 'object' &&`,
+    `${indent}  ('contactText' in detail || 'phoneText' in detail || 'statusText' in detail || 'detailScope' in detail || 'detailEntry' in detail || 'recordSource' in detail)`,
+    `${indent});`,
+    `${indent}let detailScope = detailLooksLikeStructuredEvidence && detail && typeof detail.detailScope === 'object' ? detail.detailScope : null;`,
+    `${indent}let detailScopeMarker = detailLooksLikeStructuredEvidence && detail && typeof detail.detailScope === 'string' ? detail.detailScope.trim() : detailScope ? 'detail_surface' : '';`,
+    `${indent}let detailEntry = detailLooksLikeStructuredEvidence && detail && typeof detail.detailEntry === 'string' ? detail.detailEntry.trim() : '';`,
+    `${indent}let recordSource = detailLooksLikeStructuredEvidence && detail && typeof detail.recordSource === 'string' ? detail.recordSource.trim() : '';`,
+    `${indent}let contactText = detailLooksLikeStructuredEvidence && detail ? String(detail.contactText || '').trim() : '';`,
+    `${indent}let phoneText = detailLooksLikeStructuredEvidence && detail ? String(detail.phoneText || '').trim() : '';`,
+    `${indent}let statusText = detailLooksLikeStructuredEvidence && detail ? String(detail.statusText || '').trim() : '';`,
+    `${indent}const detailUrlPattern = /#\\/(?:order\\/)?(?:detail|view)|#\\/.*order.*(?:detail|view|info)/i;`,
+    `${indent}let onDetailUrl = detailUrlPattern.test(page.url());`,
+    `${indent}let statusEvidenceRecordCheck = artifacts['plan_step_5_record_check'] || artifacts['plan_step_4_record_check'] || null;`,
+    `${indent}let targetRow = artifacts['plan_step_5_row'] || artifacts['plan_step_4_row'] || (statusEvidenceRecordCheck && statusEvidenceRecordCheck.row) || null;`,
+    ``,
+    `${indent}if (!contactText || !phoneText || !statusText) {`,
+    `${indent}  if (!targetRow && !onDetailUrl) {`,
+    `${indent}    targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [shared.selectedOrderNo] });`,
+    `${indent}  }`,
+    `${indent}`,
+    `${indent}  const targetRowText = targetRow`,
+    `${indent}    ? (await targetRow.innerText().catch(() => '')).replace(/\\s+/g, ' ').trim()`,
+    `${indent}    : '';`,
+    `${indent}  if (targetRowText) {`,
+    `${indent}    expect(targetRowText).toContain(shared.selectedOrderNo);`,
+    `${indent}  }`,
+    `${indent}`,
+    `${indent}  const targetRowKey = targetRow ? ((await targetRow.getAttribute('data-row-key')) || '').trim() : '';`,
+    `${indent}  if (!statusEvidenceRecordCheck?.response && !onDetailUrl) {`,
+    ...buildBatchAccountVisibleKeywordInputBindingLines(`${indent}    `),
+    `${indent}    const searchButton = page.getByRole('button', { name: /搜\\s*索/i }).first();`,
+    `${indent}    await expect(keywordInput).toBeVisible({ timeout: 15000 });`,
+    `${indent}    await expect(searchButton).toBeVisible({ timeout: 10000 });`,
+    `${indent}    try {`,
+    `${indent}      statusEvidenceRecordCheck = await __e2e.resolvePrimaryRecord(page, {`,
+    `${indent}        primaryValue: shared.selectedOrderNo,`,
+    `${indent}        keywordInput,`,
+    `${indent}        searchButton,`,
+    `${indent}        listResponse: { urlIncludes: '/order', method: 'GET' },`,
+    `${indent}        rowHasTexts: [shared.selectedOrderNo],`,
+    `${indent}        preferCurrentVisibleRow: false,`,
+    `${indent}        requireListResponse: true,`,
+    `${indent}        maxLookupAttempts: 2,`,
+    `${indent}        retryIntervalMs: 400,`,
+    `${indent}      });`,
+    `${indent}    } catch (error) {`,
+    `${indent}      artifacts['verification_list_response_retry_error'] = error instanceof Error ? error.message : String(error || '');`,
+    `${indent}    }`,
+    `${indent}  }`,
+    `${indent}  artifacts['verification_record_check'] = statusEvidenceRecordCheck || artifacts['plan_step_5_record_check'] || artifacts['plan_step_4_record_check'] || null;`,
+    `${indent}  const listPayload = statusEvidenceRecordCheck?.response`,
+    `${indent}    ? await __e2e.readJsonResponse(statusEvidenceRecordCheck.response, { required: false })`,
+    `${indent}    : null;`,
+    `${indent}  const matchedRecordByOrderNo = listPayload`,
+    `${indent}    ? __e2e.pickJsonRecord(listPayload, {`,
+    `${indent}        label: 'selectedOrderNo',`,
+    `${indent}        value: shared.selectedOrderNo,`,
+    `${indent}        paths: ${renderJsStringArray(SELECTED_ORDER_NO_JSON_PATHS)},`,
+    `${indent}        required: false,`,
+    `${indent}        exact: true,`,
+    `${indent}      })`,
+    `${indent}    : null;`,
+    `${indent}  const matchedRecordByRowKey = !matchedRecordByOrderNo && listPayload && targetRowKey`,
+    `${indent}    ? __e2e.pickJsonRecord(listPayload, {`,
+    `${indent}        label: 'targetRowKey',`,
+    `${indent}        value: targetRowKey,`,
+    `${indent}        paths: ${renderJsStringArray(LIST_SEARCH_DETAIL_ROW_KEY_JSON_PATHS)},`,
+    `${indent}        required: false,`,
+    `${indent}        exact: true,`,
+    `${indent}      })`,
+    `${indent}    : null;`,
+    `${indent}  const matchedRecord = matchedRecordByOrderNo || matchedRecordByRowKey;`,
+    `${indent}  const listContactText = matchedRecord`,
+    `${indent}    ? __e2e.pickJsonValue(matchedRecord, { label: '联系人', paths: ${renderJsStringArray(LIST_SEARCH_DETAIL_CONTACT_JSON_PATHS)}, required: false })`,
+    `${indent}    : '';`,
+    `${indent}  const listPhoneText = matchedRecord`,
+    `${indent}    ? __e2e.pickJsonValue(matchedRecord, { label: '手机号', paths: ${renderJsStringArray(LIST_SEARCH_DETAIL_PHONE_JSON_PATHS)}, required: false })`,
+    `${indent}    : '';`,
+    `${indent}  const listStatusText = matchedRecord`,
+    `${indent}    ? __e2e.pickJsonValue(matchedRecord, { label: '入账状态', paths: ${renderJsStringArray(LIST_SEARCH_DETAIL_STATUS_JSON_PATHS)}, required: false })`,
+    `${indent}    : '';`,
+    `${indent}  const rowContactText = targetRow`,
+    `${indent}    ? await __e2e.readAntdTableCellByHeader(page, targetRow, {`,
+    `${indent}        headerLabels: ['联系人', '联系人姓名', '客户姓名'],`,
+    `${indent}        required: false,`,
+    `${indent}      })`,
+    `${indent}    : '';`,
+    `${indent}  const rowPhoneText = targetRow`,
+    `${indent}    ? await __e2e.readAntdTableCellByHeader(page, targetRow, {`,
+    `${indent}        headerLabels: ['手机号', '手机号码', '联系电话', '电话'],`,
+    `${indent}        required: false,`,
+    `${indent}      })`,
+    `${indent}    : '';`,
+    `${indent}  const rowStatusText = targetRow`,
+    `${indent}    ? await __e2e.readAntdTableCellByHeader(page, targetRow, {`,
+    `${indent}        headerLabels: ['入账状态', '订单状态', '状态'],`,
+    `${indent}        required: false,`,
+    `${indent}      })`,
+    `${indent}    : '';`,
+    `${indent}  contactText = contactText || listContactText || rowContactText || '';`,
+    `${indent}  phoneText = phoneText || listPhoneText || rowPhoneText || '';`,
+    `${indent}  statusText = statusText || listStatusText || rowStatusText || '';`,
+    `${indent}  recordSource = recordSource || (matchedRecord ? 'list_response' : targetRow ? 'table_row' : '');`,
+    `${indent}  detailScopeMarker = detailScopeMarker || (matchedRecord ? 'list_record' : targetRow ? 'table_row' : '');`,
+    `${indent}  detailEntry = detailEntry || (matchedRecord ? 'list_response' : targetRow ? 'table_row_headers' : '');`,
+    `${indent}`,
+    `${indent}  if ((!contactText || !phoneText || !statusText) && targetRow) {`,
+    `${indent}    const orderLinkNodes = targetRowKey ? page.locator(\`tr[data-row-key="\${targetRowKey}"] a:visible\`) : targetRow.locator('a:visible');`,
+    `${indent}    const orderLink = orderLinkNodes.filter({ hasText: shared.selectedOrderNo }).first();`,
+    `${indent}    const orderLinkVisible = await orderLink.isVisible().catch(() => false);`,
+    `${indent}    if (!detailScope && !onDetailUrl && orderLinkVisible) {`,
+    `${indent}      await orderLink.click();`,
+    `${indent}      detailEntry = detailEntry || 'order_link';`,
+    `${indent}      await page.waitForLoadState('domcontentloaded').catch(() => {});`,
+    `${indent}      detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '详情', timeoutMs: 3000, required: false });`,
+    `${indent}      if (!detailScope) {`,
+    `${indent}        detailScope = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '详情', timeoutMs: 2500, required: false });`,
+    `${indent}      }`,
+    `${indent}    }`,
+    `${indent}    onDetailUrl = detailUrlPattern.test(page.url());`,
+    `${indent}    if (!detailScope && !onDetailUrl) {`,
+    `${indent}      await __e2e.clickAntdRowAction(page, targetRow, '查看');`,
+    `${indent}      detailEntry = detailEntry ? \`\${detailEntry}_fallback_row_action\` : 'row_action';`,
+    `${indent}      await page.waitForLoadState('domcontentloaded').catch(() => {});`,
+    `${indent}      detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '详情', timeoutMs: 5000, required: false });`,
+    `${indent}      if (!detailScope) {`,
+    `${indent}        detailScope = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '详情', timeoutMs: 4000, required: false });`,
+    `${indent}      }`,
+    `${indent}      onDetailUrl = detailUrlPattern.test(page.url());`,
+    `${indent}    }`,
+    `${indent}    if (!detailScope && !onDetailUrl) {`,
+    `${indent}      throw new Error('最终验收失败：未进入该订单对应详情页/详情抽屉');`,
+    `${indent}    }`,
+    `${indent}    const detailContactText = detailScope`,
+    `${indent}      ? await __e2e.readDetailField(page, { label: '联系人', scope: detailScope, required: false })`,
+    `${indent}      : await __e2e.readDetailField(page, { label: '联系人', required: false });`,
+    `${indent}    const detailPhoneText = detailScope`,
+    `${indent}      ? await __e2e.readDetailField(page, { label: '手机号', scope: detailScope, required: false })`,
+    `${indent}      : await __e2e.readDetailField(page, { label: '手机号', required: false });`,
+    `${indent}    const detailStatusText = detailScope`,
+    `${indent}      ? (await __e2e.readDetailField(page, { label: '入账状态', scope: detailScope, required: false }) || await __e2e.readDetailField(page, { label: '订单状态', scope: detailScope, required: false }) || await __e2e.readDetailField(page, { label: '状态', scope: detailScope, required: false }))`,
+    `${indent}      : (await __e2e.readDetailField(page, { label: '入账状态', required: false }) || await __e2e.readDetailField(page, { label: '订单状态', required: false }) || await __e2e.readDetailField(page, { label: '状态', required: false }));`,
+    `${indent}    contactText = contactText || String(detailContactText || '').trim();`,
+    `${indent}    phoneText = phoneText || String(detailPhoneText || '').trim();`,
+    `${indent}    statusText = statusText || String(detailStatusText || '').trim();`,
+    `${indent}    recordSource = recordSource || (detailScope ? 'detail_surface' : onDetailUrl ? 'detail_page' : '');`,
+    `${indent}    detailScopeMarker = detailScopeMarker || (detailScope ? 'detail_surface' : onDetailUrl ? 'page_detail' : '');`,
+    `${indent}    detailEntry = detailEntry || (detailScope ? 'detail_surface' : onDetailUrl ? 'detail_url' : '');`,
+    `${indent}  }`,
+    `${indent}}`,
+    ``,
+    `${indent}if (!contactText || !phoneText || !statusText) {`,
+    `${indent}  throw new Error('详情字段缺失：列表响应、结果行字段与详情字段都未提供完整的联系人/手机号/入账状态');`,
+    `${indent}}`,
+    `${indent}artifacts['verification'] = {`,
+    `${indent}  selectedOrderNo: shared.selectedOrderNo,`,
+    `${indent}  detailScope: detailScopeMarker || (detailScope ? 'detail_surface' : onDetailUrl ? 'page_detail' : ''),`,
+    `${indent}  detailEntry: detailEntry || (detailScope ? 'detail_surface' : onDetailUrl ? 'detail_url' : 'structured_evidence_reuse'),`,
+    `${indent}  recordSource: recordSource || (detailScope ? 'detail_surface' : onDetailUrl ? 'detail_page' : 'structured_evidence_reuse'),`,
+    `${indent}  contactText,`,
+    `${indent}  phoneText,`,
+    `${indent}  statusText,`,
+    `${indent}};`,
+    `${indent}expect(contactText).toBeTruthy();`,
+    `${indent}expect(phoneText).toBeTruthy();`,
+    `${indent}expect(statusText).toBeTruthy();`,
+  ].join('\n');
+}
+
+function sanitizeListSearchDetailVerificationSlot(slotCode: string): string {
+  const hasListVerificationSignals =
+    /shared\.selectedOrderNo/.test(slotCode) &&
+    /artifacts(?:\[['"]plan_step_5['"]\]|\.plan_step_5)/.test(slotCode) &&
+    /(contactText|phoneText|statusText)/.test(slotCode);
+  if (!hasListVerificationSignals) {
+    return slotCode;
+  }
+
+  const alreadyDeterministic =
+    /detailLooksLikeStructuredEvidence/.test(slotCode) &&
+    /statusEvidenceRecordCheck/.test(slotCode) &&
+    /artifacts\[['"]verification['"]\]\s*=\s*\{/.test(slotCode);
+  if (alreadyDeterministic) {
+    return slotCode;
+  }
+
+  const hasDetailHardGate =
+    /if\s*\(\s*!\w+\s*\|\|\s*!\w+\.detailScope\s*\)/.test(slotCode) ||
+    /最终验收失败：未进入该订单对应详情页\/详情抽屉/.test(slotCode);
+  if (!hasDetailHardGate) {
+    return slotCode;
+  }
+
+  const indent = slotCode.split('\n').find((line) => line.trim())?.match(/^\s*/)?.[0] || '    ';
+  return buildListSearchDetailVerificationSlot(indent);
+}
+
+function sanitizeListSearchDetailVerification(code: string): string {
+  return replaceIntentExecutionSlotCode(code, 'verification', sanitizeListSearchDetailVerificationSlot);
+}
+
+function looksLikeBusinessCreateListVerify(code: string): boolean {
+  const looksLikeBusinessListSurface =
+    /business(?:\\\/|\/)businesslist|商机列表/.test(code) && /switchBusinessListOwnershipView/.test(code);
+  return (
+    looksLikeBusinessListSurface &&
+    /(createdBusinessKey|leadMobile|leadContactName|businessIdFromCreate)/.test(code) &&
+    /(新入库|商机进展|statusEvidenceRecordCheck)/.test(code) &&
+    /(resolvePrimaryRecord|findAntdTableRow|clickAntdRowAction)/.test(code)
+  );
+}
+
+function sanitizeBusinessCreateListVerifyStep6Slot(slotCode: string): string {
+  const hasBusinessStep6Signals =
+    /switchBusinessListOwnershipView/.test(slotCode) &&
+    /statusEvidenceRecordCheck/.test(slotCode) &&
+    /input#businessList_keywords:visible/.test(slotCode) &&
+    /(createdBusinessKey|leadMobile|businessIdFromCreate|shared\.businessId)/.test(slotCode) &&
+    /(readJsonResponse|pickJsonRecord|clickAntdRowAction)/.test(slotCode);
+  if (!hasBusinessStep6Signals) {
+    return slotCode;
+  }
+
+  const alreadyDeterministic =
+    /const statusEvidenceRow = statusEvidenceRecordCheck\?\.row \|\| recordCheck\.row \|\| null;/.test(slotCode) &&
+    /if \(!matchedRecord && statusEvidenceRow\) \{/.test(slotCode) &&
+    /clickAntdRowAction\(page,\s*statusEvidenceRow,\s*'查看'\)/.test(slotCode);
+  if (alreadyDeterministic) {
+    return slotCode;
+  }
+
+  const lines = slotCode.split('\n');
+  if (!lines.some((line) => line.includes('const statusEvidenceRow = statusEvidenceRecordCheck?.row || recordCheck.row || null;'))) {
+    const statusEvidenceRowAnchorIndex = lines.findIndex((line) =>
+      line.includes('const listJson = statusEvidenceRecordCheck.response')
+    );
+    if (statusEvidenceRowAnchorIndex >= 0) {
+      const indent = lines[statusEvidenceRowAnchorIndex]?.match(/^\s*/)?.[0] || '    ';
+      let insertIndex = statusEvidenceRowAnchorIndex;
+      while (insertIndex + 1 < lines.length && !/:\s*null;\s*$/.test(lines[insertIndex])) {
+        insertIndex += 1;
+      }
+      lines.splice(insertIndex + 1, 0, `${indent}const statusEvidenceRow = statusEvidenceRecordCheck?.row || recordCheck.row || null;`);
+    }
+  }
+
+  let next = lines.join('\n');
+  next = next.replace(
+    /if \(invalidStatus\(statusText\) && recordCheck\.mode === 'table_row' && recordCheck\.row\) \{/g,
+    "if (invalidStatus(statusText) && statusEvidenceRow) {"
+  );
+  next = next.replace(
+    /await __e2e\.clickAntdRowAction\(page,\s*recordCheck\.row,\s*'查看'\);/g,
+    "await __e2e.clickAntdRowAction(page, statusEvidenceRow, '查看');"
+  );
+  next = next.replace(
+    /if \(recordCheck\.mode === 'table_row' && recordCheck\.row\) \{/g,
+    'if (!matchedRecord && statusEvidenceRow) {'
+  );
+  next = next.replace(/recordCheck\.row\.innerText\(\)/g, 'statusEvidenceRow.innerText()');
+  next = next.replace(
+    /recordCheck\.row\.getAttribute\('data-row-key'\)/g,
+    "statusEvidenceRow.getAttribute('data-row-key')"
+  );
+  next = next.replace(
+    /(\bartifacts\['plan_step_6'\]\s*=\s*\{\n)(\s*)recordCheck,\n(\s*)statusText,/m,
+    "$1$2recordCheck: statusEvidenceRecordCheck || recordCheck,\n$3statusText,"
+  );
+  return next;
+}
+
+function sanitizeBusinessCreateListVerifyStep6(code: string): string {
+  return replaceIntentExecutionSlotCode(code, 'plan_step_6', sanitizeBusinessCreateListVerifyStep6Slot);
+}
+
 export function sanitizeGeneratedCode(code: string): string {
   const looksLikeBatchAccount =
     /批量申请入账|批量入账/.test(code) &&
     (/selectedOrderNo/.test(code) || /orderNo/.test(code) || /订单号/.test(code));
-  if (!looksLikeBatchAccount) {
+  const listSearchDetail = looksLikeListSearchDetail(code);
+  const businessCreateListVerify = looksLikeBusinessCreateListVerify(code);
+  if (!looksLikeBatchAccount && !listSearchDetail && !businessCreateListVerify) {
     return code;
   }
 
-  let next = normalizeBatchAccountAmountAlias(code);
-  next = sanitizeBatchAccountRowSelection(next);
-  next = sanitizeBatchAccountPostClickCheckboxAssertions(next);
-  next = sanitizeBatchAccountRowTextAggregation(next);
-  next = sanitizeBatchAccountModalAssertions(next);
-  next = sanitizeBatchAccountServiceItemHandling(next);
-  next = sanitizeBatchAccountAmountHandling(next);
-  next = sanitizeBatchAccountOrderExtraction(next);
-  next = sanitizeBatchAccountLegacyModalExtraction(next);
-  next = sanitizeBatchAccountModalFieldFallbackReuse(next);
-  next = sanitizeBatchAccountAccountListLookup(next);
-  next = sanitizeBatchAccountPlanStep7ArtifactAliases(next);
-  next = sanitizeBatchAccountOrderExistenceLookups(next);
-  next = sanitizeBatchAccountOrderExistenceRowReuse(next);
-  next = sanitizeBatchAccountBookedMgmtSurfaceChecks(next);
-  next = sanitizeBatchAccountBookedMgmtStep6Transition(next);
-  next = sanitizeBatchAccountSubmitAndSearchWaits(next);
-  next = sanitizeBatchAccountBookedMgmtSubmitUrlFallback(next);
+  let next = code;
+  if (looksLikeBatchAccount) {
+    next = normalizeBatchAccountAmountAlias(next);
+    next = normalizeBatchAccountIdentityAliases(next);
+    next = sanitizeBatchAccountRowSelection(next);
+    next = sanitizeBatchAccountOrderListReadyAnchors(next);
+    next = sanitizeBatchAccountDeterministicPendingFilter(next);
+    next = sanitizeBatchAccountStatusCandidateVisibility(next);
+    next = sanitizeBatchAccountPendingRowAssertions(next);
+    next = sanitizeBatchAccountPostClickCheckboxAssertions(next);
+    next = sanitizeBatchAccountRowTextAggregation(next);
+    next = sanitizeBatchAccountModalAssertions(next);
+    next = sanitizeBatchAccountServiceItemHandling(next);
+    next = sanitizeBatchAccountAmountHandling(next);
+    next = sanitizeBatchAccountOrderExtraction(next);
+    next = sanitizeBatchAccountLegacyModalExtraction(next);
+    next = sanitizeBatchAccountModalFieldFallbackReuse(next);
+    next = sanitizeBatchAccountAccountListLookup(next);
+    next = sanitizeBatchAccountPlanStep7ArtifactAliases(next);
+    next = sanitizeBatchAccountOrderExistenceLookups(next);
+    next = sanitizeBatchAccountOrderExistenceRowReuse(next);
+    next = sanitizeBatchAccountBookedMgmtLookupStep6(next);
+    next = sanitizeBatchAccountPrematureBookedMgmtSurfaceChecks(next);
+    next = sanitizeBatchAccountBookedMgmtSurfaceChecks(next);
+    next = sanitizeBatchAccountBookedMgmtStep6Transition(next);
+    next = sanitizeBatchAccountSubmitAndSearchWaits(next);
+    next = sanitizeBatchAccountBookedMgmtSubmitUrlFallback(next);
+  }
+
+  if (listSearchDetail) {
+    next = sanitizeListSearchDetailOrderListReady(next);
+    next = sanitizeListSearchDetailPendingStatusFilter(next);
+    next = sanitizeListSearchDetailOrderExtraction(next);
+    next = sanitizeListSearchDetailPrimaryRecordLookup(next);
+    next = sanitizeListSearchDetailDetailEntry(next);
+    next = sanitizeListSearchDetailVerification(next);
+  }
+
+  if (businessCreateListVerify) {
+    next = sanitizeBusinessCreateListVerifyStep6(next);
+  }
+
   return next;
 }
 

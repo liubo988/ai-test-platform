@@ -132,6 +132,74 @@
     },
     {
       "version": 1,
+      "slug": "intent.order-list-search-detail.derive-order-no",
+      "title": "在订单列表先用入账状态下拉选择“待申请”，再从真实结果行提取订单号，按订单号重新检索并进入详情页/详情抽屉验证联系人、手机号与入账状态。",
+      "description": "用于 `/order/list` 上的 `list_search_detail` deterministic recipe。不要把“待申请入账”当唯一命中条件；筛选控件里的真实选项是“待申请”，结果行状态文本才可能显示“待申请入账”。先用下拉收窄集合，再提取 `orderNo / serialNo / rowKey` 这类唯一值，后续详情入口与最终验收统一复用该唯一订单号。",
+      "family": "list_search_detail",
+      "matchers": {
+        "requiresAuth": false,
+        "requiresStableIdentifier": false,
+        "targetUrlIncludes": [
+          "/order/list"
+        ],
+        "titleIncludes": [
+          "订单列表",
+          "待申请入账",
+          "待申请"
+        ],
+        "summaryIncludes": [
+          "订单列表",
+          "待申请",
+          "待申请入账",
+          "订单号",
+          "详情",
+          "联系人",
+          "手机号",
+          "入账状态"
+        ],
+        "requiredActions": [
+          "find_table_row",
+          "resolve_primary_record",
+          "read_detail_field"
+        ],
+        "preferredHelpers": [
+          "__e2e.findAntdTableRow",
+          "__e2e.resolvePrimaryRecord",
+          "__e2e.readDetailField",
+          "__e2e.clickAntdRowAction"
+        ],
+        "capabilitySlugs": [
+          "assert.resolve-primary-record",
+          "assert.read-detail-field"
+        ]
+      },
+      "requiredContext": [
+        "订单列表筛选后可能存在多条“待申请入账”真实记录，必须先提取唯一订单号再进入详情。",
+        "筛选控件里的入账状态真实选项是“待申请”，不要把结果行状态文本“待申请入账”直接拿去选下拉。",
+        "当前页面存在可见筛选面、搜索入口或 helper 可自动探测到搜索 surface。",
+        "若环境里确实没有能形成唯一订单号的真实记录，需要显式暴露 deterministic blocker，而不是退回 unknown。"
+      ],
+      "executorPlan": [
+        "先通过“展开 / 入账状态 / 搜索”把列表收窄到待申请候选集合；下拉选项使用“待申请”，不要把“待申请入账”文本本身拿去选筛选项，也不要把它当唯一主键。",
+        "从真实候选结果行优先提取 `orderNo / serialNo / rowKey / link text` 这类唯一值，再把该订单号写入 shared variable。",
+        "拿到订单号后，用 `__e2e.resolvePrimaryRecord(...)` 或同一搜索面按订单号重新命中目标记录，再进入详情页 / 详情抽屉读取联系人、手机号和入账状态。"
+      ],
+      "verifierPlan": [
+        "成功标准 1：目标记录是通过唯一订单号稳定命中，而不是通过“待申请入账”这类状态文本碰巧命中。",
+        "成功标准 2：已进入该订单对应的详情页 / 详情抽屉 / 详情弹层。",
+        "成功标准 3：通过字段标签读取联系人、手机号、入账状态完成最终验收，并保留唯一订单号证据链。"
+      ],
+      "knownPitfalls": [
+        "不要把筛选下拉里的选项写成“待申请入账”；真实可选值应优先尝试“待申请”。",
+        "不要在 Step 2 里把下拉回显或 selectedText 为空直接判失败；筛选动作是否成功应以可见控件完成选择和结果列表收敛为准。",
+        "不要在多条“待申请入账”结果里直接 `findAntdTableRow({ hasTexts: ['待申请'] })`。",
+        "不要在还没拿到唯一订单号前就用联系人/手机号/状态文本混合猜详情入口。"
+      ],
+      "successRate": 0,
+      "lastVerifiedAt": ""
+    },
+    {
+      "version": 1,
       "slug": "intent.modal-or-drawer-save.visible-container",
       "title": "在当前可见 modal / drawer 内完成编辑保存，并以提交收敛和容器关闭/页面稳定态作为最终成功证据。",
       "description": "用于 `modal_or_drawer_save` family 的项目级 deterministic recipe。主路径固定为：定位当前可见 modal/drawer -> scoped 填写 -> 保存 -> 观察提交收敛 -> 必要时继续详情/列表验收。",
@@ -195,6 +263,7 @@
       "slug": "intent.intent-modal-or-drawer-save-visible-container",
       "title": "在订单列表通过“展开”筛选入账状态为“待申请”，勾选结果行后使用表头“批量入账”提交“批量申请入账”弹窗，并跳转到入账管理页按订单号检索验证记录存在。",
       "description": "从通过 run 自动沉淀的 playbook 候选，优先沿既有执行骨架和验收路径复用。 目标路径：/order/list 打开订单列表并确认页面就绪：打开URL并设置较高分辨率；等待页面加载完成。；成功标准 1：进入订单列表页后可见“订单列表”及检索区锚点（展开/搜 索/重 置）。",
+      "family": "modal_or_drawer_save",
       "matchers": {
         "requiresAuth": false,
         "requiresStableIdentifier": false,
@@ -202,16 +271,23 @@
           "/order/list"
         ],
         "titleIncludes": [
-          "在订单列表通过“展开”筛选入账状态为“待申请”",
-          "并跳转到入账管理页按订单号检索验证记录存在"
+          "订单列表",
+          "批量申请入账",
+          "入账管理页"
         ],
         "summaryIncludes": [
-          "在订单列表通过“展开”筛选入账状态为“待申请”",
-          "并跳转到入账管理页按订单号检索验证记录存在",
-          "打开订单列表并确认页面就绪",
-          "打开URL并设置较高分辨率"
+          "批量入账",
+          "批量申请入账",
+          "订单号",
+          "入账管理",
+          "modal",
+          "弹窗",
+          "确定提交"
         ],
-        "requiredActions": [],
+        "requiredActions": [
+          "wait_for_visible_modal",
+          "observe_submit_state"
+        ],
         "preferredHelpers": [
           "__e2e.waitForVisibleAntdModal",
           "__e2e.waitForApiResponse",
@@ -224,7 +300,11 @@
           "__e2e.openAntdDropdown",
           "__e2e.selectAntdOption"
         ],
-        "capabilitySlugs": []
+        "capabilitySlugs": [
+          "ui.wait-for-visible-antd-modal",
+          "assert.watch-submit-state",
+          "assert.resolve-primary-record"
+        ]
       },
       "requiredContext": [
         "严格按 DSL 步骤顺序实现，不删减业务步骤，也不要私自新增与目标无关的大绕路。",
@@ -254,7 +334,10 @@
         "打开订单列表并确认页面就绪 验收：URL包含#/order/list，页面可见“订单列表”与“展开/搜 索/重 置”检索区锚点。",
         "按入账状态筛选待申请 验收：列表刷新后可见至少一条包含“待申请入账”的记录。"
       ],
-      "knownPitfalls": [],
+      "knownPitfalls": [
+        "提交后不要再把 `#form_in_modal_testKeyWord` 当成唯一入账管理搜索锚点。",
+        "不要只验证 toast 或 modal 打开本身；最终还要在入账管理页按订单号命中记录。"
+      ],
       "successRate": 100,
       "lastVerifiedAt": "2026-04-14T04:26:00.880Z"
     }

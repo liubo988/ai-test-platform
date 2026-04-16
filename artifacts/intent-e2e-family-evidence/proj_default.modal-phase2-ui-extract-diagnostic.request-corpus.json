@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "projectUid": "proj_default",
+  "moduleUid": "mod_1773303139537_c84d8476",
+  "testType": "browser_e2e",
+  "priorityScenarioFamily": "modal_or_drawer_save",
+  "actorUserUid": "usr_default_owner",
+  "requests": [
+    {
+      "requestId": "modal-phase2-ui-extract-deterministic-proof",
+      "expectedPriorityScenarioFamily": "modal_or_drawer_save",
+      "input": "在订单列表先点击“展开”，把入账状态筛为“待申请”，再勾选一条真实订单并点击表头“批量入账”打开当前可见的“批量申请入账”弹窗；不改默认值，直接点击“确 定”并等待弹窗关闭，然后进入入账管理页按同一订单号搜索刚提交的记录。",
+      "targetUrl": "https://uat-service.yikaiye.com/#/order/list",
+      "llmConfig": {
+        "selfHealRetries": 1
+      },
+      "runControl": {
+        "priority": "normal",
+        "timeoutMs": 420000,
+        "retryLimit": 0
+      },
+      "prefilledScenarioCard": {
+        "version": 1,
+        "title": "订单列表批量申请入账并在入账管理页按订单号检索记录",
+        "taskMode": "scenario",
+        "targetUrl": "https://uat-service.yikaiye.com/#/order/list",
+        "featureDescription": "在订单列表展开筛选并将入账状态设为“待申请”，勾选一条真实订单后通过“批量入账”提交默认参数的“批量申请入账”弹窗；弹窗关闭后进入入账管理页，按同一订单号搜索并确认记录出现。",
+        "flowDefinition": {
+          "version": 1,
+          "entryUrl": "https://uat-service.yikaiye.com/#/order/list",
+          "sharedVariables": [
+            "selectedOrderNo"
+          ],
+          "expectedOutcome": "批量申请入账提交成功且在入账管理页可按同一订单号检索到记录",
+          "cleanupNotes": "无",
+          "steps": [
+            {
+              "stepUid": "step-1",
+              "stepType": "ui",
+              "title": "进入订单列表页",
+              "target": "订单列表页面",
+              "instruction": "打开 `https://uat-service.yikaiye.com/#/order/list` 并等待页面加载完成。",
+              "expectedResult": "URL 包含 `#/order/list`，页面可见“展开”入口与订单列表区域。",
+              "extractVariable": ""
+            },
+            {
+              "stepUid": "step-2",
+              "stepType": "ui",
+              "title": "展开并设置入账状态筛选",
+              "target": "订单列表筛选区",
+              "instruction": "点击“展开”，在筛选项中将“入账状态”选择为“待申请”，触发查询。",
+              "expectedResult": "筛选条件显示为“入账状态=待申请”，列表刷新完成。",
+              "extractVariable": ""
+            },
+            {
+              "stepUid": "step-3",
+              "stepType": "extract",
+              "title": "勾选订单并提取订单号",
+              "target": "订单列表表格",
+              "instruction": "在当前结果中勾选一条可选订单，读取该行订单号。",
+              "expectedResult": "成功勾选1条订单，且获取到非空订单号。",
+              "extractVariable": "selectedOrderNo"
+            },
+            {
+              "stepUid": "step-4",
+              "stepType": "ui",
+              "title": "打开批量申请入账弹窗",
+              "target": "列表表头操作区",
+              "instruction": "点击表头“批量入账”。后续填写和保存都先 scope 到当前可见的弹层/抽屉容器内。",
+              "expectedResult": "出现标题为“批量申请入账”的弹窗。当前可见弹层/抽屉已打开，可继续填写和保存。",
+              "extractVariable": ""
+            },
+            {
+              "stepUid": "step-5",
+              "stepType": "ui",
+              "title": "按默认值提交批量入账",
+              "target": "批量申请入账弹窗",
+              "instruction": "不修改任何默认字段，直接点击“确 定”，并等待处理完成。填写和点击保存前先 scope 到当前可见的弹层/抽屉容器内。",
+              "expectedResult": "“批量申请入账”弹窗关闭。保存后确认当前弹层/抽屉关闭或页面回到稳定态。",
+              "extractVariable": ""
+            },
+            {
+              "stepUid": "step-6",
+              "stepType": "ui",
+              "title": "进入入账管理页并按订单号搜索",
+              "target": "入账管理页面",
+              "instruction": "跳转到入账管理页，在订单号搜索框填写 `${selectedOrderNo}` 并执行查询。",
+              "expectedResult": "入账管理列表返回结果，且包含订单号 `${selectedOrderNo}` 的记录。",
+              "extractVariable": ""
+            }
+          ]
+        },
+        "successCriteria": [
+          "订单列表页成功加载，URL 包含 `#/order/list` 且可见“展开”筛选入口；并确认当前弹层/抽屉关闭或页面回到稳定态",
+          "筛选条件“入账状态=待申请”生效后，列表存在可勾选订单行",
+          "点击表头“批量入账”后出现标题为“批量申请入账”的弹窗",
+          "在不修改默认值的情况下点击“确 定”后，弹窗关闭",
+          "进入入账管理页后，使用同一订单号搜索可在结果中看到对应记录"
+        ],
+        "visualAnchors": [
+          "按钮/入口：展开",
+          "筛选项：入账状态",
+          "筛选值：待申请",
+          "表头按钮：批量入账",
+          "弹窗标题：批量申请入账",
+          "弹窗按钮：确 定"
+        ],
+        "notes": [
+          "需从当前列表中选择真实存在且可勾选的订单，不预置固定订单号",
+          "订单号应从被勾选行提取并在后续页面复用",
+          "若提交后存在短暂异步延迟，应等待弹窗关闭及结果刷新后再跳转检索",
+          "不要只看 toast；弹层 / 抽屉保存后至少确认当前弹层关闭或页面回到稳定态。",
+          "弹层 / 抽屉内的填写、按钮定位和断言都先 scope 到当前可见容器，再继续操作。"
+        ]
+      }
+    }
+  ]
+}

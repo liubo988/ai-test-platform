@@ -7,10 +7,92 @@
   "actorUserUid": "usr_default_owner",
   "requests": [
     {
-      "requestId": "order-list-search-detail-pending-record",
+      "requestId": "order-list-search-detail-first-pass-anchor-a",
       "expectedPriorityScenarioFamily": "list_search_detail",
-      "input": "打开订单列表，先搜索一条待申请入账的订单记录，再进入该记录详情页或详情抽屉，按字段标签核对联系人、手机号和入账状态。",
+      "intentDraftUid": "idraft_1775757001001_list_search_detail_order_no",
+      "input": "在订单列表先用入账状态下拉选择“待申请”，再从真实结果行提取订单号，按订单号重新检索并进入详情页/详情抽屉验证联系人、手机号与入账状态。",
       "targetUrl": "https://uat-service.yikaiye.com/#/order/list",
+      "prefilledScenarioCard": {
+        "version": 1,
+        "title": "在订单列表先用入账状态下拉选择“待申请”，再从真实结果行提取订单号，按订单号重新检索并进入详情页/详情抽屉验证联系人、手机号与入账状态。",
+        "taskMode": "scenario",
+        "targetUrl": "https://uat-service.yikaiye.com/#/order/list",
+        "featureDescription": "list_search_detail first-pass breakthrough：订单列表先筛出待申请候选，再提取唯一订单号，后续统一只用该订单号进入详情做字段验收。",
+        "flowDefinition": {
+          "version": 1,
+          "entryUrl": "https://uat-service.yikaiye.com/#/order/list",
+          "sharedVariables": [
+            "selectedOrderNo"
+          ],
+          "expectedOutcome": "通过唯一订单号稳定命中对应订单详情，并按字段标签核对联系人、手机号和入账状态。",
+          "cleanupNotes": "",
+          "steps": [
+            {
+              "stepUid": "step-1",
+              "stepType": "ui",
+              "title": "打开订单列表页面",
+              "target": "https://uat-service.yikaiye.com/#/order/list",
+              "instruction": "进入订单列表并等待搜索区、展开按钮和结果表格稳定。",
+              "expectedResult": "订单列表搜索区与结果表格可见"
+            },
+            {
+              "stepUid": "step-2",
+              "stepType": "ui",
+              "title": "按待申请筛选候选订单",
+              "target": "订单列表筛选区",
+              "instruction": "点击“展开”，在入账状态下拉里选择“待申请”并执行搜索；不要把“待申请入账”当下拉选项。",
+              "expectedResult": "结果列表刷新并出现待申请候选行"
+            },
+            {
+              "stepUid": "step-3",
+              "stepType": "extract",
+              "title": "从候选结果提取唯一订单号",
+              "target": "订单结果行",
+              "instruction": "从真实候选结果行提取 selectedOrderNo；优先订单号链接，其次 rowKey 或稳定编号 token，不要使用手机号或状态文本。",
+              "expectedResult": "selectedOrderNo 非空且可复用",
+              "extractVariable": "selectedOrderNo"
+            },
+            {
+              "stepUid": "step-4",
+              "stepType": "ui",
+              "title": "按订单号重新检索目标记录",
+              "target": "订单列表结果区",
+              "instruction": "仅使用 selectedOrderNo 重新命中目标记录，不要再混入状态文本、手机号或整行宽泛 token。",
+              "expectedResult": "结果列表稳定命中 selectedOrderNo 对应记录"
+            },
+            {
+              "stepUid": "step-5",
+              "stepType": "ui",
+              "title": "进入订单详情并核对字段",
+              "target": "订单详情页或详情抽屉",
+              "instruction": "进入 selectedOrderNo 对应详情页或详情抽屉，按字段标签读取联系人、手机号和入账状态。",
+              "expectedResult": "详情页或详情抽屉可见，字段标签核对完成"
+            }
+          ]
+        },
+        "successCriteria": [
+          "通过唯一订单号稳定命中目标记录，而不是通过待申请入账这类状态文本碰巧命中",
+          "已进入该订单对应的详情页、详情抽屉或详情弹层",
+          "通过字段标签读取联系人、手机号和入账状态完成最终验收"
+        ],
+        "visualAnchors": [
+          "展开",
+          "搜 索",
+          "订单号",
+          "联系人",
+          "手机号",
+          "入账状态"
+        ],
+        "notes": [
+          "不要把待申请入账当主键",
+          "若结果不唯一，先从结果行提取订单号，再统一复用该订单号进入详情",
+          "不要把手机号、金额或状态文本写回 selectedOrderNo"
+        ]
+      },
+      "llmConfig": {
+        "selfHealRetries": 0,
+        "maxPlanSteps": 6
+      },
       "runControl": {
         "priority": "normal",
         "timeoutMs": 720000,
@@ -18,10 +100,92 @@
       }
     },
     {
-      "requestId": "business-list-search-detail-by-phone",
+      "requestId": "order-list-search-detail-first-pass-anchor-b",
       "expectedPriorityScenarioFamily": "list_search_detail",
-      "input": "在商机列表按手机号检索目标商机，命中记录后进入详情页，按字段标签读取联系人、手机号和商机进展状态。",
-      "targetUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+      "intentDraftUid": "idraft_1775757001001_list_search_detail_order_no",
+      "input": "在订单列表先用入账状态下拉选择“待申请”，再从真实结果行提取订单号，按订单号重新检索并进入详情页/详情抽屉验证联系人、手机号与入账状态。",
+      "targetUrl": "https://uat-service.yikaiye.com/#/order/list",
+      "prefilledScenarioCard": {
+        "version": 1,
+        "title": "在订单列表先用入账状态下拉选择“待申请”，再从真实结果行提取订单号，按订单号重新检索并进入详情页/详情抽屉验证联系人、手机号与入账状态。",
+        "taskMode": "scenario",
+        "targetUrl": "https://uat-service.yikaiye.com/#/order/list",
+        "featureDescription": "list_search_detail first-pass breakthrough：订单列表先筛出待申请候选，再提取唯一订单号，后续统一只用该订单号进入详情做字段验收。",
+        "flowDefinition": {
+          "version": 1,
+          "entryUrl": "https://uat-service.yikaiye.com/#/order/list",
+          "sharedVariables": [
+            "selectedOrderNo"
+          ],
+          "expectedOutcome": "通过唯一订单号稳定命中对应订单详情，并按字段标签核对联系人、手机号和入账状态。",
+          "cleanupNotes": "",
+          "steps": [
+            {
+              "stepUid": "step-1",
+              "stepType": "ui",
+              "title": "打开订单列表页面",
+              "target": "https://uat-service.yikaiye.com/#/order/list",
+              "instruction": "进入订单列表并等待搜索区、展开按钮和结果表格稳定。",
+              "expectedResult": "订单列表搜索区与结果表格可见"
+            },
+            {
+              "stepUid": "step-2",
+              "stepType": "ui",
+              "title": "按待申请筛选候选订单",
+              "target": "订单列表筛选区",
+              "instruction": "点击“展开”，在入账状态下拉里选择“待申请”并执行搜索；不要把“待申请入账”当下拉选项。",
+              "expectedResult": "结果列表刷新并出现待申请候选行"
+            },
+            {
+              "stepUid": "step-3",
+              "stepType": "extract",
+              "title": "从候选结果提取唯一订单号",
+              "target": "订单结果行",
+              "instruction": "从真实候选结果行提取 selectedOrderNo；优先订单号链接，其次 rowKey 或稳定编号 token，不要使用手机号或状态文本。",
+              "expectedResult": "selectedOrderNo 非空且可复用",
+              "extractVariable": "selectedOrderNo"
+            },
+            {
+              "stepUid": "step-4",
+              "stepType": "ui",
+              "title": "按订单号重新检索目标记录",
+              "target": "订单列表结果区",
+              "instruction": "仅使用 selectedOrderNo 重新命中目标记录，不要再混入状态文本、手机号或整行宽泛 token。",
+              "expectedResult": "结果列表稳定命中 selectedOrderNo 对应记录"
+            },
+            {
+              "stepUid": "step-5",
+              "stepType": "ui",
+              "title": "进入订单详情并核对字段",
+              "target": "订单详情页或详情抽屉",
+              "instruction": "进入 selectedOrderNo 对应详情页或详情抽屉，按字段标签读取联系人、手机号和入账状态。",
+              "expectedResult": "详情页或详情抽屉可见，字段标签核对完成"
+            }
+          ]
+        },
+        "successCriteria": [
+          "通过唯一订单号稳定命中目标记录，而不是通过待申请入账这类状态文本碰巧命中",
+          "已进入该订单对应的详情页、详情抽屉或详情弹层",
+          "通过字段标签读取联系人、手机号和入账状态完成最终验收"
+        ],
+        "visualAnchors": [
+          "展开",
+          "搜 索",
+          "订单号",
+          "联系人",
+          "手机号",
+          "入账状态"
+        ],
+        "notes": [
+          "不要把待申请入账当主键",
+          "若结果不唯一，先从结果行提取订单号，再统一复用该订单号进入详情",
+          "不要把手机号、金额或状态文本写回 selectedOrderNo"
+        ]
+      },
+      "llmConfig": {
+        "selfHealRetries": 0,
+        "maxPlanSteps": 6
+      },
       "runControl": {
         "priority": "normal",
         "timeoutMs": 720000,
@@ -29,10 +193,92 @@
       }
     },
     {
-      "requestId": "business-list-search-detail-fallback-identity",
+      "requestId": "order-list-search-detail-first-pass-anchor-c",
       "expectedPriorityScenarioFamily": "list_search_detail",
-      "input": "在商机列表搜索一条已有记录并打开详情抽屉，按字段标签核对联系人、手机号和状态，不要只看列表里有结果。",
-      "targetUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+      "intentDraftUid": "idraft_1775757001001_list_search_detail_order_no",
+      "input": "在订单列表先用入账状态下拉选择“待申请”，再从真实结果行提取订单号，按订单号重新检索并进入详情页/详情抽屉验证联系人、手机号与入账状态。",
+      "targetUrl": "https://uat-service.yikaiye.com/#/order/list",
+      "prefilledScenarioCard": {
+        "version": 1,
+        "title": "在订单列表先用入账状态下拉选择“待申请”，再从真实结果行提取订单号，按订单号重新检索并进入详情页/详情抽屉验证联系人、手机号与入账状态。",
+        "taskMode": "scenario",
+        "targetUrl": "https://uat-service.yikaiye.com/#/order/list",
+        "featureDescription": "list_search_detail first-pass breakthrough：订单列表先筛出待申请候选，再提取唯一订单号，后续统一只用该订单号进入详情做字段验收。",
+        "flowDefinition": {
+          "version": 1,
+          "entryUrl": "https://uat-service.yikaiye.com/#/order/list",
+          "sharedVariables": [
+            "selectedOrderNo"
+          ],
+          "expectedOutcome": "通过唯一订单号稳定命中对应订单详情，并按字段标签核对联系人、手机号和入账状态。",
+          "cleanupNotes": "",
+          "steps": [
+            {
+              "stepUid": "step-1",
+              "stepType": "ui",
+              "title": "打开订单列表页面",
+              "target": "https://uat-service.yikaiye.com/#/order/list",
+              "instruction": "进入订单列表并等待搜索区、展开按钮和结果表格稳定。",
+              "expectedResult": "订单列表搜索区与结果表格可见"
+            },
+            {
+              "stepUid": "step-2",
+              "stepType": "ui",
+              "title": "按待申请筛选候选订单",
+              "target": "订单列表筛选区",
+              "instruction": "点击“展开”，在入账状态下拉里选择“待申请”并执行搜索；不要把“待申请入账”当下拉选项。",
+              "expectedResult": "结果列表刷新并出现待申请候选行"
+            },
+            {
+              "stepUid": "step-3",
+              "stepType": "extract",
+              "title": "从候选结果提取唯一订单号",
+              "target": "订单结果行",
+              "instruction": "从真实候选结果行提取 selectedOrderNo；优先订单号链接，其次 rowKey 或稳定编号 token，不要使用手机号或状态文本。",
+              "expectedResult": "selectedOrderNo 非空且可复用",
+              "extractVariable": "selectedOrderNo"
+            },
+            {
+              "stepUid": "step-4",
+              "stepType": "ui",
+              "title": "按订单号重新检索目标记录",
+              "target": "订单列表结果区",
+              "instruction": "仅使用 selectedOrderNo 重新命中目标记录，不要再混入状态文本、手机号或整行宽泛 token。",
+              "expectedResult": "结果列表稳定命中 selectedOrderNo 对应记录"
+            },
+            {
+              "stepUid": "step-5",
+              "stepType": "ui",
+              "title": "进入订单详情并核对字段",
+              "target": "订单详情页或详情抽屉",
+              "instruction": "进入 selectedOrderNo 对应详情页或详情抽屉，按字段标签读取联系人、手机号和入账状态。",
+              "expectedResult": "详情页或详情抽屉可见，字段标签核对完成"
+            }
+          ]
+        },
+        "successCriteria": [
+          "通过唯一订单号稳定命中目标记录，而不是通过待申请入账这类状态文本碰巧命中",
+          "已进入该订单对应的详情页、详情抽屉或详情弹层",
+          "通过字段标签读取联系人、手机号和入账状态完成最终验收"
+        ],
+        "visualAnchors": [
+          "展开",
+          "搜 索",
+          "订单号",
+          "联系人",
+          "手机号",
+          "入账状态"
+        ],
+        "notes": [
+          "不要把待申请入账当主键",
+          "若结果不唯一，先从结果行提取订单号，再统一复用该订单号进入详情",
+          "不要把手机号、金额或状态文本写回 selectedOrderNo"
+        ]
+      },
+      "llmConfig": {
+        "selfHealRetries": 0,
+        "maxPlanSteps": 6
+      },
       "runControl": {
         "priority": "normal",
         "timeoutMs": 720000,

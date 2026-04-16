@@ -38,7 +38,13 @@ import {
   type IntentExecutionStructuredRepairOutput,
 } from '@/lib/intent-execution-artifacts';
 import { getLLMRuntimeConfig, type LLMRuntimeOverrides } from '@/lib/llm/provider-config';
-import { buildGenerateInputFromScenarioCard, generateScenarioCard, type ScenarioAttachment, type ScenarioCard } from '@/lib/ai/scenario-card';
+import {
+  buildGenerateInputFromScenarioCard,
+  generateScenarioCard,
+  normalizeScenarioCard,
+  type ScenarioAttachment,
+  type ScenarioCard,
+} from '@/lib/ai/scenario-card';
 import { resolveIntentE2EQualitySplit, type IntentE2EQualitySplit } from '@/lib/intent-e2e-quality-split';
 import {
   buildBrowserE2EPlatformTestAssetBundle,
@@ -103,7 +109,10 @@ import { resolveIntentRunnerAdapter, type IntentRunnerGeneratedArtifact } from '
 import { listIntentE2ERunSnapshots, type IntentE2ERunSnapshotRecord } from '@/lib/db/repository';
 import { searchIntentE2EExperienceHints, type IntentE2EExperienceSummary } from '@/lib/intent-e2e-experience-search';
 import { buildIntentE2ERunReview, type IntentE2ERunReview } from '@/lib/intent-e2e-run-review';
-import { resolveIntentE2EPriorityScenarioFamilyRoute } from '@/lib/intent-e2e-priority-scenario-family';
+import {
+  resolveIntentE2EPriorityScenarioFamilyRoute,
+  shouldNarrowToPriorityScenarioFamilyRoute,
+} from '@/lib/intent-e2e-priority-scenario-family';
 import { selectIntentRecipeRegistry } from '@/lib/intent-recipe-registry';
 
 export interface IntentE2EKnowledgeSummary {
@@ -532,23 +541,36 @@ async function collectGeneratedCode(
 }
 
 function buildPrefilledScenarioCardOutput(
-  input: IntentE2ERunRequest
+  input: IntentE2ERunRequest,
+  options?: {
+    card?: ScenarioCard | null;
+    source?: IntentE2EPrefilledPlanReuseSource;
+    reusedRunId?: string;
+  }
 ): {
   card: ScenarioCard;
   llmMeta: IntentE2ERunResult['llmMeta'];
+  source: IntentE2EPrefilledPlanReuseSource;
+  reusedRunId?: string;
 } | null {
-  if (!input.prefilledScenarioCard) {
+  const rawCard = input.prefilledScenarioCard || options?.card || null;
+  if (!rawCard) {
     return null;
   }
+  const card = normalizeScenarioCard(rawCard, input.targetUrl?.trim() || '');
+  const source = input.prefilledScenarioCard ? 'draft_first_pass' : options?.source || 'draft_first_pass';
+  const reusedRunId = input.prefilledScenarioCard ? '' : options?.reusedRunId?.trim() || '';
 
   return {
-    card: input.prefilledScenarioCard,
+    card,
     llmMeta: {
       provider: 'prefilled',
-      model: 'intent-draft',
+      model: source === 'draft_first_pass' ? 'intent-draft' : `intent-run/${source}`,
       visionEnabled: (input.attachments?.length || 0) > 0,
       attachmentCount: input.attachments?.length || 0,
     },
+    source,
+    ...(reusedRunId ? { reusedRunId } : {}),
   };
 }
 
@@ -587,6 +609,12 @@ interface IntentE2EPrefilledPlanReuseDecision {
 }
 
 type IntentE2ESuccessfulRunRequestMatchLevel = 'exact_request' | 'compatible_request';
+type IntentE2EReuseRequestMatchMode = 'intent_draft' | 'request_only';
+
+interface IntentE2EReuseRequestMatch {
+  requestMatchLevel: IntentE2ESuccessfulRunRequestMatchLevel;
+  matchMode: IntentE2EReuseRequestMatchMode;
+}
 
 interface IntentE2ESuccessfulRunCodeReuseCandidate {
   runId: string;
@@ -606,6 +634,15 @@ interface IntentE2EProgressedRunCodeReuseCandidate {
   attempt: number;
 }
 
+interface IntentE2EScenarioCardReuseCandidate {
+  runId: string;
+  card: ScenarioCard;
+  source: Exclude<IntentE2EPrefilledPlanReuseSource, 'draft_first_pass'>;
+  requestMatchLevel: IntentE2ESuccessfulRunRequestMatchLevel;
+  createdAtMs: number;
+  progressedStepCount: number;
+}
+
 interface IntentE2ERepairBaselineDecision {
   previousCode: string;
   comparisonCode: string;
@@ -616,12 +653,73 @@ interface IntentE2ERepairBaselineDecision {
   baselineProgressedStepCount: number;
 }
 
+const INTENT_E2E_RECENT_REUSE_SNAPSHOT_LIMIT = 12;
+const INTENT_E2E_REQUEST_ONLY_REUSE_SNAPSHOT_LIMIT = 48;
+
 function normalizeIntentE2EReuseText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function resolveIntentE2EReuseSnapshotLimit(intentDraftUid?: string): number {
+  return normalizeIntentE2EReuseText(intentDraftUid)
+    ? INTENT_E2E_RECENT_REUSE_SNAPSHOT_LIMIT
+    : INTENT_E2E_REQUEST_ONLY_REUSE_SNAPSHOT_LIMIT;
+}
+
+function shouldDisableIntentE2ERecentSuccessfulRunReuse(): boolean {
+  const rawValue = normalizeIntentE2EReuseText(process.env.INTENT_E2E_DISABLE_RECENT_SUCCESSFUL_RUN_REUSE).toLowerCase();
+  return rawValue === '1' || rawValue === 'true' || rawValue === 'yes' || rawValue === 'on';
+}
+
 function normalizeIntentE2EReuseComparableText(value: unknown): string {
   return normalizeIntentE2EReuseText(value).replace(/\s+/g, ' ').trim();
+}
+
+function looksLikeOrderBatchAccountingModalScenarioCard(card: ScenarioCard): boolean {
+  const flowSteps = Array.isArray(card.flowDefinition?.steps) ? card.flowDefinition.steps : [];
+  const haystack = [
+    card.title,
+    card.targetUrl,
+    card.featureDescription,
+    ...(Array.isArray(card.successCriteria) ? card.successCriteria : []),
+    ...(Array.isArray(card.visualAnchors) ? card.visualAnchors : []),
+    ...(Array.isArray(card.notes) ? card.notes : []),
+    card.flowDefinition?.entryUrl || '',
+    card.flowDefinition?.expectedOutcome || '',
+    ...flowSteps.flatMap((step) => [step.title, step.target, step.instruction, step.expectedResult]),
+  ]
+    .map((item) => normalizeIntentE2EReuseText(item))
+    .filter(Boolean)
+    .join('\n');
+
+  return /(订单列表|order\/list)/i.test(haystack) && /(批量申请入账|批量入账|入账管理|bookedmgmt)/i.test(haystack);
+}
+
+function hasStaleOrderBatchAccountingCheckedRowPrereqCode(code: string): boolean {
+  const normalizedCode = String(code || '');
+  if (!normalizedCode) return false;
+  return (
+    /前置条件不满足：订单列表中未找到已勾选订单行/.test(normalizedCode) ||
+    (/const checkedRows\b/.test(normalizedCode) &&
+      /已勾选订单行/.test(normalizedCode) &&
+      /批量申请入账/.test(normalizedCode) &&
+      /selectedOrderNo/.test(normalizedCode))
+  );
+}
+
+function shouldSkipHistoricalReuseCodeForScenario(input: {
+  scenarioCard: ScenarioCard;
+  code?: string | null;
+}): boolean {
+  const code = String(input.code || '');
+  if (!code) return false;
+  return looksLikeOrderBatchAccountingModalScenarioCard(input.scenarioCard) && hasStaleOrderBatchAccountingCheckedRowPrereqCode(code);
+}
+
+function buildScenarioSpecificReuseSkipReason(source: 'recent_successful_run' | 'recent_progressed_run'): string {
+  return source === 'recent_successful_run'
+    ? '最近一次成功运行脚本仍把“已勾选订单 / 已打开弹窗”当作硬前置，已回退到当前生成链路重新生成。'
+    : '最近一次推进更远的历史脚本仍把“已勾选订单 / 已打开弹窗”当作硬前置，已回退到当前生成链路重新生成。';
 }
 
 function normalizeIntentE2EReuseCount(value: unknown): number {
@@ -663,6 +761,57 @@ function resolveIntentE2ESuccessfulRunRequestMatchLevel(input: {
     return 'compatible_request';
   }
   return null;
+}
+
+function resolveIntentE2EReuseRequestMatch(input: {
+  expectedIntentDraftUid?: string;
+  candidateIntentDraftUid?: string;
+  expectedRequestInput: string;
+  candidateRequestInput: string;
+}): IntentE2EReuseRequestMatch | null {
+  const expectedIntentDraftUid = normalizeIntentE2EReuseText(input.expectedIntentDraftUid);
+  const candidateIntentDraftUid = normalizeIntentE2EReuseText(input.candidateIntentDraftUid);
+  const requestMatchLevel = resolveIntentE2ESuccessfulRunRequestMatchLevel({
+    expectedRequestInput: input.expectedRequestInput,
+    candidateRequestInput: input.candidateRequestInput,
+  });
+  if (!requestMatchLevel) {
+    return null;
+  }
+  if (expectedIntentDraftUid) {
+    if (!candidateIntentDraftUid || candidateIntentDraftUid !== expectedIntentDraftUid) {
+      return null;
+    }
+    return {
+      requestMatchLevel,
+      matchMode: 'intent_draft',
+    };
+  }
+  if (requestMatchLevel !== 'exact_request') {
+    return null;
+  }
+  return {
+    requestMatchLevel,
+    matchMode: 'request_only',
+  };
+}
+
+function resolveIntentE2EScenarioCardFromSnapshot(
+  snapshot: Awaited<ReturnType<typeof listIntentE2ERunSnapshots>>[number]
+): ScenarioCard | null {
+  const state =
+    snapshot?.state && typeof snapshot.state === 'object' && !Array.isArray(snapshot.state)
+      ? (snapshot.state as {
+          result?: {
+            scenarioCard?: unknown;
+          };
+        })
+      : null;
+  const card =
+    state?.result?.scenarioCard && typeof state.result.scenarioCard === 'object' && !Array.isArray(state.result.scenarioCard)
+      ? (state.result.scenarioCard as ScenarioCard)
+      : null;
+  return card || null;
 }
 
 function resolveIntentE2ELastAttemptCode(value: unknown): string {
@@ -823,6 +972,28 @@ function isBetterIntentE2ESuccessfulRunCodeReuseCandidate(
   return candidate.runId > currentBest.runId;
 }
 
+function isBetterIntentE2EScenarioCardReuseCandidate(
+  candidate: IntentE2EScenarioCardReuseCandidate,
+  currentBest: IntentE2EScenarioCardReuseCandidate | null
+): boolean {
+  if (!currentBest) return true;
+  const candidateRequestMatchScore = successfulRunRequestMatchLevelScore(candidate.requestMatchLevel);
+  const currentBestRequestMatchScore = successfulRunRequestMatchLevelScore(currentBest.requestMatchLevel);
+  if (candidateRequestMatchScore !== currentBestRequestMatchScore) {
+    return candidateRequestMatchScore > currentBestRequestMatchScore;
+  }
+  if (candidate.source !== currentBest.source) {
+    return candidate.source === 'recent_successful_run';
+  }
+  if (candidate.progressedStepCount !== currentBest.progressedStepCount) {
+    return candidate.progressedStepCount > currentBest.progressedStepCount;
+  }
+  if (candidate.createdAtMs !== currentBest.createdAtMs) {
+    return candidate.createdAtMs > currentBest.createdAtMs;
+  }
+  return candidate.runId > currentBest.runId;
+}
+
 function resolveIntentE2ESuccessfulRunCodeReuseCandidateFromSnapshot(
   snapshot: Awaited<ReturnType<typeof listIntentE2ERunSnapshots>>[number],
   input: {
@@ -850,15 +1021,14 @@ function resolveIntentE2ESuccessfulRunCodeReuseCandidateFromSnapshot(
   if (!state) return null;
 
   const request = state.request;
-  const draftUid = normalizeIntentE2EReuseText(request?.intentDraftUid);
-  if (!draftUid || draftUid !== input.intentDraftUid) return null;
-
   const requestInput = normalizeIntentE2EReuseText(request?.input) || normalizeIntentE2EReuseText(snapshot.requestInput);
-  const requestMatchLevel = resolveIntentE2ESuccessfulRunRequestMatchLevel({
+  const requestMatch = resolveIntentE2EReuseRequestMatch({
+    expectedIntentDraftUid: input.intentDraftUid,
+    candidateIntentDraftUid: normalizeIntentE2EReuseText(request?.intentDraftUid),
     expectedRequestInput: input.requestInput,
     candidateRequestInput: requestInput,
   });
-  if (!requestMatchLevel) return null;
+  if (!requestMatch) return null;
 
   const targetUrl = normalizeIntentE2EReuseText(request?.targetUrl) || normalizeIntentE2EReuseText(snapshot.targetUrl);
   if (!targetUrl || targetUrl !== input.targetUrl) return null;
@@ -876,11 +1046,65 @@ function resolveIntentE2ESuccessfulRunCodeReuseCandidateFromSnapshot(
   return {
     runId: snapshot.runId,
     code,
-    requestMatchLevel,
+    requestMatchLevel: requestMatch.requestMatchLevel,
     attachmentCountMatches: attachmentCount === input.attachmentCount,
     requiresSanitizerRescue,
     createdAtMs: Math.max(resolveIntentE2EReuseTimestamp(state.createdAt), resolveIntentE2EReuseTimestamp(snapshot.createdAt)),
     attemptCount: attempts.length,
+  };
+}
+
+function resolveIntentE2EScenarioCardReuseCandidateFromSnapshot(
+  snapshot: Awaited<ReturnType<typeof listIntentE2ERunSnapshots>>[number],
+  input: {
+    intentDraftUid: string;
+    requestInput: string;
+    targetUrl: string;
+  },
+  source: Exclude<IntentE2EPrefilledPlanReuseSource, 'draft_first_pass'>
+): IntentE2EScenarioCardReuseCandidate | null {
+  const state =
+    snapshot?.state && typeof snapshot.state === 'object' && !Array.isArray(snapshot.state)
+      ? (snapshot.state as {
+          request?: {
+            input?: unknown;
+            targetUrl?: unknown;
+            intentDraftUid?: unknown;
+          };
+          createdAt?: unknown;
+          result?: {
+            attempts?: unknown;
+          };
+        })
+      : null;
+  if (!state) return null;
+
+  const request = state.request;
+  const requestInput = normalizeIntentE2EReuseText(request?.input) || normalizeIntentE2EReuseText(snapshot.requestInput);
+  const requestMatch = resolveIntentE2EReuseRequestMatch({
+    expectedIntentDraftUid: input.intentDraftUid,
+    candidateIntentDraftUid: normalizeIntentE2EReuseText(request?.intentDraftUid),
+    expectedRequestInput: input.requestInput,
+    candidateRequestInput: requestInput,
+  });
+  if (!requestMatch) return null;
+
+  const targetUrl = normalizeIntentE2EReuseText(request?.targetUrl) || normalizeIntentE2EReuseText(snapshot.targetUrl);
+  if (!targetUrl || targetUrl !== input.targetUrl) return null;
+
+  const card = resolveIntentE2EScenarioCardFromSnapshot(snapshot);
+  if (!card) return null;
+
+  const progressedAttemptCandidate =
+    source === 'recent_progressed_run' ? resolveIntentE2EProgressedAttemptCandidate(state.result?.attempts) : null;
+
+  return {
+    runId: snapshot.runId,
+    card,
+    source,
+    requestMatchLevel: requestMatch.requestMatchLevel,
+    createdAtMs: Math.max(resolveIntentE2EReuseTimestamp(state.createdAt), resolveIntentE2EReuseTimestamp(snapshot.createdAt)),
+    progressedStepCount: progressedAttemptCandidate?.progressedStepCount || 0,
   };
 }
 
@@ -897,8 +1121,9 @@ async function resolveIntentE2ESuccessfulRunCodeReuseCandidate(input: {
   const intentDraftUid = normalizeIntentE2EReuseText(input.intentDraftUid);
   const requestInput = normalizeIntentE2EReuseText(input.requestInput);
   const targetUrl = normalizeIntentE2EReuseText(input.targetUrl);
+  const snapshotLimit = resolveIntentE2EReuseSnapshotLimit(intentDraftUid);
 
-  if (!intentDraftUid || !requestInput || !targetUrl || (!projectUid && !moduleUid)) {
+  if (!requestInput || !targetUrl || (!projectUid && !moduleUid)) {
     return null;
   }
 
@@ -907,7 +1132,7 @@ async function resolveIntentE2ESuccessfulRunCodeReuseCandidate(input: {
       ...(projectUid ? { projectUid } : {}),
       ...(moduleUid ? { moduleUid } : {}),
       status: 'passed',
-      limit: 12,
+      limit: snapshotLimit,
     });
 
     let bestCandidate: IntentE2ESuccessfulRunCodeReuseCandidate | null = null;
@@ -928,6 +1153,79 @@ async function resolveIntentE2ESuccessfulRunCodeReuseCandidate(input: {
   }
 
   return null;
+}
+
+async function resolveIntentE2EScenarioCardReuseCandidate(input: {
+  projectUid?: string;
+  moduleUid?: string;
+  intentDraftUid?: string;
+  requestInput: string;
+  targetUrl: string;
+}): Promise<IntentE2EScenarioCardReuseCandidate | null> {
+  const projectUid = normalizeIntentE2EReuseText(input.projectUid);
+  const moduleUid = normalizeIntentE2EReuseText(input.moduleUid);
+  const intentDraftUid = normalizeIntentE2EReuseText(input.intentDraftUid);
+  const requestInput = normalizeIntentE2EReuseText(input.requestInput);
+  const targetUrl = normalizeIntentE2EReuseText(input.targetUrl);
+  const snapshotLimit = resolveIntentE2EReuseSnapshotLimit(intentDraftUid);
+
+  if (!requestInput || !targetUrl || (!projectUid && !moduleUid)) {
+    return null;
+  }
+
+  try {
+    const passedSnapshots = await listIntentE2ERunSnapshots({
+      ...(projectUid ? { projectUid } : {}),
+      ...(moduleUid ? { moduleUid } : {}),
+      status: 'passed',
+      limit: snapshotLimit,
+    });
+
+    let bestCandidate: IntentE2EScenarioCardReuseCandidate | null = null;
+    for (const snapshot of passedSnapshots) {
+      const candidate = resolveIntentE2EScenarioCardReuseCandidateFromSnapshot(
+        snapshot,
+        {
+          intentDraftUid,
+          requestInput,
+          targetUrl,
+        },
+        'recent_successful_run'
+      );
+      if (candidate && isBetterIntentE2EScenarioCardReuseCandidate(candidate, bestCandidate)) {
+        bestCandidate = candidate;
+      }
+    }
+    if (bestCandidate) {
+      return bestCandidate;
+    }
+
+    const failedSnapshots = await listIntentE2ERunSnapshots({
+      ...(projectUid ? { projectUid } : {}),
+      ...(moduleUid ? { moduleUid } : {}),
+      status: 'failed',
+      limit: snapshotLimit,
+    });
+
+    for (const snapshot of failedSnapshots) {
+      const candidate = resolveIntentE2EScenarioCardReuseCandidateFromSnapshot(
+        snapshot,
+        {
+          intentDraftUid,
+          requestInput,
+          targetUrl,
+        },
+        'recent_progressed_run'
+      );
+      if (candidate && isBetterIntentE2EScenarioCardReuseCandidate(candidate, bestCandidate)) {
+        bestCandidate = candidate;
+      }
+    }
+
+    return bestCandidate;
+  } catch {
+    return null;
+  }
 }
 
 function resolveIntentE2EProgressedRunCodeReuseCandidateFromSnapshot(
@@ -956,11 +1254,14 @@ function resolveIntentE2EProgressedRunCodeReuseCandidateFromSnapshot(
   if (!state) return null;
 
   const request = state.request;
-  const draftUid = normalizeIntentE2EReuseText(request?.intentDraftUid);
-  if (!draftUid || draftUid !== input.intentDraftUid) return null;
-
   const requestInput = normalizeIntentE2EReuseText(request?.input) || normalizeIntentE2EReuseText(snapshot.requestInput);
-  if (!requestInput || requestInput !== input.requestInput) return null;
+  const requestMatch = resolveIntentE2EReuseRequestMatch({
+    expectedIntentDraftUid: input.intentDraftUid,
+    candidateIntentDraftUid: normalizeIntentE2EReuseText(request?.intentDraftUid),
+    expectedRequestInput: input.requestInput,
+    candidateRequestInput: requestInput,
+  });
+  if (!requestMatch) return null;
 
   const targetUrl = normalizeIntentE2EReuseText(request?.targetUrl) || normalizeIntentE2EReuseText(snapshot.targetUrl);
   if (!targetUrl || targetUrl !== input.targetUrl) return null;
@@ -990,8 +1291,9 @@ async function resolveIntentE2EProgressedRunCodeReuseCandidate(input: {
   const intentDraftUid = normalizeIntentE2EReuseText(input.intentDraftUid);
   const requestInput = normalizeIntentE2EReuseText(input.requestInput);
   const targetUrl = normalizeIntentE2EReuseText(input.targetUrl);
+  const snapshotLimit = resolveIntentE2EReuseSnapshotLimit(intentDraftUid);
 
-  if (!intentDraftUid || !requestInput || !targetUrl || (!projectUid && !moduleUid)) {
+  if (!requestInput || !targetUrl || (!projectUid && !moduleUid)) {
     return null;
   }
 
@@ -1000,7 +1302,7 @@ async function resolveIntentE2EProgressedRunCodeReuseCandidate(input: {
       ...(projectUid ? { projectUid } : {}),
       ...(moduleUid ? { moduleUid } : {}),
       status: 'failed',
-      limit: 12,
+      limit: snapshotLimit,
     });
 
     let bestCandidate: IntentE2EProgressedRunCodeReuseCandidate | null = null;
@@ -1032,7 +1334,13 @@ function resolveIntentE2EPrefilledPlanReuseDecision(input: {
   successfulRunCodeCandidate?: IntentE2ESuccessfulRunCodeReuseCandidate | null;
   progressedRunCodeCandidate?: IntentE2EProgressedRunCodeReuseCandidate | null;
 }): IntentE2EPrefilledPlanReuseDecision {
-  if (input.successfulRunCodeCandidate?.code) {
+  const recentSuccessfulRunReuseDisabled = shouldDisableIntentE2ERecentSuccessfulRunReuse();
+  const successfulRunReuseDisabledSkipReason =
+    input.successfulRunCodeCandidate?.code && recentSuccessfulRunReuseDisabled
+      ? '已临时关闭最近一次成功运行脚本复用，继续走当前生成链路。'
+      : '';
+
+  if (input.successfulRunCodeCandidate?.code && !recentSuccessfulRunReuseDisabled) {
     const rawSuccessfulRunCode = input.successfulRunCodeCandidate.code;
     const sanitizedSuccessfulRunCode = sanitizeGeneratedCode(rawSuccessfulRunCode);
     const successfulRunCodeSyntaxError = getTestCodeSyntaxError(sanitizedSuccessfulRunCode, 'recent_successful_run');
@@ -1070,7 +1378,7 @@ function resolveIntentE2EPrefilledPlanReuseDecision(input: {
 
   const rawCode = input.prefilledPlanCode?.trim() || '';
   if (!rawCode) {
-    return {};
+    return successfulRunReuseDisabledSkipReason ? { skipReason: successfulRunReuseDisabledSkipReason } : {};
   }
 
   const hitsLegacyBusinessCreateFinalSubmitFamily =
@@ -1577,6 +1885,7 @@ function resolveIntentE2EExperienceSearchMatchedRecipeSlugs(input: {
   promptContext: ReturnType<typeof buildGenerateInputFromScenarioCard>['context'];
   auth?: AuthConfig;
   priorityScenarioFamily: ReturnType<typeof resolveIntentE2EPriorityScenarioFamilyRoute>['family'];
+  priorityScenarioFamilyRoute: ReturnType<typeof resolveIntentE2EPriorityScenarioFamilyRoute>;
   recipePerformanceBySlug: ReturnType<typeof buildIntentE2ERecipePerformanceMapFromData>;
 }): string[] {
   if (!input.promptContext.actionDsl) {
@@ -1590,6 +1899,7 @@ function resolveIntentE2EExperienceSearchMatchedRecipeSlugs(input: {
       auth: input.auth,
       snapshot: input.snapshot,
       priorityScenarioFamily: input.priorityScenarioFamily,
+      narrowToPriorityScenarioFamily: shouldNarrowToPriorityScenarioFamilyRoute(input.priorityScenarioFamilyRoute),
       performanceBySlug: input.recipePerformanceBySlug,
     }).items.map((item) => item.recipe.slug),
     8
@@ -2936,10 +3246,7 @@ function extractIntentE2ERawGeneratedCodeBody(value: string): string {
 function isHighConfidencePriorityScenarioFamilyRoute(
   route: ReturnType<typeof resolveIntentE2EPriorityScenarioFamilyRoute>
 ): boolean {
-  return (
-    route.family !== 'untracked' &&
-    !(route.textFamily !== 'untracked' && route.visualFamily !== 'untracked' && route.textFamily !== route.visualFamily)
-  );
+  return shouldNarrowToPriorityScenarioFamilyRoute(route);
 }
 
 function resolveIntentE2ELegacyFallbackReason(
@@ -3349,13 +3656,41 @@ export async function runIntentDrivenE2EStream(
     throw new Error('请至少提供一句测试目标描述');
   }
   const runtimeConfig = getLLMRuntimeConfig(input.llmConfig);
-  const prefilledScenarioCardOutput = buildPrefilledScenarioCardOutput(input);
+  const scenarioCardReuseCandidate =
+    !input.prefilledScenarioCard &&
+    !normalizeIntentE2EReuseText(input.intentDraftUid) &&
+    normalizeIntentE2EReuseText(input.targetUrl)
+      ? await resolveIntentE2EScenarioCardReuseCandidate({
+          projectUid: input.projectUid,
+          moduleUid: input.moduleUid,
+          intentDraftUid: input.intentDraftUid,
+          requestInput: trimmedInput,
+          targetUrl: normalizeIntentE2EReuseText(input.targetUrl),
+        })
+      : null;
+  const prefilledScenarioCardOutput = buildPrefilledScenarioCardOutput(
+    input,
+    scenarioCardReuseCandidate
+      ? {
+          card: scenarioCardReuseCandidate.card,
+          source: scenarioCardReuseCandidate.source,
+          reusedRunId: scenarioCardReuseCandidate.runId,
+        }
+      : undefined
+  );
 
   throwIfAborted(signal);
   await emit(listener, {
     type: 'stage',
     stage: 'planning',
-    message: prefilledScenarioCardOutput ? '已复用草稿 ScenarioCard，跳过重新规划…' : '正在把自然语言整理成 ScenarioCard…',
+    message:
+      prefilledScenarioCardOutput?.source === 'draft_first_pass'
+        ? '已复用草稿 ScenarioCard，跳过重新规划…'
+        : prefilledScenarioCardOutput?.source === 'recent_successful_run'
+        ? `已复用最近一次成功运行的 ScenarioCard${prefilledScenarioCardOutput.reusedRunId ? `（${prefilledScenarioCardOutput.reusedRunId}）` : ''}，跳过重新规划…`
+        : prefilledScenarioCardOutput?.source === 'recent_progressed_run'
+        ? `已复用最近一次推进更远的 ScenarioCard${prefilledScenarioCardOutput.reusedRunId ? `（${prefilledScenarioCardOutput.reusedRunId}）` : ''}，跳过重新规划…`
+        : '正在把自然语言整理成 ScenarioCard…',
   });
 
   const scenarioCardOutput =
@@ -3566,6 +3901,7 @@ export async function runIntentDrivenE2EStream(
     promptContext,
     auth: input.auth,
     priorityScenarioFamily: priorityScenarioFamilyRoute.family,
+    priorityScenarioFamilyRoute,
     recipePerformanceBySlug,
   });
   const experienceSearchStepStartedAtMs = Date.now();
@@ -3642,6 +3978,29 @@ export async function runIntentDrivenE2EStream(
   const historyCandidateStepStartedAtMs = Date.now();
   const successfulRunCodeReuseCandidate = await successfulRunCodeReuseCandidatePromise;
   const successfulRunCodeReuseCandidateResidualWaitMs = Date.now() - historyCandidateStepStartedAtMs;
+  const reuseGuardSkipReasons: string[] = [];
+  const guardHistoricalReuseCodeCandidate = <
+    T extends IntentE2ESuccessfulRunCodeReuseCandidate | IntentE2EProgressedRunCodeReuseCandidate,
+  >(
+    candidate: T | null,
+    source: 'recent_successful_run' | 'recent_progressed_run'
+  ): T | null => {
+    if (!candidate?.code) {
+      return candidate;
+    }
+    if (!shouldSkipHistoricalReuseCodeForScenario({ scenarioCard: scenarioCardOutput.card, code: candidate.code })) {
+      return candidate;
+    }
+    const skipReason = buildScenarioSpecificReuseSkipReason(source);
+    if (!reuseGuardSkipReasons.includes(skipReason)) {
+      reuseGuardSkipReasons.push(skipReason);
+    }
+    return null;
+  };
+  const guardedSuccessfulRunCodeReuseCandidate = guardHistoricalReuseCodeCandidate(
+    successfulRunCodeReuseCandidate,
+    'recent_successful_run'
+  );
   let progressedRunCodeReuseCandidateLoaded = !successfulRunCodeReuseCandidate;
   const progressedRunCodeReuseCandidateStepStartedAtMs = Date.now();
   let progressedRunCodeReuseCandidate = successfulRunCodeReuseCandidate
@@ -3654,6 +4013,7 @@ export async function runIntentDrivenE2EStream(
         targetUrl,
         attachmentCount: input.attachments?.length || 0,
       });
+  progressedRunCodeReuseCandidate = guardHistoricalReuseCodeCandidate(progressedRunCodeReuseCandidate, 'recent_progressed_run');
   const progressedRunCodeReuseCandidateWaitMs = successfulRunCodeReuseCandidate
     ? 0
     : Date.now() - progressedRunCodeReuseCandidateStepStartedAtMs;
@@ -3670,19 +4030,30 @@ export async function runIntentDrivenE2EStream(
       targetUrl,
       attachmentCount: input.attachments?.length || 0,
     });
+    progressedRunCodeReuseCandidate = guardHistoricalReuseCodeCandidate(progressedRunCodeReuseCandidate, 'recent_progressed_run');
     return progressedRunCodeReuseCandidate;
   };
-  const prefilledPlanReuseDecision = resolveIntentE2EPrefilledPlanReuseDecision({
+  const prefilledPlanReuseDecisionBase = resolveIntentE2EPrefilledPlanReuseDecision({
     prefilledPlanCode: input.prefilledPlanCode,
-    successfulRunCodeCandidate: successfulRunCodeReuseCandidate,
+    successfulRunCodeCandidate: guardedSuccessfulRunCodeReuseCandidate,
     progressedRunCodeCandidate: progressedRunCodeReuseCandidate,
   });
+  const prefilledPlanReuseDecision =
+    !prefilledPlanReuseDecisionBase.code &&
+    !prefilledPlanReuseDecisionBase.skipReason &&
+    reuseGuardSkipReasons.length > 0
+      ? {
+          ...prefilledPlanReuseDecisionBase,
+          skipReason: reuseGuardSkipReasons[0],
+        }
+      : prefilledPlanReuseDecisionBase;
   await emitAnalyzeProgress('历史脚本候选已完成', historyCandidateStepStartedAtMs, [
-    successfulRunCodeReuseCandidate ? `successful=${successfulRunCodeReuseCandidate.runId}` : 'successful=miss',
-    successfulRunCodeReuseCandidate ? 'progressed=skip' : progressedRunCodeReuseCandidate ? `progressed=${progressedRunCodeReuseCandidate.runId}` : 'progressed=miss',
+    guardedSuccessfulRunCodeReuseCandidate ? `successful=${guardedSuccessfulRunCodeReuseCandidate.runId}` : 'successful=miss',
+    guardedSuccessfulRunCodeReuseCandidate ? 'progressed=skip' : progressedRunCodeReuseCandidate ? `progressed=${progressedRunCodeReuseCandidate.runId}` : 'progressed=miss',
     `successfulWait=${formatIntentE2EDuration(successfulRunCodeReuseCandidateResidualWaitMs)}`,
     `successfulLookupAge=${formatIntentE2EDuration(Date.now() - successfulRunCodeReuseCandidatePromiseStartedAtMs)}`,
-    !successfulRunCodeReuseCandidate ? `progressedWait=${formatIntentE2EDuration(progressedRunCodeReuseCandidateWaitMs)}` : '',
+    !guardedSuccessfulRunCodeReuseCandidate ? `progressedWait=${formatIntentE2EDuration(progressedRunCodeReuseCandidateWaitMs)}` : '',
+    reuseGuardSkipReasons[0] ? `reuseGuard=${reuseGuardSkipReasons[0]}` : '',
     prefilledPlanReuseDecision.source ? `reuse=${prefilledPlanReuseDecision.source}` : 'reuse=none',
   ]);
 
