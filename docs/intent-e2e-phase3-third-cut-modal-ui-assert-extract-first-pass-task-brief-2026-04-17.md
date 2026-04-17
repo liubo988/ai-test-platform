@@ -1,0 +1,43 @@
+# Phase 3 Third Cut Task Brief
+
+- 日期：2026-04-17
+- 目标：
+  - 只做 Phase 3 第三刀，不回到 Phase 2，也不进入 Phase 4。
+  - 只主攻 `eval_complex_enterprise_flow_scenario_ui_assert_extract` 这一条 remaining unchanged branch。
+  - 目标是把该 branch 从 `repair-only success` 推到 `first-pass non-zero`，并在相对 `bench_711bbc557a86` 的 compare 里把它从 `unchanged` 推到 `improved`。
+- 范围：
+  - 围绕 `intent-run-af2a7de8-974e-489e-b4f2-f521e54cbd4a` 做 root-cause 收敛，明确 first-pass 为什么失败、repair 为什么成功。
+  - 仅允许两类最小解法：
+    - 若 current official corpus 不会自然刷新这条 branch，补一个最小 tracked diagnostic corpus，把同一业务语义正式刷回 `ui_assert_extract` 主证明链。
+    - 若确认是 deterministic shared/service/generator 缺口，再做最小生产代码修补。
+  - 最终必须回到同一 baseline 的 replay / compare 证明 case-level improvement。
+- 非目标：
+  - 不重打 `record_lookup_miss / unknown / data_missing / selector_drift` 的 broad cleanup。
+  - 不修改 `proof-window non_weak`、benchmark harness、runtime loop。
+  - 不把 targeted diagnostic rerun 单独包装成“第三刀已达成”。
+- 验收标准：
+  - relative to `bench_711bbc557a86`，`eval_complex_enterprise_flow_scenario_ui_assert_extract` 从 `unchanged` 变成 `improved`。
+  - 该 case 的 `firstPassPassRate` 不再是 `0`；同时 terminal 不回退。
+  - official modal current-state rerun 仍 clean `3/3`。
+  - 若 touched shared path，则 official list current-state rerun 也仍 clean `3/3`。
+- 计划验证：
+  - 若无生产代码改动：
+    - `node scripts/check-doc-links.mjs`
+    - `node scripts/check-roadmap-progress.mjs`
+    - targeted rerun
+    - official modal rerun
+    - modal replay
+    - modal compare
+  - 若改动 `lib/**`、`scripts/**` 或 shared path：
+    - 受影响单测
+    - `npm run build`
+    - `npm run build:web`
+    - `npm run test:e2e`
+    - `bash scripts/check-boundaries.sh`
+    - `node scripts/check-doc-links.mjs`
+    - `node scripts/check-roadmap-progress.mjs`
+    - targeted rerun
+    - official modal rerun
+    - 如 touched shared path，再补 official list rerun
+    - modal replay
+    - modal compare

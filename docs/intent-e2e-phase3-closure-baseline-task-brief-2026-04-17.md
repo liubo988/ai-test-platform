@@ -1,0 +1,37 @@
+# Phase 3 Closure Baseline Task Brief
+
+- 日期：2026-04-17
+- 目标：
+  - 不继续打 Phase 3 新刀，也不直接进入 Phase 4。
+  - 只把当前已经完成的 improved state 正式冻结成一份 `Phase 3 closure baseline`。
+  - 用新 baseline 自己的 replay / compare 证明它可复放、可复核、可作为下一轮 Phase 4 的干净起点。
+- 范围：
+  - 复核当前 Phase 3 完成态证据链：
+    - same-baseline improved compare
+    - official modal clean rerun
+    - official list clean proof
+  - 若当前状态稳定，只执行：
+    - freeze 新 baseline
+    - replay
+    - compare
+    - brief / roadmap 回写
+- 非目标：
+  - 不改 `proof-window non_weak`
+  - 不改 benchmark harness
+  - 不改 runtime loop
+  - 不新造平行 harness
+  - 不做新的生产代码改动
+  - 不进入 Phase 4 实现
+- 验收标准：
+  - 生成一份新的 `Phase 3 closure baseline`
+  - 相对这份新 baseline 的 closure compare 收敛为：
+    - family-level `conclusion=unchanged`
+    - `regressedCases=0`
+  - official modal 仍有 clean `3/3` proof
+  - 本轮不触 shared path，因此 list 继续沿用现有 clean proof，并在结论里明确写出理由
+- 计划验证：
+  - `npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --test-type browser_e2e --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --label phase3-closure-modal-non-weak-baseline --release-candidate phase3-closure-2026-04-17 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --compared-label phase3-closure-modal-non-weak-current-2026-04-17 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`

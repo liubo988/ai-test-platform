@@ -19608,3 +19608,300 @@
   - 若继续推进 Phase 3，保持当前 baseline 仍锚定 [2026-04-16T08-18-10-905Z-bench_711bbc557a86.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-16T08-18-10-905Z-bench_711bbc557a86.json)。
   - 下一刀仍应选单一 failure bucket 做最小闭环；如果要继续围绕 deterministic blocker 推进，可优先考虑继续压缩 `record_lookup_miss` 存量，否则再单独开 `unknown`。
   - 本轮到此为止，不扩到 Phase 4。
+
+## 2026-04-16 第二百九十六次更新（Phase 3 第二刀：modal `unknown` on `assert_extract_ui`）
+
+- 本轮目标：
+  - 只主攻 Phase 3 baseline `bench_711bbc557a86` 下 `modal_or_drawer_save` non-weak proof window 的 `unknown` bucket，并把范围收窄到 `eval_complex_enterprise_flow_scenario_assert_extract_ui`。
+  - 不扩到 `ui_assert_extract` 的 first-pass、`selector_drift`、`runtime_syntax_damage`、`assertion_too_strict` 或第二轮 `record_lookup_miss`。
+  - 在不改 `proof-window non_weak`、benchmark harness、runtime loop 的前提下，优先用 repo-native tracked chain 证明这条 branch 是否已经拿到 real improvement。
+- 已完成：
+  - 落地本轮 brief：[docs/intent-e2e-phase3-second-cut-modal-unknown-assert-extract-ui-task-brief-2026-04-16.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase3-second-cut-modal-unknown-assert-extract-ui-task-brief-2026-04-16.md)。
+  - 先围绕 `assert_extract_ui` 的 historical latestRunIds 做 root-cause 收敛：
+    - `intent-run-4efd987d-dc88-4d64-adfd-06b0fda80e50`
+    - `intent-run-2f22e32f-a33e-44c2-ad9c-6b795272645f`
+    - `intent-run-7af25b83-a541-4847-abed-43dd7b15c119`
+    - 结论不是新的 shared planning bug，而是历史 stale execution debt 混入 `unknown`：
+      - 一类是 Step 5 仍停在 `#/order/list` 就等待 `#/payment/bookedMgmt`。
+      - 一类是把 `2026-04-15` 这类 date-like pseudo key 当成订单号去查入账列表。
+      - 另一类是假设“列表中已有已勾选订单行”，没有回到 canonical fallback。
+  - 本轮之所以选 `assert_extract_ui + unknown`，而不是 `ui_assert_extract + first-pass`：
+    - 用户明确要求第二刀只收 `unknown`，不要泛打其它 bucket。
+    - 在 latest compare 起点里，`assert_extract_ui` 是最弱的 unchanged branch：`runCount=3 / passedRuns=1 / terminalPassRate=33.3 / firstPassPassRate=0 / repairedPassRate=33.3 / comparisonStatus=unchanged`。
+    - 相比 first-pass 质量优化，这条 branch 先从 `unknown` 收成 `improved` 的 ROI 更直接，也更符合“单一最小闭环”边界。
+  - 本轮没有新增生产代码修改，也没有 touched shared path；优先尝试用 existing tracked chain 刷新 branch：
+    - targeted diagnostic rerun：
+      - [2026-04-16T09-44-21-711Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T09-44-21-711Z-family-modal_or_drawer_save-fresh-rerun.json)
+      - `1 terminal / 1 passed / 1 recipeHit / 1 playbookHit`
+      - breakthrough runId：`intent-run-9d92145a-bbba-4434-8a32-a55ca9f9146e`
+    - fresh replay / compare：
+      - compare：[2026-04-16T09-50-42-721Z-bench_711bbc557a86-phase3-second-cut-modal-unknown-assert-extract-ui-current-2026-04-16.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T09-50-42-721Z-bench_711bbc557a86-phase3-second-cut-modal-unknown-assert-extract-ui-current-2026-04-16.json)
+      - family-level：
+        - `frozenTerminalPassRate=65.5`
+        - `currentTerminalPassRate=72.8`
+        - `currentFirstPassPassRate=64.2`
+        - `improvedCases=3`
+        - `unchangedCases=1`
+        - `regressedCases=0`
+      - target branch：
+        - `eval_complex_enterprise_flow_scenario_assert_extract_ui`
+        - `comparisonStatus=improved`
+        - `runCount=4`
+        - `passedRuns=2`
+        - `terminalPassRate=50`
+        - `firstPassPassRate=25`
+        - `repairedPassRate=25`
+    - 也就是说，相对同一份 baseline `bench_711bbc557a86`，本轮已经拿到 real improvement。
+  - 额外复核 official modal current-state rerun 为什么没有同步保持 clean：
+    - [2026-04-16T09-47-24-188Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T09-47-24-188Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - 结果：`3 terminal / 1 passed / 2 failed / 1 recipeHit / 1 playbookHit`
+    - 两条 failed run：
+      - `intent-run-ca49803d-39c1-4e5f-a2f7-d20a12fcdece`
+      - `intent-run-7b792bf6-5617-4527-87b1-8ce0e32af84c`
+    - DB snapshot 复核表明两条都不是本轮 `unknown` branch regression，而是在 `prechecking` 就被 live data 阻塞短路：
+      - `status=failed`
+      - `stage=completed`
+      - `attempts=[]`
+      - `error=页面前置检查失败: 目标页面当前未返回可用数据。`
+      - `finalFailureTriage.failureClass=data_missing`
+      - `matchedSignals=["暂无数据"]`
+      - `repairBudget.reasonCode=data_blocked`
+    - 随后补做的 official rerun 重试没有生成新的正式 report，而是在持久化 snapshot / 关闭 DB pool 时命中 `read ETIMEDOUT`；新 run `intent-run-f8235e71-2654-4d70-bc8d-b7ccb14c16d9` 仍停在 `status=running / stage=analyzing`，因此不能把这次重试当作新的 official current-state clean proof。
+  - 本轮未 touched shared path，因此没有重跑 list fresh rerun；继续沿用 official clean proof：
+    - [2026-04-16T07-39-37-332Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T07-39-37-332Z-family-list_search_detail-fresh-rerun.json)
+    - `3 terminal / 3 passed / 3 recipeHit / 3 playbookHit`
+- 验证：
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family modal_or_drawer_save --request-corpus artifacts/intent-e2e-family-evidence/proj_default.modal-phase2-low-pass-diagnostic.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 1 --wait-timeout-ms 420000 --json`
+    - 通过，targeted diagnostic branch 命中 terminal pass。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family modal_or_drawer_save --request-corpus artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 已执行两次：
+      - 第一次得到 [2026-04-16T09-47-24-188Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T09-47-24-188Z-family-modal_or_drawer_save-fresh-rerun.json)，但 live data 阻塞导致 `1 passed / 2 failed`。
+      - 第二次在 benchmark CLI 持久化 snapshot / 关闭 DB pool 时命中 `read ETIMEDOUT`，未形成新的 official report。
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过。
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --compared-label phase3-second-cut-modal-unknown-assert-extract-ui-current-2026-04-16 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，family-level `regressedCases=0`，target branch 正式为 `improved`。
+- 当前阶段状态：
+  - 当前仍停留在 Phase 3 第二刀，不扩到 Phase 4。
+  - 相对 `bench_711bbc557a86`，本轮已经拿到 real improvement；而且 improvement 不是靠改 gate / proof-window / harness，而是把 `assert_extract_ui` 的 fresh tracked pass 刷回 non-weak 主证明链。
+  - 但本轮没有拿回新的 official modal current-state clean `3/3` 证据：
+    - 已落盘的 official rerun 是 live `data_missing`
+    - 补跑重试又被 DB `ETIMEDOUT` 打断
+  - 因此，这轮只能判定为“target branch improved，但 Phase 3 第二刀尚未满足全部达成条件”。
+- 风险 / 未完成：
+  - 当前最小剩余 blocker 已经收敛成单点：不是继续修 `assert_extract_ui` 代码逻辑，而是重新拿回一份不受 live `data_missing` 与 DB `ETIMEDOUT` 影响的 official modal current-state clean rerun。
+  - 在这个 blocker 收掉之前，不应把本轮包装成已达成，也不应扩到 `ui_assert_extract + first-pass` 或 Phase 4。
+- 下一步：
+  - 继续留在 Phase 3 第二刀。
+  - 下一步只做一个最小闭环：在不扩 scope 的前提下，重新拿回 official modal corpus 的 clean rerun，先分清 live data availability 与 DB stability，再判断是否需要代码修补。
+  - 在新的 official current-state clean proof 缺位前，不进入 Phase 4。
+
+## 2026-04-17 第二百九十七次更新（Phase 3 第二刀收口：official rerun recovery）
+
+- 本轮目标：
+  - 不开 Phase 3 第三刀，也不碰 Phase 4。
+  - 只把已经拿到 branch improvement 的 Phase 3 第二刀正式收口：恢复一份新的 official `modal_or_drawer_save` current-state clean rerun，并用同一份 baseline `bench_711bbc557a86` 把 recovery evidence 接回主证明链。
+  - 如果 recovery 能自然完成，就不改 `proof-window non_weak`、benchmark harness、runtime loop，也不新增生产代码修补。
+- 已完成：
+  - 落地本轮 brief：[docs/intent-e2e-phase3-second-cut-official-rerun-recovery-task-brief-2026-04-17.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase3-second-cut-official-rerun-recovery-task-brief-2026-04-17.md)。
+  - 复核上一轮 failed official rerun 的单点 blocker，结论明确收敛为 `live current-state evidence recovery`，而不是 target branch improvement 回退：
+    - [2026-04-16T09-47-24-188Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T09-47-24-188Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - 两条 failed run 仍是 `data_missing` precheck block，且都没有进入 attempt / repair。
+    - 后续那次 `read ETIMEDOUT` 重试没有形成新的 official report，因此不能作为收口 proof。
+  - 本轮未 touched shared path，也没有生产代码改动；优先按用户要求用 existing repo-native chain 直接 recovery official rerun。
+  - 重新执行 official modal rerun 后，current-state evidence 已恢复：
+    - [2026-04-17T00-41-58-286Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-17T00-41-58-286Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - 结果：`3 terminal / 3 passed / 3 recipeHit / 3 playbookHit / 0 timeout`
+    - runIds：
+      - `intent-run-0f43eb36-4e0f-4d38-a489-f900b4b36050`
+      - `intent-run-1ca3450f-b345-47f2-be50-4bf2077c0a76`
+      - `intent-run-698fdb51-ecfa-4175-8a85-31a58f69c6b9`
+  - 复跑 non-weak replay / compare，把 recovered official current-state 正式接回同一份 baseline：
+    - compare：[2026-04-17T00-44-29-235Z-bench_711bbc557a86-phase3-second-cut-modal-official-rerun-recovery-current-2026-04-17.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-17T00-44-29-235Z-bench_711bbc557a86-phase3-second-cut-modal-official-rerun-recovery-current-2026-04-17.json)
+    - family-level：
+      - `conclusion=improved`
+      - `improvedCases=3`
+      - `unchangedCases=1`
+      - `regressedCases=0`
+      - `frozenTerminalPassRate=65.5`
+      - `currentTerminalPassRate=73.5`
+    - target branch 继续保持：
+      - `eval_complex_enterprise_flow_scenario_assert_extract_ui`
+      - `comparisonStatus=improved`
+      - `runCount=4 / passedRuns=2 / terminalPassRate=50 / firstPassPassRate=25 / repairedPassRate=25`
+  - 本轮没有重跑 list rerun；原因是 shared path 与生产代码都未变更，继续沿用 official clean proof：
+    - [2026-04-16T07-39-37-332Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T07-39-37-332Z-family-list_search_detail-fresh-rerun.json)
+    - `3 terminal / 3 passed / 3 recipeHit / 3 playbookHit`
+- 验证：
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family modal_or_drawer_save --request-corpus artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 通过，official modal current-state rerun 已恢复为 clean `3/3`。
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，current non-weak window 最新 `terminalPassRate=73.5 / firstPassPassRate=65.1`。
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --compared-label phase3-second-cut-modal-official-rerun-recovery-current-2026-04-17 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，family-level `regressedCases=0`，target branch 仍为 `improved`。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过。
+- 当前阶段状态：
+  - 本轮确认第二刀真正卡住的不是 `assert_extract_ui` branch 自身，而是 official modal rerun recovery；现在这个 current-state proof 已恢复。
+  - benchmark CLI 的 `read ETIMEDOUT` 没有在本轮复现，且 current rerun / replay / compare 均顺利落盘，因此这次不把它判定为已证实的 repo bug，也不额外改脚本。
+  - official modal current-state clean rerun 与 latest compare 现在同时满足，因此 Phase 3 第二刀可以正式收口。
+  - 本轮任务到此为止，仍停留在 Phase 3 第二刀收口，不在本次更新里进入第三刀。
+- 风险 / 未完成：
+  - official modal corpus 仍然天然依赖 live `待申请` 数据池；本轮只证明 current-state evidence 已经恢复，不等于这个 family 从此脱离 live 环境波动。
+  - 当前 non-weak proof window 里仍有 `unchangedCases=1` 和剩余 failure buckets；那是后续 Phase 3 下一刀的问题，不属于本轮收口范围。
+- 下一步：
+  - 可以在下一轮单独决定是否开启 Phase 3 第三刀，但必须继续沿用 baseline [2026-04-16T08-18-10-905Z-bench_711bbc557a86.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-16T08-18-10-905Z-bench_711bbc557a86.json)。
+  - 如果要继续推进，应重新选一个单一 residual bucket 做最小闭环；本轮不再展开。
+
+## 2026-04-17 第二百九十八次更新（Phase 3 第三刀：modal `ui_assert_extract` first-pass closure）
+
+- 本轮目标：
+  - 只做 Phase 3 第三刀，不回到 Phase 2，也不进入 Phase 4。
+  - 只主攻 `eval_complex_enterprise_flow_scenario_ui_assert_extract` 这一条 remaining unchanged branch。
+  - 目标不是再追 terminal breakthrough，而是把该 branch 从 `repair-only success` 推到 deterministic first-pass success，并在相对 `bench_711bbc557a86` 的 compare 中把它从 `unchanged` 推到 `improved`。
+- 已完成：
+  - 落地本轮 brief：[docs/intent-e2e-phase3-third-cut-modal-ui-assert-extract-first-pass-task-brief-2026-04-17.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase3-third-cut-modal-ui-assert-extract-first-pass-task-brief-2026-04-17.md)。
+  - 围绕唯一历史样本 `intent-run-af2a7de8-974e-489e-b4f2-f521e54cbd4a` 做 root-cause 收敛，确认这条 branch 之所以 `terminal=100 / first-pass=0`，不是 broad bucket 问题，而是单点 first-pass debt：
+    - `attempt-1` 在 Step 4 失败，错误是 `page.waitForURL: Timeout 20000ms exceeded`。
+    - 失败发生在“弹窗关闭并进入入账管理稳定态”这一步；页面仍停在 `#/order/list`，并没有在 20s 内完成 URL 跳转。
+    - `attempt-2` repair 不是修业务语义，而是把这条链从“强依赖被动 URL 跳转”改成了“先观察提交收敛，再显式进入 `#/payment/bookedMgmt` 并继续检索”的更稳路径。
+    - 这说明当前 remaining debt 属于 `ui_assert_extract` 自身 first-pass proof 太薄，不是 `record_lookup_miss / unknown / data_missing / selector_drift` 的 broad cleanup，也不是必须再开 shared/service/generator 生产代码修补。
+  - 本轮之所以选 `ui_assert_extract + first-pass`，而不是继续打 broad bucket：
+    - latest compare 里它是唯一 remaining unchanged case。
+    - 它已经 `terminalPassRate=100`，业务语义本身是通的；ROI 最高的最小闭环就是把 first-pass 从 `0` 拉起来。
+    - 这比继续打 broad bucket 更小、更干净，也更符合“第三刀只收单 branch”的边界。
+  - 本轮未 touched shared path，也没有生产代码改动；优先复用 repo-native tracked chain，而不是开代码修补：
+    - 复用已跟踪的 targeted diagnostic corpus：
+      - [proj_default.modal-phase2-ui-assert-extract-diagnostic.request-corpus.json](/Users/xiaolongbao/Workspace/ai-test/artifacts/intent-e2e-family-evidence/proj_default.modal-phase2-ui-assert-extract-diagnostic.request-corpus.json)
+    - fresh targeted rerun：
+      - [2026-04-17T00-57-50-405Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-17T00-57-50-405Z-family-modal_or_drawer_save-fresh-rerun.json)
+      - breakthrough runId：`intent-run-a4a8b178-7443-4910-843d-561e61a06fd2`
+      - 结果：`1 terminal / 1 passed / 1 recipeHit / 1 playbookHit`
+    - 该 fresh run 只有 `attempt-1`，没有 repair attempt：
+      - `first-pass` 已直接通过
+      - 说明 current stack 已经具备 deterministic first-pass 能力，只是此前 current proof window 里缺这条 fresh evidence
+  - official modal current-state rerun 继续保持 clean：
+    - [2026-04-17T01-02-09-772Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-17T01-02-09-772Z-family-modal_or_drawer_save-fresh-rerun.json)
+    - 结果：`3 terminal / 3 passed / 3 recipeHit / 3 playbookHit / 0 timeout`
+  - fresh replay / compare 已把这条 first-pass breakthrough 正式刷进同一份 baseline 主证明链：
+    - compare：[2026-04-17T01-09-55-644Z-bench_711bbc557a86-phase3-third-cut-modal-ui-assert-extract-first-pass-current-2026-04-17.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-17T01-09-55-644Z-bench_711bbc557a86-phase3-third-cut-modal-ui-assert-extract-first-pass-current-2026-04-17.json)
+    - family-level：
+      - `conclusion=improved`
+      - `improvedCases=4`
+      - `unchangedCases=0`
+      - `regressedCases=0`
+      - `frozenTerminalPassRate=65.5`
+      - `currentTerminalPassRate=74.7`
+      - `frozenFirstPassPassRate=56.3`
+      - `currentFirstPassPassRate=66.7`
+    - target case：
+      - `eval_complex_enterprise_flow_scenario_ui_assert_extract`
+      - `comparisonStatus=improved`
+      - `currentRunCount=2`
+      - `currentTerminalPassRate=100`
+      - `currentFirstPassPassRate=50`
+      - `currentRepairedPassRate=50`
+    - 也就是说，相对同一份 baseline `bench_711bbc557a86`，本轮已经拿到 real improvement，而且 improvement 明确落在 `first-pass 0 -> 50`，不是靠 gate / harness 漂亮化。
+  - 本轮没有重跑 list rerun；原因是 shared path 与生产代码都未变更，继续沿用 official clean proof：
+    - [2026-04-16T07-39-37-332Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T07-39-37-332Z-family-list_search_detail-fresh-rerun.json)
+    - `3 terminal / 3 passed / 3 recipeHit / 3 playbookHit`
+- 验证：
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family modal_or_drawer_save --request-corpus artifacts/intent-e2e-family-evidence/proj_default.modal-phase2-ui-assert-extract-diagnostic.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 1 --wait-timeout-ms 420000 --json`
+    - 通过，targeted `ui_assert_extract` fresh run 为 first-pass terminal pass。
+  - `npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --priority-scenario-family modal_or_drawer_save --request-corpus artifacts/intent-e2e-family-evidence/proj_default.modal-or-drawer-save.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --max-requests 3 --wait-timeout-ms 420000 --json`
+    - 通过，official modal current-state 仍 clean `3/3`。
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，current window 已更新为 `runCount=87 / terminalPassRate=74.7 / firstPassPassRate=66.7`。
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --compared-label phase3-third-cut-modal-ui-assert-extract-first-pass-current-2026-04-17 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，family-level `regressedCases=0`，target case 正式从 `unchanged` 变成 `improved`。
+  - `node scripts/check-doc-links.mjs`
+    - 待本轮回写后执行。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 待本轮回写后执行。
+- 当前阶段状态：
+  - 当前仍停留在 Phase 3 第三刀，不扩到 Phase 4。
+  - 本轮不是 broad bucket 清理，而是把最后一条 `repair-only` modal branch 正式推成了有 current first-pass 证据的 `improved` case。
+  - 相对 `bench_711bbc557a86`，现在 modal non-weak family 已经是：
+    - `improvedCases=4`
+    - `unchangedCases=0`
+    - `regressedCases=0`
+  - 也就是说，当前这份 baseline 对应的 4 个 non-weak modal cases 已全部脱离 `unchanged`。
+- 风险 / 未完成：
+  - 本轮没有证明所有 top failure buckets 都已被彻底清空；只是把 Phase 3 这轮最小目标收到了“4 个 non-weak modal cases 全部 improved”。
+  - official modal corpus 依然受 live 数据池影响；current-state clean rerun 这次是稳定的，但不代表以后不再受 live 环境波动影响。
+- 下一步：
+  - 如果下一轮继续推进，应该重新评估是否还有必要继续留在 Phase 3 做 broader bucket cleanup，还是可以讨论是否进入下一阶段。
+  - 但本轮到此为止，不扩到 Phase 4。
+
+## 2026-04-17 第二百九十九次更新（Phase 3 收官：closure baseline freeze）
+
+- 本轮目标：
+  - 不继续打 Phase 3 新刀，也不直接进入 Phase 4。
+  - 只把当前已经完成的 improved state 正式冻结成一份 `Phase 3 closure baseline`。
+  - 用新 baseline 自己的 replay / compare 证明它可复放、可复核、可作为下一轮 Phase 4 的干净起点。
+- 已完成：
+  - 落地本轮 brief：[docs/intent-e2e-phase3-closure-baseline-task-brief-2026-04-17.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-phase3-closure-baseline-task-brief-2026-04-17.md)。
+  - 复核当前 Phase 3 完成态证据链，确认当前 improved state 已具备收官冻结前提：
+    - same-baseline improved compare：
+      - [2026-04-17T01-09-55-644Z-bench_711bbc557a86-phase3-third-cut-modal-ui-assert-extract-first-pass-current-2026-04-17.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-17T01-09-55-644Z-bench_711bbc557a86-phase3-third-cut-modal-ui-assert-extract-first-pass-current-2026-04-17.json)
+      - `improvedCases=4 / unchangedCases=0 / regressedCases=0`
+      - `currentTerminalPassRate=74.7`
+      - `currentFirstPassPassRate=66.7`
+    - official modal clean rerun：
+      - [2026-04-17T01-02-09-772Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-17T01-02-09-772Z-family-modal_or_drawer_save-fresh-rerun.json)
+      - `3 terminal / 3 passed / 3 recipeHit / 3 playbookHit / 0 timeout`
+    - official list clean proof：
+      - [2026-04-16T07-39-37-332Z-family-list_search_detail-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T07-39-37-332Z-family-list_search_detail-fresh-rerun.json)
+      - `3 terminal / 3 passed / 3 recipeHit / 3 playbookHit`
+  - 基于 benchmark 主链正式冻结新的 Phase 3 closure baseline：
+    - [2026-04-17T01-21-56-287Z-bench_deda345062d8.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-17T01-21-56-287Z-bench_deda345062d8.json)
+    - `benchmarkUid=bench_deda345062d8`
+    - `label=phase3-closure-modal-non-weak-baseline`
+    - `releaseCandidate=phase3-closure-2026-04-17`
+    - `proofWindow.mode=non_weak`
+    - 冻结摘要：
+      - `caseCount=4`
+      - `runCount=87`
+      - `passedRuns=65`
+      - `terminalPassRate=74.7`
+      - `firstPassPassRate=66.7`
+  - 基于新 baseline 完成 replay / compare 自洽验证：
+    - replay 当前快照：
+      - [intent-e2e.benchmark.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark.json)
+      - replay 输出与 frozen summary 对齐：`benchmarkUid=bench_deda345062d8`，`runCount=87`，`terminalPassRate=74.7`，`firstPassPassRate=66.7`
+    - closure compare：
+      - [2026-04-17T01-26-02-463Z-bench_deda345062d8-phase3-closure-modal-non-weak-current-2026-04-17.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-17T01-26-02-463Z-bench_deda345062d8-phase3-closure-modal-non-weak-current-2026-04-17.json)
+      - family-level：
+        - `conclusion=unchanged`
+        - `regressedCases=0`
+        - `improvedCases=0`
+        - `unchangedCases=4`
+        - `frozenTerminalPassRate=74.7`
+        - `currentTerminalPassRate=74.7`
+        - `frozenFirstPassPassRate=66.7`
+        - `currentFirstPassPassRate=66.7`
+      - 说明这份 closure baseline 已经能被 repo-native 地复放并自洽比对，不再混入旧 baseline `bench_711bbc557a86` 的历史增量。
+  - 本轮未 touched shared path，也没有生产代码改动，因此不重跑 list rerun，继续沿用 existing clean proof；这符合“只做收官 baseline 冻结”的边界。
+- 验证：
+  - `npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --test-type browser_e2e --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --label phase3-closure-modal-non-weak-baseline --release-candidate phase3-closure-2026-04-17 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，生成新的 closure baseline `bench_deda345062d8`。
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，replay summary 与 frozen summary 对齐。
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --compared-label phase3-closure-modal-non-weak-current-2026-04-17 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+    - 通过，family-level `conclusion=unchanged` 且 `regressedCases=0`。
+  - `node scripts/check-doc-links.mjs`
+    - 待本轮回写后执行。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 待本轮回写后执行。
+- 当前阶段状态：
+  - Phase 3 的 improved state 已正式冻结为新的 closure baseline `bench_deda345062d8`。
+  - 相对这份新 baseline 的 closure compare 已收敛到 `unchanged / regressedCases=0`，因此后续 Phase 4 不需要再锚定旧 baseline `bench_711bbc557a86` 解释历史增量。
+  - 本轮只做 Phase 3 收官，不进入 Phase 4。
+- 风险 / 未完成：
+  - 这轮只证明 Phase 3 完成态已经被正确冻结，并不代表 top failure buckets 已被彻底清空；它们会成为后续 Phase 4 的新起点问题，而不是本轮的 closure blocker。
+  - official modal/list clean proof 仍然依赖 live current-state；本轮只是确认当前收官状态足够稳定，未额外引入新的稳定性机制。
+- 下一步：
+  - 如果下一轮正式进入 Phase 4，应统一以 [2026-04-17T01-21-56-287Z-bench_deda345062d8.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmarks/2026-04-17T01-21-56-287Z-bench_deda345062d8.json) 作为 baseline 起点。
+  - Phase 4 的所有 replay / compare / improvement 叙事，都应基于这份新的 Phase 3 closure baseline 展开。

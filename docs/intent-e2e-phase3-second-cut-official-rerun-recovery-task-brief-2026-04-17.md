@@ -1,0 +1,38 @@
+# Phase 3 Second Cut Official Rerun Recovery Task Brief
+
+- 日期：2026-04-17
+- 目标：
+  - 只做 Phase 3 第二刀收口，不开第三刀，不碰 Phase 4。
+  - 唯一目标是拿回一份不受 `data_missing` 和 benchmark CLI `read ETIMEDOUT` 影响的 official modal current-state clean rerun。
+  - 在 official clean rerun 恢复后，再用同一 baseline `bench_711bbc557a86` 做 replay / compare，判断第二刀能否正式达成。
+- 范围：
+  - 复核 [2026-04-16T09-47-24-188Z-family-modal_or_drawer_save-fresh-rerun.json](/Users/xiaolongbao/Workspace/ai-test/reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-16T09-47-24-188Z-family-modal_or_drawer_save-fresh-rerun.json) 两条 `data_missing` run 的完整上下文。
+  - 复核 official modal tracked corpus 是否天然依赖 live data，是否存在脆弱 request 表述或 page precheck 过严。
+  - 复核 benchmark CLI 的 `read ETIMEDOUT` 是否是偶发环境噪声，还是 snapshot persist / DB pool close 的稳定性缺口。
+  - 仅允许围绕 official rerun recovery 做最小修补：official corpus 稳定化、deterministic precheck 修补、或 benchmark CLI 稳定性修补。
+- 非目标：
+  - 不再追 `assert_extract_ui` 的 branch improvement 漂亮化。
+  - 不开新的 diagnostic-only compare 叙事。
+  - 不改 `proof-window non_weak`、benchmark harness 定义、runtime loop 或其它 family 主链。
+- 验收标准：
+  - latest official modal fresh rerun 恢复为 clean `3/3 passed / 3 recipeHit / 3 playbookHit`。
+  - 相对 `bench_711bbc557a86` 的 latest modal non-weak compare 仍保持 `regressedCases=0`。
+  - 若 touched shared path，则 list official rerun 也仍保持 clean `3/3`；若未 touched，则沿用现有 list clean proof。
+  - 只有 official modal clean rerun 恢复后，才可宣称 “Phase 3 第二刀已达成”。
+- 计划验证：
+  - 若无生产代码改动：
+    - `node scripts/check-doc-links.mjs`
+    - `node scripts/check-roadmap-progress.mjs`
+    - official modal rerun
+    - modal replay
+    - modal compare
+  - 若改动 `lib/**`、`scripts/**` 或 shared path：
+    - 受影响单测
+    - `npm run build`
+    - `npm run build:web`
+    - `npm run test:e2e`
+    - `bash scripts/check-boundaries.sh`
+    - `node scripts/check-doc-links.mjs`
+    - `node scripts/check-roadmap-progress.mjs`
+    - official modal rerun
+    - 如 touched shared path，再补 official list rerun
