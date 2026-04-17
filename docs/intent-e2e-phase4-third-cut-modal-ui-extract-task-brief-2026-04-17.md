@@ -1,0 +1,28 @@
+# Phase 4 Third Cut Task Brief
+
+- 日期：2026-04-17
+- 目标：
+  - 只做 Phase 4 第三刀，不回到 Phase 3，也不扩到下一刀。
+  - 只主攻 `eval_complex_enterprise_flow_scenario_ui_extract`。
+  - 目标是在相对 `bench_deda345062d8` 的 compare 中，为这条 remaining unchanged modal branch 拿到 real improvement，同时保持 official modal current-state clean rerun 不回退。
+- 范围：
+  - 围绕 `ui_extract` 的 latest compare / latestRunIds / tracked diagnostic corpus 做 root-cause 收敛，确认 current blocker 属于 fresh evidence 薄窗、stale progressed code、signature refresh mismatch 还是新的 shared 缺口。
+  - 优先复用现有 tracked diagnostic asset，先检查 `artifacts/intent-e2e-family-evidence/proj_default.modal-phase2-ui-extract-diagnostic.request-corpus.json` 是否足够隔离该 branch。
+  - 只允许最小、repo-native 修补：若只是 evidence 太薄，优先用现有 tracked chain 刷新 current proof；若是代码缺口，只收 1 个 direct blocker。
+- 非目标：
+  - 不处理 `ui_assert_extract / data_missing / selector_drift / runtime_syntax_damage / record_lookup_miss` 第二轮。
+  - 不修改 `proof-window non_weak`、benchmark harness、runtime loop。
+  - 不做 broad cleanup，不新造平行 harness。
+- 验收标准：
+  - 相对 `bench_deda345062d8`，`eval_complex_enterprise_flow_scenario_ui_extract` 拿到 real improvement。
+  - 该 case 至少满足一项：`comparisonStatus=improved`，或 `terminalPassRate > 66.7`，或 `firstPassPassRate > 66.7`。
+  - official modal current-state rerun 仍 clean `3/3`。
+  - 若 touched shared path，则 official list current-state rerun 也仍 clean `3/3`。
+- 计划验证：
+  - 若需要，targeted diagnostic rerun
+  - official modal rerun
+  - 若 touched shared path，则 official list rerun
+  - modal replay
+  - modal compare
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`

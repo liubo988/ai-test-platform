@@ -1,0 +1,34 @@
+# Phase 4 First Cut Task Brief
+
+- 日期：2026-04-17
+- 目标：
+  - 只做 Phase 4 第一刀，不回到 Phase 3，也不扩到下一刀。
+  - 只主攻 `eval_complex_enterprise_flow_scenario_ui_extract_assert` 上的 `record_lookup_miss`。
+  - 目标是在相对 `bench_deda345062d8` 的 compare 中，为这条 high-run branch 拿到 real improvement，同时保持 official modal clean rerun 不回退。
+- 范围：
+  - 围绕 `ui_extract_assert` 的历史 stale generate / sanitizer 形态做 root-cause 收敛，重点检查 `plan_step_2/3` 中的已勾选行提取、`selected_row` 复用和 checkbox 断言残留。
+  - 仅允许最小 shared deterministic 修补：
+    - 把仍漏网的 `checkedRows` / `selected_row` 订单号提取变体重写到当前 canonical selected-row extraction path。
+    - 去掉同一路径里会把同一行再次绑死到 checkbox 可见态的脆弱断言。
+  - 最终必须回到同一 baseline `bench_deda345062d8` 的 rerun / replay / compare 证明改动真实生效。
+- 非目标：
+  - 不处理 `unknown / data_missing / selector_drift / runtime_syntax_damage` 的 broad cleanup。
+  - 不修改 `proof-window non_weak`、benchmark harness、runtime loop。
+  - 不新造平行 harness，不把 targeted diagnostic-only 结果包装成达成。
+- 验收标准：
+  - 相对 `bench_deda345062d8`，`eval_complex_enterprise_flow_scenario_ui_extract_assert` 拿到 real improvement。
+  - `record_lookup_miss` 不再维持 baseline 的 `6`，或者 target case 的 `terminalPassRate / firstPassPassRate` 有明确提升。
+  - official modal current-state rerun 仍 clean `3/3`。
+  - 因为本轮触及 shared sanitizer path，official list current-state rerun 也仍 clean `3/3`。
+- 计划验证：
+  - 受影响单测
+  - `npm run build`
+  - `npm run build:web`
+  - `npm run test:e2e`
+  - `bash scripts/check-boundaries.sh`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+  - official modal rerun
+  - official list rerun
+  - modal replay
+  - modal compare

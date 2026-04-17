@@ -1,0 +1,35 @@
+# Phase 4 Closure Baseline Task Brief
+
+- 日期：2026-04-17
+- 目标：
+  - 只做 Phase 4 收官 baseline 冻结，不回到 Phase 3，也不进入下一阶段实现。
+  - 把当前相对 `bench_deda345062d8` 已完成的 improved state 正式冻结成一份新的 `Phase 4 closure baseline`。
+  - 用新 baseline 自己的 replay / compare 证明它可复放、可复核、可作为后续阶段的干净起点。
+- 范围：
+  - 先复核 Phase 4 完成态证据链是否稳定：
+    - same-baseline improved compare
+    - official modal clean rerun
+    - official list clean proof
+  - 若 state 稳定，只做：
+    - freeze 新 baseline
+    - replay
+    - compare
+    - brief / roadmap 回写
+  - 若发现 current state 不稳，只记录 blocker，不顺手开做下一阶段。
+- 非目标：
+  - 不打 Phase 4 新刀。
+  - 不做新的生产代码改动。
+  - 不修改 `proof-window non_weak`、benchmark harness、runtime loop。
+  - 不新造平行 harness。
+- 验收标准：
+  - 生成新的 Phase 4 closure baseline。
+  - replay 与 frozen summary 对齐，没有明显 drift。
+  - 相对这份新 baseline 的 closure compare 收敛为 `conclusion=unchanged` 且 `regressedCases=0`。
+  - official modal current-state clean proof 继续有效。
+  - 因本轮不触 shared path，list clean proof 可继续沿用且理由明确。
+- 计划验证：
+  - `npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_1773303139537_c84d8476 --test-type browser_e2e --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --label phase4-closure-modal-non-weak-baseline --release-candidate phase4-closure-2026-04-17 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --run-limit 200 --compared-label phase4-closure-modal-non-weak-current-2026-04-17 --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json --json`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`

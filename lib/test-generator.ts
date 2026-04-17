@@ -3189,6 +3189,29 @@ function buildBatchAccountSelectableRowResolveBlock(indent: string, rowVar: stri
   ].join('\n');
 }
 
+function buildBatchAccountCheckedOrSelectableRowResolveBlock(indent: string, rowVar: string): string {
+  return [
+    `${indent}const checkedRows = page.locator('.ant-table-tbody tr[data-row-key]:visible').filter({`,
+    `${indent}  has: page.locator('.ant-checkbox-wrapper-checked, .ant-checkbox-checked'),`,
+    `${indent}});`,
+    `${indent}const checkedCount = await checkedRows.count();`,
+    `${indent}let ${rowVar} = checkedCount > 0 ? checkedRows.first() : null;`,
+    `${indent}if (!${rowVar}) {`,
+    `${indent}  const candidateRows = page.locator('.ant-table-tbody tr[data-row-key]:visible');`,
+    `${indent}  const candidateCount = await candidateRows.count();`,
+    `${indent}  for (let candidateIndex = 0; candidateIndex < Math.min(candidateCount, 12); candidateIndex += 1) {`,
+    `${indent}    const candidateRow = candidateRows.nth(candidateIndex);`,
+    `${indent}    try {`,
+    `${indent}      await __e2e.clickAntdRowCheckbox(page, candidateRow);`,
+    `${indent}      ${rowVar} = candidateRow;`,
+    `${indent}      break;`,
+    `${indent}    } catch {}`,
+    `${indent}  }`,
+    `${indent}}`,
+    `${indent}if (!${rowVar}) throw new Error('前置数据不足：未找到可勾选订单行');`,
+  ].join('\n');
+}
+
 function buildBatchAccountPendingRowSurfaceBlock(indent: string, rowVar: string): string {
   return [
     `${indent}const ${rowVar} = await (async () => {`,
@@ -3468,6 +3491,14 @@ function sanitizeBatchAccountPostClickCheckboxAssertions(code: string): string {
   );
   next = next.replace(
     /^\s*await expect(?:\.soft)?\(\w+\.locator\('\.ant-checkbox-checked'\)(?:\.first\(\))?\)\.to(?:BeVisible|HaveCount)\((?:[^)]*)\);\s*$/gm,
+    ''
+  );
+  next = next.replace(
+    /^(\s*)const\s+\w+\s*=\s*\w+\.locator\('\.ant-checkbox-checked:visible'\)\.first\(\);\n\1await expect\(\w+\)\.toBeVisible\(\{ timeout: \d+ \}\);\s*$/gm,
+    ''
+  );
+  next = next.replace(
+    /^(\s*)const\s+\w+\s*=\s*\w+\.locator\('\.ant-checkbox-wrapper-checked, \.ant-checkbox-checked'\)\.first\(\);\n\1await expect\(\w+\)\.toBeVisible\(\{ timeout: \d+ \}\);\s*$/gm,
     ''
   );
 
@@ -4112,6 +4143,67 @@ function sanitizeBatchAccountServiceItemHandling(code: string): string {
 function sanitizeBatchAccountOrderExtraction(code: string): string {
   let next = replaceIntentExecutionSlotCode(
     code,
+    'plan_step_2',
+    (slotCode) => {
+      if (
+        !/const\s+checkedRows\s*=\s*page\.locator\('\.ant-table-tbody tr\[data-row-key\]:visible'\)\.filter\(\{/.test(slotCode) ||
+        !/shared\.selectedOrderNo/.test(slotCode) ||
+        /selectedOrderNoFromRowKeyCandidate/.test(slotCode)
+      ) {
+        return slotCode;
+      }
+
+      const lines = slotCode.split('\n');
+      const startIndex = lines.findIndex((line) =>
+        /const\s+checkedRows\s*=\s*page\.locator\('\.ant-table-tbody tr\[data-row-key\]:visible'\)\.filter\(\{/.test(line)
+      );
+      if (startIndex < 0) {
+        return slotCode;
+      }
+
+      const indent = lines[startIndex]?.match(/^\s*/)?.[0] || '    ';
+      const replacement = [
+        ...buildBatchAccountCheckedOrSelectableRowResolveBlock(indent, 'targetRow').split('\n'),
+        ...buildBatchAccountSelectedRowOrderExtractionBlock(indent, 'targetRow', 'plan_step_2').split('\n'),
+      ];
+      lines.splice(startIndex, lines.length - startIndex, ...replacement);
+      return lines.join('\n');
+    }
+  );
+
+  next = replaceIntentExecutionSlotCode(
+    next,
+    'plan_step_2',
+    (slotCode) => {
+      const rowVar =
+        slotCode.match(/const\s+(\w+)\s*=\s*artifacts\[['"]selected_row['"]\];/)?.[1] ||
+        slotCode.match(/const\s+(\w+)\s*=\s*artifacts\[['"]selected_row['"]\]\s*\|\|\s*\w+;/)?.[1] ||
+        '';
+      if (!rowVar || !/shared\.selectedOrderNo/.test(slotCode) || /selectedOrderNoFromRowKeyCandidate/.test(slotCode)) {
+        return slotCode;
+      }
+
+      const lines = slotCode.split('\n');
+      const startIndex = lines.findIndex((line) =>
+        new RegExp(`const\\s+${rowVar}\\s*=\\s*artifacts\\[['"]selected_row['"]\\](?:\\s*\\|\\|\\s*\\w+)?;`).test(line)
+      );
+      if (startIndex < 0) {
+        return slotCode;
+      }
+
+      const indent = lines[startIndex]?.match(/^\s*/)?.[0] || '    ';
+      const replacement = [
+        `${indent}const ${rowVar} = artifacts['selected_row'];`,
+        `${indent}if (!${rowVar}) throw new Error('前置失败：缺少已勾选订单行，无法提取订单号');`,
+        ...buildBatchAccountSelectedRowOrderExtractionBlock(indent, rowVar, 'plan_step_2').split('\n'),
+      ];
+      lines.splice(startIndex, lines.length - startIndex, ...replacement);
+      return lines.join('\n');
+    }
+  );
+
+  next = replaceIntentExecutionSlotCode(
+    next,
     'plan_step_2',
     (slotCode) => {
       if (
@@ -5844,8 +5936,9 @@ function buildListSearchDetailDetailEntrySlot(
 
 function sanitizeListSearchDetailDetailEntrySlot(slotCode: string, slotUid = 'plan_step_5'): string {
   const hasGenericDetailEntrySignals =
-    /shared\.selectedOrderNo/.test(slotCode) &&
-    /clickAntdRowAction\(page,\s*\w+,\s*'查看'\)/.test(slotCode) &&
+    (/shared\.selectedOrderNo/.test(slotCode) ||
+      /artifacts\.plan_step_4_recordCheck|artifacts\[['"]plan_step_4_record_check['"]\]|recordCheck\.row/.test(slotCode)) &&
+    /clickAntdRowAction\(page,\s*(?:\w+|\w+\.row),\s*'查看'\)/.test(slotCode) &&
     /readDetailField\(page,\s*\{\s*label:\s*'联系人'/.test(slotCode) &&
     /readDetailField\(page,\s*\{\s*label:\s*'手机号'/.test(slotCode);
   if (!hasGenericDetailEntrySignals) {
@@ -6052,8 +6145,9 @@ function buildListSearchDetailVerificationSlot(indent: string): string {
 function sanitizeListSearchDetailVerificationSlot(slotCode: string): string {
   const hasListVerificationSignals =
     /shared\.selectedOrderNo/.test(slotCode) &&
-    /artifacts(?:\[['"]plan_step_5['"]\]|\.plan_step_5)/.test(slotCode) &&
-    /(contactText|phoneText|statusText)/.test(slotCode);
+    (/artifacts(?:\[['"]plan_step_5['"]\]|\.plan_step_5)/.test(slotCode) ||
+      /artifacts(?:\[['"]plan_step_4_record_check['"]\]|\.plan_step_4_record_check|\[['"]plan_step_4_recordCheck['"]\]|\.plan_step_4_recordCheck)/.test(slotCode)) &&
+    /(contactText|phoneText|statusText|accountStatusText|accountingStatusText)/.test(slotCode);
   if (!hasListVerificationSignals) {
     return slotCode;
   }
@@ -6068,7 +6162,9 @@ function sanitizeListSearchDetailVerificationSlot(slotCode: string): string {
 
   const hasDetailHardGate =
     /if\s*\(\s*!\w+\s*\|\|\s*!\w+\.detailScope\s*\)/.test(slotCode) ||
-    /最终验收失败：未进入该订单对应详情页\/详情抽屉/.test(slotCode);
+    /最终验收失败：未进入该订单对应详情页\/详情抽屉/.test(slotCode) ||
+    /验收失败：未进入详情并完成字段读取/.test(slotCode) ||
+    /验收失败：未通过唯一订单号稳定命中列表目标行/.test(slotCode);
   if (!hasDetailHardGate) {
     return slotCode;
   }
