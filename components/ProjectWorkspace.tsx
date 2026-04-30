@@ -301,48 +301,6 @@ type WorkspacePlatformSummary = {
   byArtifactKind: Array<{ artifactKind: string; count: number }>;
 };
 
-type ProjectReleaseReadinessStatus = 'ready' | 'attention' | 'blocked';
-type ProjectReleaseCheckStatus = 'passed' | 'warning' | 'failed' | 'skipped';
-
-type ProjectReleaseStatusResponse = {
-  generatedAt: string;
-  projectUid: string;
-  status: ProjectReleaseReadinessStatus;
-  canRelease: boolean;
-  summary: {
-    checkCount: number;
-    passedChecks: number;
-    warningChecks: number;
-    failedChecks: number;
-    skippedChecks: number;
-    familyCount: number;
-    readyFamilies: number;
-    attentionFamilies: number;
-    blockedFamilies: number;
-  };
-  currentCompare: {
-    status: 'passed' | 'failed' | 'missing' | 'skipped';
-    reportPath: string;
-    generatedAt: string;
-    passed: boolean;
-    message: string;
-  };
-  checks: Array<{
-    id: string;
-    title: string;
-    status: ProjectReleaseCheckStatus;
-    blocking: boolean;
-    message: string;
-    evidencePath?: string;
-  }>;
-  families: Array<{
-    priorityScenarioFamily: string;
-    releaseGuard: { status: ProjectReleaseCheckStatus; failures: string[] } | null;
-    knowledgeHit: { status: ProjectReleaseCheckStatus; failures: string[] } | null;
-  }>;
-  error?: string;
-};
-
 type TaskListResponse = {
   page: number;
   pageSize: number;
@@ -1326,91 +1284,6 @@ function formatPassRate(total: number, passRate: number): string {
   return total > 0 ? `${passRate}%` : '-';
 }
 
-function projectReleaseReadinessLabel(status: ProjectReleaseReadinessStatus): string {
-  switch (status) {
-    case 'ready':
-      return '可发布';
-    case 'attention':
-      return '需复核';
-    default:
-      return '阻断';
-  }
-}
-
-function projectReleaseReadinessTone(status: ProjectReleaseReadinessStatus): string {
-  switch (status) {
-    case 'ready':
-      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
-    case 'attention':
-      return 'border-amber-200 bg-amber-50 text-amber-700';
-    default:
-      return 'border-rose-200 bg-rose-50 text-rose-700';
-  }
-}
-
-function projectReleasePanelTone(status?: ProjectReleaseReadinessStatus): string {
-  switch (status) {
-    case 'ready':
-      return 'border-emerald-200 bg-emerald-50/80';
-    case 'attention':
-      return 'border-amber-200 bg-amber-50/80';
-    case 'blocked':
-      return 'border-rose-200 bg-rose-50/80';
-    default:
-      return 'border-slate-200 bg-white';
-  }
-}
-
-function projectReleaseSummaryText(report: ProjectReleaseStatusResponse): string {
-  if (report.status === 'ready') {
-    return 'release guard、knowledge-hit 与最近 compare 证据当前齐全。';
-  }
-  if (report.status === 'attention') {
-    return '当前没有阻塞项，但仍有需要复核的 release evidence。';
-  }
-  return '存在阻塞证据，先处理失败项再进入发布。';
-}
-
-function projectReleaseErrorTitle(message: string): string {
-  if (/权限|permission|forbidden|unauthor/i.test(message)) {
-    return '无权查看发布状态';
-  }
-  if (/no such file|ENOENT|not found|missing|找不到|不存在|未找到/i.test(message)) {
-    return '发布证据尚未配置';
-  }
-  return '发布状态暂不可用';
-}
-
-function projectReleaseErrorDescription(message: string): string {
-  if (/权限|permission|forbidden|unauthor/i.test(message)) {
-    return '当前操作者没有该项目的 viewer 权限，项目工作台不会绕过 API 读取本地证据。';
-  }
-  if (/no such file|ENOENT|not found|missing|找不到|不存在|未找到/i.test(message)) {
-    return '当前项目缺少 release guard 或 knowledge-hit tracked artifacts；任务列表仍可继续使用。';
-  }
-  return '服务端没有返回可消费的 release status，任务列表不受影响。';
-}
-
-function projectReleaseCheckIssueSummary(report: ProjectReleaseStatusResponse): string {
-  const blockingChecks = report.checks.filter((item) => item.status !== 'passed' && item.blocking).length;
-  const warningChecks = report.summary.warningChecks + report.summary.skippedChecks;
-  const failedChecks = report.summary.failedChecks;
-  const familyIssues = report.summary.attentionFamilies + report.summary.blockedFamilies;
-  return `阻塞 check ${blockingChecks} · failed ${failedChecks} · warning/skipped ${warningChecks} · family issue ${familyIssues}`;
-}
-
-function projectReleaseFamilyScopeText(report: ProjectReleaseStatusResponse): string {
-  const readyFamilies = report.families
-    .filter((family) => family.releaseGuard?.status === 'passed' && family.knowledgeHit?.status === 'passed')
-    .map((family) => family.priorityScenarioFamily);
-  if (readyFamilies.length === 0) {
-    return 'AI生成守护范围：暂无 family 同时具备 release guard 与 knowledge-hit 通过证据。';
-  }
-  const visibleFamilies = readyFamilies.slice(0, 4).join('、');
-  const suffix = readyFamilies.length > 4 ? ` 等 ${readyFamilies.length} 条` : '';
-  return `AI生成守护范围：${visibleFamilies}${suffix}；未命中守护 family 的开放式请求按实验流量统计。`;
-}
-
 function formatMoment(value: string): string {
   if (!value) return '-';
   const date = new Date(value);
@@ -1651,21 +1524,6 @@ function permissionHint(role: ProjectActorRole): string {
   }
 }
 
-async function fetchProjectReleaseStatus(projectUid: string): Promise<ProjectReleaseStatusResponse> {
-  const search = new URLSearchParams({
-    projectUid,
-    requireCurrentCompare: '1',
-  });
-  const res = await fetch(`/api/intent-e2e/release-status?${search.toString()}`, { cache: 'no-store' });
-  const json = (await res.json().catch(() => null)) as ProjectReleaseStatusResponse | { error?: string } | null;
-
-  if (!res.ok || !json || !('status' in json)) {
-    throw new Error((json as { error?: string } | null)?.error || '读取发布状态失败');
-  }
-
-  return json as ProjectReleaseStatusResponse;
-}
-
 const ALL_MODULES_UID = '__all__';
 
 function buildWorkspaceTaskQuerySyncKey(input: {
@@ -1793,9 +1651,6 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   const [loadingActivityLogs, setLoadingActivityLogs] = useState(false);
   const [activityError, setActivityError] = useState('');
   const [activityModalOpen, setActivityModalOpen] = useState(false);
-  const [releaseStatus, setReleaseStatus] = useState<ProjectReleaseStatusResponse | null>(null);
-  const [releaseStatusLoading, setReleaseStatusLoading] = useState(false);
-  const [releaseStatusError, setReleaseStatusError] = useState('');
   const [members, setMembers] = useState<ProjectMemberItem[]>([]);
   const [loadingMembers, setLoadingMembers] = useState(false);
   const [memberError, setMemberError] = useState('');
@@ -1945,15 +1800,6 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
       ? '当前内容来自需求编排工作台回填。你可以在保存前继续微调模块、描述、URL 和业务流步骤。'
       : '这是手动录入入口。若只想输入一句需求，建议使用上方“AI 生成”入口。';
   const taskSubmitLabel = taskSaving ? '保存中...' : editingTaskUid ? '保存' : taskFormEntrySource === 'intent' ? '保存到工作台' : '创建';
-  const releaseStatusIssueChecks = releaseStatus?.checks.filter((item) => item.status !== 'passed') || [];
-  const releaseStatusIssueFamilies =
-    releaseStatus?.families.filter((family) => {
-      return !family.releaseGuard || !family.knowledgeHit || family.releaseGuard.status !== 'passed' || family.knowledgeHit.status !== 'passed';
-    }) || [];
-  const releaseStatusDetailHref = `/intent-e2e?projectUid=${encodeURIComponent(projectUid)}`;
-  const releaseStatusErrorHeading = releaseStatusError ? projectReleaseErrorTitle(releaseStatusError) : '';
-  const releaseStatusErrorBody = releaseStatusError ? projectReleaseErrorDescription(releaseStatusError) : '';
-
   function currentTaskPlatformFilters(): WorkspacePlatformQueryFilters {
     return {
       ...(taskPlatformTestTypeFilter ? { platformTestType: taskPlatformTestTypeFilter } : {}),
@@ -2212,24 +2058,6 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
     }
   }
 
-  async function loadReleaseStatus(options?: { silent?: boolean }) {
-    setReleaseStatusLoading(true);
-    if (!options?.silent) {
-      setReleaseStatusError('');
-    }
-
-    try {
-      const report = await fetchProjectReleaseStatus(projectUid);
-      setReleaseStatus(report);
-      setReleaseStatusError('');
-    } catch (err: unknown) {
-      setReleaseStatus(null);
-      setReleaseStatusError(err instanceof Error ? err.message : '读取发布状态失败');
-    } finally {
-      setReleaseStatusLoading(false);
-    }
-  }
-
   function openActivityModal() {
     setActivityModalOpen(true);
     void loadActivityLogs();
@@ -2253,7 +2081,6 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   useEffect(() => { if (!activeModuleUid) return; void loadTasks(activeModuleUid); }, [projectUid, activeModuleUid]);
   useEffect(() => { void loadIntentDrafts(); }, [projectUid]);
   useEffect(() => { void loadActivityLogs(); }, [projectUid]);
-  useEffect(() => { void loadReleaseStatus({ silent: true }); }, [projectUid]);
   useEffect(() => { setCurrentPage(1); }, [activeModuleUid]);
   useEffect(() => {
     const nextTaskQueryState = readWorkspaceTaskPlatformQueryState(searchParams);
@@ -2849,7 +2676,6 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
       await loadModules();
       if (activeModuleUid) await loadTasks(activeModuleUid);
       await loadActivityLogs();
-      await loadReleaseStatus({ silent: true });
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '切换操作者失败');
     } finally {
@@ -3636,107 +3462,6 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
       {!error && !actionNotice && readOnlyHint && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">{readOnlyHint}</div>
       )}
-
-      <div className={`rounded-2xl border px-4 py-4 shadow-sm ${projectReleasePanelTone(releaseStatus?.status)}`}>
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-sm font-semibold text-slate-900">Release readiness</p>
-              {releaseStatus ? (
-                <span className={`rounded-full border px-2.5 py-1 text-[11px] font-medium ${projectReleaseReadinessTone(releaseStatus.status)}`}>
-                  {projectReleaseReadinessLabel(releaseStatus.status)}
-                </span>
-              ) : (
-                <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-500">
-                  {releaseStatusLoading ? '读取中' : '未加载'}
-                </span>
-              )}
-            </div>
-            <p className="mt-2 text-xs leading-5 text-slate-600">
-              {releaseStatus
-                ? `${projectReleaseSummaryText(releaseStatus)} ${releaseStatus.canRelease ? '当前证据允许发布。' : '当前仍需处理证据缺口。'}`
-                : releaseStatusError
-                  ? releaseStatusErrorBody
-                  : '项目工作台复用 release-status API，只读展示当前项目的发布证据摘要。'}
-            </p>
-            {releaseStatus?.currentCompare?.message && (
-              <p className="mt-1 text-xs leading-5 text-slate-500">
-                {releaseStatus.currentCompare.message}
-                {releaseStatus.currentCompare.generatedAt ? ` · ${formatMoment(releaseStatus.currentCompare.generatedAt)}` : ''}
-              </p>
-            )}
-            {releaseStatusError && (
-              <div className="mt-3 rounded-xl border border-amber-200 bg-white/70 px-3 py-2 text-xs leading-5 text-amber-800">
-                <p className="font-medium">{releaseStatusErrorHeading}</p>
-                <p className="mt-1 break-all text-amber-700">返回信息：{releaseStatusError}</p>
-              </div>
-            )}
-          </div>
-
-          {releaseStatus && (
-            <div className="grid min-w-[280px] grid-cols-3 gap-2 text-center">
-              <div className="rounded-xl border border-white/80 bg-white/85 px-3 py-3">
-                <p className="text-[10px] uppercase tracking-[0.14em] text-slate-400">checks</p>
-                <p className="mt-1 text-lg font-semibold text-slate-950">{releaseStatus.summary.passedChecks}/{releaseStatus.summary.checkCount}</p>
-              </div>
-              <div className="rounded-xl border border-white/80 bg-white/85 px-3 py-3">
-                <p className="text-[10px] uppercase tracking-[0.14em] text-slate-400">families</p>
-                <p className="mt-1 text-lg font-semibold text-slate-950">{releaseStatus.summary.readyFamilies}/{releaseStatus.summary.familyCount}</p>
-              </div>
-              <div className="rounded-xl border border-white/80 bg-white/85 px-3 py-3">
-                <p className="text-[10px] uppercase tracking-[0.14em] text-slate-400">blocked</p>
-                <p className="mt-1 text-lg font-semibold text-slate-950">{releaseStatus.summary.blockedFamilies}</p>
-              </div>
-            </div>
-          )}
-
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void loadReleaseStatus()}
-              disabled={releaseStatusLoading}
-              className="inline-flex h-8 items-center rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {releaseStatusLoading ? '刷新中...' : '刷新'}
-            </button>
-            <Link
-              href={releaseStatusDetailHref}
-              className="inline-flex h-8 items-center rounded-lg bg-slate-900 px-3 text-xs font-medium text-white transition hover:bg-slate-700"
-            >
-              查看洞察
-            </Link>
-          </div>
-        </div>
-
-        {releaseStatus && (
-          <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-slate-600">
-            <span className="max-w-full truncate rounded-full border border-sky-200 bg-white/85 px-2.5 py-1 text-sky-700" title={projectReleaseFamilyScopeText(releaseStatus)}>
-              {projectReleaseFamilyScopeText(releaseStatus)}
-            </span>
-            <span className="rounded-full border border-white/80 bg-white/80 px-2.5 py-1">
-              {projectReleaseCheckIssueSummary(releaseStatus)}
-            </span>
-            {releaseStatusIssueChecks.slice(0, 2).map((item) => (
-              <span key={item.id} className="max-w-full truncate rounded-full border border-amber-200 bg-white/85 px-2.5 py-1 text-amber-700" title={item.message}>
-                {item.title}: {item.message}
-              </span>
-            ))}
-            {releaseStatusIssueFamilies.slice(0, 2).map((family) => (
-              <span
-                key={family.priorityScenarioFamily}
-                className="max-w-full truncate rounded-full border border-amber-200 bg-white/85 px-2.5 py-1 text-amber-700"
-              >
-                {family.priorityScenarioFamily} 证据需复核
-              </span>
-            ))}
-            {releaseStatusIssueChecks.length === 0 && releaseStatusIssueFamilies.length === 0 && (
-              <span className="rounded-full border border-emerald-200 bg-white/85 px-2.5 py-1 text-emerald-700">
-                当前无未通过 check 或 family 证据缺口
-              </span>
-            )}
-          </div>
-        )}
-      </div>
 
       {/* ── sidebar + task layout ── */}
       <div className={`grid gap-4 ${sidebarCollapsed ? 'xl:grid-cols-[44px_minmax(0,1fr)]' : 'xl:grid-cols-[220px_minmax(0,1fr)]'} transition-all duration-200`}>
