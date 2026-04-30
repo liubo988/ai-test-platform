@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "generatedAt": "2026-04-28T10:32:23.523Z",
+  "requestCorpusPath": "artifacts/intent-e2e-family-evidence/proj_default.list-search-detail.request-corpus.json",
+  "recipeAssetInput": "artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json",
+  "reportPath": "artifacts/intent-e2e-family-evidence/proj_default.knowledge-hit/list-search-detail-phase14-rerun.json",
+  "scope": {
+    "projectUid": "proj_default",
+    "moduleUid": "mod_1773303139537_c84d8476",
+    "testType": "browser_e2e",
+    "priorityScenarioFamily": "list_search_detail"
+  },
+  "actorUserUid": "usr_default_owner",
+  "preflight": [
+    {
+      "requestId": "order-list-search-detail-first-pass-anchor-a",
+      "input": "在订单列表先用入账状态下拉选择“待申请”，再从真实结果行提取订单号，按订单号重新检索并进入详情页/详情抽屉验证联系人、手机号与入账状态。",
+      "targetUrl": "https://uat-service.yikaiye.com/#/order/list",
+      "expectedPriorityScenarioFamily": "list_search_detail",
+      "route": {
+        "family": "list_search_detail",
+        "textFamily": "list_search_detail",
+        "visualFamily": "untracked",
+        "source": "text_only",
+        "clarifySignals": []
+      },
+      "matchesExpectedFamily": true
+    }
+  ],
+  "summary": {
+    "requestCount": 1,
+    "terminalCount": 1,
+    "pendingCount": 0,
+    "timedOutCount": 0,
+    "passedRuns": 1,
+    "failedRuns": 0,
+    "canceledRuns": 0,
+    "knowledgeHitRuns": 1,
+    "knowledgeHitRate": 100,
+    "recipeHitRuns": 1,
+    "playbookHitRuns": 1
+  },
+  "runs": [
+    {
+      "requestId": "order-list-search-detail-first-pass-anchor-a",
+      "input": "在订单列表先用入账状态下拉选择“待申请”，再从真实结果行提取订单号，按订单号重新检索并进入详情页/详情抽屉验证联系人、手机号与入账状态。",
+      "targetUrl": "https://uat-service.yikaiye.com/#/order/list",
+      "expectedPriorityScenarioFamily": "list_search_detail",
+      "preflight": {
+        "family": "list_search_detail",
+        "textFamily": "list_search_detail",
+        "visualFamily": "untracked",
+        "source": "text_only",
+        "clarifySignals": []
+      },
+      "runId": "intent-run-b592c94e-370b-48a7-a715-d2c4577a56c6",
+      "status": "passed",
+      "terminal": true,
+      "timedOut": false,
+      "finishedAt": "2026-04-28T10:32:18.841Z",
+      "priorityScenarioFamily": "list_search_detail",
+      "targetPath": "/",
+      "matchedRecipeSlugs": [
+        "intent.order-list-search-detail.derive-order-no",
+        "intent.list-search-detail.primary-record",
+        "assert.antd-table-primary-key-search",
+        "auth.unified-login"
+      ],
+      "matchedRuleIds": [
+        "order.list-search-detail-primary-record"
+      ],
+      "matchedRuleTitles": [
+        "订单列表按订单号回查详情"
+      ],
+      "knowledgeHit": true,
+      "recipeHit": true,
+      "playbookHit": true,
+      "reviewWritten": false,
+      "experienceHit": true,
+      "failureClass": "",
+      "actorUserUid": "usr_default_owner",
+      "errorMessage": ""
+    }
+  ]
+}

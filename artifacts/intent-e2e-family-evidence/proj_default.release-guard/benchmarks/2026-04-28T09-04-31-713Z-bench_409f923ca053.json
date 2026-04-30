@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "benchmarkUid": "bench_409f923ca053",
+  "label": "phase9-business-create-list-verify-fresh-window-baseline",
+  "releaseCandidate": "phase9-baseline-gate-2026-04-28",
+  "frozenAt": "2026-04-28T09:04:31.713Z",
+  "scope": {
+    "projectUid": "proj_default",
+    "moduleUid": "",
+    "testTypes": [],
+    "runnerTypes": [],
+    "priorityScenarioFamily": "business_create_list_verify"
+  },
+  "proofWindow": {
+    "mode": "non_weak",
+    "note": "non_weak proof window 仅纳入 taskMode 明确且 stepCount > 0 的 benchmark cases；unknown taskMode / no_steps case 会被显式隔离，不主导 family gate。",
+    "excludedWeakCaseCount": 0,
+    "excludedWeakCases": []
+  },
+  "source": {
+    "runLimit": 8,
+    "generatedFromRuns": 3,
+    "candidateClusters": 1,
+    "recommendedCount": 1,
+    "recommendedFamilies": [
+      "complex_enterprise_flow"
+    ],
+    "selectionNote": "固定评测候选按 snapshot signature 聚类，优先保留高频、复杂、失败或依赖 repair 的真实业务流。 当前冻结显式启用了 non_weak proof window，会隔离 taskMode=unknown 或 stepCount=0 的 weak case。",
+    "selectedEvalCaseIds": [
+      "eval_complex_enterprise_flow_scenario_ui_extract"
+    ]
+  },
+  "summary": {
+    "caseCount": 1,
+    "runCount": 3,
+    "passedRuns": 3,
+    "failedRuns": 0,
+    "canceledRuns": 0,
+    "repairAttemptedRuns": 0,
+    "blockedRuns": 0,
+    "blockedRate": 0,
+    "knowledgeHitRuns": 3,
+    "knowledgeHitRate": 100,
+    "experienceHitRuns": 3,
+    "experienceHitRate": 100,
+    "experienceHelpedFirstPassRuns": 3,
+    "experienceHelpedFirstPassRate": 100,
+    "experienceHelpedTerminalPassRuns": 3,
+    "experienceHelpedTerminalPassRate": 100,
+    "recipeHitRuns": 3,
+    "recipeHitRate": 100,
+    "playbookHitRuns": 3,
+    "playbookHitRate": 100,
+    "untrackedRuns": 0,
+    "untrackedRate": 0,
+    "reviewWrittenRuns": 3,
+    "reviewWriteRate": 100,
+    "latestFinishedAt": "2026-04-28T08:55:41.762Z",
+    "firstPassPassedRuns": 3,
+    "firstPassPassRate": 100,
+    "repairedPassRuns": 0,
+    "repairedPassRate": 0,
+    "terminalPassRate": 100,
+    "topFailureReasons": []
+  },
+  "cases": [
+    {
+      "evalCaseId": "eval_complex_enterprise_flow_scenario_ui_extract",
+      "snapshotSignature": "complex_enterprise_flow|scenario|/|ui+extract",
+      "scenarioFamily": "complex_enterprise_flow",
+      "scenarioFamilyLabel": "复杂企业流程",
+      "priorityScenarioFamily": "business_create_list_verify",
+      "taskMode": "scenario",
+      "targetPath": "/",
+      "stepTypes": [
+        "ui",
+        "extract"
+      ],
+      "stepCount": 6,
+      "moduleUids": [
+        "mod_1773303139537_c84d8476"
+      ],
+      "testTypes": [
+        "browser_e2e"
+      ],
+      "runnerTypes": [
+        "playwright_runner"
+      ],
+      "representativeScenarioTitle": "登录后台后在商机列表页发起新建商机并保存，随后切换到“我创建的”Tab，等待列表加载完成，校验新建商机记录出现在列表中且“商机进展”为“新入库”。",
+      "representativeRequestInput": "登录后台后在商机列表页发起新建商机并保存，随后切换到“我创建的”Tab，等待列表加载完成，校验新建商机记录出现在列表中且“商机进展”为“新入库”。",
+      "representativeRunIds": [
+        "intent-run-f0d23bf0-2b97-48cd-8c5e-d46ab8e85c4b",
+        "intent-run-ba1b8788-c4ce-4c82-b62a-a55b519cb189",
+        "intent-run-67b10989-8060-471b-b247-5ea349b38c7c"
+      ],
+      "matchedRecipeSlugs": [
+        "auth.unified-login",
+        "intent.ui-antd-modal-drawer-save"
+      ],
+      "matchedRuleIds": [
+        "business.create-list-status-detail-entry"
+      ],
+      "matchedRuleTitles": [
+        "新建商机后列表状态回查"
+      ],
+      "usedHelpers": [
+        "__e2e.clickAntdRowAction",
+        "__e2e.ensureLoggedIn",
+        "__e2e.findAntdTableRow",
+        "__e2e.observeSubmitState",
+        "__e2e.pickJsonRecord"
+      ],
+      "keySignals": [
+        "ant_modal_resolved",
+        "api_response_matched",
+        "business_list_ownership_switched",
+        "submit_state_observed",
+        "table_row_matched"
+      ],
+      "failureClasses": [],
+      "priority": "p0",
+      "selectionReason": "复杂企业流程；高频样本 3 runs",
+      "frozenMetrics": {
+        "runCount": 3,
+        "passedRuns": 3,
+        "failedRuns": 0,
+        "canceledRuns": 0,
+        "repairAttemptedRuns": 0,
+        "blockedRuns": 0,
+        "blockedRate": 0,
+        "knowledgeHitRuns": 3,
+        "knowledgeHitRate": 100,
+        "experienceHitRuns": 3,
+        "experienceHitRate": 100,
+        "experienceHelpedFirstPassRuns": 3,
+        "experienceHelpedFirstPassRate": 100,
+        "experienceHelpedTerminalPassRuns": 3,
+        "experienceHelpedTerminalPassRate": 100,
+        "recipeHitRuns": 3,
+        "recipeHitRate": 100,
+        "playbookHitRuns": 3,
+        "playbookHitRate": 100,
+        "untrackedRuns": 0,
+        "untrackedRate": 0,
+        "reviewWrittenRuns": 3,
+        "reviewWriteRate": 100,
+        "latestFinishedAt": "2026-04-28T08:55:41.762Z",
+        "firstPassPassedRuns": 3,
+        "firstPassPassRate": 100,
+        "repairedPassRuns": 0,
+        "repairedPassRate": 0,
+        "terminalPassRate": 100
+      }
+    }
+  ]
+}

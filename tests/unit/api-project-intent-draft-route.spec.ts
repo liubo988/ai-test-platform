@@ -15,6 +15,10 @@ vi.mock('@/lib/services/project-intent-draft-service', () => ({
   updateProjectIntentDraftRecord: vi.fn(),
 }));
 
+vi.mock('@/lib/intent-e2e-traffic-quality', () => ({
+  safeRecordProjectIntentDraftGeneratedTrafficQuality: vi.fn(),
+}));
+
 vi.mock('@/lib/server/project-actor', () => ({
   applyActorCookie: vi.fn((response: NextResponse) => response),
   requireProjectRole: vi.fn(),
@@ -29,6 +33,7 @@ vi.mock('@/lib/server/project-actor', () => ({
 import { DELETE, GET, PUT } from '../../app/api/projects/[projectUid]/intent-drafts/[draftUid]/route';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { archiveProjectIntentDraft, getProjectIntentDraftByUid } from '@/lib/db/repository';
+import { safeRecordProjectIntentDraftGeneratedTrafficQuality } from '@/lib/intent-e2e-traffic-quality';
 import { getProjectIntentDraftDetailResult, updateProjectIntentDraftRecord } from '@/lib/services/project-intent-draft-service';
 import { applyActorCookie, requireProjectRole } from '@/lib/server/project-actor';
 
@@ -164,6 +169,16 @@ describe('project intent draft detail route', () => {
         input: '更新后的目标描述',
         targetUrl: 'https://app.example.com/#/leads',
         actorLabel: 'Owner',
+      })
+    );
+    expect(safeRecordProjectIntentDraftGeneratedTrafficQuality).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectUid: 'proj_1',
+        moduleUid: 'mod_2',
+        intentDraftUid: 'idraft_1',
+        requestInput: '更新后的目标描述',
+        targetUrl: 'https://app.example.com/#/leads',
+        operation: 'update',
       })
     );
     expect(applyActorCookie).toHaveBeenCalledTimes(1);

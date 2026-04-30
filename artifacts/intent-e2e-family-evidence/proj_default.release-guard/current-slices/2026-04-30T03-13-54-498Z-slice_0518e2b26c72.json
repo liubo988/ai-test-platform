@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "sliceUid": "slice_0518e2b26c72",
+  "projectUid": "proj_default",
+  "benchmarkUid": "bench_6a39fe026233",
+  "benchmarkPath": "artifacts/intent-e2e-family-evidence/proj_default.release-guard/benchmarks/2026-04-30T02-40-10-980Z-bench_6a39fe026233.json",
+  "priorityScenarioFamily": "business_batch_add_contacts_verify",
+  "proofWindow": "non_weak",
+  "afterTerminalRunId": "intent-run-154669d3-cda6-4c83-b0cb-ce7c61312b4d",
+  "afterFinishedAt": "2026-04-30T02:37:34.872Z",
+  "declaredReason": "post phase506 playbook recipe current window: include only live runs after playbook recipe import",
+  "createdFromCompareReport": "reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-30T02-56-29-500Z-bench_6a39fe026233-phase503-business-batch-add-contacts-current-2026-04-30.json",
+  "createdAt": "2026-04-30T03:13:54.498Z"
+}

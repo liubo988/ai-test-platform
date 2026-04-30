@@ -600,6 +600,68 @@ test('markdown fence wrapper', async () => {
   );
 
   it(
+    'recognizes the login-mode shell as a login surface before the sms form is expanded',
+    async () => {
+      const loginShellHtml = encodeURIComponent(`<!doctype html>
+        <html lang="zh-CN">
+          <body>
+            <div id="login-shell">
+              <button type="button">企业微信登录</button>
+              <button type="button">管帮手登录</button>
+              <button id="sms-mode" type="button">短信验证码登录</button>
+              <iframe src="data:text/html,qrConnect"></iframe>
+            </div>
+            <script>
+              const shell = document.getElementById('login-shell');
+              const renderSmsForm = () => {
+                if (!shell) return;
+                shell.innerHTML = [
+                  '<input id="normal_login_codePhone" placeholder="请输入手机号" />',
+                  '<input id="normal_login_code" placeholder="请输入验证码" />',
+                  '<button id="login-btn" type="button">登 录</button>',
+                ].join('');
+                document.getElementById('login-btn')?.addEventListener('click', () => {
+                  document.body.setAttribute('data-auth', 'ok');
+                  shell.innerHTML = '<h1>登录成功</h1>';
+                });
+              };
+
+              document.getElementById('sms-mode')?.addEventListener('click', renderSmsForm);
+            </script>
+          </body>
+        </html>`);
+
+      const targetUrl = `data:text/html;charset=utf-8,${loginShellHtml}`;
+      const result = await executeTest(
+        `test('ensureLoggedIn handles login mode shell', async ({ page }) => {
+          await page.goto(${JSON.stringify(targetUrl)});
+          const loginTriggered = await __e2e.ensureLoggedIn(page, {
+            loginUrl: ${JSON.stringify(targetUrl)},
+            postLoginSettleMs: 20,
+            postLoginTransitionTimeoutMs: 120,
+          });
+
+          expect(loginTriggered).toBe(true);
+          await expect(page.locator('body')).toHaveAttribute('data-auth', 'ok');
+          await expect(page.getByText('登录成功')).toBeVisible();
+        });`,
+        'worker-login-shell-detection',
+        {
+          username: '13800138000',
+          password: '123456',
+          loginDescription: '短信验证码登录',
+        }
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+    },
+    20000
+  );
+
+  it(
     'matches nested list records when the fallback identifier is only present in deep array fields',
     async () => {
       const result = await executeTest(
@@ -1105,6 +1167,110 @@ test('markdown fence wrapper', async () => {
       expect(
         logs.some((item) => item.message === 'ant-select open attempt' && item.meta?.strategy === 'click')
       ).toBe(false);
+    },
+    20000
+  );
+
+  it(
+    'selects the first visible search match when only searchText is provided',
+    async () => {
+      const logs: Array<{ level: string; message: string; meta?: any }> = [];
+      const result = await executeTest(
+        `test('select first fuzzy company match', async ({ page }) => {
+          await page.goto('about:blank');
+          await page.setContent(\`
+            <div id="company-row">
+              <div class="ant-select ant-select-show-search">
+                <div class="ant-select-selector">
+                  <span class="ant-select-selection-search">
+                    <input id="company-input" class="ant-select-selection-search-input" role="combobox" aria-autocomplete="list" />
+                  </span>
+                </div>
+              </div>
+            </div>
+          \`);
+
+          await page.evaluate(() => {
+            const row = document.getElementById('company-row');
+            const input = document.getElementById('company-input');
+            if (!(row instanceof HTMLElement) || !(input instanceof HTMLInputElement)) return;
+
+            const options = [
+              '中国平安保险（集团）股份有限公司',
+              '中国平安财产保险股份有限公司',
+            ];
+
+            const removeDropdown = () => {
+              document.querySelectorAll('.ant-select-dropdown').forEach((node) => node.remove());
+            };
+
+            const renderDropdown = (keyword) => {
+              removeDropdown();
+              const normalizedKeyword = String(keyword || '').trim();
+              if (!normalizedKeyword) return;
+
+              const dropdown = document.createElement('div');
+              dropdown.className = 'ant-select-dropdown';
+              dropdown.style.display = 'block';
+
+              for (const optionLabel of options.filter((item) => item.includes(normalizedKeyword))) {
+                const option = document.createElement('div');
+                option.className = 'ant-select-item ant-select-item-option';
+                option.setAttribute('title', optionLabel);
+
+                const content = document.createElement('div');
+                content.className = 'ant-select-item-option-content';
+                content.textContent = optionLabel;
+                option.appendChild(content);
+                option.addEventListener('click', () => {
+                  row.setAttribute('data-selected-label', optionLabel);
+                  removeDropdown();
+                });
+
+                dropdown.appendChild(option);
+              }
+
+              document.body.appendChild(dropdown);
+            };
+
+            input.addEventListener('input', () => {
+              renderDropdown(input.value);
+            });
+          });
+
+          const row = page.locator('#company-row').first();
+          await __e2e.selectAntdOption(page, row, {
+            searchText: '中国平安',
+            pickFirstSearchMatch: true,
+          });
+
+          await expect(page.locator('#company-row')).toHaveAttribute(
+            'data-selected-label',
+            '中国平安保险（集团）股份有限公司'
+          );
+        });`,
+        'worker-select-antd-option-first-search-match',
+        undefined,
+        {
+          onLog(payload) {
+            logs.push(payload);
+          },
+        }
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          level: 'info',
+          message: 'ant-select option selected',
+          meta: expect.objectContaining({
+            strategy: 'first-search-match',
+          }),
+        })
+      );
     },
     20000
   );

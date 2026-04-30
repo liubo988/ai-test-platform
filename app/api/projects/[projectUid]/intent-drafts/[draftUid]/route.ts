@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { normalizeIntentE2ERequestBody } from '@/lib/ai/intent-e2e-request';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { archiveProjectIntentDraft, getProjectIntentDraftByUid } from '@/lib/db/repository';
+import { safeRecordProjectIntentDraftGeneratedTrafficQuality } from '@/lib/intent-e2e-traffic-quality';
 import { getProjectIntentDraftDetailResult, updateProjectIntentDraftRecord } from '@/lib/services/project-intent-draft-service';
 import { applyActorCookie, requireProjectRole, toErrorResponse } from '@/lib/server/project-actor';
 
@@ -72,6 +73,21 @@ export async function PUT(
       attachments: normalizedIntent.attachments,
       llmConfig: normalizedIntent.llmConfig,
       actorLabel: actor.displayName,
+    });
+    const detail = await Promise.resolve(
+      getProjectIntentDraftDetailResult({ projectUid, intentDraftUid: draftUid })
+    ).catch(() => null);
+    await safeRecordProjectIntentDraftGeneratedTrafficQuality({
+      projectUid,
+      moduleUid,
+      intentDraftUid: draftUid,
+      requestInput: normalizedIntent.input,
+      targetUrl: normalizedIntent.targetUrl,
+      attachmentCount: normalizedIntent.attachments?.length || 0,
+      scenarioCard: detail?.scenarioCard || null,
+      scenarioLlmMeta: detail?.scenarioLlmMeta || null,
+      llmConfig: detail?.llmConfig || normalizedIntent.llmConfig,
+      operation: 'update',
     });
 
     return applyActorCookie(NextResponse.json({ item }), actor.userUid);

@@ -53,6 +53,7 @@ import {
   type IntentProjectRuntimeGovernanceIssue,
   type IntentProjectRuntimeGovernanceStatus,
 } from '@/lib/intent-project-runtime-governance';
+import { classifyIntentE2EFailure } from '@/lib/ai/intent-e2e-failure-triage';
 import { classifyIntentE2EPriorityScenarioFamily } from '@/lib/intent-e2e-priority-scenario-family';
 import type { IntentE2EPriorityScenarioFamily } from '@/lib/intent-e2e-priority-scenario-family';
 
@@ -278,6 +279,54 @@ export interface IntentE2EInsightFailureClassStat {
   latestRepairObservationAt: string;
   latestRepairObservationSummary: string;
   latestRepairObservationVerifierCheckUids: string[];
+}
+
+export type IntentE2EInsightFailureTraceGovernanceCategory =
+  | 'environment'
+  | 'data_contract'
+  | 'verifier_gap'
+  | 'workflow_gap'
+  | 'execution_gap'
+  | 'unknown_triage';
+
+export type IntentE2EInsightFailureTraceGovernanceSeverity = 'high' | 'medium' | 'low';
+
+export type IntentE2EInsightFailureTracePromotionTarget =
+  | 'environment_runbook'
+  | 'fixture_contract'
+  | 'verifier_recipe'
+  | 'workflow_recipe'
+  | 'execution_guard'
+  | 'manual_triage';
+
+export interface IntentE2EInsightFailureTraceGovernanceItem {
+  governanceId: string;
+  failureClass: string;
+  category: IntentE2EInsightFailureTraceGovernanceCategory;
+  severity: IntentE2EInsightFailureTraceGovernanceSeverity;
+  promotionTarget: IntentE2EInsightFailureTracePromotionTarget;
+  count: number;
+  latestObservedAt: string;
+  representativeRunIds: string[];
+  affectedScenarioFamilies: IntentE2EScenarioFamily[];
+  affectedPriorityScenarioFamilies: IntentE2EPriorityScenarioFamily[];
+  summary: string;
+  recommendation: string;
+  antiPatterns: string[];
+  latestRepairObservationAt: string;
+  latestRepairObservationSummary: string;
+  latestRepairObservationVerifierCheckUids: string[];
+}
+
+export interface IntentE2EInsightFailureTraceGovernanceOverview {
+  generatedFromRuns: number;
+  totalItems: number;
+  highSeverityCount: number;
+  mediumSeverityCount: number;
+  lowSeverityCount: number;
+  needsTriageCount: number;
+  promotionCandidateCount: number;
+  items: IntentE2EInsightFailureTraceGovernanceItem[];
 }
 
 export interface IntentE2EInsightScenarioFamilyStat extends IntentE2EInsightPassMetrics {
@@ -845,6 +894,7 @@ export interface IntentE2EInsightsResult {
   verificationIntents: IntentE2EInsightVerificationIntentStat[];
   capabilityVerificationIntents: IntentE2EInsightCapabilityVerificationIntentStat[];
   failureClasses: IntentE2EInsightFailureClassStat[];
+  failureTraceGovernance: IntentE2EInsightFailureTraceGovernanceOverview;
   mergeProvenanceStats: IntentE2EInsightMergeProvenanceStat[];
   riskLifecycleRules: IntentE2EInsightRiskLifecycleRule[];
   probationRules: IntentE2EInsightProbationRule[];
@@ -941,6 +991,9 @@ export interface IntentE2EInsightRunRecord {
 }
 
 type InsightRunRecord = IntentE2EInsightRunRecord;
+type RetrospectiveFailureTestResult = Parameters<typeof classifyIntentE2EFailure>[0];
+type RetrospectiveFailureTestStep = RetrospectiveFailureTestResult['steps'][number];
+type RetrospectiveFailureTriage = NonNullable<ReturnType<typeof classifyIntentE2EFailure>>;
 
 interface InsightCapabilityVerificationRecord {
   executionUid: string;
@@ -1076,6 +1129,7 @@ const SCENARIO_FAMILY_SLO_TARGETS: Record<
 const PRIORITY_SCENARIO_FAMILY_LABELS: Record<IntentE2EPriorityScenarioFamily, string> = {
   business_create_list_verify: '新建商机后回列表验收',
   business_to_order: '商机转订单 / 生成订单',
+  business_batch_add_contacts_verify: '商机批量加入通讯录并验收',
   list_search_detail: '列表搜索并进入详情',
   modal_or_drawer_save: '弹层 / 抽屉编辑并保存',
   row_action_menu: '列表行操作菜单',
@@ -1153,6 +1207,14 @@ function normalizeTargetPath(value: string): string {
     const url = raw.startsWith('http://') || raw.startsWith('https://') ? new URL(raw) : new URL(raw, 'https://intent.local');
     if (url.protocol === 'about:') {
       return raw;
+    }
+    const hashRoute = url.hash
+      .replace(/^#/, '')
+      .replace(/^!/, '')
+      .replace(/[?#].*$/, '')
+      .replace(/\/+$/, '');
+    if (hashRoute.startsWith('/')) {
+      return hashRoute || '/';
     }
     return url.pathname || '/';
   } catch {
@@ -1241,6 +1303,122 @@ function extractTraceResponseEvents(
   }
 
   return items;
+}
+
+function normalizeRetrospectiveFailureStepStatus(value: unknown): RetrospectiveFailureTestStep['status'] {
+  return value === 'running' || value === 'passed' || value === 'failed' || value === 'skipped' ? value : 'failed';
+}
+
+function normalizeRetrospectiveFailureSteps(input: {
+  rawSteps: unknown;
+  fallbackTitle: string;
+  fallbackError: string;
+}): RetrospectiveFailureTestResult['steps'] {
+  const steps: RetrospectiveFailureTestResult['steps'] = [];
+
+  if (Array.isArray(input.rawSteps)) {
+    for (const rawStep of input.rawSteps) {
+      if (!rawStep || typeof rawStep !== 'object' || Array.isArray(rawStep)) continue;
+      const source = rawStep as {
+        title?: unknown;
+        status?: unknown;
+        duration?: unknown;
+        error?: unknown;
+      };
+      const title = typeof source.title === 'string' && source.title.trim()
+        ? source.title.trim()
+        : input.fallbackTitle;
+      const error = typeof source.error === 'string' && source.error.trim() ? source.error.trim() : '';
+      if (!title && !error) continue;
+      steps.push({
+        title: title || input.fallbackTitle || '终态失败',
+        status: normalizeRetrospectiveFailureStepStatus(source.status),
+        duration: typeof source.duration === 'number' && Number.isFinite(source.duration) ? Math.max(0, source.duration) : 0,
+        ...(error ? { error } : {}),
+      });
+    }
+  }
+
+  if (steps.length === 0 && (input.fallbackTitle || input.fallbackError)) {
+    steps.push({
+      title: input.fallbackTitle || '终态失败',
+      status: 'failed',
+      duration: 0,
+      ...(input.fallbackError ? { error: input.fallbackError } : {}),
+    });
+  }
+
+  return steps;
+}
+
+function collectRetrospectiveFailureLogs(attempts: Array<{ logs?: unknown }>): Array<{ level: string; message: string }> {
+  const logs: Array<{ level: string; message: string }> = [];
+
+  for (const attempt of attempts) {
+    if (!Array.isArray(attempt?.logs)) continue;
+    for (const rawLog of attempt.logs) {
+      if (typeof rawLog === 'string' && rawLog.trim()) {
+        logs.push({ level: 'info', message: rawLog.trim() });
+        continue;
+      }
+      if (!rawLog || typeof rawLog !== 'object' || Array.isArray(rawLog)) continue;
+      const message = typeof (rawLog as { message?: unknown }).message === 'string'
+        ? String((rawLog as { message?: unknown }).message || '').trim()
+        : '';
+      if (!message) continue;
+      logs.push({
+        level:
+          typeof (rawLog as { level?: unknown }).level === 'string' && String((rawLog as { level?: unknown }).level).trim()
+            ? String((rawLog as { level?: unknown }).level).trim()
+            : 'info',
+        message,
+      });
+    }
+  }
+
+  return logs;
+}
+
+function refineRetrospectiveUnknownFailure(input: {
+  status: InsightRunRecord['status'];
+  targetUrl: string;
+  scenarioTitle: string;
+  finalResultPayload: {
+    success?: unknown;
+    error?: unknown;
+    steps?: unknown;
+  } | null;
+  finalResultError: string;
+  finalFailureSummary: string;
+  snapshotError: string;
+  attempts: Array<{ logs?: unknown }>;
+}): RetrospectiveFailureTriage | null {
+  if (input.status !== 'failed') return null;
+  if (input.finalResultPayload?.success === true) return null;
+
+  const fallbackError = uniqueStrings([
+    input.finalResultError,
+    input.snapshotError,
+    input.finalFailureSummary,
+  ]).join('\n');
+  const testResult: RetrospectiveFailureTestResult = {
+    success: false,
+    duration: 0,
+    steps: normalizeRetrospectiveFailureSteps({
+      rawSteps: input.finalResultPayload?.steps,
+      fallbackTitle: input.scenarioTitle || '终态失败',
+      fallbackError,
+    }),
+    error:
+      typeof input.finalResultPayload?.error === 'string' && input.finalResultPayload.error.trim()
+        ? input.finalResultPayload.error.trim()
+        : fallbackError || null,
+  };
+  const triage = classifyIntentE2EFailure(testResult, collectRetrospectiveFailureLogs(input.attempts), {
+    pageUrl: input.targetUrl,
+  });
+
+  return triage && triage.failureClass !== 'unknown' ? triage : null;
 }
 
 function buildTraceFinalGraderResult(input: {
@@ -1429,17 +1607,19 @@ function priorityScenarioFamilyRank(family: IntentE2EPriorityScenarioFamily): nu
       return 0;
     case 'business_to_order':
       return 1;
-    case 'list_search_detail':
+    case 'business_batch_add_contacts_verify':
       return 2;
-    case 'modal_or_drawer_save':
+    case 'list_search_detail':
       return 3;
-    case 'row_action_menu':
+    case 'modal_or_drawer_save':
       return 4;
-    case 'list_ownership_switch':
+    case 'row_action_menu':
       return 5;
+    case 'list_ownership_switch':
+      return 6;
     case 'untracked':
     default:
-      return 6;
+      return 7;
   }
 }
 
@@ -2230,6 +2410,8 @@ function normalizeTerminalRun(snapshot: IntentE2ERunSnapshotRecord): InsightRunR
             kind?: unknown;
             result?: {
               success?: unknown;
+              error?: unknown;
+              steps?: unknown;
             } | null;
             helperUsage?: {
               usedHelpers?: unknown;
@@ -2492,13 +2674,13 @@ function normalizeTerminalRun(snapshot: IntentE2ERunSnapshotRecord): InsightRunR
   const responseEvents = normalizedAttempts.flatMap((attemptRecord, index) =>
     extractTraceResponseEvents(attempts[index]?.logs, attemptRecord.attempt)
   );
-  const finalFailureSummary =
+  let finalFailureSummary =
     result?.finalFailureTriage && typeof result.finalFailureTriage.summary === 'string'
       ? result.finalFailureTriage.summary.trim()
       : '';
   const finalResultError =
     result?.finalResult && typeof result.finalResult.error === 'string' ? result.finalResult.error.trim() : '';
-  const finalFailureRepairable =
+  let finalFailureRepairable =
     result?.finalFailureTriage && typeof result.finalFailureTriage.repairable === 'boolean'
       ? result.finalFailureTriage.repairable
       : null;
@@ -2523,10 +2705,28 @@ function normalizeTerminalRun(snapshot: IntentE2ERunSnapshotRecord): InsightRunR
     snapshot.status === 'passed'
       ? ''
       : [...normalizedAttempts].reverse().find((attempt) => attempt.failureClass)?.failureClass || '';
-  const finalFailureClass =
+  let finalFailureClass =
     result?.finalFailureTriage && typeof result.finalFailureTriage.failureClass === 'string'
       ? result.finalFailureTriage.failureClass.trim()
       : fallbackFailureClass;
+  if (!finalFailureClass || finalFailureClass === 'unknown') {
+    const retrospectiveTriage = refineRetrospectiveUnknownFailure({
+      status: snapshot.status,
+      targetUrl: snapshot.targetUrl,
+      scenarioTitle:
+        typeof scenarioCard?.title === 'string' && scenarioCard.title.trim() ? scenarioCard.title.trim() : snapshot.requestInput.trim(),
+      finalResultPayload,
+      finalResultError,
+      finalFailureSummary,
+      snapshotError: snapshot.error || '',
+      attempts,
+    });
+    if (retrospectiveTriage) {
+      finalFailureClass = retrospectiveTriage.failureClass;
+      finalFailureSummary = retrospectiveTriage.summary;
+      finalFailureRepairable = retrospectiveTriage.repairable;
+    }
+  }
   const testType = normalizePlatformTestType(resultPlatformMeta?.testType) || DEFAULT_INTENT_E2E_TEST_TYPE;
   const runnerType = normalizePlatformRunnerType(resultPlatformMeta?.runnerType) || DEFAULT_INTENT_E2E_RUNNER_TYPE;
   const qualitySplit = normalizeIntentE2EQualitySplit(result?.qualitySplit, {
@@ -3448,6 +3648,227 @@ export function buildIntentE2EFailureClassStatsFromRuns(runs: IntentE2EInsightRu
     }))
     .sort((a, b) => b.count - a.count || a.failureClass.localeCompare(b.failureClass))
     .slice(0, 5);
+}
+
+function failureTraceGovernanceCategoryRank(category: IntentE2EInsightFailureTraceGovernanceCategory): number {
+  switch (category) {
+    case 'unknown_triage':
+      return 0;
+    case 'verifier_gap':
+      return 1;
+    case 'workflow_gap':
+      return 2;
+    case 'execution_gap':
+      return 3;
+    case 'data_contract':
+      return 4;
+    default:
+      return 5;
+  }
+}
+
+function failureTraceGovernanceSeverityRank(severity: IntentE2EInsightFailureTraceGovernanceSeverity): number {
+  switch (severity) {
+    case 'high':
+      return 0;
+    case 'medium':
+      return 1;
+    default:
+      return 2;
+  }
+}
+
+function classifyFailureTraceGovernance(failureClass: string): {
+  category: IntentE2EInsightFailureTraceGovernanceCategory;
+  promotionTarget: IntentE2EInsightFailureTracePromotionTarget;
+  baseSeverity: IntentE2EInsightFailureTraceGovernanceSeverity;
+  antiPatterns: string[];
+  recommendation: string;
+} {
+  switch (failureClass) {
+    case 'env_transient':
+    case 'auth_failed':
+    case 'auth_state_invalid':
+    case 'permission_blocked':
+      return {
+        category: 'environment',
+        promotionTarget: 'environment_runbook',
+        baseSeverity: 'low',
+        antiPatterns: [
+          '不要把环境、登录或权限阻塞继续交给代码 repair 重试。',
+          '不要把环境阻塞样本混入模型质量回归判断。',
+        ],
+        recommendation: '先沉淀到 runbook / runtime governance，恢复环境或权限后再重跑；不要用这类样本驱动 verifier 或 recipe 改写。',
+      };
+    case 'data_missing':
+    case 'fixture_contract_missing':
+      return {
+        category: 'data_contract',
+        promotionTarget: 'fixture_contract',
+        baseSeverity: 'medium',
+        antiPatterns: [
+          '不要在真实数据缺失时伪造业务成功证据。',
+          '不要把空列表或缺 fixture 误判为 selector / planner 失败。',
+        ],
+        recommendation: '补 fixture / 数据前提契约，或在 precheck 阶段显式暴露 data blocker，再决定是否纳入 benchmark。',
+      };
+    case 'record_lookup_miss':
+    case 'target_row_not_found':
+    case 'assertion_too_strict':
+      return {
+        category: 'verifier_gap',
+        promotionTarget: 'verifier_recipe',
+        baseSeverity: 'high',
+        antiPatterns: [
+          '不要用第一行、状态文本或模糊包含关系当成目标记录命中。',
+          '不要在主键为空时直接硬断言失败，应走 fallback identity 与详情字段验收。',
+        ],
+        recommendation: '优先沉淀为 verifier recipe / project knowledge：稳定主键提取、列表收敛、详情字段回查和 fallback identity 必须成链。',
+      };
+    case 'response_missing':
+    case 'workflow_gap':
+      return {
+        category: 'workflow_gap',
+        promotionTarget: 'workflow_recipe',
+        baseSeverity: 'medium',
+        antiPatterns: [
+          '不要只看 toast 或页面跳转就结束业务验收。',
+          '不要把接口等待、JSON 提取和后续回查拆成互不关联的步骤。',
+        ],
+        recommendation: '补 workflow recipe：提交前准备 response wait，提交后读取结构化响应，再把真实字段传给后续验收。',
+      };
+    case 'selector_drift':
+    case 'ui_anchor_missing':
+    case 'runtime_syntax_damage':
+    case 'repair_non_progress':
+    case 'repair_stagnated':
+      return {
+        category: 'execution_gap',
+        promotionTarget: 'execution_guard',
+        baseSeverity: 'medium',
+        antiPatterns: [
+          '不要在页面顶层做宽泛 locator 点击。',
+          '不要让 repair 在同一失败形态上重复整段重写。',
+        ],
+        recommendation: '补 execution guard / helper 约束：先定位可见容器、绑定可观测状态，再允许局部 patch。',
+      };
+    default:
+      return {
+        category: 'unknown_triage',
+        promotionTarget: 'manual_triage',
+        baseSeverity: 'high',
+        antiPatterns: [
+          '不要把 unknown 当成普通统计桶长期留在 baseline。',
+          '不要在缺少 final trace / failed step / verifier 证据时直接提升 recipe 或 knowledge。',
+        ],
+        recommendation: '先做人工 triage 或补 failure-class 规则，把 unknown 拆成环境、数据、verifier、workflow 或 execution 的明确类别。',
+      };
+  }
+}
+
+function pickFailureTraceGovernanceSeverity(input: {
+  failureClass: string;
+  baseSeverity: IntentE2EInsightFailureTraceGovernanceSeverity;
+  count: number;
+  affectedPriorityScenarioFamilies: IntentE2EPriorityScenarioFamily[];
+}): IntentE2EInsightFailureTraceGovernanceSeverity {
+  if (input.failureClass === 'unknown') return 'high';
+  if (input.baseSeverity === 'high') return 'high';
+  if (input.count >= 3 && input.affectedPriorityScenarioFamilies.some((family) => family !== 'untracked')) return 'high';
+  if (input.count >= 2 || input.baseSeverity === 'medium') return 'medium';
+  return 'low';
+}
+
+function formatFailureTraceFamilyList(families: IntentE2EPriorityScenarioFamily[]): string {
+  const effectiveFamilies = families.length > 0 ? families : ['untracked' as IntentE2EPriorityScenarioFamily];
+  return effectiveFamilies
+    .slice(0, 3)
+    .map((family) => PRIORITY_SCENARIO_FAMILY_LABELS[family] || family)
+    .join(' / ');
+}
+
+export function buildIntentE2EFailureTraceGovernanceFromRuns(
+  runs: IntentE2EInsightRunRecord[],
+  limit = 8
+): IntentE2EInsightFailureTraceGovernanceOverview {
+  const failedRuns = runs.filter((run) => run.status !== 'passed' && run.failureClass);
+  const grouped = new Map<string, IntentE2EInsightRunRecord[]>();
+
+  for (const run of failedRuns) {
+    const failureClass = run.failureClass || 'unknown';
+    const current = grouped.get(failureClass) || [];
+    current.push(run);
+    grouped.set(failureClass, current);
+  }
+
+  const items = [...grouped.entries()].map(([failureClass, groupRuns]) => {
+    const sortedRuns = [...groupRuns].sort((a, b) => b.finishedAtMs - a.finishedAtMs || b.runId.localeCompare(a.runId));
+    const latestRun = sortedRuns[0];
+    const affectedScenarioFamilies = uniqueStrings(sortedRuns.map((run) => run.scenarioFamily)).sort(
+      (a, b) => scenarioFamilyPriorityRank(a as IntentE2EScenarioFamily) - scenarioFamilyPriorityRank(b as IntentE2EScenarioFamily)
+    ) as IntentE2EScenarioFamily[];
+    const affectedPriorityScenarioFamilies = uniqueStrings(sortedRuns.map((run) => run.priorityScenarioFamily)).sort(
+      (a, b) => priorityScenarioFamilyRank(a as IntentE2EPriorityScenarioFamily) - priorityScenarioFamilyRank(b as IntentE2EPriorityScenarioFamily)
+    ) as IntentE2EPriorityScenarioFamily[];
+    const latestRepairObservation = sortedRuns
+      .map((run) => ({
+        run,
+        observation: pickLatestVerifierRepairObservationFromAttempts(run.attempts),
+      }))
+      .find((item) => item.observation);
+    const classification = classifyFailureTraceGovernance(failureClass);
+    const severity = pickFailureTraceGovernanceSeverity({
+      failureClass,
+      baseSeverity: classification.baseSeverity,
+      count: sortedRuns.length,
+      affectedPriorityScenarioFamilies,
+    });
+    const familySummary = formatFailureTraceFamilyList(affectedPriorityScenarioFamilies);
+
+    return {
+      governanceId: `failure-trace:${failureClass}`,
+      failureClass,
+      category: classification.category,
+      severity,
+      promotionTarget: classification.promotionTarget,
+      count: sortedRuns.length,
+      latestObservedAt: latestRun?.finishedAt || '',
+      representativeRunIds: sortedRuns.slice(0, 3).map((run) => run.runId),
+      affectedScenarioFamilies,
+      affectedPriorityScenarioFamilies,
+      summary: `${failureClass} 在最近窗口出现 ${sortedRuns.length} 次，主要影响 ${familySummary}。`,
+      recommendation: classification.recommendation,
+      antiPatterns: classification.antiPatterns,
+      latestRepairObservationAt: latestRepairObservation?.run.finishedAt || '',
+      latestRepairObservationSummary: latestRepairObservation?.observation?.repairObservationSummary || '',
+      latestRepairObservationVerifierCheckUids: latestRepairObservation?.observation?.patchedVerifierCheckUids
+        ? [...latestRepairObservation.observation.patchedVerifierCheckUids]
+        : [],
+    };
+  });
+
+  const normalizedLimit = Math.max(1, Math.floor(limit || 8));
+  const rankedItems = items
+    .sort(
+      (a, b) =>
+        failureTraceGovernanceSeverityRank(a.severity) - failureTraceGovernanceSeverityRank(b.severity) ||
+        failureTraceGovernanceCategoryRank(a.category) - failureTraceGovernanceCategoryRank(b.category) ||
+        b.count - a.count ||
+        toTimestamp(b.latestObservedAt) - toTimestamp(a.latestObservedAt) ||
+        a.failureClass.localeCompare(b.failureClass)
+    )
+    .slice(0, normalizedLimit);
+
+  return {
+    generatedFromRuns: runs.length,
+    totalItems: rankedItems.length,
+    highSeverityCount: rankedItems.filter((item) => item.severity === 'high').length,
+    mediumSeverityCount: rankedItems.filter((item) => item.severity === 'medium').length,
+    lowSeverityCount: rankedItems.filter((item) => item.severity === 'low').length,
+    needsTriageCount: rankedItems.filter((item) => item.category === 'unknown_triage').length,
+    promotionCandidateCount: rankedItems.filter((item) => item.promotionTarget !== 'manual_triage').length,
+    items: rankedItems,
+  };
 }
 
 function buildRecentTraceSummaries(runs: InsightRunRecord[], limit = 8): IntentE2EInsightRecentTrace[] {
@@ -6444,6 +6865,7 @@ export function buildIntentE2EInsightsFromData(
   const verificationIntents = buildVerificationIntentStats(terminalRuns);
   const scenarioFamilies = buildScenarioFamilyStats(terminalRuns);
   const scenarioFamilySlo = buildScenarioFamilySloOverview(scenarioFamilies, terminalRuns.length);
+  const failureTraceGovernance = buildIntentE2EFailureTraceGovernanceFromRuns(terminalRuns);
   const regressionWatchlist = buildRegressionWatchlist({
     scenarioFamilySlo,
     evaluationBaseline,
@@ -6513,6 +6935,7 @@ export function buildIntentE2EInsightsFromData(
       verificationIntents
     ),
     failureClasses: buildIntentE2EFailureClassStatsFromRuns(terminalRuns),
+    failureTraceGovernance,
     mergeProvenanceStats,
     riskLifecycleRules,
     probationRules,

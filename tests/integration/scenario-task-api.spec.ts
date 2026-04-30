@@ -360,7 +360,7 @@ describe.sequential('scenario task config API integration', () => {
       expect.arrayContaining([
         expect.objectContaining({
           configUid: created.item.configUid,
-          platformQuery: {
+          platformQuery: expect.objectContaining({
             version: 1,
             source: 'latest_plan_prompt',
             importedFromRunId: 'intent-run-platform-1',
@@ -372,11 +372,11 @@ describe.sequential('scenario task config API integration', () => {
             artifactKinds: ['scenario_card', 'final_result', 'attempt_trace'],
             imported: true,
             platformTagged: true,
-          },
+          }),
         }),
         expect.objectContaining({
           configUid: legacyImported.configUid,
-          platformQuery: {
+          platformQuery: expect.objectContaining({
             version: 1,
             source: 'latest_plan_prompt',
             importedFromRunId: 'intent-run-platform-legacy-1',
@@ -388,7 +388,7 @@ describe.sequential('scenario task config API integration', () => {
             artifactKinds: [],
             imported: true,
             platformTagged: false,
-          },
+          }),
         }),
       ])
     );
@@ -430,7 +430,7 @@ describe.sequential('scenario task config API integration', () => {
       latestPlanImportedTestSpecId: 'ts_platform_1',
       latestPlanImportedVerificationContractId: 'vc_platform_1',
       latestPlanImportedArtifactKinds: ['scenario_card', 'final_result', 'attempt_trace'],
-      platformQuery: {
+      platformQuery: expect.objectContaining({
         version: 1,
         source: 'latest_plan_prompt',
         importedFromRunId: 'intent-run-platform-1',
@@ -442,7 +442,7 @@ describe.sequential('scenario task config API integration', () => {
         artifactKinds: ['scenario_card', 'final_result', 'attempt_trace'],
         imported: true,
         platformTagged: true,
-      },
+      }),
     });
     expect(filtered.platformSummary).toEqual({
       scopeCount: 1,

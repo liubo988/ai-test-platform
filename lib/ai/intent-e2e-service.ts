@@ -203,6 +203,7 @@ export interface IntentE2ERunRequest {
   runControl?: IntentE2ERunControl;
   runtimeGovernance?: IntentE2ERuntimeGovernance;
   prefilledScenarioCard?: ScenarioCard;
+  prefilledScenarioLlmMeta?: unknown;
   prefilledPlanCode?: string;
 }
 
@@ -266,6 +267,10 @@ export interface IntentE2ERunResult {
     model: string;
     visionEnabled: boolean;
     attachmentCount: number;
+    attachmentOcrAttempted?: boolean;
+    attachmentOcrUsed?: boolean;
+    attachmentOcrVisualAnchorCount?: number;
+    attachmentOcrTextSnippetCount?: number;
   };
   targetUrl: string;
   resolvedUrls?: IntentE2EResolvedUrls;
@@ -653,7 +658,7 @@ interface IntentE2ERepairBaselineDecision {
   baselineProgressedStepCount: number;
 }
 
-const INTENT_E2E_RECENT_REUSE_SNAPSHOT_LIMIT = 12;
+const INTENT_E2E_INTENT_DRAFT_REUSE_SNAPSHOT_LIMIT = 120;
 const INTENT_E2E_REQUEST_ONLY_REUSE_SNAPSHOT_LIMIT = 48;
 
 function normalizeIntentE2EReuseText(value: unknown): string {
@@ -662,7 +667,7 @@ function normalizeIntentE2EReuseText(value: unknown): string {
 
 function resolveIntentE2EReuseSnapshotLimit(intentDraftUid?: string): number {
   return normalizeIntentE2EReuseText(intentDraftUid)
-    ? INTENT_E2E_RECENT_REUSE_SNAPSHOT_LIMIT
+    ? INTENT_E2E_INTENT_DRAFT_REUSE_SNAPSHOT_LIMIT
     : INTENT_E2E_REQUEST_ONLY_REUSE_SNAPSHOT_LIMIT;
 }
 
@@ -707,19 +712,61 @@ function hasStaleOrderBatchAccountingCheckedRowPrereqCode(code: string): boolean
   );
 }
 
-function shouldSkipHistoricalReuseCodeForScenario(input: {
-  scenarioCard: ScenarioCard;
-  code?: string | null;
-}): boolean {
-  const code = String(input.code || '');
-  if (!code) return false;
-  return looksLikeOrderBatchAccountingModalScenarioCard(input.scenarioCard) && hasStaleOrderBatchAccountingCheckedRowPrereqCode(code);
+function looksLikeBusinessBatchAddContactsScenarioCard(card: ScenarioCard): boolean {
+  const flowSteps = Array.isArray(card.flowDefinition?.steps) ? card.flowDefinition.steps : [];
+  const haystack = [
+    card.title,
+    card.targetUrl,
+    card.featureDescription,
+    ...(Array.isArray(card.successCriteria) ? card.successCriteria : []),
+    ...(Array.isArray(card.visualAnchors) ? card.visualAnchors : []),
+    ...(Array.isArray(card.notes) ? card.notes : []),
+    card.flowDefinition?.entryUrl || '',
+    card.flowDefinition?.expectedOutcome || '',
+    ...flowSteps.flatMap((step) => [step.title, step.target, step.instruction, step.expectedResult]),
+  ]
+    .map((item) => normalizeIntentE2EReuseText(item))
+    .filter(Boolean)
+    .join('\n');
+
+  return (
+    /(商机列表|business\/businesslist)/i.test(haystack) &&
+    /(批量加入通讯录|我的通讯录|mails\/mailslist|手机号)/i.test(haystack)
+  );
 }
 
-function buildScenarioSpecificReuseSkipReason(source: 'recent_successful_run' | 'recent_progressed_run'): string {
-  return source === 'recent_successful_run'
-    ? '最近一次成功运行脚本仍把“已勾选订单 / 已打开弹窗”当作硬前置，已回退到当前生成链路重新生成。'
-    : '最近一次推进更远的历史脚本仍把“已勾选订单 / 已打开弹窗”当作硬前置，已回退到当前生成链路重新生成。';
+function hasStaleBusinessBatchContactsMandatoryToastCode(code: string): boolean {
+  const normalizedCode = String(code || '');
+  if (!normalizedCode) return false;
+  const hasBusinessBatchContactSignal =
+    /批量加入通讯录/.test(normalizedCode) && /(我的通讯录|mailslist|mail-list_keywords|targetPhone)/.test(normalizedCode);
+  const hasContactToastLocator =
+    /(ant-message-notice|ant-notification-notice)/.test(normalizedCode) && /(加入通讯录|通讯录)/.test(normalizedCode);
+  const hasMandatoryFeedbackAssert =
+    /await\s+expect\(\s*feedback\s*\)\.toBeVisible\s*\(/.test(normalizedCode) ||
+    /expect\([^)]*(ant-message-notice|ant-notification-notice)[\s\S]{0,240}\)\.toBeVisible\s*\(/.test(normalizedCode);
+
+  return hasBusinessBatchContactSignal && hasContactToastLocator && hasMandatoryFeedbackAssert;
+}
+
+function resolveScenarioSpecificReuseSkipReason(input: {
+  scenarioCard: ScenarioCard;
+  code?: string | null;
+  source: 'recent_successful_run' | 'recent_progressed_run';
+}): string {
+  const code = String(input.code || '');
+  if (!code) return '';
+  if (looksLikeOrderBatchAccountingModalScenarioCard(input.scenarioCard) && hasStaleOrderBatchAccountingCheckedRowPrereqCode(code)) {
+    return input.source === 'recent_successful_run'
+      ? '最近一次成功运行脚本仍把“已勾选订单 / 已打开弹窗”当作硬前置，已回退到当前生成链路重新生成。'
+      : '最近一次推进更远的历史脚本仍把“已勾选订单 / 已打开弹窗”当作硬前置，已回退到当前生成链路重新生成。';
+  }
+  if (looksLikeBusinessBatchAddContactsScenarioCard(input.scenarioCard) && hasStaleBusinessBatchContactsMandatoryToastCode(code)) {
+    return input.source === 'recent_successful_run'
+      ? '最近一次成功运行脚本仍把“加入通讯录 toast”当作硬阻断，已回退到当前生成链路重新生成。'
+      : '最近一次推进更远的历史脚本仍把“加入通讯录 toast”当作硬阻断，已回退到当前生成链路重新生成。';
+  }
+  return '';
 }
 
 function normalizeIntentE2EReuseCount(value: unknown): number {
@@ -1331,6 +1378,7 @@ async function resolveIntentE2EProgressedRunCodeReuseCandidate(input: {
 
 function resolveIntentE2EPrefilledPlanReuseDecision(input: {
   prefilledPlanCode?: string;
+  scenarioCard: ScenarioCard;
   successfulRunCodeCandidate?: IntentE2ESuccessfulRunCodeReuseCandidate | null;
   progressedRunCodeCandidate?: IntentE2EProgressedRunCodeReuseCandidate | null;
 }): IntentE2EPrefilledPlanReuseDecision {
@@ -1387,10 +1435,32 @@ function resolveIntentE2EPrefilledPlanReuseDecision(input: {
     /attachmentAnchor\.locator\('xpath=ancestor::\*\[contains\(@class,"ant-card"\) or contains\(@class,"ant-tabs-tabpane"\) or self::form]\[1\]'\)/.test(
       rawCode
     );
+  const hitsLegacyBusinessCreateDetailVerificationFamily =
+    /waitForVisibleAntdModal\(page,\s*\{\s*titleIncludes:\s*'商机联系人信息'[\s\S]{0,120}required:\s*false/.test(rawCode) &&
+    /readDetailField\(page,\s*\{\s*label:\s*'联系人'[\s\S]{0,160}titleIncludes:\s*'商机联系人信息'[\s\S]{0,120}required:\s*false/.test(
+      rawCode
+    ) &&
+    /readDetailField\(page,\s*\{\s*label:\s*'手机号'[\s\S]{0,160}titleIncludes:\s*'商机联系人信息'[\s\S]{0,120}required:\s*false/.test(
+      rawCode
+    ) &&
+    /shared\.createdContactName[\s\S]{0,120}expect\(contactText\)\.toContain\(shared\.createdContactName\)/.test(rawCode) &&
+    /shared\.createdPhone[\s\S]{0,120}expect\(phoneText\)\.toContain\(shared\.createdPhone\)/.test(rawCode);
 
   if (hitsLegacyBusinessCreateFinalSubmitFamily) {
     return {
       skipReason: '草稿首版脚本命中已知旧的最终提交按钮定位骨架，已回退到当前生成链路。',
+    };
+  }
+
+  if (hitsLegacyBusinessCreateDetailVerificationFamily) {
+    return {
+      skipReason: '草稿首版脚本命中已知旧的商机详情字段验收骨架，已回退到当前生成链路。',
+    };
+  }
+
+  if (looksLikeBusinessBatchAddContactsScenarioCard(input.scenarioCard) && hasStaleBusinessBatchContactsMandatoryToastCode(rawCode)) {
+    return {
+      skipReason: '草稿首版脚本命中已知旧的批量加入通讯录 toast 硬断言骨架，已回退到当前生成链路。',
     };
   }
 
@@ -3988,10 +4058,14 @@ export async function runIntentDrivenE2EStream(
     if (!candidate?.code) {
       return candidate;
     }
-    if (!shouldSkipHistoricalReuseCodeForScenario({ scenarioCard: scenarioCardOutput.card, code: candidate.code })) {
+    const skipReason = resolveScenarioSpecificReuseSkipReason({
+      scenarioCard: scenarioCardOutput.card,
+      code: candidate.code,
+      source,
+    });
+    if (!skipReason) {
       return candidate;
     }
-    const skipReason = buildScenarioSpecificReuseSkipReason(source);
     if (!reuseGuardSkipReasons.includes(skipReason)) {
       reuseGuardSkipReasons.push(skipReason);
     }
@@ -4035,6 +4109,7 @@ export async function runIntentDrivenE2EStream(
   };
   const prefilledPlanReuseDecisionBase = resolveIntentE2EPrefilledPlanReuseDecision({
     prefilledPlanCode: input.prefilledPlanCode,
+    scenarioCard: scenarioCardOutput.card,
     successfulRunCodeCandidate: guardedSuccessfulRunCodeReuseCandidate,
     progressedRunCodeCandidate: progressedRunCodeReuseCandidate,
   });

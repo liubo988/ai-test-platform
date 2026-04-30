@@ -94,6 +94,76 @@ describe('intent-e2e-failure-triage', () => {
     expect(triage?.matchedSignals).toContain('详情入口缺失');
   });
 
+  it('classifies order-detail entry timeouts after row action as response_missing instead of unknown', () => {
+    const triage = classifyIntentE2EFailure(
+      {
+        success: false,
+        duration: 120000,
+        steps: [
+          {
+            title: 'Step 5: 进入订单详情并核对字段',
+            status: 'failed',
+            duration: 120000,
+            error: '测试执行超时 (120s)',
+          },
+        ],
+        error: 'Step 5: 进入订单详情并核对字段|测试执行超时 (120s)',
+      },
+      [
+        { level: 'info', message: 'api response matched' },
+        { level: 'info', message: 'table row matched' },
+        { level: 'info', message: 'row action clicked label=查看 strategy=inline targetIndex=11' },
+      ],
+      {
+        pageUrl: 'https://uat.example.com/#/order/list',
+        snapshot: {
+          url: 'https://uat.example.com/#/order/list',
+          title: '订单列表',
+          forms: [],
+          buttons: [],
+          tooltipElements: [],
+          headings: [],
+          frames: [],
+        },
+      }
+    );
+
+    expect(triage).toMatchObject({
+      failureClass: 'response_missing',
+      repairable: true,
+    });
+    expect(triage?.matchedSignals).toContain('详情入口超时');
+    expect(triage?.matchedSignals).toContain('row action clicked');
+  });
+
+  it('classifies projected order-detail step timeouts as response_missing without full attempt logs', () => {
+    const triage = classifyIntentE2EFailure(
+      {
+        success: false,
+        duration: 120000,
+        steps: [
+          {
+            title: 'Step 5: 进入订单详情并核对字段',
+            status: 'failed',
+            duration: 120000,
+            error: '测试执行超时 (120s)',
+          },
+        ],
+        error: 'Step 5: 进入订单详情并核对字段|测试执行超时 (120s)',
+      },
+      [],
+      {
+        pageUrl: 'https://uat.example.com/#/order/list',
+      }
+    );
+
+    expect(triage).toMatchObject({
+      failureClass: 'response_missing',
+      repairable: true,
+    });
+    expect(triage?.matchedSignals).toContain('order detail step timeout');
+  });
+
   it('classifies expired session errors as non-repairable auth_state_invalid', () => {
     const triage = classifyIntentE2EFailure({
       success: false,
@@ -242,6 +312,44 @@ describe('intent-e2e-failure-triage', () => {
     expect(triage?.diagnosis?.nextActions.join('\n')).toContain('详情页或详情抽屉');
   });
 
+  it('classifies business-create form step transition misses as workflow gaps instead of unknown', () => {
+    const triage = classifyIntentE2EFailure(
+      {
+        success: false,
+        duration: 1200,
+        steps: [
+          {
+            title: 'Step 2: 填写第1个Tab商机联系人信息并进入下一步',
+            status: 'failed',
+            duration: 1200,
+            error: '未成功切换到“关联产品意向信息”步骤：未检测到第二步字段锚点（企业名称/意向产品/商机权重）',
+          },
+        ],
+        error: '未成功切换到“关联产品意向信息”步骤：未检测到第二步字段锚点（企业名称/意向产品/商机权重）',
+      },
+      [],
+      {
+        pageUrl: 'https://uat.example.com/#/business/businesslist',
+        snapshot: {
+          url: 'https://uat.example.com/#/business/businesslist',
+          title: '商机列表',
+          forms: [],
+          buttons: [],
+          tooltipElements: [],
+          headings: [],
+          frames: [],
+        },
+      }
+    );
+
+    expect(triage).toMatchObject({
+      failureClass: 'workflow_gap',
+      repairable: true,
+    });
+    expect(triage?.matchedSignals).toContain('business create tab transition missing');
+    expect(triage?.matchedSignals).toContain('第二步字段锚点缺失');
+  });
+
   it('classifies structured record lookup misses separately from visible-row misses', () => {
     const triage = classifyIntentE2EFailure({
       success: false,
@@ -299,6 +407,44 @@ describe('intent-e2e-failure-triage', () => {
       repairable: true,
     });
     expect(triage?.matchedSignals).toContain('order list actionable row missing');
+  });
+
+  it('classifies skipped order-list runs with no filtered rows as non-repairable data gaps', () => {
+    const triage = classifyIntentE2EFailure(
+      {
+        success: false,
+        duration: 2400,
+        steps: [
+          {
+            title: 'Step 3: 勾选首条结果并提取订单号',
+            status: 'failed',
+            duration: 1,
+            error: '前置数据不足：筛选“待申请”后无可用订单行',
+          },
+        ],
+        error: '跳过: 前置数据不足：筛选“待申请”后无可用订单行',
+      },
+      [],
+      {
+        pageUrl: 'https://uat.example.com/#/order/list',
+        snapshot: {
+          url: 'https://uat.example.com/#/order/list',
+          title: '订单列表',
+          forms: [],
+          buttons: [],
+          tooltipElements: [],
+          headings: [],
+          frames: [],
+        },
+      }
+    );
+
+    expect(triage).toMatchObject({
+      failureClass: 'data_missing',
+      repairable: false,
+    });
+    expect(triage?.matchedSignals).toContain('precondition data missing');
+    expect(triage?.matchedSignals).toContain('order list no actionable rows after filter');
   });
 
   it('classifies missing dropdown options as data-missing blockers instead of unknown', () => {

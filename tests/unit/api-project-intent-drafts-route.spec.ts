@@ -10,7 +10,12 @@ vi.mock('@/lib/db/repository', () => ({
 
 vi.mock('@/lib/services/project-intent-draft-service', () => ({
   createProjectIntentDraftRecord: vi.fn(),
+  getProjectIntentDraftDetailResult: vi.fn(),
   listProjectIntentDraftSummaryResults: vi.fn(),
+}));
+
+vi.mock('@/lib/intent-e2e-traffic-quality', () => ({
+  safeRecordProjectIntentDraftGeneratedTrafficQuality: vi.fn(),
 }));
 
 vi.mock('@/lib/server/project-actor', () => ({
@@ -26,7 +31,12 @@ vi.mock('@/lib/server/project-actor', () => ({
 
 import { GET, POST } from '../../app/api/projects/[projectUid]/intent-drafts/route';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
-import { createProjectIntentDraftRecord, listProjectIntentDraftSummaryResults } from '@/lib/services/project-intent-draft-service';
+import { safeRecordProjectIntentDraftGeneratedTrafficQuality } from '@/lib/intent-e2e-traffic-quality';
+import {
+  createProjectIntentDraftRecord,
+  getProjectIntentDraftDetailResult,
+  listProjectIntentDraftSummaryResults,
+} from '@/lib/services/project-intent-draft-service';
 import { applyActorCookie, requireProjectRole } from '@/lib/server/project-actor';
 
 describe('project intent drafts route', () => {
@@ -117,6 +127,36 @@ describe('project intent drafts route', () => {
       updatedAt: '2026-03-17T00:00:00.000Z',
       workspacePath: '/projects/proj_1?module=mod_1',
     } as never);
+    vi.mocked(getProjectIntentDraftDetailResult).mockResolvedValue({
+      scenarioCard: {
+        title: '创建商机并校验状态',
+        taskMode: 'scenario',
+        targetUrl: 'https://app.example.com/#/business/create',
+        featureDescription: '创建商机并校验状态',
+        successCriteria: ['状态可见'],
+        visualAnchors: ['新建商机按钮'],
+        notes: ['附件文字锚点：新建商机按钮'],
+        flowDefinition: {
+          version: 1,
+          entryUrl: 'https://app.example.com/#/business/create',
+          sharedVariables: [],
+          expectedOutcome: '状态可见',
+          cleanupNotes: '',
+          steps: [],
+        },
+      },
+      scenarioLlmMeta: {
+        visionEnabled: true,
+        attachmentCount: 1,
+        attachmentOcrAttempted: true,
+        attachmentOcrUsed: true,
+        attachmentOcrVisualAnchorCount: 1,
+        attachmentOcrTextSnippetCount: 1,
+      },
+      llmConfig: {
+        visionEnabled: true,
+      },
+    } as never);
 
     const req = new NextRequest('http://localhost/api/projects/proj_1/intent-drafts', {
       method: 'POST',
@@ -137,6 +177,19 @@ describe('project intent drafts route', () => {
         input: '登录后台后创建一个商机',
         targetUrl: 'https://app.example.com/#/business/create',
         actorLabel: 'Owner',
+      })
+    );
+    expect(safeRecordProjectIntentDraftGeneratedTrafficQuality).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectUid: 'proj_1',
+        moduleUid: 'mod_1',
+        intentDraftUid: 'idraft_1',
+        requestInput: '登录后台后创建一个商机',
+        targetUrl: 'https://app.example.com/#/business/create',
+        scenarioLlmMeta: expect.objectContaining({
+          attachmentOcrUsed: true,
+        }),
+        operation: 'create',
       })
     );
     expect(applyActorCookie).toHaveBeenCalledTimes(1);

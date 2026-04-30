@@ -56,6 +56,10 @@ vi.mock('@/lib/intent-e2e-launch-decision', () => ({
   resolveIntentE2ELaunchDecision: vi.fn(),
 }));
 
+vi.mock('@/lib/intent-e2e-traffic-quality', () => ({
+  safeRecordIntentE2ELaunchDecisionTrafficQuality: vi.fn(),
+}));
+
 import { POST } from '../../app/api/intent-e2e/launch-decision/route';
 import { resolveIntentE2ERepeatedFailureSuppressionFromData } from '@/lib/ai/intent-e2e-insights';
 import { listRecentIntentE2ETerminalRunSnapshots } from '@/lib/ai/intent-e2e-run-registry';
@@ -63,6 +67,7 @@ import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { buildIntentE2EProjectAssetAvailability } from '@/lib/intent-e2e-asset-readiness';
 import { loadWorkspaceIntentE2EGlobalRunConfig } from '@/lib/intent-e2e-global-config';
 import { resolveIntentE2ELaunchDecision } from '@/lib/intent-e2e-launch-decision';
+import { safeRecordIntentE2ELaunchDecisionTrafficQuality } from '@/lib/intent-e2e-traffic-quality';
 import { getWorkspaceLLMRuntimeOverrides, mergeLLMRuntimeOverrides } from '@/lib/llm/workspace-config';
 import { resolveIntentE2EProjectAuth } from '@/lib/server/intent-e2e-project-auth';
 import { applyActorCookie } from '@/lib/server/project-actor';
@@ -171,6 +176,14 @@ describe('POST /api/intent-e2e/launch-decision', () => {
           source: 'text_only',
         }),
         repeatedFailureSuppression: null,
+      })
+    );
+    expect(safeRecordIntentE2ELaunchDecisionTrafficQuality).toHaveBeenCalledWith(
+      expect.objectContaining({
+        launchDecision: expect.objectContaining({
+          decision: 'needs_bootstrap',
+        }),
+        priorityScenarioFamily: 'business_create_list_verify',
       })
     );
     expect(applyActorCookie).toHaveBeenCalledTimes(1);
@@ -397,6 +410,198 @@ describe('POST /api/intent-e2e/launch-decision', () => {
       assetAvailability: {
         status: 'ready',
         projectUid: 'proj_2',
+        reasons: [],
+      },
+    });
+  });
+
+  it('surfaces repeated data gaps as needs_fixture instead of starting another generated run', async () => {
+    vi.mocked(getWorkspaceLLMRuntimeOverrides).mockResolvedValue({} as never);
+    vi.mocked(resolveIntentE2EProjectAuth).mockResolvedValue({
+      request: {
+        input: '打开订单列表的待申请入账记录，在详情弹窗里填写备注后保存，并校验弹窗关闭',
+        projectUid: 'proj_modal',
+        moduleUid: 'mod_order',
+        targetUrl: 'https://example.com/#/order/list',
+        attachments: [{ name: 'order-modal.png', dataUrl: 'data:image/png;base64,aaa' }],
+      },
+    } as never);
+    vi.mocked(buildIntentE2EProjectAssetAvailability).mockReturnValue({
+      status: 'ready',
+      projectUid: 'proj_modal',
+      reasons: [],
+    } as never);
+    vi.mocked(listRecentIntentE2ETerminalRunSnapshots).mockResolvedValue([
+      {
+        runId: 'run_data_gap_1',
+        projectUid: 'proj_modal',
+        moduleUid: 'mod_order',
+        status: 'failed',
+        stage: 'completed',
+        requestInput: '打开订单列表的待申请入账记录，在详情弹窗里填写备注后保存，并校验弹窗关闭',
+        targetUrl: 'https://example.com/#/order/list',
+        state: null,
+        error: '跳过: 前置数据不足：筛选“待申请”后无可用订单行',
+        createdAt: '2026-04-30T10:00:00.000Z',
+        updatedAt: '2026-04-30T10:01:00.000Z',
+        startedAt: '2026-04-30T10:00:05.000Z',
+        endedAt: '2026-04-30T10:01:00.000Z',
+      },
+    ] as never);
+    vi.mocked(resolveIntentE2ERepeatedFailureSuppressionFromData).mockReturnValue({
+      shouldSuppress: true,
+      scenarioFamily: 'complex_enterprise_flow',
+      priorityScenarioFamily: 'modal_or_drawer_save',
+      targetPath: '/order/list',
+      matchedSnapshotSignature: 'complex_enterprise_flow|modal_or_drawer_save|/order/list|data_missing',
+      matchedRunCount: 2,
+      matchedFailedRuns: 2,
+      recentFailureStreak: 2,
+      dominantQualityBucket: 'data_blocked',
+      dominantBlockerKind: 'data_missing',
+      latestFailureClass: 'data_missing',
+      recommendedDecision: 'needs_fixture',
+      reason: 'recent_repeated_data_block',
+      latestFinishedAt: '2026-04-30T10:01:00.000Z',
+      representativeRunIds: ['run_data_gap_1', 'run_data_gap_2'],
+      failurePressureSummary: {
+        recentFailedReviewCapabilityCount: 0,
+        recentFailedVerifyCapabilityCount: 0,
+        recentFailedReviewExecutionCount: 0,
+        recentFailedVerifyExecutionCount: 2,
+        recentFailureWindowDays: 2,
+        highFailureCandidateCount: 1,
+        highFailureRepairCount: 0,
+        highFailureGovernanceCount: 1,
+        latestRepairObservationAt: '2026-04-30T10:01:00.000Z',
+        latestRepairObservationSummary: '前置数据不足：筛选“待申请”后无可用订单行',
+        latestRepairObservationVerifierCheckUids: ['verify_data_gap'],
+      },
+    } as never);
+    vi.mocked(resolveIntentE2ELaunchDecision)
+      .mockReturnValueOnce({
+        decision: 'auto_run',
+        reasons: ['launch_ready'],
+        signals: {
+          projectUid: 'proj_modal',
+          moduleUid: 'mod_order',
+          hasTargetUrl: true,
+          attachmentCount: 1,
+          assetStatus: 'ready',
+          requiresFixture: false,
+          hasFixtureContract: false,
+          priorityScenarioFamily: 'modal_or_drawer_save',
+          priorityScenarioFamilySource: 'text_only',
+          priorityScenarioTextFamily: 'modal_or_drawer_save',
+          priorityScenarioVisualFamily: 'untracked',
+          hasTrackedPriorityScenarioFamily: true,
+          hasPriorityScenarioFamilyConflict: false,
+          hasStablePriorityScenarioPath: true,
+          hasExplicitVerifierSignal: true,
+          hasHighFailurePressure: false,
+          hasRepeatedFailureSuppression: false,
+          repeatedFailureDecision: '',
+          repeatedFailureReason: '',
+        },
+      } as never)
+      .mockReturnValueOnce({
+        decision: 'needs_fixture',
+        reasons: ['recent_repeated_data_block'],
+        signals: {
+          projectUid: 'proj_modal',
+          moduleUid: 'mod_order',
+          hasTargetUrl: true,
+          attachmentCount: 1,
+          assetStatus: 'ready',
+          requiresFixture: false,
+          hasFixtureContract: false,
+          priorityScenarioFamily: 'modal_or_drawer_save',
+          priorityScenarioFamilySource: 'text_only',
+          priorityScenarioTextFamily: 'modal_or_drawer_save',
+          priorityScenarioVisualFamily: 'untracked',
+          hasTrackedPriorityScenarioFamily: true,
+          hasPriorityScenarioFamilyConflict: false,
+          hasStablePriorityScenarioPath: true,
+          hasExplicitVerifierSignal: true,
+          hasHighFailurePressure: true,
+          hasRepeatedFailureSuppression: true,
+          repeatedFailureDecision: 'needs_fixture',
+          repeatedFailureReason: 'recent_repeated_data_block',
+        },
+      } as never);
+
+    const req = new NextRequest('http://localhost/api/intent-e2e/launch-decision', {
+      method: 'POST',
+      body: JSON.stringify({
+        input: '打开订单列表的待申请入账记录，在详情弹窗里填写备注后保存，并校验弹窗关闭',
+        projectUid: 'proj_modal',
+        moduleUid: 'mod_order',
+        targetUrl: 'https://example.com/#/order/list',
+        attachments: [{ name: 'order-modal.png', dataUrl: 'data:image/png;base64,aaa' }],
+      }),
+    });
+    const res = await POST(req);
+    const json = await res.json();
+
+    expect(listRecentIntentE2ETerminalRunSnapshots).toHaveBeenCalledWith({
+      projectUid: 'proj_modal',
+      moduleUid: 'mod_order',
+      limit: 20,
+    });
+    expect(resolveIntentE2ELaunchDecision).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        attachments: [{ name: 'order-modal.png', dataUrl: 'data:image/png;base64,aaa' }],
+        failurePressureSummary: expect.objectContaining({
+          recentFailedVerifyExecutionCount: 2,
+          highFailureCandidateCount: 1,
+        }),
+        priorityScenarioFamilyRoute: expect.objectContaining({
+          family: 'modal_or_drawer_save',
+          source: 'text_only',
+        }),
+        repeatedFailureSuppression: {
+          recommendedDecision: 'needs_fixture',
+          reason: 'recent_repeated_data_block',
+        },
+      })
+    );
+    expect(safeRecordIntentE2ELaunchDecisionTrafficQuality).toHaveBeenCalledWith(
+      expect.objectContaining({
+        launchDecision: expect.objectContaining({
+          decision: 'needs_fixture',
+        }),
+        priorityScenarioFamily: 'modal_or_drawer_save',
+      })
+    );
+    expect(res.status).toBe(200);
+    expect(json).toEqual({
+      decision: 'needs_fixture',
+      reasons: ['recent_repeated_data_block'],
+      signals: {
+        projectUid: 'proj_modal',
+        moduleUid: 'mod_order',
+        hasTargetUrl: true,
+        attachmentCount: 1,
+        assetStatus: 'ready',
+        requiresFixture: false,
+        hasFixtureContract: false,
+        priorityScenarioFamily: 'modal_or_drawer_save',
+        priorityScenarioFamilySource: 'text_only',
+        priorityScenarioTextFamily: 'modal_or_drawer_save',
+        priorityScenarioVisualFamily: 'untracked',
+        hasTrackedPriorityScenarioFamily: true,
+        hasPriorityScenarioFamilyConflict: false,
+        hasStablePriorityScenarioPath: true,
+        hasExplicitVerifierSignal: true,
+        hasHighFailurePressure: true,
+        hasRepeatedFailureSuppression: true,
+        repeatedFailureDecision: 'needs_fixture',
+        repeatedFailureReason: 'recent_repeated_data_block',
+      },
+      assetAvailability: {
+        status: 'ready',
+        projectUid: 'proj_modal',
         reasons: [],
       },
     });

@@ -355,6 +355,12 @@ function inferVerificationKind(
     return 'table_row';
   }
   if (
+    priorityScenarioFamily === 'business_batch_add_contacts_verify' &&
+    /(商机列表|目标行|勾选|通讯录|手机号|联系人|检索|搜索|批量加入通讯录)/i.test(normalizedText)
+  ) {
+    return 'table_row';
+  }
+  if (
     priorityScenarioFamily === 'list_search_detail' &&
     /(搜索|检索|目标行|详情|联系人|手机号|状态)/i.test(normalizedText)
   ) {
@@ -1017,6 +1023,11 @@ function buildPriorityScenarioFamilyRecordLookupSpec(
           keywordInput: { placeholderIncludes: '商机' },
           searchButton: { textIncludes: '搜索' },
         }
+      : profile.family === 'business_batch_add_contacts_verify'
+        ? {
+            keywordInput: { placeholderIncludes: '手机号' },
+            searchButton: { textIncludes: '搜索' },
+          }
       : undefined;
 
   return {
@@ -1059,6 +1070,7 @@ function buildPriorityScenarioFamilyDetailSurfaceSpec(
     profile.family === 'modal_or_drawer_save' ? '详情抽屉' : '',
     profile.family === 'business_create_list_verify' ? '详情抽屉' : '',
     profile.family === 'business_create_list_verify' ? '详情页' : '',
+    profile.family === 'business_batch_add_contacts_verify' ? '我的通讯录列表' : '',
     profile.family === 'list_search_detail' ? '详情抽屉' : '',
     profile.family === 'list_search_detail' ? '详情页' : '',
   ]);

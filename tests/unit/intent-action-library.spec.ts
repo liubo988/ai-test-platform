@@ -173,6 +173,51 @@ describe('intent-action-library', () => {
     expect(slugs).toEqual(expect.arrayContaining(['ui.find-antd-table-row']));
   });
 
+  it('front-loads batch-add-contacts family capabilities for row selection and通讯录验证 flows', () => {
+    const dsl = buildIntentActionDSL({
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/businesslist',
+      featureDescription: '在商机列表勾选目标商机后批量加入通讯录，并在我的通讯录按手机号检索命中目标联系人',
+      expectedOutcome: '我的通讯录按同一手机号命中目标联系人',
+      sharedVariables: ['contactPhone'],
+      steps: [
+        {
+          stepUid: 'step_1',
+          stepType: 'ui',
+          title: '勾选目标商机并批量加入通讯录',
+          target: 'https://example.com/#/business/businesslist',
+          instruction: '先定位目标商机行并勾选，再点击批量加入通讯录',
+          expectedResult: '批量动作触发',
+          extractVariable: 'contactPhone',
+        },
+        {
+          stepUid: 'step_2',
+          stepType: 'assert',
+          title: '在我的通讯录检索目标联系人',
+          target: 'https://example.com/#/mails/mailslist',
+          instruction: '按 contactPhone 搜索并命中目标联系人',
+          expectedResult: '我的通讯录命中目标联系人',
+          extractVariable: '',
+        },
+      ],
+    });
+
+    const library = selectIntentActionLibrary({
+      dsl,
+      snapshot: { url: 'https://example.com/#/business/businesslist', title: '商机列表', frames: [] },
+      priorityScenarioFamily: 'business_batch_add_contacts_verify',
+    });
+
+    const slugs = library.capabilities.map((item) => item.slug);
+
+    expect(slugs.slice(0, 3)).toEqual([
+      'ui.find-antd-table-row',
+      'ui.click-antd-row-checkbox',
+      'assert.resolve-primary-record',
+    ]);
+    expect(slugs).toEqual(expect.arrayContaining(['ui.click-antd-row-checkbox']));
+  });
+
   it('renders helper examples for prompt injection', () => {
     const rendered = renderIntentActionLibrary(
       selectIntentActionLibrary({

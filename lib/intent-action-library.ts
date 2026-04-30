@@ -134,12 +134,14 @@ function createDropdownCapability(): IntentActionCapability {
       '优先先 scope 到当前字段所在 form-item / row / modal，再调用 helper。',
       '如果当前字段实际是 row 内 radio / segmented / tab 风格枚举，也继续直接调用 helper；执行层会先尝试就地枚举，再处理真实 dropdown。',
       '远程搜索型下拉必须传 `searchText`，不要手写 click + waitForTimeout。',
+      '如果任务只要求“输入关键词并选择任意一个模糊匹配项”，不要编造固定 `label`；改用 `{ searchText, pickFirstSearchMatch: true }` 选择首个可见匹配项。',
       '树形枚举值优先使用 helper 的 `tree: true` 模式。',
     ],
     example: [
       "const sourceRow = page.locator('.ant-form-item').filter({ hasText: '商机来源' }).first();",
+      "const companyRow = page.locator('.ant-form-item').filter({ hasText: '企业名称' }).first();",
       "await __e2e.selectAntdOption(page, sourceRow, { label: '抖音', tree: true });",
-      "await __e2e.selectAntdOption(page, sourceRow, { label: '中铁上海工程局集团有限公司(91310000566528939E)', searchText: '中铁上海工程局集团有限公司' });",
+      "await __e2e.selectAntdOption(page, companyRow, { searchText: '中国平安', pickFirstSearchMatch: true });",
     ].join('\n'),
   };
 }
@@ -190,6 +192,28 @@ function createBusinessListOwnershipCapability(): IntentActionCapability {
       "const LIST_URL = 'https://example.com/#/business/businesslist';",
       "await __e2e.switchBusinessListOwnershipView(page, { label: '我创建的', listUrl: LIST_URL });",
       "await page.getByPlaceholder(/商机ID\\/联系人名称\\/电话\\/企业名称/i).first().fill(recordKeyword);",
+    ].join('\n'),
+  };
+}
+
+function createRowCheckboxCapability(): IntentActionCapability {
+  return {
+    slug: 'ui.click-antd-row-checkbox',
+    title: 'Ant Design 表格行勾选',
+    preferredHelper: '__e2e.clickAntdRowCheckbox',
+    whenToUse: [
+      '步骤需要在 Ant Design 表格里勾选目标行，再执行批量动作、批量保存或后续统一操作。',
+      '目标复选框可能落在 fixed-column clone、行首吸附列或隐藏 input 上，直接点 `.ant-checkbox` 容易漂移。',
+    ],
+    implementationNotes: [
+      '先用 `__e2e.findAntdTableRow(...)` 或等价稳定方式命中真实主表体目标行，再把该行传给 helper；不要直接点第一条可见 checkbox。',
+      'helper 会处理 fixed-column clone、滚动、命中重试与“当前已勾选”场景；成功后不要再补一层 brittle checked-locator 断言。',
+      '如果当前候选行没有可点复选框，就把它视为不可选行并继续寻找下一条候选，不要立刻把整个任务判死。',
+    ],
+    example: [
+      "const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [contactPhone, contactName] });",
+      'await targetRow.scrollIntoViewIfNeeded();',
+      'await __e2e.clickAntdRowCheckbox(page, targetRow);',
     ].join('\n'),
   };
 }
@@ -636,6 +660,8 @@ function createCapabilityFromSlug(slug: string, input: SelectIntentActionLibrary
       return createDropdownCapability();
     case 'ui.switch-business-list-ownership-view':
       return createBusinessListOwnershipCapability();
+    case 'ui.click-antd-row-checkbox':
+      return createRowCheckboxCapability();
     case 'ui.wait-for-visible-antd-modal':
       return createVisibleModalCapability();
     case 'assert.read-detail-field':
@@ -712,6 +738,10 @@ export function selectIntentActionLibrary(input: SelectIntentActionLibraryInput)
     hasAllowedAction(input.dsl, 'switch_business_list_ownership_view')
   ) {
     capabilities.push(createBusinessListOwnershipCapability());
+  }
+
+  if (hasPreferredHelper(input.dsl, '__e2e.clickAntdRowCheckbox') || hasAllowedAction(input.dsl, 'click_row_checkbox')) {
+    capabilities.push(createRowCheckboxCapability());
   }
 
   if (

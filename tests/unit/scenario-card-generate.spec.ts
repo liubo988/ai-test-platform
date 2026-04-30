@@ -90,5 +90,13 @@ describe('scenario-card generate', () => {
     expect(result.card.notes.some((note) => note.includes('附件文字锚点：'))).toBe(true);
     expect(result.card.notes.some((note) => note.includes('不要搜索后直接点击第一行'))).toBe(true);
     expect(result.card.flowDefinition.steps[0]?.instruction).toContain('等待表格刷新并重新定位目标行');
+    expect(result.llmMeta).toMatchObject({
+      visionEnabled: true,
+      attachmentCount: 1,
+      attachmentOcrAttempted: true,
+      attachmentOcrUsed: true,
+      attachmentOcrVisualAnchorCount: 2,
+      attachmentOcrTextSnippetCount: 1,
+    });
   });
 });

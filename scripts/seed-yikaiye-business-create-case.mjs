@@ -134,51 +134,21 @@ const PLAN_CASES = [
 const GENERATED_CODE = String.raw`import { test, expect } from '@playwright/test';
 
 test('创建商机：无附件提交并在商机列表校验落库', async ({ page }) => {
-  const LOGIN_URL = 'https://uat-service.yikaiye.com/#/';
   const CREATE_URL = 'https://uat-service.yikaiye.com/#/business/createbusiness';
   const LIST_URL = 'https://uat-service.yikaiye.com/#/business/businesslist';
-  const USERNAME = process.env.E2E_USERNAME;
-  const PASSWORD = process.env.E2E_PASSWORD;
   const COMPANY_KEYWORD = '中铁上海工程局集团有限公司';
   const COMPANY_NAME = '中铁上海工程局集团有限公司(91310000566528939E)';
   const PRODUCT_NAME = '疑难工商注销';
 
-  test.skip(!USERNAME || !PASSWORD, '缺少 E2E_USERNAME / E2E_PASSWORD，无法执行 UAT 登录');
+  test.skip(!process.env.E2E_USERNAME || !process.env.E2E_PASSWORD, '缺少 E2E_USERNAME / E2E_PASSWORD');
 
   const stamp = Date.now().toString().slice(-6);
   const contactName = '自动化商机' + stamp;
   const contactPhone = '1990000' + stamp.slice(-4);
   let businessId = '';
 
-  await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded' });
-
-  const smsTab = page.getByRole('tab', { name: /短信验证码登录|短信登录|验证码登录/i }).first();
-  const smsTabByText = page.getByText(/短信验证码登录|短信登录|验证码登录/i).first();
-  if (await smsTab.isVisible({ timeout: 3000 }).catch(() => false)) {
-    await smsTab.click({ force: true });
-  } else if (await smsTabByText.isVisible({ timeout: 3000 }).catch(() => false)) {
-    await smsTabByText.click({ force: true });
-  }
-
-  const accountInput = page.getByPlaceholder(/手机号|手机号码|请输入手机号|账号|用户名/i).first();
-  await expect(accountInput).toBeVisible({ timeout: 15000 });
-  await accountInput.fill(String(USERNAME));
-
-  const codeInput = page.getByPlaceholder(/验证码|请输入验证码|短信验证码/i).first();
-  await expect(codeInput).toBeVisible({ timeout: 10000 });
-  await codeInput.fill(String(PASSWORD));
-
-  const loginBtn = page.getByRole('button', { name: /登\s*录|登录|Login/i }).first();
-  await expect(loginBtn).toBeVisible({ timeout: 10000 });
-  await loginBtn.click();
-  await page.waitForLoadState('domcontentloaded');
-  await page.waitForFunction(() => {
-    const hash = window.location.hash || '';
-    const bodyText = document.body?.innerText || '';
-    return !hash.includes('/user/login') && (bodyText.includes('首页') || bodyText.includes('业务数据') || bodyText.includes('商机管理'));
-  }, { timeout: 30000 });
-  // 登录后首页还会继续做一次会话/菜单初始化，过早跳业务页会被判成“登录信息过期”。
-  await page.waitForTimeout(5000);
+  await __e2e.ensureLoggedIn(page, { targetUrl: CREATE_URL });
+  await page.waitForURL(/#\/business\/createbusiness/i, { timeout: 30000 });
 
   await page.goto(CREATE_URL, { waitUntil: 'domcontentloaded' });
   await page.waitForURL(/#\/business\/createbusiness/i, { timeout: 30000 });
@@ -200,7 +170,8 @@ test('创建商机：无附件提交并在商机列表校验落库', async ({ pa
 
   const companyRow = page.locator('.ant-form-item').filter({ has: page.locator('label[title="企业名称"]') }).first();
   const productRow = page.locator('.ant-form-item').filter({ has: page.locator('label[title="意向产品"]') }).first();
-  await companyRow.waitFor({ timeout: 15000 });
+  await expect(companyRow).toBeVisible({ timeout: 15000 });
+  await expect(productRow).toBeVisible({ timeout: 15000 });
 
   await __e2e.selectAntdOption(page, companyRow, {
     label: COMPANY_NAME,
@@ -227,7 +198,8 @@ test('创建商机：无附件提交并在商机列表校验落库', async ({ pa
 
   await page.goto(LIST_URL, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(3000);
-  const searchInput = page.locator('input[placeholder="商机ID/联系人名称/电话/企业名称"]').first();
+  await __e2e.switchBusinessListOwnershipView(page, { label: '我创建的', listUrl: LIST_URL });
+  const searchInput = page.locator('input#businessList_keywords:visible').first();
   await expect(searchInput).toBeVisible({ timeout: 10000 });
   await searchInput.fill(contactPhone);
   await page.getByRole('button', { name: /搜\s*索/ }).first().click();

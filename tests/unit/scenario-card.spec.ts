@@ -1357,4 +1357,60 @@ describe('scenario-card', () => {
     expect(card.notes).toContain('按钮文本匹配需兼容中间空格（可用去空格后匹配）');
     expect(card.notes.some((note) => note.includes('不要预设页面一定存在“商机名称输入框”'))).toBe(true);
   });
+
+  it('stabilizes batch-add-contacts cards around contact-phone reuse and通讯录终态验收', () => {
+    const card = normalizeScenarioCard({
+      version: 1,
+      title: '商机列表批量加入通讯录并校验结果',
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/businesslist',
+      featureDescription: '随机勾选一条商机后点击批量加入通讯录，再到我的通讯录确认联系人已可见。',
+      successCriteria: ['点击批量加入通讯录后页面给出成功反馈'],
+      visualAnchors: ['批量加入通讯录', '我的通讯录', '手机号'],
+      notes: ['如果当前商机列表为空，允许先切到有数量的阶段。'],
+      flowDefinition: {
+        version: 1,
+        entryUrl: 'https://example.com/#/business/businesslist',
+        sharedVariables: ['businessId'],
+        expectedOutcome: '联系人成功加入通讯录',
+        cleanupNotes: '',
+        steps: [
+          {
+            stepUid: 'step_1',
+            stepType: 'extract',
+            title: '勾选目标商机',
+            target: '商机列表',
+            instruction: '随机选择一条商机并勾选。',
+            expectedResult: '目标行已被勾选。',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step_2',
+            stepType: 'ui',
+            title: '执行批量加入通讯录',
+            target: '商机列表',
+            instruction: '点击批量加入通讯录按钮。',
+            expectedResult: '页面提示加入成功。',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step_3',
+            stepType: 'assert',
+            title: '在我的通讯录检索目标联系人',
+            target: '我的通讯录',
+            instruction: '进入我的通讯录查看联系人。',
+            expectedResult: '通讯录中可以看到该联系人。',
+            extractVariable: '',
+          },
+        ],
+      },
+    });
+
+    expect(card.successCriteria).toContain('不要只看批量加入通讯录 toast；最终必须在我的通讯录按同一手机号检索到目标联系人。');
+    expect(card.flowDefinition.sharedVariables).toEqual(expect.arrayContaining(['businessId', 'contactPhone', 'contactName']));
+    expect(card.flowDefinition.expectedOutcome).toContain('最终在我的通讯录列表按同一手机号检索命中目标联系人');
+    expect(card.flowDefinition.steps[0]?.instruction).toContain('不要直接点击第一条可见行或裸 checkbox');
+    expect(card.flowDefinition.steps[1]?.expectedResult).toContain('后续继续进入我的通讯录按同一手机号检索验收');
+    expect(card.flowDefinition.steps[2]?.instruction).toContain('使用前面记录的同一手机号执行检索');
+  });
 });

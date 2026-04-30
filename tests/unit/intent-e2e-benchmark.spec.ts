@@ -5,6 +5,7 @@ import { buildIntentE2EEvaluationBaselineFromData } from '@/lib/ai/intent-e2e-in
 
 vi.mock('@/lib/db/repository', () => ({
   listIntentE2ERunSnapshots: vi.fn(),
+  getIntentE2ERunSnapshotByRunId: vi.fn(),
 }));
 
 import {
@@ -12,12 +13,20 @@ import {
   buildIntentE2EBenchmarkReplayFromData,
   buildIntentE2EBenchmarkSuiteFromData,
   compareIntentE2EBenchmark,
+  declareIntentE2EBenchmarkCurrentSlice,
   freezeIntentE2EBenchmark,
+  readIntentE2EBenchmarkCurrentSlice,
   normalizeIntentE2EBenchmarkRequestCorpus,
   preflightIntentE2EBenchmarkRequestCorpus,
   readIntentE2EBenchmark,
+  replayIntentE2EBenchmark,
+  type IntentE2EBenchmarkCurrentSlice,
 } from '@/lib/intent-e2e-benchmark';
-import { listIntentE2ERunSnapshots, type IntentE2ERunSnapshotRecord } from '@/lib/db/repository';
+import {
+  getIntentE2ERunSnapshotByRunId,
+  listIntentE2ERunSnapshots,
+  type IntentE2ERunSnapshotRecord,
+} from '@/lib/db/repository';
 
 function makeRunSnapshot(
   input: Partial<IntentE2ERunSnapshotRecord> & Pick<IntentE2ERunSnapshotRecord, 'runId' | 'status'>
@@ -394,6 +403,31 @@ function makeModalWeakUnknownNoStepsSnapshots(count = 3, startedAt = '2026-04-01
   );
 }
 
+function makeCurrentSlice(
+  benchmark: ReturnType<typeof buildIntentE2EBenchmarkSuiteFromData>,
+  overrides: Partial<IntentE2EBenchmarkCurrentSlice> = {}
+): IntentE2EBenchmarkCurrentSlice {
+  return {
+    version: 1,
+    sliceUid: overrides.sliceUid || 'slice_test_boundary',
+    projectUid: overrides.projectUid || benchmark.scope.projectUid,
+    benchmarkUid: overrides.benchmarkUid || benchmark.benchmarkUid,
+    benchmarkPath:
+      overrides.benchmarkPath ||
+      `reports/intent-e2e/projects/${benchmark.scope.projectUid || 'global'}/intent-e2e.benchmark.json`,
+    priorityScenarioFamily:
+      overrides.priorityScenarioFamily === undefined
+        ? benchmark.scope.priorityScenarioFamily
+        : overrides.priorityScenarioFamily,
+    proofWindow: overrides.proofWindow || benchmark.proofWindow.mode,
+    afterTerminalRunId: overrides.afterTerminalRunId || 'intent-run-boundary',
+    afterFinishedAt: overrides.afterFinishedAt || '2026-04-01T10:59:59.000Z',
+    declaredReason: overrides.declaredReason || 'exclude pre-recovery terminal runs',
+    createdFromCompareReport: overrides.createdFromCompareReport || '',
+    createdAt: overrides.createdAt || '2026-04-01T11:00:00.000Z',
+  };
+}
+
 describe('intent-e2e-benchmark', () => {
   const originalProjectAssetRoot = process.env.INTENT_E2E_PROJECT_ASSET_ROOT;
   let tempAssetRoot = '';
@@ -567,7 +601,10 @@ describe('intent-e2e-benchmark', () => {
   });
 
   it('freezes a project benchmark and writes compare reports with improved, missing and regressed cases', async () => {
-    vi.mocked(listIntentE2ERunSnapshots).mockResolvedValueOnce(makeImprovedFrozenSnapshots() as never);
+    vi.mocked(listIntentE2ERunSnapshots)
+      .mockResolvedValueOnce(makeImprovedFrozenSnapshots() as never)
+      .mockResolvedValueOnce(makeCurrentReplaySnapshots() as never)
+      .mockResolvedValueOnce(makeCurrentReplaySnapshots() as never);
 
     const frozen = await freezeIntentE2EBenchmark({
       projectUid: 'proj_checkout',
@@ -583,6 +620,7 @@ describe('intent-e2e-benchmark', () => {
       moduleUid: 'mod_sales',
       status: 'terminal',
       limit: 200,
+      projection: 'benchmark',
     });
     expect(frozen.writtenTo).toContain('proj_checkout/intent-e2e.benchmark.json');
     expect(frozen.archivePath).toContain('proj_checkout/intent-e2e.benchmarks/');
@@ -600,12 +638,9 @@ describe('intent-e2e-benchmark', () => {
     });
     expect(await fs.readFile(archiveFile, 'utf8')).toContain(frozen.benchmark.benchmarkUid);
 
-    vi.mocked(listIntentE2ERunSnapshots).mockResolvedValueOnce(makeCurrentReplaySnapshots() as never);
-
-    const compareResult = await compareIntentE2EBenchmark({
+    const replay = await replayIntentE2EBenchmark({
       projectUid: 'proj_checkout',
-      comparedAt: '2026-03-31T12:30:00.000Z',
-      comparedLabel: 'post-release',
+      replayedAt: '2026-03-31T12:15:00.000Z',
     });
 
     expect(listIntentE2ERunSnapshots).toHaveBeenNthCalledWith(2, {
@@ -613,6 +648,25 @@ describe('intent-e2e-benchmark', () => {
       moduleUid: 'mod_sales',
       status: 'terminal',
       limit: 200,
+      projection: 'benchmark',
+    });
+    expect(replay.summary).toMatchObject({
+      matchedCases: 2,
+      missingCases: 1,
+    });
+
+    const compareResult = await compareIntentE2EBenchmark({
+      projectUid: 'proj_checkout',
+      comparedAt: '2026-03-31T12:30:00.000Z',
+      comparedLabel: 'post-release',
+    });
+
+    expect(listIntentE2ERunSnapshots).toHaveBeenNthCalledWith(3, {
+      projectUid: 'proj_checkout',
+      moduleUid: 'mod_sales',
+      status: 'terminal',
+      limit: 200,
+      projection: 'benchmark',
     });
     expect(compareResult.writtenTo).toContain('proj_checkout/intent-e2e.benchmark-reports/');
     expect(compareResult.report.summary).toMatchObject({
@@ -775,6 +829,398 @@ describe('intent-e2e-benchmark', () => {
     ]);
   });
 
+  it('matches legacy root-path benchmark cases against current hash-route runs', () => {
+    const makeHashRouteModalSnapshots = (statuses: Array<'passed' | 'failed'>, startedAt = '2026-04-01T09:00:00.000Z') =>
+      statuses.map((status, index) =>
+        makeRunSnapshot({
+          runId: `hash_modal_${status}_${index + 1}`,
+          status,
+          requestInput:
+            '在订单列表点击表头“批量入账”打开当前可见的“批量申请入账”弹窗，直接点击“确 定”提交，等待弹窗关闭后进入入账管理页按订单号搜索刚提交的记录。',
+          targetUrl: 'https://uat-service.yikaiye.com/#/order/list',
+          endedAt: new Date(Date.parse(startedAt) + index * 60_000).toISOString(),
+          state: makeResultState({
+            title: '订单批量申请入账弹窗提交后回查',
+            taskMode: 'scenario',
+            stepTypes: ['ui', 'extract', 'assert'],
+            description: '打开当前可见批量申请入账弹窗，点击确定提交并等待弹窗关闭。',
+            matchedRecipeSlugs: ['intent.intent-modal-or-drawer-save-visible-container'],
+          }),
+        })
+      );
+    const benchmark = buildIntentE2EBenchmarkSuiteFromData(makeHashRouteModalSnapshots(['passed', 'passed', 'passed']), {
+      projectUid: 'proj_checkout',
+      moduleUid: 'mod_sales',
+      testTypes: ['browser_e2e'],
+      priorityScenarioFamily: 'modal_or_drawer_save',
+      maxCases: 1,
+      frozenAt: '2026-04-01T11:30:00.000Z',
+    });
+    const benchmarkCase = benchmark.cases[0];
+    expect(benchmarkCase?.snapshotSignature).toContain('|/order/list|');
+
+    if (!benchmarkCase) throw new Error('expected benchmark case');
+    benchmarkCase.snapshotSignature = benchmarkCase.snapshotSignature.replace('|/order/list|', '|/|');
+    benchmarkCase.targetPath = '/';
+
+    const replay = buildIntentE2EBenchmarkReplayFromData(
+      benchmark,
+      makeHashRouteModalSnapshots(['passed', 'passed', 'passed'], '2026-04-01T12:00:00.000Z'),
+      '2026-04-01T12:30:00.000Z'
+    );
+    const report = buildIntentE2EBenchmarkCompareReport(benchmark, replay, {
+      comparedAt: '2026-04-01T12:30:00.000Z',
+      comparedLabel: 'hash-route-current',
+    });
+
+    expect(replay.summary).toMatchObject({
+      matchedCases: 1,
+      missingCases: 0,
+      runCount: 3,
+    });
+    expect(replay.cases[0]).toMatchObject({
+      status: 'matched',
+      sampleRunIds: ['hash_modal_passed_3', 'hash_modal_passed_2', 'hash_modal_passed_1'],
+    });
+    expect(report.cases[0]).toMatchObject({
+      comparisonStatus: 'unchanged',
+      evidenceConclusion: 'unchanged',
+    });
+  });
+
+  it('declares and reads back a repo-native current-slice asset', async () => {
+    const benchmark = buildIntentE2EBenchmarkSuiteFromData(makeModalStrongSnapshots(['passed', 'passed', 'passed']), {
+      projectUid: 'proj_checkout',
+      moduleUid: 'mod_sales',
+      testTypes: ['browser_e2e'],
+      priorityScenarioFamily: 'modal_or_drawer_save',
+      proofWindow: 'non_weak',
+      maxCases: 3,
+      frozenAt: '2026-04-01T11:30:00.000Z',
+    });
+
+    vi.mocked(getIntentE2ERunSnapshotByRunId).mockResolvedValueOnce(
+      makeRunSnapshot({
+        runId: 'intent-run-boundary',
+        projectUid: 'proj_checkout',
+        moduleUid: 'mod_sales',
+        status: 'passed',
+        requestInput: '在订单列表打开弹窗并点击保存提交，确认弹窗关闭后回到稳定态',
+        targetUrl: 'https://example.com/order/list',
+        endedAt: '2026-04-01T11:00:00.000Z',
+        state: makeResultState({
+          title: '订单弹窗保存提交后回到列表校验',
+          taskMode: 'scenario',
+          stepTypes: ['ui', 'extract', 'assert'],
+        }),
+      }) as never
+    );
+
+    const result = await declareIntentE2EBenchmarkCurrentSlice({
+      projectUid: 'proj_checkout',
+      benchmark,
+      afterTerminalRunId: 'intent-run-boundary',
+      declaredReason: 'exclude pre-recovery terminal runs',
+      createdFromCompareReport:
+        'reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/example-regressed.json',
+    });
+
+    expect(result.writtenTo).toContain('proj_checkout/intent-e2e.current-slices/');
+    expect(result.slice).toMatchObject({
+      benchmarkUid: benchmark.benchmarkUid,
+      priorityScenarioFamily: 'modal_or_drawer_save',
+      proofWindow: 'non_weak',
+      afterTerminalRunId: 'intent-run-boundary',
+      afterFinishedAt: '2026-04-01T11:00:00.000Z',
+    });
+
+    const readResult = await readIntentE2EBenchmarkCurrentSlice(result.writtenTo);
+    expect(readResult).toMatchObject({
+      path: result.writtenTo,
+      slice: {
+        sliceUid: result.slice.sliceUid,
+        benchmarkUid: benchmark.benchmarkUid,
+        afterTerminalRunId: 'intent-run-boundary',
+      },
+    });
+  });
+
+  it('rejects invalid current-slice declarations', async () => {
+    const benchmark = buildIntentE2EBenchmarkSuiteFromData(makeModalStrongSnapshots(['passed', 'passed', 'passed']), {
+      projectUid: 'proj_checkout',
+      moduleUid: 'mod_sales',
+      testTypes: ['browser_e2e'],
+      priorityScenarioFamily: 'modal_or_drawer_save',
+      proofWindow: 'non_weak',
+      maxCases: 3,
+      frozenAt: '2026-04-01T11:30:00.000Z',
+    });
+
+    vi.mocked(getIntentE2ERunSnapshotByRunId).mockResolvedValueOnce(null as never);
+    await expect(
+      declareIntentE2EBenchmarkCurrentSlice({
+        projectUid: 'proj_checkout',
+        benchmark,
+        afterTerminalRunId: 'intent-run-missing',
+        declaredReason: 'exclude pre-recovery terminal runs',
+      })
+    ).rejects.toThrow('afterTerminalRunId 未找到对应 run');
+
+    vi.mocked(getIntentE2ERunSnapshotByRunId).mockResolvedValueOnce(
+      makeRunSnapshot({
+        runId: 'intent-run-running',
+        projectUid: 'proj_checkout',
+        moduleUid: 'mod_sales',
+        status: 'running',
+        requestInput: '在订单列表打开弹窗并点击保存提交，确认弹窗关闭后回到稳定态',
+        targetUrl: 'https://example.com/order/list',
+        endedAt: '2026-04-01T11:05:00.000Z',
+        state: makeResultState({
+          title: '订单弹窗保存提交后回到列表校验',
+          taskMode: 'scenario',
+          stepTypes: ['ui', 'extract', 'assert'],
+        }),
+      }) as never
+    );
+    await expect(
+      declareIntentE2EBenchmarkCurrentSlice({
+        projectUid: 'proj_checkout',
+        benchmark,
+        afterTerminalRunId: 'intent-run-running',
+        declaredReason: 'exclude pre-recovery terminal runs',
+      })
+    ).rejects.toThrow('afterTerminalRunId 对应 run 不是 terminal');
+
+    vi.mocked(getIntentE2ERunSnapshotByRunId).mockResolvedValueOnce(
+      makeRunSnapshot({
+        runId: 'intent-run-boundary',
+        projectUid: 'proj_checkout',
+        moduleUid: 'mod_sales',
+        status: 'passed',
+        requestInput: '在订单列表打开弹窗并点击保存提交，确认弹窗关闭后回到稳定态',
+        targetUrl: 'https://example.com/order/list',
+        endedAt: '2026-04-01T11:00:00.000Z',
+        state: makeResultState({
+          title: '订单弹窗保存提交后回到列表校验',
+          taskMode: 'scenario',
+          stepTypes: ['ui', 'extract', 'assert'],
+        }),
+      }) as never
+    );
+    await expect(
+      declareIntentE2EBenchmarkCurrentSlice({
+        projectUid: 'proj_checkout',
+        benchmark,
+        priorityScenarioFamily: 'list_search_detail',
+        afterTerminalRunId: 'intent-run-boundary',
+        declaredReason: 'exclude pre-recovery terminal runs',
+      })
+    ).rejects.toThrow('priorityScenarioFamily 与 benchmark scope 不匹配');
+  });
+
+  it('keeps legacy replay behavior unchanged and filters current samples when a current-slice is provided', () => {
+    const benchmark = buildIntentE2EBenchmarkSuiteFromData(makeListSearchDetailSnapshots(['passed', 'passed', 'passed']), {
+      projectUid: 'proj_checkout',
+      moduleUid: 'mod_sales',
+      testTypes: ['browser_e2e'],
+      priorityScenarioFamily: 'list_search_detail',
+      maxCases: 3,
+      frozenAt: '2026-04-01T09:00:00.000Z',
+    });
+    const currentSnapshots = [
+      ...makeListSearchDetailSnapshots(['failed', 'failed'], '2026-04-01T10:00:00.000Z'),
+      ...makeListSearchDetailSnapshots(['passed', 'passed', 'passed'], '2026-04-01T12:00:00.000Z'),
+    ];
+
+    const legacyReplay = buildIntentE2EBenchmarkReplayFromData(benchmark, currentSnapshots, '2026-04-01T12:30:00.000Z');
+    const legacyReport = buildIntentE2EBenchmarkCompareReport(benchmark, legacyReplay, {
+      comparedAt: '2026-04-01T12:30:00.000Z',
+      comparedLabel: 'legacy-current',
+    });
+
+    expect(legacyReplay.currentSlice).toMatchObject({
+      enabled: false,
+      rawTerminalSampleCount: 5,
+      preSliceFilteredTerminalSampleCount: 0,
+      includedTerminalSampleCount: 5,
+    });
+    expect(legacyReplay.cases[0]).toMatchObject({
+      sampleRunIds: [
+        'list_search_detail_passed_3',
+        'list_search_detail_passed_2',
+        'list_search_detail_passed_1',
+        'list_search_detail_failed_2',
+        'list_search_detail_failed_1',
+      ],
+      latestRunIds: ['list_search_detail_passed_3', 'list_search_detail_passed_2', 'list_search_detail_passed_1'],
+      currentMetrics: {
+        runCount: 5,
+        passedRuns: 3,
+      },
+    });
+    expect(legacyReport.cases[0]?.comparisonStatus).toBe('regressed');
+
+    const currentSlice = makeCurrentSlice(benchmark, {
+      afterTerminalRunId: 'intent-run-boundary',
+      afterFinishedAt: '2026-04-01T10:59:59.000Z',
+      declaredReason: 'exclude pre-recovery terminal runs',
+      createdFromCompareReport: 'reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/example.json',
+    });
+    const slicedReplay = buildIntentE2EBenchmarkReplayFromData(
+      benchmark,
+      currentSnapshots,
+      '2026-04-01T12:30:00.000Z',
+      {
+        currentSlice,
+        currentSlicePath: 'reports/intent-e2e/projects/proj_checkout/intent-e2e.current-slices/test-slice.json',
+      }
+    );
+    const slicedReport = buildIntentE2EBenchmarkCompareReport(benchmark, slicedReplay, {
+      comparedAt: '2026-04-01T12:30:00.000Z',
+      comparedLabel: 'sliced-current',
+    });
+
+    expect(slicedReplay.currentSlice).toMatchObject({
+      enabled: true,
+      sliceUid: 'slice_test_boundary',
+      rawTerminalSampleCount: 5,
+      preSliceFilteredTerminalSampleCount: 2,
+      includedTerminalSampleCount: 3,
+      includedTerminalRunIds: [
+        'list_search_detail_passed_3',
+        'list_search_detail_passed_2',
+        'list_search_detail_passed_1',
+      ],
+    });
+    expect(slicedReplay.cases[0]).toMatchObject({
+      sampleRunIds: ['list_search_detail_passed_3', 'list_search_detail_passed_2', 'list_search_detail_passed_1'],
+      latestRunIds: ['list_search_detail_passed_3', 'list_search_detail_passed_2', 'list_search_detail_passed_1'],
+      currentMetrics: {
+        runCount: 3,
+        passedRuns: 3,
+      },
+    });
+    expect(slicedReport.currentSlice.enabled).toBe(true);
+    expect(slicedReport.cases[0]?.comparisonStatus).toBe('unchanged');
+    expect(slicedReport.summary.regressedCases).toBe(0);
+  });
+
+  it('marks slice-filtered families as insufficient evidence when post-slice samples are below threshold', () => {
+    const benchmark = buildIntentE2EBenchmarkSuiteFromData(makeListSearchDetailSnapshots(['passed', 'passed', 'passed']), {
+      projectUid: 'proj_checkout',
+      moduleUid: 'mod_sales',
+      testTypes: ['browser_e2e'],
+      priorityScenarioFamily: 'list_search_detail',
+      maxCases: 3,
+      frozenAt: '2026-04-01T09:00:00.000Z',
+    });
+    const currentSnapshots = [
+      ...makeListSearchDetailSnapshots(['failed', 'failed'], '2026-04-01T10:00:00.000Z'),
+      ...makeListSearchDetailSnapshots(['passed', 'passed'], '2026-04-01T12:00:00.000Z'),
+    ];
+    const replay = buildIntentE2EBenchmarkReplayFromData(benchmark, currentSnapshots, '2026-04-01T12:30:00.000Z', {
+      currentSlice: makeCurrentSlice(benchmark, {
+        afterTerminalRunId: 'intent-run-boundary',
+        afterFinishedAt: '2026-04-01T10:59:59.000Z',
+      }),
+      currentSlicePath: 'reports/intent-e2e/projects/proj_checkout/intent-e2e.current-slices/test-slice.json',
+    });
+    const report = buildIntentE2EBenchmarkCompareReport(benchmark, replay, {
+      comparedAt: '2026-04-01T12:30:00.000Z',
+      comparedLabel: 'slice-insufficient',
+    });
+
+    expect(report.priorityScenarioFamilies).toEqual([
+      expect.objectContaining({
+        priorityScenarioFamily: 'list_search_detail',
+        currentRunCount: 2,
+        conclusion: 'insufficient_evidence',
+      }),
+    ]);
+    expect(report.summary.insufficientEvidenceCases).toBe(1);
+    expect(report.summary.regressedCases).toBe(0);
+    expect(report.cases[0]).toMatchObject({
+      comparisonStatus: 'insufficient_evidence',
+      evidenceConclusion: 'insufficient_evidence',
+      evidenceNote: expect.stringContaining('当前窗口 2 次 terminal 样本'),
+    });
+  });
+
+  it('consumes an explicit current-slice path in compare and rejects benchmark mismatches', async () => {
+    const frozenSnapshots = makeListSearchDetailSnapshots(['passed', 'passed', 'passed'], '2026-04-01T08:00:00.000Z');
+    const currentSnapshots = [
+      ...makeListSearchDetailSnapshots(['failed', 'failed'], '2026-04-01T10:00:00.000Z'),
+      ...makeListSearchDetailSnapshots(['passed', 'passed', 'passed'], '2026-04-01T12:00:00.000Z'),
+    ];
+
+    vi.mocked(listIntentE2ERunSnapshots)
+      .mockResolvedValueOnce(frozenSnapshots as never)
+      .mockResolvedValueOnce(currentSnapshots as never)
+      .mockResolvedValueOnce(currentSnapshots as never);
+
+    const frozen = await freezeIntentE2EBenchmark({
+      projectUid: 'proj_checkout',
+      moduleUid: 'mod_sales',
+      testTypes: ['browser_e2e'],
+      priorityScenarioFamily: 'list_search_detail',
+      maxCases: 3,
+      frozenAt: '2026-04-01T09:00:00.000Z',
+    });
+
+    const slicePath = path.join(tempAssetRoot, 'proj_checkout', 'intent-e2e.current-slices', 'explicit-slice.json');
+    await fs.mkdir(path.dirname(slicePath), { recursive: true });
+    await fs.writeFile(
+      slicePath,
+      JSON.stringify(
+        makeCurrentSlice(frozen.benchmark, {
+          afterTerminalRunId: 'intent-run-boundary',
+          afterFinishedAt: '2026-04-01T10:59:59.000Z',
+        }),
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const compareResult = await compareIntentE2EBenchmark({
+      projectUid: 'proj_checkout',
+      currentSlicePath: slicePath,
+      comparedAt: '2026-04-01T12:30:00.000Z',
+      comparedLabel: 'sliced-current',
+    });
+
+    expect(compareResult.report.currentSlice).toMatchObject({
+      enabled: true,
+      slicePath: slicePath.replace(`${process.cwd()}/`, ''),
+      preSliceFilteredTerminalSampleCount: 2,
+      includedTerminalSampleCount: 3,
+    });
+
+    const invalidSlicePath = path.join(tempAssetRoot, 'proj_checkout', 'intent-e2e.current-slices', 'invalid-slice.json');
+    await fs.writeFile(
+      invalidSlicePath,
+      JSON.stringify(
+        makeCurrentSlice(frozen.benchmark, {
+          benchmarkUid: 'bench_other',
+          afterTerminalRunId: 'intent-run-boundary',
+          afterFinishedAt: '2026-04-01T10:59:59.000Z',
+        }),
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    await expect(
+      compareIntentE2EBenchmark({
+        projectUid: 'proj_checkout',
+        currentSlicePath: invalidSlicePath,
+        comparedAt: '2026-04-01T12:35:00.000Z',
+        comparedLabel: 'sliced-current-invalid',
+      })
+    ).rejects.toThrow('current-slice benchmarkUid 不匹配');
+  });
+
   it('normalizes tracked request corpus and applies scope defaults', () => {
     const corpus = normalizeIntentE2EBenchmarkRequestCorpus({
       version: 1,
@@ -841,6 +1287,32 @@ describe('intent-e2e-benchmark', () => {
       matchesExpectedFamily: false,
     });
     expect(preflight[1]?.route.family).toBe('list_search_detail');
+  });
+
+  it('preflights the repo-owned business batch-add-contacts corpus as a tracked family', async () => {
+    const corpusPath = path.join(
+      process.cwd(),
+      'artifacts/intent-e2e-family-evidence/proj_default.business-batch-add-contacts.request-corpus.json'
+    );
+    const rawCorpus = JSON.parse(await fs.readFile(corpusPath, 'utf8'));
+    const corpus = normalizeIntentE2EBenchmarkRequestCorpus(rawCorpus);
+
+    expect(corpus.priorityScenarioFamily).toBe('business_batch_add_contacts_verify');
+    expect(corpus.requests).toHaveLength(1);
+    expect(corpus.requests[0]?.prefilledScenarioCard?.flowDefinition?.steps?.some((step) => step.stepType === 'assert')).toBe(
+      true
+    );
+    expect(corpus.requests[0]?.prefilledScenarioCard?.successCriteria?.join('\n')).toContain('toast');
+
+    const preflight = preflightIntentE2EBenchmarkRequestCorpus(corpus);
+
+    expect(preflight).toHaveLength(1);
+    expect(preflight[0]).toMatchObject({
+      requestId: 'business-batch-add-contacts-anchor-a',
+      expectedPriorityScenarioFamily: 'business_batch_add_contacts_verify',
+      matchesExpectedFamily: true,
+    });
+    expect(preflight[0]?.route.family).toBe('business_batch_add_contacts_verify');
   });
 
   it('reads legacy benchmark files without priorityScenarioFamily metadata', async () => {

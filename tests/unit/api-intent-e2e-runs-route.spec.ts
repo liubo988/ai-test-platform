@@ -43,10 +43,15 @@ vi.mock('@/lib/ai/intent-e2e-run-registry', () => ({
   waitForIntentE2ERunPersistence: vi.fn(),
 }));
 
+vi.mock('@/lib/intent-e2e-traffic-quality', () => ({
+  safeRecordIntentE2EAutoRunStartedTrafficQuality: vi.fn(),
+}));
+
 import { POST } from '../../app/api/intent-e2e/runs/route';
 import { createIntentE2ERun, startIntentE2ERun, waitForIntentE2ERunPersistence } from '@/lib/ai/intent-e2e-run-registry';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { loadWorkspaceIntentE2EGlobalRunConfig } from '@/lib/intent-e2e-global-config';
+import { safeRecordIntentE2EAutoRunStartedTrafficQuality } from '@/lib/intent-e2e-traffic-quality';
 import { getWorkspaceLLMRuntimeOverrides, mergeLLMRuntimeOverrides } from '@/lib/llm/workspace-config';
 import { resolveIntentE2EProjectAuth } from '@/lib/server/intent-e2e-project-auth';
 import { applyActorCookie } from '@/lib/server/project-actor';
@@ -171,6 +176,17 @@ describe('POST /api/intent-e2e/runs', () => {
       })
     );
     expect(waitForIntentE2ERunPersistence).toHaveBeenCalledWith('intent-run-1');
+    expect(safeRecordIntentE2EAutoRunStartedTrafficQuality).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: 'intent-run-1',
+        request: expect.objectContaining({
+          input: '登录后查看首页',
+          runControl: expect.objectContaining({
+            replayOfRunId: 'intent-run-prev',
+          }),
+        }),
+      })
+    );
     expect(applyActorCookie).toHaveBeenCalledTimes(1);
     expect(res.status).toBe(202);
     expect(json).toEqual({

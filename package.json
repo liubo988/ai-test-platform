@@ -23,9 +23,15 @@
     "knowledge:import:gbs": "node --env-file-if-exists=.env scripts/import-gbs-manual-knowledge.mjs",
     "intent:benchmark:candidates": "node --env-file-if-exists=.env --experimental-strip-types --import ./scripts/register-ts-alias-loader.mjs ./scripts/intent-e2e-benchmark.ts candidates",
     "intent:benchmark:freeze": "node --env-file-if-exists=.env --experimental-strip-types --import ./scripts/register-ts-alias-loader.mjs ./scripts/intent-e2e-benchmark.ts freeze",
+    "intent:benchmark:slice": "node --env-file-if-exists=.env --experimental-strip-types --import ./scripts/register-ts-alias-loader.mjs ./scripts/intent-e2e-benchmark.ts slice",
     "intent:benchmark:replay": "node --env-file-if-exists=.env --experimental-strip-types --import ./scripts/register-ts-alias-loader.mjs ./scripts/intent-e2e-benchmark.ts replay",
     "intent:benchmark:compare": "node --env-file-if-exists=.env --experimental-strip-types --import ./scripts/register-ts-alias-loader.mjs ./scripts/intent-e2e-benchmark.ts compare",
     "intent:benchmark:rerun": "node --env-file-if-exists=.env --experimental-strip-types --import ./scripts/register-ts-alias-loader.mjs ./scripts/intent-e2e-benchmark.ts rerun",
+    "intent:release-guard": "node --env-file-if-exists=.env --experimental-strip-types --import ./scripts/register-ts-alias-loader.mjs ./scripts/intent-e2e-release-guard.ts",
+    "intent:release-guard:preflight": "node --env-file-if-exists=.env --experimental-strip-types --import ./scripts/register-ts-alias-loader.mjs ./scripts/intent-e2e-release-guard.ts --preflight --config artifacts/intent-e2e-family-evidence/proj_default.release-guard.baselines.json",
+    "intent:knowledge-hit-guard": "node --env-file-if-exists=.env --experimental-strip-types --import ./scripts/register-ts-alias-loader.mjs ./scripts/intent-e2e-knowledge-hit-guard.ts",
+    "intent:release-status": "node --env-file-if-exists=.env --experimental-strip-types --import ./scripts/register-ts-alias-loader.mjs ./scripts/intent-e2e-release-status.ts",
+    "intent:traffic-quality": "node --env-file-if-exists=.env --experimental-strip-types --import ./scripts/register-ts-alias-loader.mjs ./scripts/intent-e2e-traffic-quality-report.ts",
     "intent:playbook:promote": "node --env-file-if-exists=.env --experimental-strip-types --import ./scripts/register-ts-alias-loader.mjs ./scripts/intent-e2e-playbook-promotion.ts"
   },
   "devDependencies": {

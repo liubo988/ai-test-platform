@@ -543,6 +543,14 @@ describe('project-intent-task-service', () => {
       "test('reused-successful-run', async ({ page }) => { await page.goto('https://app.example.com/#/business/create'); await expect(page).toHaveURL(/business/); });";
     const sanitizedReusedCode =
       "test('reused-successful-run-sanitized', async ({ page }) => { await page.goto('https://app.example.com/#/business/create'); await expect(page).toHaveURL(/business/); });";
+    const fillerSnapshots = Array.from({ length: 12 }, (_, index) =>
+      createPassedRunSnapshot({
+        runId: `intent-run-unrelated-import-${index + 1}`,
+        intentDraftUid: `idraft_unrelated_${index + 1}`,
+        requestInput: `无关草稿 ${index + 1}`,
+        code: `test('unrelated-import-${index + 1}', async () => {});`,
+      })
+    );
     vi.mocked(sanitizeGeneratedCode).mockReturnValueOnce(sanitizedReusedCode);
     vi.mocked(getProjectIntentDraftByUid).mockResolvedValue({
       intentDraftUid: 'idraft_1',
@@ -603,12 +611,17 @@ describe('project-intent-task-service', () => {
       generationPrompt: 'draft prompt',
       generatedFiles: [{ name: 'gen.spec.ts', content: 'stale draft code', language: 'typescript' }],
     } as never);
-    vi.mocked(listIntentE2ERunSnapshots).mockResolvedValue([
-      createPassedRunSnapshot({
-        runId: 'intent-run-passed-import',
-        code: reusedCode,
-      }),
-    ] as never);
+    vi.mocked(listIntentE2ERunSnapshots).mockImplementation(async (query) => {
+      if (query?.status !== 'passed') return [] as never;
+      if ((query.limit || 0) <= 12) return fillerSnapshots as never;
+      return [
+        ...fillerSnapshots,
+        createPassedRunSnapshot({
+          runId: 'intent-run-passed-import',
+          code: reusedCode,
+        }),
+      ] as never;
+    });
     vi.mocked(createTestConfig).mockResolvedValue({
       configUid: 'cfg_1',
       projectUid: 'proj_1',
@@ -653,7 +666,7 @@ describe('project-intent-task-service', () => {
       projectUid: 'proj_1',
       moduleUid: 'mod_1',
       status: 'passed',
-      limit: 12,
+      limit: 120,
     });
     expect(vi.mocked(sanitizeGeneratedCode)).toHaveBeenCalledWith(reusedCode);
     expect(createTestPlan).toHaveBeenCalledWith(

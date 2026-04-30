@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "generatedAt": "2026-04-30T03:20:26.596Z",
+  "requestCorpusPath": "artifacts/intent-e2e-family-evidence/proj_default.business-batch-add-contacts.request-corpus.json",
+  "recipeAssetInput": "artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json",
+  "reportPath": "artifacts/intent-e2e-family-evidence/proj_default.knowledge-hit/business-batch-add-contacts-phase507-playbook-rerun-4.json",
+  "scope": {
+    "projectUid": "proj_default",
+    "moduleUid": "mod_1773303139537_c84d8476",
+    "testType": "browser_e2e",
+    "priorityScenarioFamily": "business_batch_add_contacts_verify"
+  },
+  "actorUserUid": "usr_default_owner",
+  "preflight": [
+    {
+      "requestId": "business-batch-add-contacts-anchor-a",
+      "input": "参考知识目录《管帮手PC端操作手册》，在商机列表随机选择一条带联系人手机号的商机，先记录同一条商机的手机号和联系人，再勾选该行并点击“批量加入通讯录”；随后进入我的通讯录，按刚才记录的手机号搜索并验证联系人可见。若当前筛选结果为空，先切换到有数量的商机进展阶段。最终通过标准不是 toast，而是通讯录列表里能查到同一手机号。",
+      "targetUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+      "expectedPriorityScenarioFamily": "business_batch_add_contacts_verify",
+      "route": {
+        "family": "business_batch_add_contacts_verify",
+        "textFamily": "business_batch_add_contacts_verify",
+        "visualFamily": "untracked",
+        "source": "text_only",
+        "clarifySignals": []
+      },
+      "matchesExpectedFamily": true
+    }
+  ],
+  "summary": {
+    "requestCount": 1,
+    "terminalCount": 1,
+    "pendingCount": 0,
+    "timedOutCount": 0,
+    "passedRuns": 1,
+    "failedRuns": 0,
+    "canceledRuns": 0,
+    "knowledgeHitRuns": 1,
+    "knowledgeHitRate": 100,
+    "recipeHitRuns": 1,
+    "playbookHitRuns": 1
+  },
+  "runs": [
+    {
+      "requestId": "business-batch-add-contacts-anchor-a",
+      "input": "参考知识目录《管帮手PC端操作手册》，在商机列表随机选择一条带联系人手机号的商机，先记录同一条商机的手机号和联系人，再勾选该行并点击“批量加入通讯录”；随后进入我的通讯录，按刚才记录的手机号搜索并验证联系人可见。若当前筛选结果为空，先切换到有数量的商机进展阶段。最终通过标准不是 toast，而是通讯录列表里能查到同一手机号。",
+      "targetUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+      "expectedPriorityScenarioFamily": "business_batch_add_contacts_verify",
+      "preflight": {
+        "family": "business_batch_add_contacts_verify",
+        "textFamily": "business_batch_add_contacts_verify",
+        "visualFamily": "untracked",
+        "source": "text_only",
+        "clarifySignals": []
+      },
+      "runId": "intent-run-8c2c70c1-f6eb-4972-9857-881158c42c3c",
+      "status": "passed",
+      "terminal": true,
+      "timedOut": false,
+      "finishedAt": "2026-04-30T03:20:23.890Z",
+      "priorityScenarioFamily": "business_batch_add_contacts_verify",
+      "targetPath": "/",
+      "matchedRecipeSlugs": [
+        "intent.business-batch-add-contacts",
+        "business.batch-add-contacts",
+        "auth.unified-login"
+      ],
+      "matchedRuleIds": [
+        "business.batch-add-contacts",
+        "business.create-list-status-detail-entry"
+      ],
+      "matchedRuleTitles": [
+        "商机列表批量加入通讯录",
+        "新建商机后列表状态回查"
+      ],
+      "knowledgeHit": true,
+      "recipeHit": true,
+      "playbookHit": true,
+      "reviewWritten": false,
+      "experienceHit": true,
+      "failureClass": "",
+      "actorUserUid": "usr_default_owner",
+      "errorMessage": ""
+    }
+  ]
+}

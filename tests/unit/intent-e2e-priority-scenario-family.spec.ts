@@ -99,4 +99,46 @@ describe('intent-e2e-priority-scenario-family', () => {
     expect(route.family).toBe('list_search_detail');
     expect(route.textFamily).toBe('list_search_detail');
   });
+
+  it('routes business batch-add-contacts verification requests into the tracked contacts family', () => {
+    const route = resolveIntentE2EPriorityScenarioFamilyRoute({
+      requestInput:
+        '在商机列表随机勾选一条带手机号的商机，点击“批量加入通讯录”，然后进入我的通讯录按该手机号搜索并确认联系人可见。',
+      targetUrl: 'https://example.com/#/business/businesslist',
+      scenarioCard: {
+        title: '商机列表批量加入通讯录并验收',
+        featureDescription: '批量动作触发后进入我的通讯录按手机号检索目标联系人。',
+        visualAnchors: ['批量加入通讯录', '手机号', '我的通讯录'],
+        flowDefinition: {
+          steps: [
+            {
+              title: '执行批量加入通讯录',
+              target: 'https://example.com/#/business/businesslist',
+              instruction: '勾选目标行后点击批量加入通讯录',
+              expectedResult: '动作触发，后续继续通讯录检索',
+            },
+          ],
+        },
+      },
+      description: '最终以我的通讯录按手机号检索命中目标联系人作为成功标准。',
+    });
+
+    expect(route.family).toBe('business_batch_add_contacts_verify');
+    expect(route.textFamily).toBe('business_batch_add_contacts_verify');
+  });
+
+  it('does not over-route plain batch-add-contacts clicks without verification intent', () => {
+    const route = resolveIntentE2EPriorityScenarioFamilyRoute({
+      requestInput: '在商机列表勾选一条记录后点击批量加入通讯录。',
+      targetUrl: 'https://example.com/#/business/businesslist',
+      scenarioCard: {
+        title: '商机列表操作',
+        featureDescription: '点击批量加入通讯录按钮。',
+        visualAnchors: ['批量加入通讯录'],
+      },
+      description: '只验证按钮可点击。',
+    });
+
+    expect(route.family).toBe('untracked');
+  });
 });

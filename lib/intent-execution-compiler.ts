@@ -173,6 +173,16 @@ function buildPriorityScenarioFamilyStepHints(
             '当前 family = business_create_list_verify：如果目标 row 已命中、结构化列表响应也已返回，但 businessId 仍为空，不要直接报“列表响应未返回状态”；先用 rowKey / rowText 派生 derivedBusinessId，再回填 matchedRecordByDerivedBusinessId。',
           ]
         : [];
+    case 'business_batch_add_contacts_verify':
+      return step.preferredHelpers.includes('__e2e.findAntdTableRow') ||
+        step.preferredHelpers.includes('__e2e.clickAntdRowCheckbox') ||
+        step.preferredHelpers.includes('__e2e.resolvePrimaryRecord')
+        ? [
+            '当前 family = business_batch_add_contacts_verify：先命中真实业务行，再直接调用 __e2e.clickAntdRowCheckbox(page, targetRow)；不要点第一条可见 checkbox，也不要手写 fixed-column clone 细节。',
+            '当前 family = business_batch_add_contacts_verify：点击“批量加入通讯录”前先记录同一行的手机号/联系人；后续所有验收统一复用这条身份链。',
+            '当前 family = business_batch_add_contacts_verify：最终成功以“我的通讯录按同一手机号检索命中”为主，不要把 toast 或“已存在您的通讯录”反馈单独当最终通过。',
+          ]
+        : [];
     case 'modal_or_drawer_save':
       return step.preferredHelpers.includes('__e2e.waitForVisibleAntdModal') ||
         step.preferredHelpers.includes('__e2e.observeSubmitState')
@@ -204,6 +214,10 @@ function buildPriorityScenarioFamilyVerificationHints(
     case 'business_create_list_verify':
       return [
         '当前 family = business_create_list_verify：最终验收优先复用列表响应 / 详情字段完成状态证据，不要求状态必须出现在同一行可见文本。',
+      ];
+    case 'business_batch_add_contacts_verify':
+      return [
+        '当前 family = business_batch_add_contacts_verify：最终验收以“批量加入通讯录动作触发 + 我的通讯录按同一手机号命中”为主，不要只验 toast 或页面反馈。',
       ];
     case 'modal_or_drawer_save':
       return [

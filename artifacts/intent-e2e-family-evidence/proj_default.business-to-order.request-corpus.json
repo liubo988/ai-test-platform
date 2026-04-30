@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "projectUid": "proj_default",
+  "moduleUid": "mod_1773303139537_c84d8476",
+  "testType": "browser_e2e",
+  "priorityScenarioFamily": "business_to_order",
+  "actorUserUid": "usr_default_owner",
+  "requests": [
+    {
+      "requestId": "business-to-order-create-order-anchor-a",
+      "expectedPriorityScenarioFamily": "business_to_order",
+      "input": "登录后台后在商机列表页创建商机并生成订单：先填写最小必填商机信息并保存，回到商机列表用唯一手机号定位新建商机，从目标行操作菜单点击“生成订单”，在“确定订单信息”Drawer 中点击确定，并以 createOrder 成功响应和 Drawer 关闭作为主断言。",
+      "targetUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+      "prefilledScenarioCard": {
+        "version": 1,
+        "title": "创建商机并生成订单",
+        "taskMode": "scenario",
+        "targetUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+        "featureDescription": "business_to_order fresh sample：从商机列表创建真实新商机，回列表定位目标行并触发生成订单，以 /crmapi/business/createOrder 成功响应、确定订单信息 Drawer 关闭和关键清理信息记录作为主要验收。",
+        "flowDefinition": {
+          "version": 1,
+          "entryUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+          "sharedVariables": [
+            "createdBusinessKey",
+            "contactPhone",
+            "contactName",
+            "businessId",
+            "createOrderResponse"
+          ],
+          "expectedOutcome": "新建商机后可在商机列表定位目标行并成功生成订单；最终通过必须具备 createOrder 成功响应和 Drawer 关闭/页面稳定态，不强依赖原商机行继续可见。",
+          "cleanupNotes": "记录 businessId、联系人、手机号和创建时间供人工清理；生成订单成功后不要求自动回滚。",
+          "steps": [
+            {
+              "stepUid": "step-1",
+              "stepType": "ui",
+              "title": "进入商机列表页",
+              "target": "https://uat-service.yikaiye.com/#/business/businesslist",
+              "instruction": "进入商机列表页并等待主表格、“新建商机”按钮和搜索区稳定可见。",
+              "expectedResult": "商机列表页主表格和新建入口可见"
+            },
+            {
+              "stepUid": "step-2",
+              "stepType": "ui",
+              "title": "创建商机并填写最小必填信息",
+              "target": "新建商机表单",
+              "instruction": "点击“新建商机”，按当前页面真实必填项填写商机来源、唯一联系人、唯一手机号、企业名称和叶子意向产品；第一步提交后必须等待“关联产品意向信息”步骤和企业名称/意向产品字段可见，再继续下一步。",
+              "expectedResult": "新商机表单关键必填信息已填写完成"
+            },
+            {
+              "stepUid": "step-3",
+              "stepType": "ui",
+              "title": "保存商机并提取业务标识",
+              "target": "商机创建提交响应",
+              "instruction": "提交保存商机，等待创建响应或 submit-state 收敛；优先从响应提取 businessId，否则保留本次真实填写的 contactPhone/contactName 作为 createdBusinessKey。",
+              "expectedResult": "商机创建成功，createdBusinessKey 可用于回列表定位",
+              "extractVariable": "createdBusinessKey"
+            },
+            {
+              "stepUid": "step-4",
+              "stepType": "ui",
+              "title": "回到商机列表定位目标商机",
+              "target": "商机列表目标行",
+              "instruction": "回到商机列表后，优先用 businessId 或 contactPhone/contactName 检索目标行；不要点击第一行或用宽泛“新入库”文本碰巧命中。",
+              "expectedResult": "目标商机真实行被稳定定位"
+            },
+            {
+              "stepUid": "step-5",
+              "stepType": "ui",
+              "title": "从目标行打开生成订单 Drawer",
+              "target": "目标商机行操作菜单",
+              "instruction": "在目标行末列三点菜单或操作入口点击“生成订单”，等待“确定订单信息”Drawer 可见；优先使用 __e2e.clickAntdRowAction(page, targetRow, '生成订单')。",
+              "expectedResult": "确定订单信息 Drawer 可见"
+            },
+            {
+              "stepUid": "step-6",
+              "stepType": "ui",
+              "title": "确认生成订单并等待 createOrder 成功",
+              "target": "确定订单信息 Drawer",
+              "instruction": "在 Drawer 内点击“确定”，等待 POST /crmapi/business/createOrder 成功响应，并观察 Drawer 关闭或页面回到稳定态。",
+              "expectedResult": "createOrder 成功响应已返回且 Drawer 关闭",
+              "extractVariable": "createOrderResponse"
+            },
+            {
+              "stepUid": "step-7",
+              "stepType": "assert",
+              "title": "记录订单生成证据",
+              "target": "createOrder 响应与页面稳定态",
+              "instruction": "以 createOrder 成功响应、Drawer 关闭/页面稳定态和关键清理信息记录作为最终通过证据；生成订单成功后不要强制要求原商机行仍可见。",
+              "expectedResult": "生成订单主链路完成，证据链可供后续人工清理与复核"
+            }
+          ]
+        },
+        "successCriteria": [
+          "必须定位本次新建商机的真实目标行后再触发“生成订单”",
+          "最终通过以 /crmapi/business/createOrder 成功响应为主断言",
+          "确认生成订单后的 Drawer/Modal 必须关闭或页面回到稳定态",
+          "生成订单成功后不再强依赖原商机行继续可见"
+        ],
+        "visualAnchors": [
+          "新建商机",
+          "商机联系人信息",
+          "关联产品意向信息",
+          "生成订单",
+          "确定订单信息",
+          "确 定"
+        ],
+        "notes": [
+          "这是 Phase 7 为 business_to_order 补齐 terminal 样本而设计的最小 tracked corpus。",
+          "若真实环境无法创建商机或没有生成订单权限，应显式暴露 fixture / permission blocker，不要伪造 baseline。",
+          "生成订单入口通常在目标行末列三点菜单，不要全局点击“生成订单”。"
+        ]
+      },
+      "llmConfig": {
+        "selfHealRetries": 0,
+        "maxPlanSteps": 7
+      },
+      "runControl": {
+        "priority": "normal",
+        "timeoutMs": 720000,
+        "retryLimit": 0
+      }
+    }
+  ]
+}

@@ -26,9 +26,14 @@ npm run test:all
 - `npm run edge:report`
 - `npm run intent:benchmark:candidates -- --project-uid <projectUid>`
 - `npm run intent:benchmark:freeze -- --project-uid <projectUid>`
+- `npm run intent:benchmark:slice -- --project-uid <projectUid> --after-terminal-run-id <runId> --declared-reason <text>`
 - `npm run intent:benchmark:replay -- --project-uid <projectUid>`
 - `npm run intent:benchmark:compare -- --project-uid <projectUid>`
 - `npm run intent:benchmark:rerun -- --project-uid <projectUid> --request-corpus <path>`
+- `npm run intent:release-guard -- --config <path>`
+- `npm run intent:release-guard:preflight`
+- `npm run intent:knowledge-hit-guard`
+- `npm run intent:release-status`
 
 ## 部署入口
 - Ubuntu 裸机部署：`docs/linux-deploy-super-test-yikaiye-net-2026-04-08.md`
@@ -74,6 +79,7 @@ npm run edge:generate
 ### Intent E2E 开发主线
 - `R0-R7` 的历史主线与高成功率能力收口，统一以 [docs/intent-e2e-high-success-roadmap-2026-03-20.md](docs/intent-e2e-high-success-roadmap-2026-03-20.md) 为准。
 - `R7.5-R14` 的生产化续线、多项目资产隔离、统一测试类型抽象与后续平台化演进，统一以 [docs/intent-e2e-production-roadmap-2026-03-29.md](docs/intent-e2e-production-roadmap-2026-03-29.md) 为准。
+- `AI生成` 阶段性收尾、发布边界和提交前命令，以 [docs/intent-e2e-ai-generate-release-closure-summary-2026-04-30.md](docs/intent-e2e-ai-generate-release-closure-summary-2026-04-30.md) 为准。
 - 详细的“最近一次联调验证”与阶段回写不再在 README 和多份 roadmap 间重复维护，避免状态漂移。
 - 如果当前任务涉及 `ExecutionPlan / VerificationPlan`、verifier、starter helper、repair memory、project knowledge、run registry / insights，或 `/intent-e2e` 工作台，请先阅读对应 roadmap 的“阶段状态”和最新一条进度更新。
 
@@ -160,6 +166,7 @@ npm run edge:generate
 - `POST /api/intent-e2e/runs/:runId/workspace`：把最终运行结果导入现有项目工作台，沉淀为任务、脚本版本和执行历史；导入后的 `generated_spec` artifact meta 会保留 `platformAssetBundle`，响应里的 `workspaceQueryPath` 可直接跳到带平台筛选的聚焦任务视图，`workspaceHistoryPath` 可直接打开该任务的聚焦执行历史视图；若当前 run 的凭证来自 project-backed `credential.secretRef`，导入时不会再把该项目密码复制成任务级 legacy auth
 - `POST /api/intent-e2e/runs/:runId/workspace` 在 plan prompt、artifact meta 和 activity meta 里也会保留本次 run 的 `runtimeGovernance` 摘要，方便后续追踪环境 / 凭证 / 数据治理上下文
 - `GET /api/intent-e2e/insights`：汇总最近终态运行的通过率、`modelQualityPassRate / blockedRate`、知识命中率、helper 复用率、`assetMissing / noHit` 冷启动信号、`starterHelpers`、Top 规则 / helper / 失败类别、`probationRules`，以及基于 merge 审计推导的回滚候选；`recentTraces` 还会透出每次运行的 `testType / runnerType`
+- `GET /api/intent-e2e/release-status`：返回当前项目的 release readiness 摘要，默认 `projectUid=proj_default`，会校验 `owner/editor/viewer` 权限；服务端只根据项目 UID 读取 tracked release guard / knowledge-hit artifacts，不接受任意本地文件路径；可选 `requireCurrentCompare=1` 把缺少最近 compare report 视为阻塞，`skipCurrentCompare=1` 只看静态证据
 - `GET /api/test-configs`：返回项目工作台任务列表；当前支持可选 `platformTestType / platformRunnerType / platformArtifactKind / platformContractIdType / platformContractId` 查询参数，用于筛出某一类平台导入任务；legacy 的 `platformTestCaseId / platformTestSpecId / platformVerificationContractId` 仍兼容；若该任务来自 `intent-e2e` 导入，还会透出 `latestPlanImportedTestCaseId / latestPlanImportedTestSpecId / latestPlanImportedVerificationContractId / latestPlanImportedArtifactKinds`，并新增稳定的 `platformQuery` item contract（含 `source / importedFromRunId / testType / runnerType / contract ids / artifactKinds / imported / platformTagged`）；响应还会额外返回 `platformSummary` 与 `platformIndex`，后者会按当前查询范围物化 `bySource / byTestCaseId / byTestSpecId / byVerificationContractId`
 - `GET /api/test-configs/:configUid/executions`：返回项目工作台里的单任务执行历史；若该执行来自 `intent-e2e` 导入，会额外透出 `intentImportedTestType / intentImportedRunnerType / intentImportedTestCaseId / intentImportedTestSpecId / intentImportedVerificationContractId / intentImportedArtifactKinds`，并支持可选 `platformTestType / platformRunnerType / platformArtifactKind / platformContractIdType / platformContractId` 查询参数；legacy 的 `platformTestCaseId / platformTestSpecId / platformVerificationContractId` 仍兼容；响应项同样会返回 `platformQuery` item contract，显式区分 `execution_artifact_meta` 与 imported-only legacy 形态；整体响应继续返回当前返回窗口的 `platformSummary` 与 `platformIndex`
 - `GET /api/test-executions/:executionUid`：若该执行历史来自 `intent-e2e` 导入，`intentImport` 里会额外透出 `testType / runnerType` 和关键 contract id，方便后续按平台语义追踪
@@ -179,6 +186,7 @@ npm run edge:generate
 - 若请求里带 `projectUid`，会优先读 `reports/intent-e2e/projects/<projectUid>/intent-e2e.project-knowledge.json`；项目文件不存在时，运行态读取会回退到当前全局 legacy 文件，但 merge / restore / 后续写回会直接落到项目文件
 - 可通过环境变量 `INTENT_E2E_PROJECT_ASSET_ROOT` 覆盖项目级资产根目录
 - 每条规则可按 URL / 标题 / 页面正文 / iframe URL / 用户意图命中后，自动追加全局规则、步骤约束、首选 helper 和动作库能力
+- 默认知识已覆盖当前 release guard 的四条已治理 family：`business_create_list_verify`、`business_to_order`、`list_search_detail`、`business_batch_add_contacts_verify`；用于把稳定 recipe/playbook 行为同步沉淀成可解释的 knowledge hit
 - 这是后续最推荐的迭代入口：优先改这份 JSON，而不是直接改 Prompt 大段文案
 
 ### Project Onboarding
@@ -219,6 +227,7 @@ npm run edge:generate
 - 当前 repo 已提供零依赖 CLI，用于冻结 `AI生成` holdout、回放和 compare：
   - `npm run intent:benchmark:candidates -- --project-uid proj_default --module-uid <moduleUid> --test-type browser_e2e --proof-window non_weak`
   - `npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid <moduleUid> --test-type browser_e2e --proof-window non_weak --max-cases 12 --release-candidate ai-holdout-2026-04-09`
+  - `npm run intent:benchmark:slice -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --after-terminal-run-id intent-run-xxx --declared-reason "exclude pre-recovery terminal runs" --created-from-compare-report reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/xxxx.json`
   - `npm run intent:benchmark:replay -- --project-uid proj_default`
   - `npm run intent:benchmark:compare -- --project-uid proj_default --compared-label post-e1e2e3`
 - 命令默认读取最近 `200` 条 terminal runs，可用 `--run-limit` 覆盖。
@@ -237,7 +246,36 @@ npm run edge:generate
 - 显式 recipe asset 链路也复用这套 CLI：
   - `--recipe-asset-output <path>`：把当前项目 recipe profile 导出到显式路径，便于后续 family replay / compare 复核。
   - `--recipe-asset-input <path>`：先把显式 recipe profile 导回当前项目 registry，再执行 benchmark 命令。
+- 如果 same-baseline compare 的 current side 被旧 terminal runs 污染，可先声明一份官方 current-slice 资产，再让 replay / compare 显式消费它：
+  - `npm run intent:benchmark:slice -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --after-terminal-run-id intent-run-xxx --declared-reason "exclude pre-recovery terminal runs" --created-from-compare-report reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/xxxx.json`
+  - `npm run intent:benchmark:replay -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --current-slice reports/intent-e2e/projects/proj_default/intent-e2e.current-slices/<timestamp>-slice_<uid>.json`
+  - `npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --current-slice reports/intent-e2e/projects/proj_default/intent-e2e.current-slices/<timestamp>-slice_<uid>.json --compared-label sliced-current`
+- `current-slice` 是官方 current-side boundary 资产，不是手工按 case 删除失败样本；它会统一按 `afterTerminalRunId + afterFinishedAt` 切出“严格晚于 boundary”的 terminal run 窗口，并把 slice metadata、pre-slice 过滤计数与实际纳入的 runIds 写进 replay / compare 报告。
 - `compare` 报告现在会额外输出 `priorityScenarioFamilies` 维度；若某个 family 在冻结窗口或当前窗口的 terminal 样本少于 3，会明确标记为 `insufficient_evidence`，不要把这种窗口误写成 improved / regressed。
+- 多 family release 前可直接跑统一 guard；它会按配置逐条 compare baseline，任一 family 出现 `regressed / missing / insufficient_evidence` 都会返回非 0：
+  - `npm run intent:release-guard:preflight`
+  - `npm run intent:release-guard -- --config artifacts/intent-e2e-family-evidence/proj_default.release-guard.baselines.json`
+  - preflight 不连接数据库，只校验 release guard 配置、tracked benchmark、current-slice 与 recipe asset 是否齐全且匹配；完整 `intent:release-guard` 才执行 current compare。
+  - 默认 `proj_default` 配置覆盖 `business_create_list_verify`、`business_to_order`、`list_search_detail`、`business_batch_add_contacts_verify` 四条已治理 family，输入资产位于 `artifacts/intent-e2e-family-evidence/proj_default.release-guard/`。
+- 如果要单独复核默认 project knowledge 是否仍有真实命中证据，可跑：
+  - `npm run intent:knowledge-hit-guard`
+  - 默认配置 `artifacts/intent-e2e-family-evidence/proj_default.knowledge-hit-guard.json` 会检查四条 expected rule：`business.create-list-status-detail-entry`、`business.create-order-flow`、`order.list-search-detail-primary-record`、`business.batch-add-contacts`。该命令只校验 knowledge 命中证据，不替代 release compare。
+- 如果需要一眼判断发布状态，可跑统一摘要：
+  - `npm run intent:release-status -- --json`
+  - `npm run intent:release-status -- --require-current-compare --json`
+  - 默认会聚合 release guard preflight、knowledge-hit guard 与最近一次 release guard compare report，输出 `ready / attention / blocked`；缺少 compare report 时默认是 `attention`，加 `--require-current-compare` 后会变成阻塞。
+- 如果需要查看真实 AI 生成成功率口径，可跑 traffic-quality 报表：
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30 --json`
+  - 默认输出到 `reports/intent-e2e/projects/<projectUid>/intent-e2e.traffic-quality-report.latest.json` 和 `.md`。
+  - 该报表使用独立 counters：`launch_click_count / draft_generated_count / launch_gate_passed_count / auto_run_started_count / terminal_run_count / terminal_pass_count`。
+  - 该报表按 `source=real_click|draft_import|benchmark_rerun|replay`、`attachment=with_image|without_image`、`launchDecision`、`priorityScenarioFamily` 分桶；`benchmark_rerun` runIds 会从 real traffic 终态统计中剔除，不能和 `real_click` 混统。
+  - 报表会额外输出 `Sample Readiness` 和 `Document Family Selection`：只有 `real_click.launch_click_count / auto_run_started_count / terminal_run_count` 达到阈值后，才允许直接从 post-instrumentation `real_click` 选择 document families。
+  - 如需覆盖默认阈值，可传：
+    - `--min-real-click-launches`
+    - `--min-real-click-auto-runs`
+    - `--min-real-click-terminal-runs`
+    - `--historical-draft-limit`
+  - 如果报表输出 `readiness=not_ready` 或 `document_selection=insufficient_evidence`，说明当前 project 还不具备 document family 治理资格；不要把 release window 的 synthetic benchmark 结果外推成真实 document traffic。
 
 ### System Onboarding & CI/CD
 - repo-owned onboarding manifest registry：`intent-e2e.system-onboarding-manifests.json`
@@ -271,6 +309,9 @@ npm run edge:generate
 - `GET /api/intent-e2e/project-knowledge/backups` 会返回当前规则文件可用的备份列表
 - `POST /api/intent-e2e/project-knowledge/backups/restore` 传入某个 `backupPath` 后，可直接把项目规则回滚到该备份版本，并返回回滚前后配置对比
 - `GET /api/intent-e2e/insights` 可选带 `projectUid`、`runLimit`、`auditLimit`；若指定 `projectUid`，会校验该项目的 `owner/editor/viewer` 权限
+- `GET /api/intent-e2e/release-status` 可选带 `projectUid`、`requireCurrentCompare`、`skipCurrentCompare`；若省略 `projectUid`，默认读取 `proj_default` 并同样校验项目 viewer 权限
+- `/intent-e2e` 工作台的“历史运行洞察”区会同步调用 `GET /api/intent-e2e/release-status?requireCurrentCompare=1`，只读展示 release readiness、latest compare、checks 与 family evidence 状态；非 passed check、缺失 family evidence 和 release / knowledge failures 会在面板内展开为可读原因，API 读取失败时显示只读空状态
+- `/projects/:projectUid` 项目工作台顶部也会调用同一份 release-status API，只读展示项目级 release readiness 摘要、check/family 计数、最近 compare message，并提供刷新和跳转 `/intent-e2e?projectUid=...` 查看详情
 - `GET /api/intent-e2e/insights` 当前直接复用已持久化的 run snapshot 和知识审计，不额外建表；新 merge 的规则会进入最多 6 次终态运行的观察期，并结合合并前最多 5 次终态运行做基线对比
 - `GET /api/intent-e2e/insights` 的 `summary` 现会额外返回 `modelQualityEligibleRuns / modelQualityPassRate / modelQualityFailureRuns / blockedRuns / blockedRate / permissionBlockedRuns / dataBlockedRuns / assetMissingRuns / assetMissingRate / noHitRuns / noHitRate`，`recentTraces` 也会带每次运行的 `testType / runnerType + assetReadiness + qualitySplit`
 - 观察期在满足至少 3 次样本后，如果通过率降到 35% 以下，或相对基线下滑达到 15 个点，会自动标记为 `degraded`；完成 6 次观察且未降级则自动转正

@@ -29,6 +29,7 @@ function uniqueStrings(values: Array<string | null | undefined>, max = 12): stri
 function normalizeTrackedScenarioFamily(value: unknown): IntentTrackedE2EPriorityScenarioFamily | undefined {
   return value === 'business_create_list_verify' ||
     value === 'business_to_order' ||
+    value === 'business_batch_add_contacts_verify' ||
     value === 'list_search_detail' ||
     value === 'modal_or_drawer_save' ||
     value === 'row_action_menu' ||
@@ -69,7 +70,11 @@ function collectMatcherFragments(candidate: IntentE2EPlaybookCandidate): string[
 
 function inferRequiredActions(candidate: IntentE2EPlaybookCandidate): string[] {
   const family = normalizeTrackedScenarioFamily(candidate.scenarioFamily);
-  if (family === 'list_search_detail' || family === 'business_create_list_verify') {
+  if (
+    family === 'list_search_detail' ||
+    family === 'business_create_list_verify' ||
+    family === 'business_batch_add_contacts_verify'
+  ) {
     return ['find_table_row'];
   }
   if (family === 'modal_or_drawer_save' || family === 'business_to_order') {

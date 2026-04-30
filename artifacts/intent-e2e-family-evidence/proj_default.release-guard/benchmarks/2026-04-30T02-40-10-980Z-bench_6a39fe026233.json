@@ -1,0 +1,186 @@
+{
+  "version": 1,
+  "benchmarkUid": "bench_6a39fe026233",
+  "label": "phase503-business-batch-add-contacts non-weak benchmark",
+  "releaseCandidate": "phase503-business-batch-add-contacts",
+  "frozenAt": "2026-04-30T02:40:10.980Z",
+  "scope": {
+    "projectUid": "proj_default",
+    "moduleUid": "mod_1773303139537_c84d8476",
+    "testTypes": [
+      "browser_e2e"
+    ],
+    "runnerTypes": [],
+    "priorityScenarioFamily": "business_batch_add_contacts_verify"
+  },
+  "proofWindow": {
+    "mode": "non_weak",
+    "note": "non_weak proof window 仅纳入 taskMode 明确且 stepCount > 0 的 benchmark cases；unknown taskMode / no_steps case 会被显式隔离，不主导 family gate。",
+    "excludedWeakCaseCount": 0,
+    "excludedWeakCases": []
+  },
+  "source": {
+    "runLimit": 200,
+    "generatedFromRuns": 20,
+    "candidateClusters": 2,
+    "recommendedCount": 2,
+    "recommendedFamilies": [
+      "complex_enterprise_flow"
+    ],
+    "selectionNote": "固定评测候选按 snapshot signature 聚类，优先保留高频、复杂、失败或依赖 repair 的真实业务流。 当前冻结显式启用了 non_weak proof window，会隔离 taskMode=unknown 或 stepCount=0 的 weak case。",
+    "selectedEvalCaseIds": [
+      "eval_complex_enterprise_flow_scenario_ui_extract_assert_cleanup"
+    ]
+  },
+  "summary": {
+    "caseCount": 1,
+    "runCount": 16,
+    "passedRuns": 14,
+    "failedRuns": 2,
+    "canceledRuns": 0,
+    "repairAttemptedRuns": 0,
+    "blockedRuns": 1,
+    "blockedRate": 6.3,
+    "knowledgeHitRuns": 15,
+    "knowledgeHitRate": 93.8,
+    "experienceHitRuns": 15,
+    "experienceHitRate": 93.8,
+    "experienceHelpedFirstPassRuns": 14,
+    "experienceHelpedFirstPassRate": 93.3,
+    "experienceHelpedTerminalPassRuns": 14,
+    "experienceHelpedTerminalPassRate": 93.3,
+    "recipeHitRuns": 15,
+    "recipeHitRate": 93.8,
+    "playbookHitRuns": 12,
+    "playbookHitRate": 75,
+    "untrackedRuns": 0,
+    "untrackedRate": 0,
+    "reviewWrittenRuns": 16,
+    "reviewWriteRate": 100,
+    "latestFinishedAt": "2026-04-30T02:37:34.872Z",
+    "firstPassPassedRuns": 14,
+    "firstPassPassRate": 87.5,
+    "repairedPassRuns": 0,
+    "repairedPassRate": 0,
+    "terminalPassRate": 87.5,
+    "topFailureReasons": [
+      {
+        "failureClass": "data_missing",
+        "count": 1,
+        "latestRepairObservationAt": "",
+        "latestRepairObservationSummary": "",
+        "latestRepairObservationVerifierCheckUids": []
+      },
+      {
+        "failureClass": "selector_drift",
+        "count": 1,
+        "latestRepairObservationAt": "",
+        "latestRepairObservationSummary": "",
+        "latestRepairObservationVerifierCheckUids": []
+      }
+    ]
+  },
+  "cases": [
+    {
+      "evalCaseId": "eval_complex_enterprise_flow_scenario_ui_extract_assert_cleanup",
+      "snapshotSignature": "complex_enterprise_flow|scenario|/|ui+extract+assert+cleanup",
+      "scenarioFamily": "complex_enterprise_flow",
+      "scenarioFamilyLabel": "复杂企业流程",
+      "priorityScenarioFamily": "business_batch_add_contacts_verify",
+      "taskMode": "scenario",
+      "targetPath": "/",
+      "stepTypes": [
+        "ui",
+        "extract",
+        "assert",
+        "cleanup"
+      ],
+      "stepCount": 7,
+      "moduleUids": [
+        "mod_1773303139537_c84d8476"
+      ],
+      "testTypes": [
+        "browser_e2e"
+      ],
+      "runnerTypes": [
+        "playwright_runner"
+      ],
+      "representativeScenarioTitle": "商机列表批量加入通讯录并按手机号验收",
+      "representativeRequestInput": "参考知识目录《管帮手PC端操作手册》，在商机列表随机选择一条带联系人手机号的商机，先记录同一条商机的手机号和联系人，再勾选该行并点击“批量加入通讯录”；随后进入我的通讯录，按刚才记录的手机号搜索并验证联系人可见。若当前筛选结果为空，先切换到有数量的商机进展阶段。最终通过标准不是 toast，而是通讯录列表里能查到同一手机号。",
+      "representativeRunIds": [
+        "intent-run-154669d3-cda6-4c83-b0cb-ce7c61312b4d",
+        "intent-run-e3302410-aa9e-4811-b823-465518e06a5c",
+        "intent-run-09f9b18e-33e5-4ad0-a663-116a338edf59"
+      ],
+      "matchedRecipeSlugs": [
+        "assert.antd-table-primary-key-search",
+        "intent.list-search-detail.primary-record",
+        "intent.order-list-search-detail.derive-order-no",
+        "intent.ui-antd-modal-drawer-save",
+        "auth.unified-login"
+      ],
+      "matchedRuleIds": [
+        "business.batch-add-contacts",
+        "business.create-list-status-detail-entry"
+      ],
+      "matchedRuleTitles": [
+        "商机列表批量加入通讯录",
+        "新建商机后列表状态回查"
+      ],
+      "usedHelpers": [
+        "__e2e.clickAntdRowCheckbox",
+        "__e2e.ensureLoggedIn"
+      ],
+      "keySignals": [],
+      "failureClasses": [
+        {
+          "failureClass": "data_missing",
+          "count": 1,
+          "latestRepairObservationAt": "",
+          "latestRepairObservationSummary": "",
+          "latestRepairObservationVerifierCheckUids": []
+        },
+        {
+          "failureClass": "selector_drift",
+          "count": 1,
+          "latestRepairObservationAt": "",
+          "latestRepairObservationSummary": "",
+          "latestRepairObservationVerifierCheckUids": []
+        }
+      ],
+      "priority": "p0",
+      "selectionReason": "复杂企业流程；高频样本 16 runs；含 2 次失败",
+      "frozenMetrics": {
+        "runCount": 16,
+        "passedRuns": 14,
+        "failedRuns": 2,
+        "canceledRuns": 0,
+        "repairAttemptedRuns": 0,
+        "blockedRuns": 1,
+        "blockedRate": 6.3,
+        "knowledgeHitRuns": 15,
+        "knowledgeHitRate": 93.8,
+        "experienceHitRuns": 15,
+        "experienceHitRate": 93.8,
+        "experienceHelpedFirstPassRuns": 14,
+        "experienceHelpedFirstPassRate": 93.3,
+        "experienceHelpedTerminalPassRuns": 14,
+        "experienceHelpedTerminalPassRate": 93.3,
+        "recipeHitRuns": 15,
+        "recipeHitRate": 93.8,
+        "playbookHitRuns": 12,
+        "playbookHitRate": 75,
+        "untrackedRuns": 0,
+        "untrackedRate": 0,
+        "reviewWrittenRuns": 16,
+        "reviewWriteRate": 100,
+        "latestFinishedAt": "2026-04-30T02:37:34.872Z",
+        "firstPassPassedRuns": 14,
+        "firstPassPassRate": 87.5,
+        "repairedPassRuns": 0,
+        "repairedPassRate": 0,
+        "terminalPassRate": 87.5
+      }
+    }
+  ]
+}

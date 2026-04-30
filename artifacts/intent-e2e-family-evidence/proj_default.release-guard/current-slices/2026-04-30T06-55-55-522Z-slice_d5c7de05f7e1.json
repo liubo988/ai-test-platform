@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "sliceUid": "slice_d5c7de05f7e1",
+  "projectUid": "proj_default",
+  "benchmarkUid": "bench_6a39fe026233",
+  "benchmarkPath": "artifacts/intent-e2e-family-evidence/proj_default.release-guard/benchmarks/2026-04-30T02-40-10-980Z-bench_6a39fe026233.json",
+  "priorityScenarioFamily": "business_batch_add_contacts_verify",
+  "proofWindow": "non_weak",
+  "afterTerminalRunId": "intent-run-2c001e18-949e-4a72-b20e-9d428b6c7938",
+  "afterFinishedAt": "2026-04-30T06:29:39.723Z",
+  "declaredReason": "post toast-nonblocking reuse guard current window: include only live runs after fresh with_image fix",
+  "createdFromCompareReport": "reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/2026-04-30T06-53-11-360Z-bench_6a39fe026233-phase507-business-batch-add-contacts-playbook-5run-current-2026-04-30.json",
+  "createdAt": "2026-04-30T06:55:55.522Z"
+}

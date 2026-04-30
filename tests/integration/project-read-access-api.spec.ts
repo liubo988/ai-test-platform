@@ -396,7 +396,7 @@ describe.sequential('project read access API integration', () => {
           intentImportedTestSpecId: 'ts_read_access_1',
           intentImportedVerificationContractId: 'vc_read_access_1',
           intentImportedArtifactKinds: ['scenario_card', 'final_result'],
-          platformQuery: {
+          platformQuery: expect.objectContaining({
             version: 1,
             source: 'execution_artifact_meta',
             importedFromRunId: 'intent-run-read-access-1',
@@ -408,11 +408,11 @@ describe.sequential('project read access API integration', () => {
             artifactKinds: ['scenario_card', 'final_result'],
             imported: true,
             platformTagged: true,
-          },
+          }),
         }),
         expect.objectContaining({
           executionUid: expect.any(String),
-          platformQuery: {
+          platformQuery: expect.objectContaining({
             version: 1,
             source: 'execution_artifact_meta',
             importedFromRunId: 'intent-run-read-access-legacy-1',
@@ -424,7 +424,7 @@ describe.sequential('project read access API integration', () => {
             artifactKinds: [],
             imported: true,
             platformTagged: false,
-          },
+          }),
         }),
       ])
     );
@@ -571,7 +571,7 @@ describe.sequential('project read access API integration', () => {
       intentImportedTestSpecId: 'ts_read_access_1',
       intentImportedVerificationContractId: 'vc_read_access_1',
       intentImportedArtifactKinds: ['scenario_card', 'final_result'],
-      platformQuery: {
+      platformQuery: expect.objectContaining({
         version: 1,
         source: 'execution_artifact_meta',
         importedFromRunId: 'intent-run-read-access-1',
@@ -583,7 +583,7 @@ describe.sequential('project read access API integration', () => {
         artifactKinds: ['scenario_card', 'final_result'],
         imported: true,
         platformTagged: true,
-      },
+      }),
     });
     expect(matched.platformSummary).toEqual({
       scopeCount: 1,

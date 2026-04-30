@@ -95,6 +95,36 @@ describe('intent-e2e-playbook', () => {
     expect(recipes[1]?.family).toBeUndefined();
   });
 
+  it('keeps the batch-add-contacts tracked family when promoting playbook candidates', () => {
+    const recipe = buildIntentProjectRecipeMergeInputFromPlaybookCandidate({
+      candidateId: 'candidate-batch-contacts',
+      slug: 'intent.business-batch-add-contacts',
+      title: '商机批量加入通讯录并验收',
+      scenarioFamily: 'business_batch_add_contacts_verify',
+      targetPath: 'https://example.com/#/business/businesslist',
+      matchedRecipeSlugs: ['business.batch-add-contacts'],
+      stepTypes: ['ui', 'assert'],
+      preconditions: ['保持登录态稳定'],
+      executorPlan: ['命中真实商机行后勾选，再点击批量加入通讯录。'],
+      verifierPlan: ['进入我的通讯录按同一手机号搜索并命中目标联系人。'],
+      preferredHelpers: ['__e2e.findAntdTableRow', '__e2e.clickAntdRowCheckbox'],
+      knownPitfalls: ['不要只看 toast。'],
+      sourceRunIds: ['intent-run-batch-contacts-1'],
+      successRate: 100,
+      lastVerifiedAt: '2026-04-30T03:00:00.000Z',
+      promotionStatus: 'candidate',
+    });
+
+    expect(recipe).toMatchObject({
+      family: 'business_batch_add_contacts_verify',
+      matchers: {
+        targetUrlIncludes: ['/business/businesslist'],
+        requiredActions: ['find_table_row'],
+        preferredHelpers: ['__e2e.findAntdTableRow', '__e2e.clickAntdRowCheckbox'],
+      },
+    });
+  });
+
   it('aggregates duplicated playbook candidates by slug before building recipes', () => {
     const candidates = aggregateIntentE2EPlaybookCandidates([
       {

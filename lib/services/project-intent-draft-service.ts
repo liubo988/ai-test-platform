@@ -121,6 +121,7 @@ export interface ImportProjectIntentDraftResult {
 }
 
 const ACTIVE_RUN_HEARTBEAT_STALE_MS = 5 * 60 * 1000;
+const INTENT_DRAFT_SUCCESSFUL_RUN_REUSE_SNAPSHOT_LIMIT = 120;
 type ActiveIntentE2ERunSnapshot = IntentE2ERunSnapshotRecord & {
   status: Extract<IntentE2ERunStatus, 'created' | 'running'>;
 };
@@ -288,7 +289,7 @@ async function resolveIntentDraftSuccessfulRunCodeCandidate(input: {
       projectUid,
       ...(moduleUid ? { moduleUid } : {}),
       status: 'passed',
-      limit: 12,
+      limit: INTENT_DRAFT_SUCCESSFUL_RUN_REUSE_SNAPSHOT_LIMIT,
     });
     for (const snapshot of snapshots) {
       const candidate = resolveIntentDraftSuccessfulRunCodeCandidateFromSnapshot(snapshot, {

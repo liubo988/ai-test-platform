@@ -279,4 +279,34 @@ describe('resolveIntentE2ELaunchDecision', () => {
       },
     });
   });
+
+  it('routes repeated data gaps to needs_fixture before another auto-run attempt', () => {
+    const decision = resolveIntentE2ELaunchDecision({
+      input: '打开订单列表的待申请入账记录，在详情弹窗里填写备注后保存，并校验弹窗关闭',
+      targetUrl: 'https://example.com/#/order/list',
+      projectUid: 'proj_checkout',
+      assetAvailability: readyProjectAssets,
+      requiresFixture: false,
+      priorityScenarioFamilyRoute: {
+        family: 'modal_or_drawer_save',
+        textFamily: 'modal_or_drawer_save',
+        visualFamily: 'untracked',
+        source: 'text_only',
+        clarifySignals: [],
+      },
+      repeatedFailureSuppression: {
+        recommendedDecision: 'needs_fixture',
+        reason: 'recent_repeated_data_block',
+      },
+    });
+
+    expect(decision.decision).toBe('needs_fixture');
+    expect(decision.reasons).toEqual(['recent_repeated_data_block']);
+    expect(decision.signals).toMatchObject({
+      hasRepeatedFailureSuppression: true,
+      repeatedFailureDecision: 'needs_fixture',
+      repeatedFailureReason: 'recent_repeated_data_block',
+      priorityScenarioFamily: 'modal_or_drawer_save',
+    });
+  });
 });

@@ -326,6 +326,116 @@ describe('intent-e2e insights', () => {
     });
   });
 
+  it('refines historical unknown failure classes while normalizing terminal snapshots', () => {
+    const businessRun = normalizeIntentE2ETerminalRunSnapshot(
+      makeRunSnapshot({
+        runId: 'run_business_unknown_transition',
+        status: 'failed',
+        requestInput: '登录后台后在商机列表页发起新建商机并保存，随后回列表校验新入库。',
+        targetUrl: 'https://uat.example.com/#/business/businesslist',
+        state: {
+          result: {
+            scenarioCard: {
+              title: '商机创建后回列表验收',
+              taskMode: 'scenario',
+              flowDefinition: {
+                steps: [
+                  { stepType: 'ui', title: '填写商机联系人信息' },
+                  { stepType: 'ui', title: '填写关联产品意向信息' },
+                ],
+              },
+            },
+            finalFailureTriage: {
+              failureClass: 'unknown',
+              repairable: true,
+              summary: '暂未识别明确失败类型，先沿用自动修复策略。',
+            },
+            finalResult: {
+              success: false,
+              error: '未成功切换到“关联产品意向信息”步骤：未检测到第二步字段锚点（企业名称/意向产品/商机权重）',
+              steps: [
+                {
+                  title: 'Step 2: 填写第1个Tab商机联系人信息并进入下一步',
+                  status: 'failed',
+                  duration: 1200,
+                  error: '未成功切换到“关联产品意向信息”步骤：未检测到第二步字段锚点（企业名称/意向产品/商机权重）',
+                },
+              ],
+            },
+          },
+        },
+      })
+    );
+    const orderRun = normalizeIntentE2ETerminalRunSnapshot(
+      makeRunSnapshot({
+        runId: 'run_order_unknown_detail_timeout',
+        status: 'failed',
+        requestInput: '在订单列表按订单号检索并进入详情页核对联系人、手机号与入账状态。',
+        targetUrl: 'https://uat.example.com/#/order/list',
+        state: {
+          result: {
+            scenarioCard: {
+              title: '订单列表搜索详情',
+              taskMode: 'scenario',
+              flowDefinition: {
+                steps: [
+                  { stepType: 'ui', title: '按订单号重新检索目标记录' },
+                  { stepType: 'ui', title: '进入订单详情并核对字段' },
+                ],
+              },
+            },
+            finalFailureTriage: {
+              failureClass: 'unknown',
+              repairable: true,
+              summary: '暂未识别明确失败类型，先沿用自动修复策略。',
+            },
+            finalResult: {
+              success: false,
+              error: 'Step 5: 进入订单详情并核对字段|测试执行超时 (120s)',
+              steps: [
+                {
+                  title: 'Step 5: 进入订单详情并核对字段',
+                  status: 'failed',
+                  duration: 120000,
+                  error: '测试执行超时 (120s)',
+                },
+              ],
+            },
+            attempts: [
+              {
+                attempt: 1,
+                kind: 'generate',
+                result: { success: false },
+                logs: [
+                  { level: 'info', message: 'api response matched' },
+                  { level: 'info', message: 'table row matched' },
+                  { level: 'info', message: 'row action clicked label=查看 strategy=inline targetIndex=11' },
+                ],
+              },
+            ],
+          },
+        },
+      })
+    );
+
+    expect(businessRun).toMatchObject({
+      failureClass: 'workflow_gap',
+      finalGraderResult: {
+        failureClass: 'workflow_gap',
+        repairable: true,
+      },
+    });
+    expect(businessRun?.finalGraderResult.summary).toContain('商机创建表单流转缺口');
+    expect(orderRun).toMatchObject({
+      failureClass: 'response_missing',
+      finalGraderResult: {
+        failureClass: 'response_missing',
+        repairable: true,
+      },
+    });
+    expect(orderRun?.finalGraderResult.summary).toContain('订单详情入口响应缺失');
+  });
+
   it('surfaces fallback debt metadata from terminal run snapshots', () => {
     const scenarioCard = {
       title: '提交并验证成功页',
@@ -619,6 +729,19 @@ describe('intent-e2e insights', () => {
       warningCount: 0,
       readyCount: 2,
     });
+    expect(result.failureTraceGovernance).toMatchObject({
+      generatedFromRuns: 3,
+      totalItems: 2,
+      highSeverityCount: 0,
+      mediumSeverityCount: 1,
+      lowSeverityCount: 1,
+      needsTriageCount: 0,
+      promotionCandidateCount: 2,
+    });
+    expect(result.failureTraceGovernance.items.map((item) => [item.failureClass, item.category, item.severity, item.promotionTarget])).toEqual([
+      ['selector_drift', 'execution_gap', 'medium', 'execution_guard'],
+      ['env_transient', 'environment', 'low', 'environment_runbook'],
+    ]);
   });
 
   it('aggregates auth, env, and assertion failure summary rates from conservative failure classes', () => {
@@ -709,6 +832,125 @@ describe('intent-e2e insights', () => {
       dataBlockedRate: 16.7,
       assertionFailureRuns: 1,
       assertionFailureRate: 16.7,
+    });
+  });
+
+  it('turns terminal failure classes into actionable failure trace governance items', () => {
+    const runSnapshots = [
+      makeRunSnapshot({
+        runId: 'governance_unknown',
+        status: 'failed',
+        requestInput: '新建商机222，保存后回商机列表验收目标记录',
+        targetUrl: 'https://example.com/business/createbusiness',
+        endedAt: '2026-03-19T10:04:00.000Z',
+        state: {
+          result: {
+            scenarioCard: {
+              title: '新建商机后回列表验收',
+              taskMode: 'scenario',
+              flowDefinition: {
+                steps: [
+                  { stepType: 'ui', title: '提交商机', target: '新建商机页', instruction: '填写并保存', expectedResult: '保存成功' },
+                  { stepType: 'assert', title: '回列表验收', target: '商机列表', instruction: '搜索商机222', expectedResult: '命中目标记录' },
+                ],
+              },
+            },
+            finalFailureTriage: {
+              failureClass: 'unknown',
+            },
+          },
+        },
+      }),
+      makeRunSnapshot({
+        runId: 'governance_record_lookup',
+        status: 'failed',
+        requestInput: '登录后搜索商机并进入详情页校验字段',
+        targetUrl: 'https://example.com/business/list',
+        endedAt: '2026-03-19T10:03:00.000Z',
+        state: {
+          result: {
+            scenarioCard: {
+              title: '列表搜索并进入详情',
+              taskMode: 'scenario',
+              flowDefinition: {
+                steps: [
+                  { stepType: 'ui', title: '搜索目标商机', target: '商机列表', instruction: '输入关键字并搜索', expectedResult: '列表返回目标行' },
+                  { stepType: 'assert', title: '详情字段校验', target: '商机详情', instruction: '进入详情读取字段', expectedResult: '字段正确' },
+                ],
+              },
+            },
+            finalFailureTriage: {
+              failureClass: 'record_lookup_miss',
+            },
+          },
+        },
+      }),
+      makeRunSnapshot({
+        runId: 'governance_data_missing',
+        status: 'failed',
+        requestInput: '进入列表验证指定客户记录，当前前置数据缺失',
+        targetUrl: 'https://example.com/customer/list',
+        endedAt: '2026-03-19T10:02:00.000Z',
+        state: {
+          result: {
+            finalFailureTriage: {
+              failureClass: 'data_missing',
+            },
+          },
+        },
+      }),
+      makeRunSnapshot({
+        runId: 'governance_env_transient',
+        status: 'canceled',
+        requestInput: '登录后打开业务工作台',
+        targetUrl: 'https://example.com/dashboard',
+        endedAt: '2026-03-19T10:01:00.000Z',
+        state: {
+          result: {
+            finalFailureTriage: {
+              failureClass: 'env_transient',
+            },
+          },
+        },
+      }),
+    ];
+
+    const result = buildIntentE2EInsightsFromData(runSnapshots, [], {
+      projectUid: 'proj_checkout',
+    });
+    const governanceByClass = new Map(result.failureTraceGovernance.items.map((item) => [item.failureClass, item]));
+
+    expect(result.failureTraceGovernance).toMatchObject({
+      generatedFromRuns: 4,
+      totalItems: 4,
+      highSeverityCount: 2,
+      mediumSeverityCount: 1,
+      lowSeverityCount: 1,
+      needsTriageCount: 1,
+      promotionCandidateCount: 3,
+    });
+    expect(governanceByClass.get('unknown')).toMatchObject({
+      category: 'unknown_triage',
+      severity: 'high',
+      promotionTarget: 'manual_triage',
+      affectedPriorityScenarioFamilies: ['business_create_list_verify'],
+    });
+    expect(governanceByClass.get('unknown')?.antiPatterns.join(' ')).toContain('unknown');
+    expect(governanceByClass.get('record_lookup_miss')).toMatchObject({
+      category: 'verifier_gap',
+      severity: 'high',
+      promotionTarget: 'verifier_recipe',
+      affectedPriorityScenarioFamilies: ['list_search_detail'],
+    });
+    expect(governanceByClass.get('data_missing')).toMatchObject({
+      category: 'data_contract',
+      severity: 'medium',
+      promotionTarget: 'fixture_contract',
+    });
+    expect(governanceByClass.get('env_transient')).toMatchObject({
+      category: 'environment',
+      severity: 'low',
+      promotionTarget: 'environment_runbook',
     });
   });
 
@@ -3470,6 +3712,78 @@ describe('intent-e2e insights', () => {
     });
     expect(signal.failurePressureSummary.highFailureCandidateCount).toBe(1);
     expect(signal.failurePressureSummary.recentFailedVerifyExecutionCount).toBe(3);
+  });
+
+  it('routes repeated modal data gaps to needs_fixture instead of another auto-run', () => {
+    const requestInput =
+      '在订单列表通过“展开”筛选入账状态为“待申请”，勾选结果行后使用表头“批量入账”提交“批量申请入账”弹窗，等待弹窗关闭，并跳转到入账管理页按订单号检索验证记录存在。';
+    const runSnapshots = ['modal_data_gap_1', 'modal_data_gap_2'].map((runId, index) =>
+      makeRunSnapshot({
+        runId,
+        status: 'failed',
+        requestInput,
+        targetUrl: 'https://uat-service.yikaiye.com/#/order/list',
+        endedAt: `2026-04-30T04:3${index + 1}:00.000Z`,
+        state: {
+          result: {
+            description: requestInput,
+            scenarioCard: {
+              title: '订单列表批量申请入账并在入账管理按订单号校验',
+              taskMode: 'scenario',
+              featureDescription: requestInput,
+              flowDefinition: {
+                steps: [
+                  { stepType: 'ui', title: '打开订单列表页' },
+                  { stepType: 'ui', title: '展开筛选并设置入账状态' },
+                  { stepType: 'extract', title: '勾选首条结果并提取订单号' },
+                  { stepType: 'ui', title: '发起批量入账' },
+                  { stepType: 'assert', title: '校验入账记录存在' },
+                ],
+              },
+            },
+            finalFailureTriage: {
+              summary: '筛选“待申请”后无可用订单行',
+              failureClass: 'data_missing',
+              repairable: false,
+            },
+            finalResult: {
+              success: false,
+              error: '跳过: 前置数据不足：筛选“待申请”后无可用订单行',
+              steps: [],
+            },
+            attempts: [
+              {
+                attempt: 1,
+                kind: 'generate',
+                result: { success: false },
+                logs: [],
+                events: [],
+              },
+            ],
+          },
+        },
+      })
+    );
+
+    const signal = resolveIntentE2ERepeatedFailureSuppressionFromData(runSnapshots, {
+      requestInput,
+      targetUrl: 'https://uat-service.yikaiye.com/#/order/list',
+    });
+
+    expect(signal).toMatchObject({
+      shouldSuppress: true,
+      priorityScenarioFamily: 'modal_or_drawer_save',
+      targetPath: '/order/list',
+      matchedRunCount: 2,
+      matchedFailedRuns: 2,
+      recentFailureStreak: 2,
+      dominantQualityBucket: 'data_blocked',
+      dominantBlockerKind: 'data',
+      latestFailureClass: 'data_missing',
+      recommendedDecision: 'needs_fixture',
+      reason: 'recent_repeated_data_block',
+      representativeRunIds: ['modal_data_gap_2', 'modal_data_gap_1'],
+    });
   });
 
   it('flags rollback candidates when pass rate drops after a merge audit', () => {

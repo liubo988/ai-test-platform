@@ -4,6 +4,7 @@ import { listRecentIntentE2ETerminalRunSnapshots } from '@/lib/ai/intent-e2e-run
 import { buildIntentE2EProjectAssetAvailability } from '@/lib/intent-e2e-asset-readiness';
 import { resolveIntentE2ELaunchDecision } from '@/lib/intent-e2e-launch-decision';
 import { resolveIntentE2EPriorityScenarioFamilyRoute } from '@/lib/intent-e2e-priority-scenario-family';
+import { safeRecordIntentE2ELaunchDecisionTrafficQuality } from '@/lib/intent-e2e-traffic-quality';
 import { prepareIntentE2ERequest } from '@/lib/server/intent-e2e-request-preparation';
 import { applyActorCookie, toErrorResponse } from '@/lib/server/project-actor';
 
@@ -103,6 +104,12 @@ export async function POST(req: NextRequest) {
         });
       }
     }
+
+    await safeRecordIntentE2ELaunchDecisionTrafficQuality({
+      request,
+      launchDecision,
+      priorityScenarioFamily: priorityScenarioFamilyRoute.family,
+    });
 
     const response = NextResponse.json({
       ...launchDecision,

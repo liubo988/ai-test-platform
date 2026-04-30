@@ -127,6 +127,17 @@ describe('intent-e2e-request', () => {
         visualAnchors: ['新建商机按钮'],
         notes: ['复用草稿资产'],
       },
+      prefilledScenarioLlmMeta: {
+        provider: ' openai ',
+        model: ' gpt-5.4 ',
+        visionEnabled: true,
+        attachmentCount: 1.8,
+        attachmentOcrAttempted: true,
+        attachmentOcrUsed: true,
+        attachmentOcrVisualAnchorCount: 3.2,
+        attachmentOcrTextSnippetCount: 1,
+        ignored: 'nope',
+      },
       prefilledPlanCode: "test('draft-prefill', async ({ page }) => { await page.goto('https://example.com/#/business/businesslist'); });",
     });
 
@@ -136,6 +147,16 @@ describe('intent-e2e-request', () => {
       featureDescription: '从草稿复用 ScenarioCard',
     });
     expect(request.intentDraftUid).toBe('idraft_1');
+    expect(request.prefilledScenarioLlmMeta).toEqual({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      visionEnabled: true,
+      attachmentCount: 1,
+      attachmentOcrAttempted: true,
+      attachmentOcrUsed: true,
+      attachmentOcrVisualAnchorCount: 3,
+      attachmentOcrTextSnippetCount: 1,
+    });
     expect(request.prefilledPlanCode).toContain("test('draft-prefill'");
   });
 
@@ -162,6 +183,14 @@ describe('intent-e2e-request', () => {
         visualAnchors: ['新建商机按钮'],
         notes: [],
       },
+      prefilledScenarioLlmMeta: {
+        visionEnabled: true,
+        attachmentCount: 1,
+        attachmentOcrAttempted: true,
+        attachmentOcrUsed: true,
+        attachmentOcrVisualAnchorCount: 2,
+        attachmentOcrTextSnippetCount: 1,
+      },
       prefilledPlanCode: "test('draft-prefill')",
       attachments: [
         {
@@ -182,6 +211,14 @@ describe('intent-e2e-request', () => {
       projectUid: 'proj_default',
       moduleUid: 'mod_business',
       intentDraftUid: 'idraft_1',
+      prefilledScenarioLlmMeta: {
+        visionEnabled: true,
+        attachmentCount: 1,
+        attachmentOcrAttempted: true,
+        attachmentOcrUsed: true,
+        attachmentOcrVisualAnchorCount: 2,
+        attachmentOcrTextSnippetCount: 1,
+      },
       attachments: [
         {
           name: 'screenshot.png',

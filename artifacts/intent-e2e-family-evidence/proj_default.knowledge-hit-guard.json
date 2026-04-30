@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "label": "phase14-knowledge-hit-guard",
+  "projectUid": "proj_default",
+  "evidences": [
+    {
+      "id": "business-create-list-verify-phase9-knowledge-hit",
+      "priorityScenarioFamily": "business_create_list_verify",
+      "evidenceType": "benchmark",
+      "evidencePath": "artifacts/intent-e2e-family-evidence/proj_default.release-guard/benchmarks/2026-04-28T09-04-31-713Z-bench_409f923ca053.json",
+      "expectedRuleIds": ["business.create-list-status-detail-entry"],
+      "minKnowledgeHitRate": 100,
+      "requirePassed": true
+    },
+    {
+      "id": "business-to-order-phase9-knowledge-hit",
+      "priorityScenarioFamily": "business_to_order",
+      "evidenceType": "benchmark",
+      "evidencePath": "artifacts/intent-e2e-family-evidence/proj_default.release-guard/benchmarks/2026-04-28T09-04-55-528Z-bench_1b1ffa81dc16.json",
+      "expectedRuleIds": ["business.create-order-flow"],
+      "minKnowledgeHitRate": 100,
+      "requirePassed": true
+    },
+    {
+      "id": "list-search-detail-phase14-knowledge-hit",
+      "priorityScenarioFamily": "list_search_detail",
+      "evidenceType": "rerun_report",
+      "evidencePath": "artifacts/intent-e2e-family-evidence/proj_default.knowledge-hit/list-search-detail-phase14-rerun.json",
+      "expectedRuleIds": ["order.list-search-detail-primary-record"],
+      "minKnowledgeHitRate": 100,
+      "requirePassed": true
+    },
+    {
+      "id": "business-batch-add-contacts-phase503-knowledge-hit",
+      "priorityScenarioFamily": "business_batch_add_contacts_verify",
+      "evidenceType": "rerun_report",
+      "evidencePath": "artifacts/intent-e2e-family-evidence/proj_default.knowledge-hit/business-batch-add-contacts-phase506-playbook-rerun-1.json",
+      "expectedRuleIds": ["business.batch-add-contacts"],
+      "minKnowledgeHitRate": 100,
+      "requirePassed": true
+    }
+  ]
+}

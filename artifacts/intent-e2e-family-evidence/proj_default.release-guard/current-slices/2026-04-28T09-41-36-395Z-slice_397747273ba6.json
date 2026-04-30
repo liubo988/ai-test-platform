@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "sliceUid": "slice_397747273ba6",
+  "projectUid": "proj_default",
+  "benchmarkUid": "bench_c45252cb7ff0",
+  "benchmarkPath": "artifacts/intent-e2e-family-evidence/proj_default.release-guard/benchmarks/2026-04-28T09-26-01-629Z-bench_c45252cb7ff0.json",
+  "priorityScenarioFamily": "list_search_detail",
+  "proofWindow": "non_weak",
+  "afterTerminalRunId": "intent-run-a7f229e2-7fb0-477c-b505-602febf26f17",
+  "afterFinishedAt": "2026-04-28T09:00:08.895Z",
+  "declaredReason": "phase11 release guard: isolate phase10 list_search_detail fresh window",
+  "createdFromCompareReport": "",
+  "createdAt": "2026-04-28T09:41:36.395Z"
+}

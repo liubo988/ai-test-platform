@@ -938,6 +938,206 @@ describe('intent-project-knowledge', () => {
     expect(renderIntentProjectKnowledge(resolution)).toBe('');
   });
 
+  it('covers the release-guard families with the default project knowledge asset', () => {
+    const previousKnowledgePath = process.env.INTENT_E2E_PROJECT_KNOWLEDGE_PATH;
+    delete process.env.INTENT_E2E_PROJECT_KNOWLEDGE_PATH;
+    resetIntentProjectKnowledgeCache();
+
+    try {
+      const businessCreateDsl = buildIntentActionDSL({
+        taskMode: 'scenario',
+        targetUrl: 'https://uat-service.yikaiye.com/#/business/businesslist',
+        featureDescription:
+          'business_create_list_verify fresh live evidence：在商机列表页完成真实新建商机、切换到“我创建的”并对真实新建记录执行严格状态验收，优先用结构化列表响应确认“商机进展”为“新入库”。',
+        expectedOutcome:
+          '在“我创建的”列表中稳定命中新建商机记录，并优先通过结构化列表响应确认其商机进展为“新入库”；仅在缺失时才回退到详情面的“商机进展 / 状态”字段。',
+        sharedVariables: ['createdBusinessKey'],
+        steps: [
+          {
+            stepUid: 'step_1',
+            stepType: 'assert',
+            title: '校验新建记录及进展状态',
+            target: '“我创建的”商机列表与可能的详情面',
+            instruction:
+              '使用 createdBusinessKey 或 businessId 在“我创建的”列表中稳定命中真实新建记录；优先使用结构化列表响应中的状态字段校验商机进展为“新入库”，仅当列表响应缺失状态证据时，才进入该记录详情面读取“商机进展 / 状态”字段做严格 fallback。',
+            expectedResult: '真实新建商机记录已被命中，且最终业务状态明确校验为“新入库”',
+            extractVariable: '',
+          },
+        ],
+      });
+      const businessCreateResolution = resolveIntentProjectKnowledge(
+        {
+          snapshot: {
+            url: 'https://uat-service.yikaiye.com/#/business/businesslist',
+            title: '商机列表',
+            buttons: [],
+            headings: [{ level: 'H1', text: '商机列表' }],
+            bodyTextExcerpt: '我创建的 新建商机 商机进展 新入库',
+            frames: [],
+          },
+          description:
+            '登录后台后在商机列表页发起新建商机并保存，随后切换到“我创建的”Tab，等待列表加载完成，校验新建商机记录出现在列表中且“商机进展”为“新入库”。',
+          dsl: businessCreateDsl,
+        },
+        { projectUid: 'proj_default' }
+      );
+      const businessCreateMatch = businessCreateResolution.matches.find(
+        (item) => item.ruleId === 'business.create-list-status-detail-entry'
+      );
+      const patchedBusinessCreate = applyIntentProjectKnowledgeToDsl(businessCreateDsl, businessCreateResolution);
+
+      expect(businessCreateMatch).toBeTruthy();
+      expect(businessCreateMatch?.capabilitySlugs).toEqual(
+        expect.arrayContaining(['assert.resolve-primary-record', 'assert.read-detail-field'])
+      );
+      expect(businessCreateMatch?.recordLookupHints?.[0]?.stableIdentifiers).toEqual(
+        expect.arrayContaining(['createdBusinessKey', 'businessId', 'contactPhone'])
+      );
+      expect(businessCreateMatch?.detailSurfaceHints?.[0]?.stableIdentifiers).toContain('createdBusinessKey');
+      expect(patchedBusinessCreate.steps[0].preferredHelpers).toEqual(
+        expect.arrayContaining(['__e2e.resolvePrimaryRecord', '__e2e.clickAntdRowAction', '__e2e.readDetailField'])
+      );
+
+      const businessToOrderDsl = buildIntentActionDSL({
+        taskMode: 'scenario',
+        targetUrl: 'https://uat-service.yikaiye.com/#/business/businesslist',
+        featureDescription:
+          'business_to_order fresh sample：从商机列表创建真实新商机，回列表定位目标行并触发生成订单，以 /crmapi/business/createOrder 成功响应、确定订单信息 Drawer 关闭和关键清理信息记录作为主要验收。',
+        expectedOutcome:
+          '新建商机后可在商机列表定位目标行并成功生成订单；最终通过必须具备 createOrder 成功响应和 Drawer 关闭/页面稳定态，不强依赖原商机行继续可见。',
+        sharedVariables: ['createdBusinessKey', 'contactPhone', 'businessId', 'createOrderResponse'],
+        steps: [
+          {
+            stepUid: 'step_1',
+            stepType: 'ui',
+            title: '从目标行打开生成订单 Drawer',
+            target: '目标商机行操作菜单',
+            instruction:
+              '在目标行末列三点菜单或操作入口点击“生成订单”，等待“确定订单信息”Drawer 可见；优先使用 __e2e.clickAntdRowAction(page, targetRow, "生成订单")。',
+            expectedResult: '确定订单信息 Drawer 可见',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step_2',
+            stepType: 'assert',
+            title: '记录订单生成证据',
+            target: 'createOrder 响应与页面稳定态',
+            instruction:
+              '以 createOrder 成功响应、Drawer 关闭/页面稳定态和关键清理信息记录作为最终通过证据；生成订单成功后不要强制要求原商机行仍可见。',
+            expectedResult: '生成订单主链路完成',
+            extractVariable: '',
+          },
+        ],
+      });
+      const businessToOrderResolution = resolveIntentProjectKnowledge(
+        {
+          snapshot: {
+            url: 'https://uat-service.yikaiye.com/#/business/businesslist',
+            title: '商机列表',
+            buttons: [],
+            headings: [{ level: 'H1', text: '商机列表' }],
+            bodyTextExcerpt: '生成订单 确定订单信息 商机列表',
+            frames: [],
+          },
+          description:
+            '登录后台后在商机列表页创建商机并生成订单：回到商机列表用唯一手机号定位新建商机，从目标行操作菜单点击“生成订单”，在“确定订单信息”Drawer 中点击确定，并以 createOrder 成功响应和 Drawer 关闭作为主断言。',
+          dsl: businessToOrderDsl,
+        },
+        { projectUid: 'proj_default' }
+      );
+      const businessToOrderMatch = businessToOrderResolution.matches.find(
+        (item) => item.ruleId === 'business.create-order-flow'
+      );
+      const patchedBusinessToOrder = applyIntentProjectKnowledgeToDsl(businessToOrderDsl, businessToOrderResolution);
+
+      expect(businessToOrderMatch).toBeTruthy();
+      expect(businessToOrderMatch?.recordLookupHints?.[0]?.detailEntry).toEqual({
+        trigger: 'row_action',
+        actionLabel: '生成订单',
+        target: 'drawer_or_modal',
+      });
+      expect(businessToOrderMatch?.detailSurfaceHints?.[0]?.titleIncludes).toBe('确定订单信息');
+      expect(patchedBusinessToOrder.steps[0].preferredHelpers).toEqual(
+        expect.arrayContaining(['__e2e.findAntdTableRow', '__e2e.clickAntdRowAction', '__e2e.waitForApiResponse'])
+      );
+      expect(patchedBusinessToOrder.globalRules.join('\n')).toContain('生成订单入口必须作用在本次创建或检索命中的目标商机行上');
+
+      const orderListDsl = buildIntentActionDSL({
+        taskMode: 'scenario',
+        targetUrl: 'https://uat-service.yikaiye.com/#/order/list',
+        featureDescription:
+          'list_search_detail first-pass breakthrough：订单列表先筛出待申请候选，再提取唯一订单号，后续统一只用该订单号进入详情做字段验收。',
+        expectedOutcome: '通过唯一订单号稳定命中对应订单详情，并按字段标签核对联系人、手机号和入账状态。',
+        sharedVariables: ['selectedOrderNo'],
+        steps: [
+          {
+            stepUid: 'step_1',
+            stepType: 'extract',
+            title: '从候选结果提取唯一订单号',
+            target: '订单结果行',
+            instruction: '从真实候选结果行提取 selectedOrderNo；优先订单号链接，其次 rowKey 或稳定编号 token，不要使用手机号或状态文本。',
+            expectedResult: 'selectedOrderNo 非空且可复用',
+            extractVariable: 'selectedOrderNo',
+          },
+          {
+            stepUid: 'step_2',
+            stepType: 'assert',
+            title: '进入订单详情并核对字段',
+            target: '订单详情页或详情抽屉',
+            instruction: '进入 selectedOrderNo 对应详情页或详情抽屉，按字段标签读取联系人、手机号和入账状态。',
+            expectedResult: '详情页或详情抽屉可见，字段标签核对完成',
+            extractVariable: '',
+          },
+        ],
+      });
+      const orderListResolution = resolveIntentProjectKnowledge(
+        {
+          snapshot: {
+            url: 'https://uat-service.yikaiye.com/#/order/list',
+            title: '订单列表',
+            buttons: [],
+            headings: [{ level: 'H1', text: '订单列表' }],
+            bodyTextExcerpt: '展开 搜 索 订单号 联系人 手机号 入账状态',
+            frames: [],
+          },
+          description:
+            '在订单列表先用入账状态下拉选择“待申请”，再从真实结果行提取订单号，按订单号重新检索并进入详情页/详情抽屉验证联系人、手机号与入账状态。',
+          dsl: orderListDsl,
+        },
+        { projectUid: 'proj_default' }
+      );
+      const orderListMatch = orderListResolution.matches.find(
+        (item) => item.ruleId === 'order.list-search-detail-primary-record'
+      );
+      const patchedOrderList = applyIntentProjectKnowledgeToDsl(orderListDsl, orderListResolution);
+
+      expect(orderListMatch).toBeTruthy();
+      expect(orderListMatch?.capabilitySlugs).toEqual(
+        expect.arrayContaining(['assert.resolve-primary-record', 'assert.read-detail-field', 'extract.capture-shared-variable'])
+      );
+      expect(orderListMatch?.recordLookupHints?.[0]?.stableIdentifiers).toEqual(
+        expect.arrayContaining(['selectedOrderNo', 'orderNo', 'serialNo'])
+      );
+      expect(orderListMatch?.recordLookupHints?.[0]?.searchSurface?.keywordInput).toEqual({
+        placeholderIncludes: '请输入关键词',
+      });
+      expect(orderListMatch?.detailSurfaceHints?.[0]?.scopeHints).toEqual(
+        expect.arrayContaining(['详情页', '详情抽屉', '详情弹层'])
+      );
+      expect(patchedOrderList.steps[0].preferredHelpers).toEqual(
+        expect.arrayContaining(['__e2e.selectAntdOption', '__e2e.resolvePrimaryRecord', '__e2e.readDetailField'])
+      );
+      expect(patchedOrderList.outputContract.join('\n')).toContain('selectedOrderNo 的来源');
+    } finally {
+      if (previousKnowledgePath) {
+        process.env.INTENT_E2E_PROJECT_KNOWLEDGE_PATH = previousKnowledgePath;
+      } else {
+        delete process.env.INTENT_E2E_PROJECT_KNOWLEDGE_PATH;
+      }
+      resetIntentProjectKnowledgeCache();
+    }
+  });
+
   it('reloads same-path knowledge content when the file changes without manual cache reset', () => {
     const baseDsl = buildIntentActionDSL({
       taskMode: 'scenario',

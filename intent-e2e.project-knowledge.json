@@ -6,11 +6,12 @@
       "title": "商机转订单主链路",
       "match": {
         "urlIncludes": ["/business/createbusiness", "/business/businesslist"],
-        "descriptionIncludes": ["生成订单", "createorder", "签约成功", "商机转订单"]
+        "descriptionIncludes": ["生成订单", "createorder", "商机转订单"]
       },
       "promptNotes": [
         "商机转订单链路优先以 createOrder 响应成功 + Drawer/Modal 收敛 + 状态变化为主断言，不强求原商机行继续可见。",
-        "如果需要重新检索目标商机，优先复用真实手机号、businessId 或接口响应主键，不要随机挑行。"
+        "如果需要重新检索目标商机，优先复用真实手机号、businessId 或接口响应主键，不要随机挑行。",
+        "触发“生成订单”必须从已命中的目标商机行进入，等待“确定订单信息”Drawer 后再点击确认并绑定 /crmapi/business/createOrder 响应。"
       ],
       "capabilitySlugs": [
         "ui.select-antd-option",
@@ -20,10 +21,12 @@
       ],
       "addGlobalRules": [
         "命中商机转订单知识时，主成功条件优先绑定 createOrder 响应成功、订单 Drawer 关闭和签约状态变化。",
-        "订单创建成功后，不要再把“原列表行仍然可见”当成唯一成功标准。"
+        "订单创建成功后，不要再把“原列表行仍然可见”当成唯一成功标准。",
+        "生成订单入口必须作用在本次创建或检索命中的目标商机行上，不允许全局点击第一个“生成订单”。"
       ],
       "addPreferredPrimitives": [
-        "assert_business_transition(before, after): 用接口成功 + 状态计数/Drawer 收敛验证商机转订单结果"
+        "assert_business_transition(before, after): 用接口成功 + 状态计数/Drawer 收敛验证商机转订单结果",
+        "resolve_business_row(identity): 用 businessId、createdBusinessKey、contactPhone 或 contactName 定位目标商机行后再触发行操作"
       ],
       "addOutputContract": [
         "商机转订单场景不要回退成宽泛成功 toast 断言，至少保留接口成功 + UI 状态收敛其中两类证据。"
@@ -33,9 +36,37 @@
           "whenStepTypes": ["ui", "assert", "extract"],
           "stepTextIncludes": ["商机", "订单", "生成订单", "签约成功", "查看"],
           "addAllowedActions": ["find_table_row", "click_row_action", "wait_for_response", "assert_response_ok", "extract_text", "store_variable"],
-          "addPreferredHelpers": ["__e2e.clickAntdRowAction", "__e2e.waitForApiResponse"],
-          "addRequiredAssertions": ["/crmapi/business/createOrder 响应成功", "订单 Drawer 关闭或签约状态发生变化"],
-          "addForbiddenPatterns": ["用 page.getByText(/成功/i).first() 作为主断言", "createOrder 成功后继续强依赖原目标行仍然可见"]
+          "addPreferredHelpers": ["__e2e.findAntdTableRow", "__e2e.clickAntdRowAction", "__e2e.waitForApiResponse", "__e2e.waitForVisibleAntdModal"],
+          "addRequiredAssertions": ["/crmapi/business/createOrder 响应成功", "确定订单信息 Drawer 已打开并在确认后关闭", "订单 Drawer 关闭或签约状态发生变化"],
+          "addForbiddenPatterns": ["用 page.getByText(/成功/i).first() 作为主断言", "createOrder 成功后继续强依赖原目标行仍然可见", "未定位目标商机行就全局点击“生成订单”"]
+        }
+      ],
+      "recordLookupHints": [
+        {
+          "stableIdentifiers": ["businessId", "createdBusinessKey", "contactPhone", "contactName"],
+          "whenStepTypes": ["ui", "assert", "extract"],
+          "stepTextIncludes": ["商机", "生成订单", "目标行"],
+          "listResponse": { "urlIncludes": "/business", "method": "GET" },
+          "rowHasTexts": ["createdBusinessKey", "contactPhone", "contactName"],
+          "searchSurface": {
+            "keywordInput": { "selector": "input#businessList_keywords:visible" },
+            "searchButton": { "textIncludes": "搜索" }
+          },
+          "detailReadyLocator": { "textIncludes": "确定订单信息" },
+          "detailEntry": {
+            "trigger": "row_action",
+            "actionLabel": "生成订单",
+            "target": "drawer_or_modal"
+          }
+        }
+      ],
+      "detailSurfaceHints": [
+        {
+          "stableIdentifiers": ["businessId", "createdBusinessKey", "contactPhone", "contactName"],
+          "whenStepTypes": ["ui", "assert"],
+          "stepTextIncludes": ["生成订单", "确定订单信息"],
+          "titleIncludes": "确定订单信息",
+          "scopeHints": ["订单确认抽屉", "Drawer"]
         }
       ]
     },
@@ -44,21 +75,26 @@
       "title": "新建商机后列表状态回查",
       "match": {
         "urlIncludes": ["/business/createbusiness", "/business/businesslist"],
-        "descriptionIncludes": ["商机进展", "新入库"]
+        "descriptionIncludes": ["商机进展", "新入库", "我创建的"]
       },
       "promptNotes": [
         "新建商机后切到“我创建的”校验“商机进展”时，不要把 `#/business/detail/:id` 当成唯一详情入口；如果列表行已经命中且 detailUrl 无效，优先复用目标行的显式“查看”入口。",
-        "这条 family 的固定详情链优先写成 `detailEntry{ trigger=row_action; actionLabel=查看; target=drawer_or_modal } -> detailReadyLocator.textIncludes=商机详情 -> __e2e.readDetailField(... '商机进展') || __e2e.readDetailField(... '状态')`。"
+        "这条 family 的固定详情链优先写成 `detailEntry{ trigger=row_action; actionLabel=查看; target=drawer_or_modal } -> detailReadyLocator.textIncludes=商机详情 -> __e2e.readDetailField(... '商机进展') || __e2e.readDetailField(... '状态')`。",
+        "若列表响应已经带出目标记录状态，优先读取结构化列表响应；只有状态证据缺失时才进入商机详情做字段 fallback。"
       ],
       "capabilitySlugs": [
         "ui.click-antd-row-action",
-        "assert.read-detail-field"
+        "assert.resolve-primary-record",
+        "assert.read-detail-field",
+        "extract.capture-shared-variable"
       ],
       "addGlobalRules": [
-        "命中新建商机列表状态回查知识时，若 `detailUrl` 无效，优先复用已命中目标行的“查看”详情入口，不要把 `business/detail` 当成唯一详情路径。"
+        "命中新建商机列表状态回查知识时，若 `detailUrl` 无效，优先复用已命中目标行的“查看”详情入口，不要把 `business/detail` 当成唯一详情路径。",
+        "新建商机回查必须绑定 createdBusinessKey / businessId / 本次唯一手机号之一，不能只凭 toast、URL 或任意“新入库”文本判定通过。"
       ],
       "addPreferredPrimitives": [
-        "open_business_detail_from_row(row): 用 `__e2e.clickAntdRowAction(page, row, '查看')` 打开商机详情，并等待 `商机详情` surface 稳定。"
+        "open_business_detail_from_row(row): 用 `__e2e.clickAntdRowAction(page, row, '查看')` 打开商机详情，并等待 `商机详情` surface 稳定。",
+        "assert_business_created_status(identity): 优先从结构化列表响应读取“商机进展=新入库”，缺失时再进入详情读取“商机进展 / 状态”。"
       ],
       "addOutputContract": [
         "若列表行已命中但行内未直接展示“商机进展”，优先通过“查看”打开商机详情并读取“商机进展/状态”，不要直接把 invalid detail route 继续当作唯一详情路径。"
@@ -67,9 +103,10 @@
         {
           "whenStepTypes": ["assert"],
           "stepTextIncludes": ["商机进展", "新入库", "我创建的"],
-          "addAllowedActions": ["click_row_action", "wait_for_visible_modal", "read_detail_field"],
-          "addPreferredHelpers": ["__e2e.clickAntdRowAction", "__e2e.waitForVisibleAntdModal", "__e2e.readDetailField"],
+          "addAllowedActions": ["find_table_row", "click_row_action", "wait_for_visible_modal", "read_detail_field"],
+          "addPreferredHelpers": ["__e2e.resolvePrimaryRecord", "__e2e.clickAntdRowAction", "__e2e.waitForVisibleAntdModal", "__e2e.readDetailField"],
           "addRequiredAssertions": [
+            "优先绑定本次新建商机的 createdBusinessKey、businessId 或唯一手机号",
             "若列表行未直出状态，优先通过“查看”打开“商机详情”并读取“商机进展”或“状态”字段"
           ],
           "addForbiddenPatterns": [
@@ -80,11 +117,12 @@
       ],
       "recordLookupHints": [
         {
-          "stableIdentifiers": ["createdBusinessId"],
+          "stableIdentifiers": ["createdBusinessId", "createdBusinessKey", "businessId", "contactPhone"],
           "whenStepTypes": ["assert"],
-          "stepTextIncludes": ["商机进展", "新入库"],
+          "stepTextIncludes": ["商机进展", "新入库", "我创建的"],
           "listResponse": { "urlIncludes": "/business", "method": "GET" },
           "detailUrl": "/business/detail/{{primaryValue}}",
+          "rowHasTexts": ["createdBusinessKey", "businessId", "contactPhone"],
           "searchSurface": {
             "keywordInput": { "selector": "input#businessList_keywords:visible" },
             "searchButton": { "textIncludes": "搜索" }
@@ -99,11 +137,89 @@
       ],
       "detailSurfaceHints": [
         {
-          "stableIdentifiers": ["createdBusinessId"],
+          "stableIdentifiers": ["createdBusinessId", "createdBusinessKey", "businessId", "contactPhone"],
           "whenStepTypes": ["assert"],
-          "stepTextIncludes": ["商机进展", "新入库"],
+          "stepTextIncludes": ["商机进展", "新入库", "我创建的"],
           "titleIncludes": "商机详情",
           "scopeHints": ["详情抽屉"]
+        }
+      ]
+    },
+    {
+      "id": "order.list-search-detail-primary-record",
+      "title": "订单列表按订单号回查详情",
+      "match": {
+        "urlIncludes": ["/order/list"],
+        "descriptionIncludes": ["按订单号重新检索", "提取订单号", "入账状态", "订单详情"]
+      },
+      "promptNotes": [
+        "订单列表筛选入账状态时，下拉选项优先使用“待申请”；“待申请入账”是结果行状态文本，不应作为下拉选项或唯一主键。",
+        "必须先从真实候选行提取 selectedOrderNo / orderNo / serialNo / rowKey 这类唯一订单号，再按该订单号重新检索目标记录。",
+        "最终验收必须进入该订单对应的详情页、详情抽屉或详情弹层，并按字段标签读取联系人、手机号与入账状态。"
+      ],
+      "capabilitySlugs": [
+        "ui.select-antd-option",
+        "assert.resolve-primary-record",
+        "assert.read-detail-field",
+        "extract.capture-shared-variable",
+        "ui.click-antd-row-action"
+      ],
+      "addGlobalRules": [
+        "命中订单列表回查详情知识时，目标记录必须由唯一订单号稳定命中；不要用手机号、金额、状态文本或第一行结果代替 selectedOrderNo。",
+        "进入详情前先保留 selectedOrderNo 证据链；详情字段验收按“联系人 / 手机号 / 入账状态”标签读取。"
+      ],
+      "addPreferredPrimitives": [
+        "extract_order_no(row): 优先读取订单号列、订单号链接、rowKey 或 serialNo，排除手机号、金额和状态文本。",
+        "resolve_order_detail_by_no(selectedOrderNo): 用 `__e2e.resolvePrimaryRecord` 按订单号重新命中目标行，再进入详情 surface 读取字段。",
+        "assert_order_detail_fields(scope, selectedOrderNo): 在详情页 / 详情抽屉内用 `__e2e.readDetailField` 读取联系人、手机号和入账状态。"
+      ],
+      "addOutputContract": [
+        "list_search_detail 订单场景必须输出 selectedOrderNo 的来源、重新检索命中证据和详情字段读取证据，不能只断言列表存在“待申请入账”。"
+      ],
+      "stepPatches": [
+        {
+          "whenStepTypes": ["ui", "extract", "assert"],
+          "stepTextIncludes": ["订单号", "详情", "联系人", "手机号", "入账状态", "待申请"],
+          "addAllowedActions": ["select_dropdown_option", "find_table_row", "resolve_primary_record", "click_row_action", "extract_text", "store_variable", "read_detail_field"],
+          "addPreferredHelpers": ["__e2e.selectAntdOption", "__e2e.findAntdTableRow", "__e2e.resolvePrimaryRecord", "__e2e.clickAntdRowAction", "__e2e.readDetailField"],
+          "addRequiredAssertions": [
+            "selectedOrderNo 来自真实订单候选行且不是手机号、金额或状态文本",
+            "按 selectedOrderNo 重新检索后命中目标订单行",
+            "已进入该订单对应详情 surface，并读取联系人、手机号和入账状态字段"
+          ],
+          "addForbiddenPatterns": [
+            "把“待申请入账”作为下拉选项",
+            "把手机号、金额、状态文本或第一行宽泛 token 写入 selectedOrderNo",
+            "未进入详情 surface 就把列表命中当最终通过"
+          ]
+        }
+      ],
+      "recordLookupHints": [
+        {
+          "stableIdentifiers": ["selectedOrderNo", "orderNo", "serialNo", "rowKey"],
+          "whenStepTypes": ["ui", "extract", "assert"],
+          "stepTextIncludes": ["订单号", "详情", "联系人", "手机号", "入账状态"],
+          "listResponse": { "urlIncludes": "/order", "method": "GET" },
+          "rowHasTexts": ["selectedOrderNo", "orderNo", "serialNo"],
+          "searchSurface": {
+            "keywordInput": { "placeholderIncludes": "请输入关键词" },
+            "searchButton": { "textIncludes": "搜 索" }
+          },
+          "detailReadyLocator": { "textIncludes": "订单详情" },
+          "detailEntry": {
+            "trigger": "row_action",
+            "actionLabel": "查看",
+            "target": "drawer_or_modal"
+          }
+        }
+      ],
+      "detailSurfaceHints": [
+        {
+          "stableIdentifiers": ["selectedOrderNo", "orderNo", "serialNo", "rowKey"],
+          "whenStepTypes": ["ui", "assert"],
+          "stepTextIncludes": ["详情", "联系人", "手机号", "入账状态"],
+          "titleIncludes": "订单详情",
+          "scopeHints": ["详情页", "详情抽屉", "详情弹层"]
         }
       ]
     },

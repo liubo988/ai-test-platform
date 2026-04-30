@@ -1,6 +1,7 @@
 export type IntentE2EPriorityScenarioFamily =
   | 'business_create_list_verify'
   | 'business_to_order'
+  | 'business_batch_add_contacts_verify'
   | 'list_search_detail'
   | 'modal_or_drawer_save'
   | 'row_action_menu'
@@ -82,6 +83,7 @@ function uniqueStrings(values: Array<string | null | undefined>): string[] {
 
 const NARROW_PRIORITY_SCENARIO_FAMILIES = new Set<IntentTrackedE2EPriorityScenarioFamily>([
   'business_create_list_verify',
+  'business_batch_add_contacts_verify',
   'list_search_detail',
   'modal_or_drawer_save',
 ]);
@@ -160,6 +162,57 @@ const PRIORITY_SCENARIO_FAMILY_ASSET_PROFILES: Partial<
       fixtureContract: 'project_data_dependency_explicit',
       notes: [
         '若当前环境不允许真实创建并回查新记录，这不是 prompt 质量问题，而是显式 data/fixture gap；主链路必须保留该缺口可见。',
+      ],
+    },
+  },
+  business_batch_add_contacts_verify: {
+    family: 'business_batch_add_contacts_verify',
+    preferredCapabilitySlugs: [
+      'ui.find-antd-table-row',
+      'ui.click-antd-row-checkbox',
+      'assert.resolve-primary-record',
+    ],
+    preferredRecipeSlugs: [
+      'intent.business-batch-add-contacts',
+      'business.batch-add-contacts',
+    ],
+    executionRules: [
+      '命中 family=business_batch_add_contacts_verify 时，首轮优先沿“命中真实可勾选商机行 -> 记录手机号/联系人 -> 勾选 -> 点击批量加入通讯录 -> 进入我的通讯录按同一手机号检索命中”固定骨架执行，不要退回自由生成。',
+      '如果当前商机列表筛选结果为空，但任务已显式声明允许切到有数量阶段，先把列表切到有真实数据的阶段，再继续选行；不要把空结果直接当最终失败。',
+      '如果已经命中目标行，勾选动作必须优先复用 `__e2e.clickAntdRowCheckbox(...)`；不要直接点第一条可见 checkbox，也不要手写 fixed-column clone 细节。',
+    ],
+    preferredPrimitives: [
+      'find_selectable_row(rowHasTexts?): 先命中真实业务表格行，再用 __e2e.clickAntdRowCheckbox(...) 完成勾选',
+      'verify_contact_enrollment(contactPhone): 进入我的通讯录并按同一手机号检索，最终以结果命中作为成功证据',
+    ],
+    outputContract: [
+      '在点击“批量加入通讯录”前，必须先从被选中商机行记录 `contactPhone`；若手机号缺失，至少保留 `contactName` 作为 fallback identity。',
+      '最终通过必须覆盖：真实业务行被命中并勾选、批量加入通讯录动作已触发，以及我的通讯录列表按同一手机号或联系人稳定命中目标记录。',
+      'toast、“已加入通讯录/已存在您的通讯录”等页面反馈不能单独判通过；若页面提示已存在，但最终在我的通讯录按同一手机号检索命中，仍可判通过。',
+    ],
+    stableIdentifier: {
+      primaryVariables: ['contactPhone'],
+      fallbackVariables: ['contactName', 'businessId'],
+      responsePathHints: ['mobile', 'phone', 'contactPhone', 'contactMobile', 'businessId', 'id'],
+      detailFieldLabels: ['联系人', '手机号'],
+    },
+    verifier: {
+      requiredEvidence: ['selected_business_row', 'contact_identifier', 'contacts_list_row'],
+      policyNotes: [
+        '当前 family = business_batch_add_contacts_verify：最终成功以“同一手机号在我的通讯录可被检索命中”为主，不允许只把批量动作 toast 当最终通过。',
+        '当前 family = business_batch_add_contacts_verify：如果页面反馈“已存在您的通讯录”，先保留该反馈，但仍要回我的通讯录按同一手机号做最终命中校验。',
+      ],
+      expectedFieldLabels: ['联系人', '手机号'],
+    },
+    readiness: {
+      requirements: [
+        '需要商机列表存在可勾选真实行，或任务已显式声明允许先切到有数量的阶段',
+        '需要能从目标商机行提取手机号或联系人标识',
+        '需要能进入我的通讯录并使用手机号执行检索',
+      ],
+      fixtureContract: 'project_data_dependency_explicit',
+      notes: [
+        '若当前环境既没有可勾选商机，也没有可检索的通讯录结果面，应显式暴露 data gap，不要只根据 toast 或阶段文案判成功。',
       ],
     },
   },
@@ -408,6 +461,14 @@ function classifyPriorityScenarioFamilyFromHaystack(haystack: string): IntentE2E
       normalizedHaystack
     ) ||
     (hasBusiness && hasCreateVerb);
+  const hasBusinessBatchAddContacts =
+    /(批量加入通讯录|加入通讯录|收录到通讯录|通讯录校验|联系人收录)/i.test(normalizedHaystack);
+  const hasContactsVerification =
+    /(按手机号|手机号搜索|检索到目标联系人|搜索确认联系人可见|mailslist|mail-list_keywords)/i.test(normalizedHaystack) ||
+    (/(我的通讯录|通讯录列表)/i.test(normalizedHaystack) &&
+      /(确认联系人可见|确认联系人已可见|联系人可见|联系人已可见|命中联系人|找到联系人|确认可见|检索命中|搜索命中)/i.test(
+        normalizedHaystack
+      ));
   const hasBusinessListVerifySurface =
     /(回列表|商机列表|列表中状态|新入库|列表可见|记录存在|命中目标记录|主键回查|businessid|商机id|详情回退)/i.test(
       normalizedHaystack
@@ -423,6 +484,9 @@ function classifyPriorityScenarioFamilyFromHaystack(haystack: string): IntentE2E
 
   if (hasOrderFlow && (hasBusiness || /crmapi\/business/i.test(normalizedHaystack))) {
     return 'business_to_order';
+  }
+  if ((hasBusiness || /business\/businesslist/i.test(normalizedHaystack)) && hasBusinessBatchAddContacts && hasContactsVerification) {
+    return 'business_batch_add_contacts_verify';
   }
   if (hasBusiness && hasBusinessCreateSurface && hasBusinessListVerifySurface) {
     return 'business_create_list_verify';
@@ -456,6 +520,8 @@ export function formatIntentE2EPriorityScenarioFamilyLabel(family: IntentE2EPrio
       return '创建后回列表验收';
     case 'business_to_order':
       return '创建后转订单';
+    case 'business_batch_add_contacts_verify':
+      return '商机批量加入通讯录验收';
     case 'list_search_detail':
       return '列表搜索详情';
     case 'modal_or_drawer_save':
@@ -561,6 +627,7 @@ export function normalizeIntentE2EPriorityScenarioFamily(
 ): IntentE2EPriorityScenarioFamily | '' {
   return value === 'business_create_list_verify' ||
     value === 'business_to_order' ||
+    value === 'business_batch_add_contacts_verify' ||
     value === 'list_search_detail' ||
     value === 'modal_or_drawer_save' ||
     value === 'row_action_menu' ||

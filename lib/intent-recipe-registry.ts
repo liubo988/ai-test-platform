@@ -336,6 +336,7 @@ const BUILTIN_INTENT_RECIPES: IntentRecipe[] = [
     slug: 'business.batch-add-contacts',
     title: '商机列表批量加入通讯录',
     description: '在商机列表选择目标商机后批量加入通讯录，并回通讯录列表按手机号验收。',
+    family: 'business_batch_add_contacts_verify',
     matchers: {
       targetUrlIncludes: ['/business/businesslist'],
       summaryIncludes: ['批量加入通讯录', '加入通讯录', '通讯录'],
@@ -344,14 +345,18 @@ const BUILTIN_INTENT_RECIPES: IntentRecipe[] = [
     executorPlan: [
       '先等待商机列表真实数据行出现，再选择可勾选目标行。',
       '若当前阶段无可用商机，可切到有数量的阶段后继续。',
-      '点击“批量加入通讯录”后不要只看 toast，最终回通讯录列表按手机号检索验收。',
+      '点击“批量加入通讯录”后 toast 只允许作为可选日志，不允许等待 toast 作为阻断；最终回通讯录列表按手机号检索验收。',
     ],
     verifierPlan: [
       '记录被选中商机的手机号或联系人标识。',
       '进入我的通讯录列表按目标手机号执行搜索。',
       '确认检索结果中稳定命中该联系人。',
     ],
-    knownPitfalls: ['不要把加入通讯录 toast 直接当最终成功。', '不要假设当前默认阶段一定有可勾选行。'],
+    knownPitfalls: [
+      '不要等待加入通讯录 toast 作为必经断言；toast 可能不出现或很快消失。',
+      '不要把加入通讯录 toast 直接当最终成功。',
+      '不要假设当前默认阶段一定有可勾选行。',
+    ],
     successRate: 0,
     lastVerifiedAt: '',
   },

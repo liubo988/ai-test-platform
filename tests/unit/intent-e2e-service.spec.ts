@@ -137,6 +137,70 @@ const scenarioCard = {
   notes: ['优先使用稳定文本定位'],
 };
 
+function createBusinessBatchAddContactsScenarioCard() {
+  return {
+    version: 1 as const,
+    title: '商机列表批量加入通讯录并在我的通讯录按手机号验收',
+    taskMode: 'scenario' as const,
+    targetUrl: 'https://example.com/#/business/businesslist',
+    featureDescription:
+      '在商机列表选择真实带手机号商机行，记录同一行手机号，勾选该行并点击批量加入通讯录，最后进入我的通讯录按同一手机号检索命中。',
+    flowDefinition: {
+      version: 1 as const,
+      entryUrl: 'https://example.com/#/business/businesslist',
+      sharedVariables: ['contactPhone'],
+      expectedOutcome: '我的通讯录按同一手机号检索命中联系人',
+      cleanupNotes: '',
+      steps: [
+        {
+          stepUid: 'flow-batch-add-contacts',
+          stepType: 'ui' as const,
+          title: '执行批量加入通讯录',
+          target: '商机列表顶部“批量加入通讯录”按钮',
+          instruction: '点击批量加入通讯录后不要等待 toast 作为必经断言，继续进入我的通讯录验收。',
+          expectedResult: '批量动作触发，toast 只是可选反馈。',
+          extractVariable: '',
+        },
+        {
+          stepUid: 'flow-search-contact-by-phone',
+          stepType: 'assert' as const,
+          title: '按手机号检索并校验联系人可见',
+          target: 'https://example.com/#/mails/mailslist',
+          instruction: '使用同一手机号搜索通讯录并校验联系人可见。',
+          expectedResult: '我的通讯录可检索到同一手机号。',
+          extractVariable: '',
+        },
+      ],
+    },
+    successCriteria: [
+      '必须先记录同一行手机号并勾选目标行。',
+      '不要等待加入通讯录 toast 作为阻断条件。',
+      '最终必须在我的通讯录按同一手机号检索命中。',
+    ],
+    visualAnchors: ['商机列表', '批量加入通讯录', '我的通讯录', '手机号'],
+    notes: ['toast 只允许作为可选日志，不能作为最终通过标准。'],
+  };
+}
+
+function createStaleBusinessBatchContactsToastCode() {
+  return `
+    test('stale-business-batch-add-contacts', async ({ page }) => {
+      const BUSINESS_LIST_URL = 'https://example.com/#/business/businesslist';
+      const MAILS_LIST_URL = 'https://example.com/#/mails/mailslist';
+      const targetPhone = '13800138000';
+      await page.goto(BUSINESS_LIST_URL);
+      await page.getByRole('button', { name: '批量加入通讯录' }).click();
+      const feedback = page
+        .locator('.ant-message-notice, .ant-notification-notice')
+        .filter({ hasText: /加入通讯录|通讯录/ })
+        .first();
+      await expect(feedback).toBeVisible({ timeout: 15000 });
+      await page.goto(MAILS_LIST_URL);
+      await page.locator('#mail-list_keywords').fill(targetPhone);
+    });
+  `.trim();
+}
+
 const repairMemoryHint = {
   clusterId: 'irm-existing',
   category: 'row-action-not-found',
@@ -1821,6 +1885,136 @@ describe('intent-e2e-service stream', () => {
     ]);
   });
 
+  it('bypasses data_missing precheck for list flows that explicitly switch to a dataful stage', async () => {
+    vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 0 } as any);
+    vi.mocked(generateScenarioCard).mockResolvedValueOnce({
+      card: {
+        version: 1,
+        title: '商机列表批量加入通讯录并校验结果',
+        taskMode: 'scenario',
+        targetUrl: 'https://example.com/#/business/businesslist',
+        featureDescription:
+          '若当前筛选结果为空，则先切换到当前有数量的商机进展阶段，再随机勾选一条带手机号的商机并批量加入通讯录。',
+        flowDefinition: {
+          version: 1,
+          entryUrl: 'https://example.com/#/business/businesslist',
+          sharedVariables: ['businessId', 'contactPhone'],
+          expectedOutcome: '最终在我的通讯录列表按手机号检索到目标联系人。',
+          cleanupNotes: '',
+          steps: [
+            {
+              stepUid: 'step_1',
+              stepType: 'ui',
+              title: '进入商机列表页',
+              target: 'https://example.com/#/business/businesslist',
+              instruction: '进入商机列表页并等待搜索框可见。',
+              expectedResult: '当前页面可执行列表操作。',
+              extractVariable: '',
+            },
+            {
+              stepUid: 'step_2',
+              stepType: 'extract',
+              title: '空结果时切换到有数量阶段并选择目标行',
+              target: '商机列表',
+              instruction:
+                '若当前筛选结果为空，则切换到当前有数量的商机进展阶段，再随机选择一条带手机号的商机并勾选。',
+              expectedResult: '列表恢复到有数据状态且目标行已选中。',
+              extractVariable: 'businessId,contactPhone',
+            },
+            {
+              stepUid: 'step_3',
+              stepType: 'ui',
+              title: '执行批量加入通讯录',
+              target: '商机列表',
+              instruction: '点击批量加入通讯录按钮并读取页面反馈。',
+              expectedResult: '页面给出通讯录相关反馈。',
+              extractVariable: '',
+            },
+          ],
+        },
+        successCriteria: ['若当前结果为空可先切换到有数量的阶段', '最终必须在通讯录按手机号检索到目标记录'],
+        visualAnchors: ['批量加入通讯录', '手机号', '搜索框'],
+        notes: ['空结果不是立即失败，允许先切换到有数据的列表视角'],
+      },
+      llmMeta: {
+        provider: 'openai',
+        model: 'chat-gpt5.4',
+        visionEnabled: true,
+        attachmentCount: 0,
+      },
+    });
+    vi.mocked(buildGenerateInputFromScenarioCard).mockReturnValue({
+      targetUrl: 'https://example.com/#/business/businesslist',
+      description: '在商机列表遇到空结果时先切到有数量阶段，再批量加入通讯录并校验。',
+      context: {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://example.com/#/business/businesslist',
+        scenarioSummary: '商机列表 -> 空结果切阶段 -> 勾选目标行 -> 批量加入通讯录',
+        expectedOutcome: '通讯录中可检索到目标手机号',
+        successCriteria: ['最终必须在通讯录按手机号检索到目标记录'],
+        sharedVariables: ['businessId', 'contactPhone'],
+        cleanupNotes: '',
+      },
+    });
+    vi.mocked(precheckPageAccess).mockResolvedValue({
+      url: 'https://example.com/#/business/businesslist',
+      finalUrl: 'https://example.com/#/business/businesslist',
+      title: 'Business List',
+      storageState: { cookies: [], origins: [] },
+    } as any);
+    vi.mocked(analyzePage).mockResolvedValue({
+      url: 'https://example.com/#/business/businesslist',
+      title: 'Business List',
+      bodyTextExcerpt: '暂无数据，可切换商机进展阶段',
+      buttons: [],
+      links: [],
+      forms: [],
+      images: [],
+      frames: [],
+    } as any);
+    vi.mocked(generateTest).mockReturnValue(
+      toAsyncGenerator([
+        {
+          type: 'complete',
+          content:
+            "test('business-batch-add-contacts', async ({ page }) => { await page.goto('https://example.com/#/business/businesslist'); });",
+        },
+      ])
+    );
+    vi.mocked(executeTest).mockResolvedValue({
+      success: true,
+      duration: 420,
+      steps: [
+        {
+          title: '切换到有数量的商机进展阶段',
+          status: 'passed',
+          duration: 120,
+          at: '2026-03-31T05:00:00.000Z',
+        },
+      ],
+      error: null,
+    } as never);
+
+    const result = await runIntentDrivenE2EStream({
+      input: '在商机列表空结果时先切到有数量阶段，再批量加入通讯录并校验',
+    });
+
+    expect(result.finalResult.success).toBe(true);
+    expect(result.resolvedUrls).toEqual({
+      targetUrl: 'https://example.com/#/business/businesslist',
+      scenarioEntryUrl: 'https://example.com/#/business/businesslist',
+      precheckUrl: 'https://example.com/#/business/businesslist',
+      analyzeUrl: 'https://example.com/#/business/businesslist',
+    });
+    expect(vi.mocked(precheckPageAccess)).toHaveBeenCalledWith('https://example.com/#/business/businesslist', undefined, {
+      ignoreFailureClasses: ['data_missing'],
+      captureSnapshot: true,
+    });
+    expect(result.verificationContract?.typeFields.policyNotes).toEqual([
+      '前置检查策略：已声明“结果为空时切换到有数据列表视角”的场景允许列表页空态绕过 data_missing 阻断，继续执行显式切换步骤。',
+    ]);
+  });
+
   it('builds structured success knowledge candidates from successful verification checks', async () => {
     vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 0 } as any);
     vi.mocked(resolveIntentPromptPlanningContext).mockReturnValueOnce({
@@ -2826,7 +3020,7 @@ describe('intent-e2e-service stream', () => {
       projectUid: 'proj_default',
       moduleUid: 'mod_checkout',
       status: 'passed',
-      limit: 12,
+      limit: 120,
     });
     expect(vi.mocked(generateTest)).not.toHaveBeenCalled();
     expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toBe(successfulRunCode);
@@ -2847,6 +3041,108 @@ describe('intent-e2e-service stream', () => {
           log: expect.objectContaining({
             message: expect.stringContaining('intent-run-passed-reuse'),
           }),
+        }),
+      ])
+    );
+  });
+
+  it('keeps exact intent-draft successful-run reuse after unrelated module activity pushes it past the first 12 runs', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+    const olderSuccessfulRunCode =
+      "test('older-matching-successful-run', async ({ page }) => { await page.goto('https://example.com/checkout'); await expect(page).toHaveURL('https://example.com/checkout'); });";
+    const newerProgressedRunCode =
+      "test('newer-progressed-failure', async ({ page }) => { await page.goto('https://example.com/checkout'); await page.getByText('stale-step').click(); });";
+    const unrelatedPassedRuns = Array.from({ length: 12 }, (_, index) =>
+      createPassedRunSnapshot({
+        runId: `intent-run-unrelated-passed-${index + 1}`,
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: `idraft_unrelated_${index + 1}`,
+        requestInput: `无关请求 ${index + 1}`,
+        targetUrl: 'https://example.com/checkout',
+        code: `test('unrelated-passed-${index + 1}', async () => {});`,
+      })
+    );
+
+    vi.mocked(listIntentE2ERunSnapshots).mockImplementation(async (query) => {
+      if (query?.status === 'passed') {
+        return [
+          ...unrelatedPassedRuns,
+          createPassedRunSnapshot({
+            runId: 'intent-run-older-matching-success',
+            projectUid: 'proj_default',
+            moduleUid: 'mod_checkout',
+            intentDraftUid: 'idraft_checkout',
+            requestInput: '访问结算页并提交，最终看到成功页',
+            targetUrl: 'https://example.com/checkout',
+            code: olderSuccessfulRunCode,
+          }),
+        ] as never;
+      }
+      if (query?.status === 'failed') {
+        return [
+          createFailedRunSnapshot({
+            runId: 'intent-run-newer-progressed-failure',
+            projectUid: 'proj_default',
+            moduleUid: 'mod_checkout',
+            intentDraftUid: 'idraft_checkout',
+            requestInput: '访问结算页并提交，最终看到成功页',
+            targetUrl: 'https://example.com/checkout',
+            attempts: [
+              {
+                attempt: 1,
+                kind: 'generate',
+                code: newerProgressedRunCode,
+                failedStepTitle: 'Step 2: stale failure',
+                progressedStepCount: 1,
+                error: 'stale failure',
+              },
+            ],
+          }),
+        ] as never;
+      }
+      return [] as never;
+    });
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_checkout',
+        intentDraftUid: 'idraft_checkout',
+        prefilledScenarioCard: scenarioCard,
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(listIntentE2ERunSnapshots)).toHaveBeenCalledWith({
+      projectUid: 'proj_default',
+      moduleUid: 'mod_checkout',
+      status: 'passed',
+      limit: 120,
+    });
+    expect(vi.mocked(listIntentE2ERunSnapshots)).not.toHaveBeenCalledWith({
+      projectUid: 'proj_default',
+      moduleUid: 'mod_checkout',
+      status: 'failed',
+      limit: 120,
+    });
+    expect(vi.mocked(generateTest)).not.toHaveBeenCalled();
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toBe(olderSuccessfulRunCode);
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'prefilled_plan_reuse',
+      prefilledPlanReuseSource: 'recent_successful_run',
+      reusedRunId: 'intent-run-older-matching-success',
+    });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'generating',
+          message: expect.stringContaining('最近一次成功运行脚本'),
         }),
       ])
     );
@@ -2887,7 +3183,7 @@ describe('intent-e2e-service stream', () => {
       projectUid: 'proj_default',
       moduleUid: 'mod_checkout',
       status: 'passed',
-      limit: 12,
+      limit: 120,
     });
     expect(vi.mocked(generateTest)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toBe(
@@ -3456,6 +3752,93 @@ describe('intent-e2e-service stream', () => {
     );
   });
 
+  it('skips stale successful-run toast reuse for business batch-add-contacts scenarios', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+    const requestInput =
+      '参考附件截图和《管帮手PC端操作手册》，在商机列表选择一条有手机号的商机，点击“批量加入通讯录”；不要等待 toast 作为必经断言，最后进入我的通讯录用手机号搜索并验证联系人可见。';
+    const staleSuccessfulCode = createStaleBusinessBatchContactsToastCode();
+    vi.mocked(buildGenerateInputFromScenarioCard).mockReturnValue({
+      targetUrl: 'https://example.com/#/business/businesslist',
+      description: requestInput,
+      context: {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://example.com/#/business/businesslist',
+        scenarioSummary: '商机列表批量加入通讯录并回通讯录验收',
+        expectedOutcome: '我的通讯录按同一手机号检索命中',
+        sharedVariables: ['contactPhone'],
+        cleanupNotes: '',
+        actionDsl: {
+          version: 1,
+          mode: 'scenario',
+          targetUrl: 'https://example.com/#/business/businesslist',
+          summary: '商机列表批量加入通讯录并回通讯录验收',
+          globalRules: [],
+          preferredPrimitives: [],
+          outputContract: [],
+          steps: [],
+        },
+      },
+    } as never);
+
+    vi.mocked(listIntentE2ERunSnapshots).mockResolvedValue([
+      createPassedRunSnapshot({
+        runId: 'intent-run-business-batch-stale-success',
+        projectUid: 'proj_default',
+        moduleUid: 'mod_business',
+        intentDraftUid: 'idraft_business_batch',
+        requestInput,
+        targetUrl: 'https://example.com/#/business/businesslist',
+        attachmentCount: 1,
+        code: staleSuccessfulCode,
+      }),
+    ] as never);
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: requestInput,
+        projectUid: 'proj_default',
+        moduleUid: 'mod_business',
+        intentDraftUid: 'idraft_business_batch',
+        targetUrl: 'https://example.com/#/business/businesslist',
+        attachments: [
+          {
+            name: 'business-list-reference.png',
+            purpose: 'OCR anchors',
+            dataUrl: 'data:image/png;base64,AAAA',
+          },
+        ],
+        prefilledScenarioCard: createBusinessBatchAddContactsScenarioCard(),
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(generateTest)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).not.toBe(staleSuccessfulCode);
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toContain("test('checkout-default'");
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'prefilled_plan_reuse',
+      prefilledPlanSkipReason: expect.stringContaining('加入通讯录 toast'),
+    });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'generating',
+          message: expect.stringContaining('已回退到当前生成链路'),
+        }),
+        expect.objectContaining({
+          type: 'attempt_log',
+          log: expect.objectContaining({
+            message: expect.stringContaining('加入通讯录 toast'),
+          }),
+        }),
+      ])
+    );
+  });
+
   it('prefers a newer sanitizer-clean compatible successful run over an older exact-match run that still needs rescue', async () => {
     const dirtyExactRunCode =
       "test('dirty-exact-run', async ({ page }) => { await page.getByText('CURRENT_TABLE_SHORTCUT').click(); });";
@@ -3742,7 +4125,7 @@ describe('intent-e2e-service stream', () => {
           projectUid: 'proj_default',
           moduleUid: 'mod_checkout',
           status: 'passed',
-          limit: 12,
+          limit: 120,
         },
       ],
       [
@@ -3765,7 +4148,7 @@ describe('intent-e2e-service stream', () => {
           projectUid: 'proj_default',
           moduleUid: 'mod_checkout',
           status: 'failed',
-          limit: 12,
+          limit: 120,
         },
       ],
     ]);
@@ -3986,6 +4369,147 @@ describe('intent-e2e-service stream', () => {
           log: expect.objectContaining({
             message: expect.stringContaining('命中已知旧的最终提交按钮定位骨架'),
           }),
+        }),
+      ])
+    );
+  });
+
+  it('skips stale draft first-pass code reuse when it matches the legacy business detail verification family', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+    const stalePrefilledCode = `
+      test('draft-prefill', async ({ page }) => {
+        let detailScope = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '商机联系人信息', timeoutMs: 5000, required: false });
+        if (!detailScope) {
+          detailScope = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机联系人信息', timeoutMs: 2500, required: false });
+        }
+        const contactText = await __e2e.readDetailField(page, { label: '联系人', scope: detailScope, titleIncludes: '商机联系人信息', required: false });
+        const phoneText = await __e2e.readDetailField(page, { label: '手机号', scope: detailScope, titleIncludes: '商机联系人信息', required: false });
+        if (shared.createdContactName && contactText) expect(contactText).toContain(shared.createdContactName);
+        if (shared.createdPhone && phoneText) expect(phoneText).toContain(shared.createdPhone);
+      });
+    `.trim();
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '登录后台后创建一个商机，保存成功后切换到我创建的列表，并按 businessId 或手机号回查目标记录，校验商机进展为新入库',
+        prefilledScenarioCard: {
+          ...scenarioCard,
+          title: '创建商机后回列表校验新入库',
+          targetUrl: 'https://example.com/#/business/businesslist',
+          featureDescription: '创建商机后切到我创建的列表，校验新记录处于新入库状态。',
+          flowDefinition: {
+            ...scenarioCard.flowDefinition,
+            entryUrl: 'https://example.com/#/business/businesslist',
+            expectedOutcome: '在我创建的列表中命中新建商机并看到新入库状态',
+          },
+        },
+        prefilledPlanCode: stalePrefilledCode,
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(generateScenarioCard)).not.toHaveBeenCalled();
+    expect(vi.mocked(generateTest)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).not.toBe(stalePrefilledCode);
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toContain("test('checkout-default'");
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'prefilled_plan_reuse',
+      prefilledPlanSkipReason: expect.stringContaining('商机详情字段验收骨架'),
+    });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'generating',
+          message: expect.stringContaining('已回退到当前生成链路'),
+        }),
+        expect.objectContaining({
+          type: 'attempt_log',
+          log: expect.objectContaining({
+            message: expect.stringContaining('商机详情字段验收骨架'),
+          }),
+        }),
+      ])
+    );
+  });
+
+  it('skips stale draft first-pass code reuse when business batch-add-contacts waits on toast', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+    const stalePrefilledCode = createStaleBusinessBatchContactsToastCode();
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input:
+          '在商机列表选择一条有手机号的商机执行“批量加入通讯录”；点击后不要等待 toast，最终进入我的通讯录按同一手机号检索并验证联系人可见。',
+        targetUrl: 'https://example.com/#/business/businesslist',
+        prefilledScenarioCard: createBusinessBatchAddContactsScenarioCard(),
+        prefilledPlanCode: stalePrefilledCode,
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(generateScenarioCard)).not.toHaveBeenCalled();
+    expect(vi.mocked(generateTest)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).not.toBe(stalePrefilledCode);
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toContain("test('checkout-default'");
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'prefilled_plan_reuse',
+      prefilledPlanSkipReason: expect.stringContaining('批量加入通讯录 toast 硬断言骨架'),
+    });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'generating',
+          message: expect.stringContaining('已回退到当前生成链路'),
+        }),
+        expect.objectContaining({
+          type: 'attempt_log',
+          log: expect.objectContaining({
+            message: expect.stringContaining('批量加入通讯录 toast 硬断言骨架'),
+          }),
+        }),
+      ])
+    );
+  });
+
+  it('does not skip toast-shaped draft first-pass code for unrelated scenario families', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+    const unrelatedPrefilledCode = createStaleBusinessBatchContactsToastCode();
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        targetUrl: 'https://example.com/checkout',
+        prefilledScenarioCard: scenarioCard,
+        prefilledPlanCode: unrelatedPrefilledCode,
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(generateScenarioCard)).not.toHaveBeenCalled();
+    expect(vi.mocked(generateTest)).not.toHaveBeenCalled();
+    expect(vi.mocked(executeTest).mock.calls[0]?.[0]).toBe(unrelatedPrefilledCode);
+    expect(result.attempts[0]?.fallbackTelemetry).toMatchObject({
+      path: 'prefilled_plan_reuse',
+      prefilledPlanReuseSource: 'draft_first_pass',
+    });
+    expect(result.attempts[0]?.fallbackTelemetry?.prefilledPlanSkipReason).toBeUndefined();
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'stage',
+          stage: 'generating',
+          message: expect.stringContaining('已复用草稿首版脚本'),
         }),
       ])
     );

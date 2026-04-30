@@ -5,15 +5,20 @@ import { NextRequest } from 'next/server';
 import {
   buildIntentE2EBenchmarkSuiteFromData,
   compareIntentE2EBenchmark,
+  declareIntentE2EBenchmarkCurrentSlice,
   freezeIntentE2EBenchmark,
+  getIntentE2EBenchmarkCurrentSliceDir,
   getIntentE2EBenchmarkReportDir,
   normalizeIntentE2EBenchmarkRequestCorpus,
   preflightIntentE2EBenchmarkRequestCorpus,
   readIntentE2EBenchmark,
   replayIntentE2EBenchmark,
   type CompareIntentE2EBenchmarkOptions,
+  type DeclareIntentE2EBenchmarkCurrentSliceOptions,
   type FreezeIntentE2EBenchmarkOptions,
   type IntentE2EBenchmarkCompareReport,
+  type IntentE2EBenchmarkCurrentSliceAudit,
+  type IntentE2EBenchmarkCurrentSlice,
   type IntentE2EBenchmarkProofWindow,
   type IntentE2EBenchmarkRequestCorpusPreflightItem,
   type IntentE2EBenchmarkReplayResult,
@@ -30,6 +35,7 @@ import {
   getIntentE2ERun,
   startIntentE2ERun,
   waitForIntentE2ERunCompletion,
+  waitForIntentE2ERunPersistence,
 } from '@/lib/ai/intent-e2e-run-registry';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
 import { closeDbPool } from '@/lib/db/client';
@@ -55,12 +61,14 @@ import {
   type PlatformTestType,
 } from '@/lib/test-platform-asset-model';
 
-type Command = 'candidates' | 'freeze' | 'replay' | 'compare' | 'rerun';
+type Command = 'candidates' | 'freeze' | 'slice' | 'replay' | 'compare' | 'rerun';
 
 const DEFAULT_RUN_LIMIT = 200;
 const DEFAULT_CANDIDATE_LIMIT = 12;
 const DEFAULT_WAIT_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
+const BENCHMARK_PERSISTENCE_FLUSH_TIMEOUT_MS = 30 * 1000;
+const TERMINAL_BENCHMARK_RUN_IDS = new Set<string>();
 
 const parsed = parseArgs({
   args: process.argv.slice(2),
@@ -80,6 +88,11 @@ const parsed = parseArgs({
     'run-limit': { type: 'string' },
     'recipe-asset-input': { type: 'string' },
     'recipe-asset-output': { type: 'string' },
+    'benchmark-path': { type: 'string' },
+    'current-slice': { type: 'string' },
+    'after-terminal-run-id': { type: 'string' },
+    'declared-reason': { type: 'string' },
+    'created-from-compare-report': { type: 'string' },
     label: { type: 'string' },
     'release-candidate': { type: 'string' },
     'frozen-at': { type: 'string' },
@@ -100,6 +113,7 @@ function printHelp() {
 用法：
   npm run intent:benchmark:candidates -- --project-uid <project> [options]
   npm run intent:benchmark:freeze -- --project-uid <project> [options]
+  npm run intent:benchmark:slice -- --project-uid <project> --after-terminal-run-id <runId> --declared-reason <text> [options]
   npm run intent:benchmark:replay -- --project-uid <project> [options]
   npm run intent:benchmark:compare -- --project-uid <project> [options]
   npm run intent:benchmark:rerun -- --project-uid <project> --request-corpus <path> [options]
@@ -116,6 +130,8 @@ function printHelp() {
   --eval-case-id <id>         freeze 时显式选择 case，可重复传入或逗号分隔
   --recipe-asset-input <path> 先把显式 recipe asset 导入当前项目 registry，再执行 benchmark 命令
   --recipe-asset-output <path> 执行结束后把当前项目 recipe asset 导出到显式路径
+  --benchmark-path <path>      显式 benchmark 文件路径；slice 命令可覆盖当前 benchmark 指针
+  --current-slice <path>       replay / compare 显式消费 current-slice 资产
   --json                      输出完整 JSON
   --help                      打印帮助
 
@@ -123,6 +139,11 @@ freeze 额外选项：
   --label <text>
   --release-candidate <text>
   --frozen-at <iso>
+
+slice 额外选项：
+  --after-terminal-run-id <runId>
+  --declared-reason <text>
+  --created-from-compare-report <path>
 
 replay 额外选项：
   --replayed-at <iso>
@@ -141,6 +162,7 @@ rerun 额外选项：
 示例：
   npm run intent:benchmark:candidates -- --project-uid proj_default --module-uid mod_xxx --test-type browser_e2e --priority-scenario-family list_search_detail --proof-window non_weak
   npm run intent:benchmark:freeze -- --project-uid proj_default --module-uid mod_xxx --test-type browser_e2e --priority-scenario-family modal_or_drawer_save --proof-window non_weak --max-cases 12 --release-candidate ai-holdout-2026-04-09
+  npm run intent:benchmark:slice -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --proof-window non_weak --after-terminal-run-id intent-run-xxx --declared-reason "exclude pre-recovery terminal runs" --created-from-compare-report reports/intent-e2e/projects/proj_default/intent-e2e.benchmark-reports/xxxx.json
   npm run intent:benchmark:compare -- --project-uid proj_default --priority-scenario-family business_create_list_verify --compared-label post-e1e2e3
   npm run intent:benchmark:rerun -- --project-uid proj_default --module-uid mod_xxx --priority-scenario-family list_search_detail --request-corpus artifacts/intent-e2e-family-evidence/proj_default.list-search-detail.request-corpus.json --recipe-asset-input artifacts/intent-e2e-family-evidence/proj_default.project-recipes.json
 `);
@@ -288,6 +310,47 @@ function printProofWindowSummary(
   }
 }
 
+function printCurrentSliceAudit(currentSlice: IntentE2EBenchmarkCurrentSliceAudit) {
+  console.log(
+    `current-slice: ${currentSlice.enabled ? 'enabled' : 'disabled'} | raw=${currentSlice.rawTerminalSampleCount} filtered=${currentSlice.preSliceFilteredTerminalSampleCount} included=${currentSlice.includedTerminalSampleCount}`
+  );
+  if (!currentSlice.enabled) {
+    return;
+  }
+
+  console.log(
+    `slice-meta: uid=${currentSlice.sliceUid} path=${currentSlice.slicePath} boundaryRun=${currentSlice.afterTerminalRunId} boundaryFinishedAt=${currentSlice.afterFinishedAt}`
+  );
+  console.log(
+    `slice-scope: priorityFamily=${currentSlice.priorityScenarioFamily || '-'} proofWindow=${currentSlice.proofWindow} benchmarkUid=${currentSlice.benchmarkUid}`
+  );
+  if (currentSlice.declaredReason) {
+    console.log(`slice-reason: ${currentSlice.declaredReason}`);
+  }
+  if (currentSlice.createdFromCompareReport) {
+    console.log(`slice-source-compare: ${currentSlice.createdFromCompareReport}`);
+  }
+}
+
+function printDeclaredCurrentSliceSummary(
+  slice: IntentE2EBenchmarkCurrentSlice,
+  writtenTo: string,
+  benchmarkPath: string
+) {
+  console.log(`current-slice: ${slice.sliceUid}`);
+  console.log(`writtenTo: ${writtenTo}`);
+  console.log(`benchmarkPath: ${benchmarkPath}`);
+  console.log(
+    `scope: project=${slice.projectUid || 'global'} priorityFamily=${slice.priorityScenarioFamily || '-'} proofWindow=${slice.proofWindow}`
+  );
+  console.log(`boundary: runId=${slice.afterTerminalRunId} finishedAt=${slice.afterFinishedAt}`);
+  console.log(`createdAt: ${slice.createdAt}`);
+  console.log(`reason: ${slice.declaredReason}`);
+  if (slice.createdFromCompareReport) {
+    console.log(`createdFromCompareReport: ${slice.createdFromCompareReport}`);
+  }
+}
+
 function printSuiteSummary(benchmark: IntentE2EBenchmarkSuite) {
   console.log(`benchmark: ${benchmark.label} (${benchmark.benchmarkUid})`);
   console.log(
@@ -334,6 +397,7 @@ function printReplaySummary(replay: IntentE2EBenchmarkReplayResult) {
   );
   console.log(`cases: matched=${replay.summary.matchedCases} missing=${replay.summary.missingCases} total=${replay.summary.caseCount}`);
   printProofWindowSummary(replay.proofWindow);
+  printCurrentSliceAudit(replay.currentSlice);
   console.log(
     `metrics: terminal=${formatPercent(replay.summary.terminalPassRate)} first-pass=${formatPercent(
       replay.summary.firstPassPassRate
@@ -361,9 +425,10 @@ function printCompareSummary(report: IntentE2EBenchmarkCompareReport, writtenTo:
     } runnerTypes=${report.scope.runnerTypes.join(',') || '-'} priorityFamily=${report.scope.priorityScenarioFamily || '-'}`
   );
   console.log(
-    `cases: improved=${report.summary.improvedCases} regressed=${report.summary.regressedCases} unchanged=${report.summary.unchangedCases} missing=${report.summary.missingCases}`
+    `cases: improved=${report.summary.improvedCases} regressed=${report.summary.regressedCases} unchanged=${report.summary.unchangedCases} missing=${report.summary.missingCases} insufficient=${report.summary.insufficientEvidenceCases}`
   );
   printProofWindowSummary(report.proofWindow);
+  printCurrentSliceAudit(report.currentSlice);
   console.log(
     `terminal: ${formatPercent(report.summary.frozenTerminalPassRate)} -> ${formatPercent(
       report.summary.currentTerminalPassRate
@@ -382,7 +447,12 @@ function printCompareSummary(report: IntentE2EBenchmarkCompareReport, writtenTo:
   );
 
   const focusCases = report.cases
-    .filter((item) => item.comparisonStatus === 'regressed' || item.comparisonStatus === 'missing')
+    .filter(
+      (item) =>
+        item.comparisonStatus === 'regressed' ||
+        item.comparisonStatus === 'missing' ||
+        item.comparisonStatus === 'insufficient_evidence'
+    )
     .slice(0, 5);
   if (focusCases.length > 0) {
     console.log('focus-cases:');
@@ -415,6 +485,9 @@ interface IntentE2EBenchmarkRerunEntryResult {
   priorityScenarioFamily: IntentE2EPriorityScenarioFamily | '';
   targetPath: string;
   matchedRecipeSlugs: string[];
+  matchedRuleIds: string[];
+  matchedRuleTitles: string[];
+  knowledgeHit: boolean;
   recipeHit: boolean;
   playbookHit: boolean;
   reviewWritten: boolean;
@@ -446,6 +519,8 @@ interface IntentE2EBenchmarkRerunReport {
     passedRuns: number;
     failedRuns: number;
     canceledRuns: number;
+    knowledgeHitRuns: number;
+    knowledgeHitRate: number;
     recipeHitRuns: number;
     playbookHitRuns: number;
   };
@@ -463,6 +538,90 @@ async function waitForTerminalRun(runId: string, timeoutMs: number): Promise<voi
   await Promise.race([waitForIntentE2ERunCompletion(runId), timer]);
 }
 
+function trackTerminalBenchmarkRun(runId: string): void {
+  const normalized = runId.trim();
+  if (normalized) {
+    TERMINAL_BENCHMARK_RUN_IDS.add(normalized);
+  }
+}
+
+async function waitForNextMacrotask(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const handle = setTimeout(resolve, 0);
+    handle.unref?.();
+  });
+}
+
+async function waitWithTimeout<T>(task: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let handle: NodeJS.Timeout | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    handle = setTimeout(() => {
+      reject(new Error(message));
+    }, timeoutMs);
+    handle.unref?.();
+  });
+
+  try {
+    return await Promise.race([task, timeout]);
+  } finally {
+    if (handle) {
+      clearTimeout(handle);
+    }
+  }
+}
+
+function hasPendingDeferredReview(runId: string): boolean {
+  const runRecord = getIntentE2ERun(runId);
+  if (!runRecord?.result) {
+    return false;
+  }
+  return isTerminalRerunRunStatus(normalizeRerunRunStatus(runRecord.status)) && !runRecord.result.review;
+}
+
+async function flushTrackedBenchmarkRunPersistenceBeforePoolClose(): Promise<void> {
+  const runIds = [...TERMINAL_BENCHMARK_RUN_IDS];
+  TERMINAL_BENCHMARK_RUN_IDS.clear();
+  if (runIds.length === 0) {
+    return;
+  }
+
+  const completionResults = await Promise.allSettled(
+    runIds.map((runId) =>
+      waitWithTimeout(
+        waitForIntentE2ERunCompletion(runId),
+        BENCHMARK_PERSISTENCE_FLUSH_TIMEOUT_MS,
+        `等待 run completion flush 超时：${runId}`
+      )
+    )
+  );
+  for (const result of completionResults) {
+    if (result.status === 'rejected') {
+      console.warn('[intent-e2e-benchmark] ignored run completion flush error before pool close', result.reason);
+    }
+  }
+
+  // Let setTimeout(0)-scheduled deferred reviews enqueue before draining persistence.
+  let pendingRunIds = runIds;
+  for (let attempt = 0; attempt < 2 && pendingRunIds.length > 0; attempt += 1) {
+    await waitForNextMacrotask();
+    const persistenceResults = await Promise.allSettled(
+      pendingRunIds.map((runId) =>
+        waitWithTimeout(
+          waitForIntentE2ERunPersistence(runId),
+          BENCHMARK_PERSISTENCE_FLUSH_TIMEOUT_MS,
+          `等待 run persistence flush 超时：${runId}`
+        )
+      )
+    );
+    for (const result of persistenceResults) {
+      if (result.status === 'rejected') {
+        console.warn('[intent-e2e-benchmark] ignored run persistence flush error before pool close', result.reason);
+      }
+    }
+    pendingRunIds = runIds.filter(hasPendingDeferredReview);
+  }
+}
+
 function normalizeRerunRunStatus(value: unknown): IntentE2EBenchmarkRerunEntryResult['status'] {
   if (value === 'created' || value === 'queued' || value === 'running' || value === 'passed' || value === 'failed' || value === 'canceled') {
     return value;
@@ -472,6 +631,28 @@ function normalizeRerunRunStatus(value: unknown): IntentE2EBenchmarkRerunEntryRe
 
 function isTerminalRerunRunStatus(status: IntentE2EBenchmarkRerunEntryResult['status']): boolean {
   return status === 'passed' || status === 'failed' || status === 'canceled';
+}
+
+function toRerunPercent(count: number, total: number): number {
+  if (!total) return 0;
+  return Math.round((count / total) * 10_000) / 100;
+}
+
+function collectStringArrayValuesByKey(value: unknown, key: string, depth = 0, seen = new WeakSet<object>()): string[] {
+  if (!value || depth > 8) return [];
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectStringArrayValuesByKey(item, key, depth + 1, seen));
+  }
+  if (typeof value !== 'object') return [];
+  if (seen.has(value)) return [];
+  seen.add(value);
+
+  const record = value as Record<string, unknown>;
+  const directValues = Array.isArray(record[key]) ? record[key] : [];
+  return [
+    ...directValues.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean),
+    ...Object.values(record).flatMap((item) => collectStringArrayValuesByKey(item, key, depth + 1, seen)),
+  ];
 }
 
 function collectRerunMatchedRecipeSlugs(runRecord: ReturnType<typeof getIntentE2ERun> | null): string[] {
@@ -484,6 +665,14 @@ function collectRerunMatchedRecipeSlugs(runRecord: ReturnType<typeof getIntentE2
     ? runRecord.result.verificationPlan.matchedRecipeSlugs
     : [];
   return [...new Set([...executionPlanRecipeSlugs, ...verificationPlanRecipeSlugs].filter(Boolean))];
+}
+
+function collectRerunMatchedRuleIds(runRecord: ReturnType<typeof getIntentE2ERun> | null): string[] {
+  return [...new Set(collectStringArrayValuesByKey(runRecord, 'matchedRuleIds'))];
+}
+
+function collectRerunMatchedRuleTitles(runRecord: ReturnType<typeof getIntentE2ERun> | null): string[] {
+  return [...new Set(collectStringArrayValuesByKey(runRecord, 'matchedRuleTitles'))];
 }
 
 function collectRerunFailureClass(runRecord: ReturnType<typeof getIntentE2ERun> | null): string {
@@ -531,6 +720,7 @@ function buildRerunSummaryPayload(
   preflight: IntentE2EBenchmarkRequestCorpusPreflightItem[],
   runs: IntentE2EBenchmarkRerunEntryResult[]
 ): IntentE2EBenchmarkRerunReport {
+  const knowledgeHitRuns = runs.filter((item) => item.knowledgeHit).length;
   return {
     version: 1,
     generatedAt: new Date().toISOString(),
@@ -548,6 +738,8 @@ function buildRerunSummaryPayload(
       passedRuns: runs.filter((item) => item.status === 'passed').length,
       failedRuns: runs.filter((item) => item.status === 'failed').length,
       canceledRuns: runs.filter((item) => item.status === 'canceled').length,
+      knowledgeHitRuns,
+      knowledgeHitRate: toRerunPercent(knowledgeHitRuns, runs.length),
       recipeHitRuns: runs.filter((item) => item.recipeHit).length,
       playbookHitRuns: runs.filter((item) => item.playbookHit).length,
     },
@@ -688,6 +880,29 @@ async function freezeBenchmark() {
   printSuiteSummary(result.benchmark);
 }
 
+async function declareCurrentSlice() {
+  const scope = buildScopeFromFlags();
+  await ensureDbBootstrap();
+  const options: DeclareIntentE2EBenchmarkCurrentSliceOptions = {
+    projectUid: scope.projectUid,
+    benchmarkPath: readOptionalString(parsed.values['benchmark-path']),
+    priorityScenarioFamily: scope.priorityScenarioFamily,
+    proofWindow: scope.proofWindow,
+    afterTerminalRunId: readOptionalString(parsed.values['after-terminal-run-id']),
+    declaredReason: readOptionalString(parsed.values['declared-reason']),
+    createdFromCompareReport: readOptionalString(parsed.values['created-from-compare-report']),
+  };
+  const result = await declareIntentE2EBenchmarkCurrentSlice(options);
+
+  if (parsed.values.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(`sliceDir: ${getIntentE2EBenchmarkCurrentSliceDir(scope.projectUid)}`);
+  printDeclaredCurrentSliceSummary(result.slice, result.writtenTo, result.benchmarkPath);
+}
+
 async function replayBenchmark() {
   const scope = buildScopeFromFlags();
   const importedRecipeAsset = await maybeImportRecipeAsset(scope.projectUid);
@@ -697,6 +912,8 @@ async function replayBenchmark() {
     runLimit: scope.runLimit,
     replayedAt: readOptionalString(parsed.values['replayed-at']),
     priorityScenarioFamily: scope.priorityScenarioFamily,
+    currentSlicePath: readOptionalString(parsed.values['current-slice']),
+    benchmarkPath: readOptionalString(parsed.values['benchmark-path']),
   };
   const result = await replayIntentE2EBenchmark(options);
   const exportedRecipeAsset = await maybeExportRecipeAsset(scope.projectUid);
@@ -732,6 +949,8 @@ async function compareBenchmark() {
     comparedAt: readOptionalString(parsed.values['compared-at']),
     comparedLabel: readOptionalString(parsed.values['compared-label']),
     priorityScenarioFamily: scope.priorityScenarioFamily,
+    currentSlicePath: readOptionalString(parsed.values['current-slice']),
+    benchmarkPath: readOptionalString(parsed.values['benchmark-path']),
   };
   const result = await compareIntentE2EBenchmark(options);
   const exportedRecipeAsset = await maybeExportRecipeAsset(scope.projectUid);
@@ -847,12 +1066,27 @@ async function rerunRequestCorpus() {
         ...collectRerunMatchedRecipeSlugs(runRecord),
       ].filter(Boolean)),
     ];
+    const matchedRuleIds = [
+      ...new Set([
+        ...(normalizedRun?.matchedRuleIds || []),
+        ...collectRerunMatchedRuleIds(runRecord),
+      ].filter(Boolean)),
+    ];
+    const matchedRuleTitles = [
+      ...new Set([
+        ...(normalizedRun?.matchedRuleTitles || []),
+        ...collectRerunMatchedRuleTitles(runRecord),
+      ].filter(Boolean)),
+    ];
     const experienceHintCount = Array.isArray(runRecord?.result?.experience?.hints)
       ? runRecord.result.experience.hints.length
       : 0;
     const reviewWritten = normalizedRun?.reviewWritten || Boolean(runRecord?.result?.review?.reviewedAt);
     const experienceHit = normalizedRun?.experienceHit || experienceHintCount > 0;
     const failureClass = normalizedRun?.failureClass || collectRerunFailureClass(runRecord);
+    if (terminal && runId) {
+      trackTerminalBenchmarkRun(runId);
+    }
 
     runs.push({
       requestId: request.requestId,
@@ -868,6 +1102,9 @@ async function rerunRequestCorpus() {
       priorityScenarioFamily: normalizedRun?.priorityScenarioFamily || preflightItem.route.family || '',
       targetPath: normalizedRun?.targetPath || '',
       matchedRecipeSlugs,
+      matchedRuleIds,
+      matchedRuleTitles,
+      knowledgeHit: matchedRuleIds.length > 0,
       recipeHit: matchedRecipeSlugs.length > 0,
       playbookHit: matchedRecipeSlugs.some((slug) => isIntentPlaybookRecipeSlug(slug)),
       reviewWritten,
@@ -924,13 +1161,13 @@ async function rerunRequestCorpus() {
     `scope: project=${corpus.projectUid} module=${corpus.moduleUid} testType=${corpus.testType} priorityFamily=${corpus.priorityScenarioFamily}`
   );
   console.log(
-    `summary: requests=${report.summary.requestCount} terminal=${report.summary.terminalCount} pending=${report.summary.pendingCount} timed-out=${report.summary.timedOutCount} passed=${report.summary.passedRuns} failed=${report.summary.failedRuns} canceled=${report.summary.canceledRuns} recipe-hit=${report.summary.recipeHitRuns} playbook-hit=${report.summary.playbookHitRuns}`
+    `summary: requests=${report.summary.requestCount} terminal=${report.summary.terminalCount} pending=${report.summary.pendingCount} timed-out=${report.summary.timedOutCount} passed=${report.summary.passedRuns} failed=${report.summary.failedRuns} canceled=${report.summary.canceledRuns} knowledge-hit=${report.summary.knowledgeHitRuns} recipe-hit=${report.summary.recipeHitRuns} playbook-hit=${report.summary.playbookHitRuns}`
   );
   for (const item of runs) {
     console.log(
       `- ${item.requestId}: runId=${item.runId || '-'} status=${item.status} family=${item.priorityScenarioFamily || '-'} targetPath=${
         item.targetPath || '-'
-      } terminal=${item.terminal ? 'yes' : 'no'} timedOut=${item.timedOut ? 'yes' : 'no'} recipeHit=${item.recipeHit ? 'yes' : 'no'} playbookHit=${item.playbookHit ? 'yes' : 'no'}${
+      } terminal=${item.terminal ? 'yes' : 'no'} timedOut=${item.timedOut ? 'yes' : 'no'} knowledgeHit=${item.knowledgeHit ? 'yes' : 'no'} recipeHit=${item.recipeHit ? 'yes' : 'no'} playbookHit=${item.playbookHit ? 'yes' : 'no'}${
         item.errorMessage ? ` error=${item.errorMessage}` : ''
       }`
     );
@@ -951,6 +1188,9 @@ async function main() {
       return;
     case 'freeze':
       await freezeBenchmark();
+      return;
+    case 'slice':
+      await declareCurrentSlice();
       return;
     case 'replay':
       await replayBenchmark();
@@ -981,5 +1221,9 @@ main()
     process.exitCode = 1;
   })
   .finally(async () => {
-    await closeDbPool();
+    try {
+      await flushTrackedBenchmarkRunPersistenceBeforePoolClose();
+    } finally {
+      await closeDbPool();
+    }
   });

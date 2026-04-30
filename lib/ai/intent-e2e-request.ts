@@ -92,6 +92,34 @@ function normalizePrefilledScenarioCard(value: unknown, fallbackTargetUrl = ''):
   return normalizeScenarioCard(value, fallbackTargetUrl);
 }
 
+function normalizePrefilledScenarioLlmMeta(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+
+  for (const key of [
+    'provider',
+    'model',
+    'visionEnabled',
+    'attachmentCount',
+    'attachmentOcrAttempted',
+    'attachmentOcrUsed',
+    'attachmentOcrVisualAnchorCount',
+    'attachmentOcrTextSnippetCount',
+  ]) {
+    const raw = record[key];
+    if (typeof raw === 'string' && raw.trim()) {
+      result[key] = raw.trim();
+    } else if (typeof raw === 'boolean') {
+      result[key] = raw;
+    } else if (typeof raw === 'number' && Number.isFinite(raw)) {
+      result[key] = Math.max(0, Math.floor(raw));
+    }
+  }
+
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
 export function normalizeIntentE2ERequestBody(body: unknown): IntentE2ERunRequest {
   const record = body && typeof body === 'object' && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
   const targetUrl = typeof record.targetUrl === 'string' ? record.targetUrl.trim() : '';
@@ -110,6 +138,7 @@ export function normalizeIntentE2ERequestBody(body: unknown): IntentE2ERunReques
     runControl: normalizeIntentE2ERunControl(record.runControl),
     runtimeGovernance: normalizeIntentE2ERuntimeGovernance(record.runtimeGovernance),
     prefilledScenarioCard: normalizePrefilledScenarioCard(record.prefilledScenarioCard, targetUrl),
+    prefilledScenarioLlmMeta: normalizePrefilledScenarioLlmMeta(record.prefilledScenarioLlmMeta),
     prefilledPlanCode: typeof record.prefilledPlanCode === 'string' && record.prefilledPlanCode.trim() ? record.prefilledPlanCode : undefined,
   };
 }
@@ -127,6 +156,7 @@ export function buildIntentE2ELaunchDecisionRequestBody(body: unknown): Record<s
     auth: request.auth || undefined,
     llmConfig: request.llmConfig,
     runtimeGovernance: request.runtimeGovernance,
+    prefilledScenarioLlmMeta: request.prefilledScenarioLlmMeta,
     attachments: attachments.map((item) => ({
       name: item.name,
       purpose: item.purpose,

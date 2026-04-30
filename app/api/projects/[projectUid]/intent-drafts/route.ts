@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { normalizeIntentE2ERequestBody } from '@/lib/ai/intent-e2e-request';
 import { ensureDbBootstrap } from '@/lib/db/bootstrap';
-import { createProjectIntentDraftRecord, listProjectIntentDraftSummaryResults } from '@/lib/services/project-intent-draft-service';
+import { safeRecordProjectIntentDraftGeneratedTrafficQuality } from '@/lib/intent-e2e-traffic-quality';
+import {
+  createProjectIntentDraftRecord,
+  getProjectIntentDraftDetailResult,
+  listProjectIntentDraftSummaryResults,
+} from '@/lib/services/project-intent-draft-service';
 import { applyActorCookie, requireProjectRole, toErrorResponse } from '@/lib/server/project-actor';
 
 type CreateIntentDraftBody = {
@@ -72,6 +77,21 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ projectUid
       attachments: normalizedIntent.attachments,
       llmConfig: normalizedIntent.llmConfig,
       actorLabel: actor.displayName,
+    });
+    const detail = await Promise.resolve(
+      getProjectIntentDraftDetailResult({ projectUid, intentDraftUid: item.intentDraftUid })
+    ).catch(() => null);
+    await safeRecordProjectIntentDraftGeneratedTrafficQuality({
+      projectUid,
+      moduleUid,
+      intentDraftUid: item.intentDraftUid,
+      requestInput: normalizedIntent.input,
+      targetUrl: normalizedIntent.targetUrl,
+      attachmentCount: normalizedIntent.attachments?.length || 0,
+      scenarioCard: detail?.scenarioCard || null,
+      scenarioLlmMeta: detail?.scenarioLlmMeta || null,
+      llmConfig: detail?.llmConfig || normalizedIntent.llmConfig,
+      operation: 'create',
     });
 
     return applyActorCookie(NextResponse.json({ item }, { status: 201 }), actor.userUid);

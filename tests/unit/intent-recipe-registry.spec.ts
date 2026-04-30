@@ -1,6 +1,10 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildIntentActionDSL } from '@/lib/intent-action-dsl';
 import { renderIntentRecipeRegistry, selectIntentRecipeRegistry } from '@/lib/intent-recipe-registry';
+import { resetIntentProjectRecipeCache } from '@/lib/intent-project-recipe-registry';
 
 describe('intent-recipe-registry', () => {
   it('selects seeded business-list and primary-record recipes from DSL signals', () => {
@@ -290,6 +294,97 @@ describe('intent-recipe-registry', () => {
 
     expect(createOrderRegistry.items.map((item) => item.recipe.slug)).toContain('business.create-to-order');
     expect(batchContactsRegistry.items.map((item) => item.recipe.slug)).toContain('business.batch-add-contacts');
+  });
+
+  it('selects the project playbook recipe for the tracked batch-add-contacts family', () => {
+    const previousAssetRoot = process.env.INTENT_E2E_PROJECT_ASSET_ROOT;
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'intent-recipe-playbook-'));
+    const projectUid = 'proj_batch_playbook';
+    const projectDir = path.join(tempRoot, projectUid);
+
+    try {
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(projectDir, 'intent-e2e.project-recipes.json'),
+        JSON.stringify(
+          {
+            version: 1,
+            recipes: [
+              {
+                version: 1,
+                slug: 'intent.business-batch-add-contacts',
+                title: '商机列表批量加入通讯录并验收',
+                description: '命中真实商机行，勾选后批量加入通讯录，并在我的通讯录按手机号验收。',
+                family: 'business_batch_add_contacts_verify',
+                matchers: {
+                  targetUrlIncludes: ['/business/businesslist'],
+                  summaryIncludes: ['批量加入通讯录', '我的通讯录', '手机号'],
+                  requiredActions: ['find_table_row'],
+                  preferredHelpers: ['__e2e.findAntdTableRow', '__e2e.clickAntdRowCheckbox'],
+                  capabilitySlugs: ['ui.click-antd-row-checkbox', 'assert.resolve-primary-record'],
+                },
+                requiredContext: ['保留同一手机号作为终态验收主键。'],
+                executorPlan: ['先命中真实商机行，再勾选该行并执行批量加入通讯录。'],
+                verifierPlan: ['进入我的通讯录按同一手机号搜索并命中目标联系人。'],
+                knownPitfalls: ['不要只看 toast。'],
+                successRate: 100,
+                lastVerifiedAt: '2026-04-30T03:00:00.000Z',
+              },
+            ],
+          },
+          null,
+          2
+        )
+      );
+
+      process.env.INTENT_E2E_PROJECT_ASSET_ROOT = tempRoot;
+      resetIntentProjectRecipeCache();
+
+      const registry = selectIntentRecipeRegistry({
+        projectUid,
+        priorityScenarioFamily: 'business_batch_add_contacts_verify',
+        narrowToPriorityScenarioFamily: true,
+        preferredCapabilitySlugs: ['ui.find-antd-table-row', 'ui.click-antd-row-checkbox', 'assert.resolve-primary-record'],
+        dsl: buildIntentActionDSL({
+          taskMode: 'scenario',
+          targetUrl: 'https://example.com/#/business/businesslist',
+          featureDescription: '商机列表勾选真实联系人，批量加入通讯录，最后在我的通讯录按手机号验收',
+          expectedOutcome: '同一手机号在我的通讯录可检索命中',
+          sharedVariables: ['contactPhone'],
+          steps: [
+            {
+              stepUid: 'step_batch_contacts',
+              stepType: 'ui',
+              title: '批量加入通讯录',
+              target: 'https://example.com/#/business/businesslist',
+              instruction: '命中真实商机行，记录手机号，勾选该行后点击批量加入通讯录',
+              expectedResult: '联系人进入我的通讯录',
+              extractVariable: 'contactPhone',
+            },
+          ],
+        }),
+        snapshot: {
+          url: 'https://example.com/#/business/businesslist',
+          title: '商机列表',
+          frames: [],
+        },
+      });
+
+      const slugs = registry.items.map((item) => item.recipe.slug);
+      expect(slugs).toContain('intent.business-batch-add-contacts');
+      expect(slugs).toContain('business.batch-add-contacts');
+      expect(registry.items.find((item) => item.recipe.slug === 'intent.business-batch-add-contacts')?.matchedSignals).toEqual(
+        expect.arrayContaining(['family=business_batch_add_contacts_verify'])
+      );
+    } finally {
+      if (previousAssetRoot) {
+        process.env.INTENT_E2E_PROJECT_ASSET_ROOT = previousAssetRoot;
+      } else {
+        delete process.env.INTENT_E2E_PROJECT_ASSET_ROOT;
+      }
+      resetIntentProjectRecipeCache();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it('renders matched recipes as a reusable prompt section', () => {

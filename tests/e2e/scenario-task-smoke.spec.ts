@@ -446,6 +446,138 @@ function buildPlanArtifacts(task: Task) {
   return { plan, planCases };
 }
 
+function buildReleaseStatusReport() {
+  return {
+    version: 1,
+    generatedAt: now,
+    projectUid,
+    status: 'ready',
+    canRelease: true,
+    summary: {
+      checkCount: 3,
+      passedChecks: 3,
+      warningChecks: 0,
+      failedChecks: 0,
+      skippedChecks: 0,
+      familyCount: 3,
+      readyFamilies: 3,
+      attentionFamilies: 0,
+      blockedFamilies: 0,
+    },
+    currentCompare: {
+      status: 'passed',
+      reportPath: 'reports/intent-e2e/projects/proj_smoke/intent-e2e.release-guard-reports/latest.json',
+      generatedAt: now,
+      passed: true,
+      summary: {
+        baselineCount: 3,
+        passedBaselines: 3,
+        failedBaselines: 0,
+        totalCases: 3,
+        regressedCases: 0,
+        missingCases: 0,
+        insufficientEvidenceCases: 0,
+      },
+      message: '最近一次 release guard compare 通过。',
+    },
+    checks: [
+      {
+        id: 'release_guard_preflight',
+        title: 'Release guard assets',
+        status: 'passed',
+        blocking: true,
+        message: 'release guard tracked assets 可用，warning=0。',
+        metrics: { baselineCount: 3, checkedFileCount: 8, errorCount: 0, warningCount: 0 },
+      },
+      {
+        id: 'knowledge_hit_guard',
+        title: 'Project knowledge evidence',
+        status: 'passed',
+        blocking: true,
+        message: '默认 project knowledge expected rules 均有 tracked 命中证据。',
+        metrics: { evidenceCount: 3, passedEvidences: 3, failedEvidences: 0, missingRuleCount: 0 },
+      },
+      {
+        id: 'release_guard_current_compare',
+        title: 'Latest release compare',
+        status: 'passed',
+        blocking: false,
+        message: '最近一次 release guard compare 通过。',
+        evidencePath: 'reports/intent-e2e/projects/proj_smoke/intent-e2e.release-guard-reports/latest.json',
+        metrics: { baselineCount: 3, failedBaselines: 0, regressedCases: 0, missingCases: 0, insufficientEvidenceCases: 0 },
+      },
+    ],
+    families: [
+      {
+        priorityScenarioFamily: 'business_create_list_verify',
+        releaseGuard: {
+          status: 'passed',
+          baselineId: 'business-create-list-verify-smoke',
+          benchmarkPath: 'artifacts/smoke/business-create-list-verify.json',
+          compareReportPath: 'reports/smoke/business-create-list-verify.json',
+          currentRunCount: 3,
+          currentTerminalPassRate: 100,
+          currentFirstPassPassRate: 100,
+          failures: [],
+        },
+        knowledgeHit: {
+          status: 'passed',
+          evidenceId: 'business-create-list-verify-smoke-hit',
+          evidencePath: 'artifacts/smoke/business-create-list-verify.json',
+          expectedRuleIds: ['business.create-list-status-detail-entry'],
+          matchedRuleIds: ['business.create-list-status-detail-entry'],
+          knowledgeHitRate: 100,
+          failures: [],
+        },
+      },
+      {
+        priorityScenarioFamily: 'business_to_order',
+        releaseGuard: {
+          status: 'passed',
+          baselineId: 'business-to-order-smoke',
+          benchmarkPath: 'artifacts/smoke/business-to-order.json',
+          compareReportPath: 'reports/smoke/business-to-order.json',
+          currentRunCount: 3,
+          currentTerminalPassRate: 100,
+          currentFirstPassPassRate: 100,
+          failures: [],
+        },
+        knowledgeHit: {
+          status: 'passed',
+          evidenceId: 'business-to-order-smoke-hit',
+          evidencePath: 'artifacts/smoke/business-to-order.json',
+          expectedRuleIds: ['business.create-order-flow'],
+          matchedRuleIds: ['business.create-order-flow'],
+          knowledgeHitRate: 100,
+          failures: [],
+        },
+      },
+      {
+        priorityScenarioFamily: 'list_search_detail',
+        releaseGuard: {
+          status: 'passed',
+          baselineId: 'list-search-detail-smoke',
+          benchmarkPath: 'artifacts/smoke/list-search-detail.json',
+          compareReportPath: 'reports/smoke/list-search-detail.json',
+          currentRunCount: 5,
+          currentTerminalPassRate: 100,
+          currentFirstPassPassRate: 100,
+          failures: [],
+        },
+        knowledgeHit: {
+          status: 'passed',
+          evidenceId: 'list-search-detail-smoke-hit',
+          evidencePath: 'artifacts/smoke/list-search-detail.json',
+          expectedRuleIds: ['order.list-search-detail-primary-record'],
+          matchedRuleIds: ['order.list-search-detail-primary-record'],
+          knowledgeHitRate: 100,
+          failures: [],
+        },
+      },
+    ],
+  };
+}
+
 function buildEmptyCapabilityStarterHelperHealthSnapshotResponse(state: MockState) {
   return {
     snapshot: {
@@ -595,6 +727,13 @@ async function installApiMocks(
 
     if (method === 'GET' && pathname === `/api/projects/${projectUid}/activity`) {
       return jsonResponse(route, { items: state.activity.slice(0, Number(url.searchParams.get('limit') || 12)) });
+    }
+
+    if (method === 'GET' && pathname === '/api/intent-e2e/release-status') {
+      if (url.searchParams.get('projectUid') && url.searchParams.get('projectUid') !== projectUid) {
+        return jsonResponse(route, { error: '项目不匹配' }, 404);
+      }
+      return jsonResponse(route, buildReleaseStatusReport());
     }
 
     if (method === 'GET' && pathname === `/api/projects/${projectUid}/knowledge`) {
@@ -1105,6 +1244,26 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   await stopSmokeServer();
+});
+
+test('smoke: project dashboard renders release status summary @smoke', async ({ page }) => {
+  test.setTimeout(120_000);
+  await installApiMocks(page);
+
+  await page.goto(`${appOrigin}/projects/${projectUid}`, { waitUntil: 'domcontentloaded' });
+
+  const releaseCard = page.locator('div').filter({ hasText: 'Release readiness' }).first();
+  await expect(releaseCard.getByText('Release readiness', { exact: true })).toBeVisible();
+  await expect(releaseCard).toContainText('可发布');
+  await expect(releaseCard).toContainText('release guard、knowledge-hit 与最近 compare 证据当前齐全');
+  await expect(releaseCard).toContainText('checks');
+  await expect(releaseCard).toContainText('3/3');
+  await expect(releaseCard).toContainText('最近一次 release guard compare 通过。');
+  await expect(releaseCard).toContainText('当前无未通过 check 或 family 证据缺口');
+  await expect(releaseCard.getByRole('link', { name: '查看洞察' })).toHaveAttribute(
+    'href',
+    `/intent-e2e?projectUid=${projectUid}`
+  );
 });
 
 test('smoke: scenario task flow renders structured plan preview @smoke', async ({ page }) => {

@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "projectUid": "proj_default",
+  "moduleUid": "mod_1773303139537_c84d8476",
+  "testType": "browser_e2e",
+  "priorityScenarioFamily": "business_batch_add_contacts_verify",
+  "actorUserUid": "usr_default_owner",
+  "requests": [
+    {
+      "requestId": "business-batch-add-contacts-anchor-a",
+      "expectedPriorityScenarioFamily": "business_batch_add_contacts_verify",
+      "input": "参考知识目录《管帮手PC端操作手册》，在商机列表随机选择一条带联系人手机号的商机，先记录同一条商机的手机号和联系人，再勾选该行并点击“批量加入通讯录”；随后进入我的通讯录，按刚才记录的手机号搜索并验证联系人可见。若当前筛选结果为空，先切换到有数量的商机进展阶段。最终通过标准不是 toast，而是通讯录列表里能查到同一手机号。",
+      "targetUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+      "cicdProfile": "manual",
+      "prefilledScenarioCard": {
+        "version": 1,
+        "title": "商机列表批量加入通讯录并按手机号验收",
+        "taskMode": "scenario",
+        "targetUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+        "featureDescription": "business_batch_add_contacts_verify tracked corpus：在商机列表选择真实带手机号商机行，记录同一行联系人手机号，勾选该行并执行批量加入通讯录，最后进入我的通讯录按同一手机号检索命中目标联系人。",
+        "flowDefinition": {
+          "version": 1,
+          "entryUrl": "https://uat-service.yikaiye.com/#/business/businesslist",
+          "sharedVariables": [
+            "businessId",
+            "contactPhone",
+            "contactName",
+            "feedbackText"
+          ],
+          "expectedOutcome": "在商机列表真实命中一条带联系人手机号的业务行后，可批量加入通讯录；无论页面反馈是成功加入还是已存在，最终都必须在我的通讯录按同一手机号检索到该联系人。",
+          "cleanupNotes": "该业务流会真实写入 UAT 通讯录数据。记录 contactPhone、contactName、businessId 和执行时间；若需清理，由业务侧按 UAT 规则手工删除通讯录联系人。",
+          "steps": [
+            {
+              "stepUid": "flow-open-business-list",
+              "stepType": "ui",
+              "title": "进入商机列表页并等待页面稳定",
+              "target": "https://uat-service.yikaiye.com/#/business/businesslist",
+              "instruction": "复用共享登录态后打开商机列表页，等待关键词搜索框、商机表格和顶部“批量加入通讯录”按钮稳定可见。",
+              "expectedResult": "商机列表页主表格和批量加入通讯录入口稳定可见"
+            },
+            {
+              "stepUid": "flow-pick-business-row",
+              "stepType": "extract",
+              "title": "选择带手机号的真实商机行",
+              "target": "商机列表表格",
+              "instruction": "若当前筛选结果为空，先切换到有数量的商机进展阶段；从当前页可见业务行中选择一条带 11 位手机号的真实行，记录该行 businessId、contactPhone 和 contactName。不要直接点击第一条可见 checkbox，也不要在未记录手机号前执行批量动作。",
+              "expectedResult": "已定位一条真实业务行，contactPhone 非空，并且 businessId 或 contactName 可作为 fallback identity",
+              "extractVariable": "businessId,contactPhone,contactName"
+            },
+            {
+              "stepUid": "flow-select-business-row",
+              "stepType": "ui",
+              "title": "勾选同一条商机行",
+              "target": "目标商机行 checkbox",
+              "instruction": "只勾选刚才提取 contactPhone 的同一条商机行；优先使用稳定的 antd 行 checkbox helper，勾选后确认该行处于 selected/checked 状态。",
+              "expectedResult": "目标商机行已被勾选，且所选行与 contactPhone 来源一致"
+            },
+            {
+              "stepUid": "flow-batch-add-contacts",
+              "stepType": "ui",
+              "title": "执行批量加入通讯录",
+              "target": "商机列表顶部“批量加入通讯录”按钮",
+              "instruction": "点击顶部“批量加入通讯录”按钮，读取页面反馈文本；允许出现“加入通讯录成功”“已存在您的通讯录”或类似通讯录反馈，但不要把 toast 当成最终通过。",
+              "expectedResult": "页面出现与通讯录写入或已存在相关的反馈，feedbackText 已记录",
+              "extractVariable": "feedbackText"
+            },
+            {
+              "stepUid": "flow-open-mails-list",
+              "stepType": "ui",
+              "title": "进入我的通讯录列表",
+              "target": "https://uat-service.yikaiye.com/#/mails/mailslist",
+              "instruction": "打开我的通讯录列表，等待页面进入 /mails/mailslist，上方搜索框可见，列表区域完成加载。",
+              "expectedResult": "我的通讯录列表稳定可搜索"
+            },
+            {
+              "stepUid": "flow-search-contact-by-phone",
+              "stepType": "assert",
+              "title": "按同一手机号检索并校验联系人可见",
+              "target": "我的通讯录列表搜索结果",
+              "instruction": "使用 contactPhone 搜索我的通讯录，并校验结果中出现同一手机号；若手机号被格式化展示，可结合 contactName 做 fallback，但最终必须证明目标联系人来自刚才选中的同一业务行。",
+              "expectedResult": "我的通讯录列表中能检索到 contactPhone 或同一联系人，最终业务结果成立"
+            },
+            {
+              "stepUid": "flow-record-contact-cleanup-info",
+              "stepType": "cleanup",
+              "title": "记录通讯录清理信息",
+              "target": "执行日志",
+              "instruction": "记录 contactPhone、contactName、businessId、feedbackText 和执行时间，不在自动化里删除联系人。",
+              "expectedResult": "通讯录测试数据具备可追踪的人工清理凭据"
+            }
+          ]
+        },
+        "successCriteria": [
+          "必须先定位带手机号的真实业务行并记录 contactPhone，再勾选同一行",
+          "点击“批量加入通讯录”前后都必须保持同一手机号身份链，不允许点击第一条可见 checkbox 碰运气",
+          "页面反馈可能是成功加入或已存在，但 toast 不是最终通过标准",
+          "最终必须进入我的通讯录并按同一手机号或同一联系人稳定命中目标记录"
+        ],
+        "visualAnchors": [
+          "批量加入通讯录",
+          "商机进展",
+          "联系人",
+          "手机号",
+          "我的通讯录",
+          "我的联系人",
+          "搜索"
+        ],
+        "notes": [
+          "前置条件：已登录系统，优先复用共享登录态。",
+          "优先复用项目知识 `business.batch-add-contacts` 的稳定步骤和 action helper。",
+          "若当前筛选结果为空，可先切换到有数量的商机进展阶段。",
+          "不要臆造行内“加入通讯录”按钮；该流程使用顶部批量按钮完成。",
+          "这条 corpus 是 release-guard 候选输入，不等于已经具备 release baseline。"
+        ]
+      },
+      "llmConfig": {
+        "selfHealRetries": 0,
+        "maxPlanSteps": 7
+      },
+      "runControl": {
+        "priority": "normal",
+        "timeoutMs": 720000,
+        "retryLimit": 0
+      }
+    }
+  ]
+}

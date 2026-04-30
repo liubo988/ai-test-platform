@@ -46,6 +46,10 @@ export interface ScenarioCardGenerationOutput {
     model: string;
     visionEnabled: boolean;
     attachmentCount: number;
+    attachmentOcrAttempted?: boolean;
+    attachmentOcrUsed?: boolean;
+    attachmentOcrVisualAnchorCount?: number;
+    attachmentOcrTextSnippetCount?: number;
   };
 }
 
@@ -812,6 +816,102 @@ function stabilizeListSearchDetailCard(card: ScenarioCard): ScenarioCard {
   };
 }
 
+function looksLikeBusinessBatchAddContactsStep(step: FlowDefinition['steps'][number]): boolean {
+  const haystack = buildScenarioStepHaystack(step);
+  return /(批量加入通讯录|加入通讯录|我的通讯录|手机号搜索|通讯录检索)/i.test(haystack) || (
+    /(商机|business|列表)/i.test(haystack) && /(勾选|复选框|目标行|随机选择一条|选择一条)/i.test(haystack)
+  );
+}
+
+function sanitizeBusinessBatchAddContactsStep(step: FlowDefinition['steps'][number]): FlowDefinition['steps'][number] {
+  const haystack = buildScenarioStepHaystack(step);
+
+  if (/(勾选|复选框|目标行|随机选择一条|选择一条)/i.test(haystack) && /(商机|列表|business)/i.test(haystack)) {
+    return {
+      ...step,
+      instruction: appendUniqueClause(
+        step.instruction,
+        '先稳定命中真实业务行，再勾选；不要直接点击第一条可见行或裸 checkbox。'
+      ),
+      expectedResult: appendUniqueClause(
+        step.expectedResult,
+        '已记录目标手机号或联系人，供后续通讯录检索复用。'
+      ),
+      extractVariable: step.extractVariable || 'contactPhone',
+    };
+  }
+
+  if (/(批量加入通讯录|加入通讯录)/i.test(haystack)) {
+    return {
+      ...step,
+      instruction: appendUniqueClause(
+        step.instruction,
+        '点击前先确保已记录目标手机号；点击后保留页面反馈，但不要把 toast 直接当最终成功。'
+      ),
+      expectedResult: appendUniqueClause(
+        step.expectedResult,
+        '批量动作已触发，后续继续进入我的通讯录按同一手机号检索验收。'
+      ),
+    };
+  }
+
+  if (/(我的通讯录|通讯录列表|手机号搜索|检索|搜索)/i.test(haystack)) {
+    return {
+      ...step,
+      instruction: appendUniqueClause(
+        step.instruction,
+        '使用前面记录的同一手机号执行检索，优先命中同一联系人，不要改用新的模糊关键词。'
+      ),
+      expectedResult: appendUniqueClause(
+        step.expectedResult,
+        '我的通讯录结果中稳定命中目标手机号或联系人。'
+      ),
+    };
+  }
+
+  return step;
+}
+
+function stabilizeBusinessBatchAddContactsCard(card: ScenarioCard): ScenarioCard {
+  const flowDefinition = normalizeFlowDefinition(card.flowDefinition, card.targetUrl || card.flowDefinition.entryUrl);
+  const mentionsFamily = [
+    card.title,
+    card.featureDescription,
+    ...card.successCriteria,
+    ...card.notes,
+    flowDefinition.expectedOutcome,
+    ...flowDefinition.steps.flatMap((step) => [step.title, step.target, step.instruction, step.expectedResult]),
+  ].join('\n');
+
+  if (!/(批量加入通讯录|加入通讯录)/i.test(mentionsFamily) || !/(我的通讯录|通讯录列表|手机号搜索|检索到目标联系人)/i.test(mentionsFamily)) {
+    return card;
+  }
+
+  return {
+    ...card,
+    successCriteria: normalizeStringArray([
+      ...card.successCriteria,
+      '不要只看批量加入通讯录 toast；最终必须在我的通讯录按同一手机号检索到目标联系人。',
+    ]),
+    notes: normalizeStringArray([
+      ...card.notes,
+      '如果当前商机列表结果为空，但任务已明确允许切到有数量阶段，先把列表切到有真实数据的阶段，再继续选行。',
+      '点击“批量加入通讯录”前必须先记录目标手机号；最终验收统一复用这条身份链，不要中途换成新的模糊关键词。',
+    ]),
+    flowDefinition: {
+      ...flowDefinition,
+      sharedVariables: normalizeStringArray([...flowDefinition.sharedVariables, 'contactPhone', 'contactName']),
+      expectedOutcome: appendUniqueClause(
+        flowDefinition.expectedOutcome,
+        '最终在我的通讯录列表按同一手机号检索命中目标联系人'
+      ),
+      steps: flowDefinition.steps.map((step) =>
+        looksLikeBusinessBatchAddContactsStep(step) ? sanitizeBusinessBatchAddContactsStep(step) : step
+      ),
+    },
+  };
+}
+
 function stabilizeScenarioCard(card: ScenarioCard): ScenarioCard {
   let nextCard = card;
 
@@ -839,6 +939,8 @@ function stabilizeScenarioCard(card: ScenarioCard): ScenarioCard {
   const priorityScenarioFamily = familyRoute.family;
   if (priorityScenarioFamily === 'modal_or_drawer_save') {
     nextCard = stabilizeModalOrDrawerSaveCard(nextCard);
+  } else if (priorityScenarioFamily === 'business_batch_add_contacts_verify') {
+    nextCard = stabilizeBusinessBatchAddContactsCard(nextCard);
   } else if (priorityScenarioFamily === 'list_search_detail') {
     nextCard = stabilizeListSearchDetailCard(nextCard);
   }
@@ -1011,8 +1113,9 @@ export async function generateScenarioCard(
 ): Promise<ScenarioCardGenerationOutput> {
   const config = getLLMRuntimeConfig(runtimeOverrides);
   const attachments = (input.attachments || []).filter((item) => Boolean(item?.dataUrl)).slice(0, 4);
+  const attachmentOcrAttempted = attachments.length > 0 && config.visionEnabled;
   const attachmentOcrSummary =
-    attachments.length > 0 && config.visionEnabled
+    attachmentOcrAttempted
       ? await extractIntentAttachmentOcrSummary(
           {
             requestInput: input.input,
@@ -1023,6 +1126,7 @@ export async function generateScenarioCard(
           signal
         ).catch(() => EMPTY_INTENT_ATTACHMENT_OCR_SUMMARY)
       : EMPTY_INTENT_ATTACHMENT_OCR_SUMMARY;
+  const attachmentOcrUsed = attachmentOcrSummary.visualAnchors.length > 0 || attachmentOcrSummary.textSnippets.length > 0;
   const card = normalizeScenarioCard(
     applyIntentAttachmentOcrSummary(
       await callLLMStructured<ScenarioCard>(
@@ -1050,6 +1154,10 @@ export async function generateScenarioCard(
       model: config.model,
       visionEnabled: config.visionEnabled,
       attachmentCount: attachments.length,
+      attachmentOcrAttempted,
+      attachmentOcrUsed,
+      attachmentOcrVisualAnchorCount: attachmentOcrSummary.visualAnchors.length,
+      attachmentOcrTextSnippetCount: attachmentOcrSummary.textSnippets.length,
     },
   };
 }

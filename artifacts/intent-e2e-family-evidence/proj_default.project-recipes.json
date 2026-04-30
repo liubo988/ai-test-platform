@@ -200,6 +200,76 @@
     },
     {
       "version": 1,
+      "slug": "intent.business-batch-add-contacts",
+      "title": "商机列表批量加入通讯录并在我的通讯录按手机号验收",
+      "description": "用于 `business_batch_add_contacts_verify` family 的项目级 playbook recipe。主路径固定为：商机列表命中真实可勾选行 -> 记录同一行手机号/联系人 -> 勾选该行 -> 点击批量加入通讯录 -> 进入我的通讯录按同一手机号检索命中；toast 只作为中间反馈。",
+      "family": "business_batch_add_contacts_verify",
+      "matchers": {
+        "requiresAuth": false,
+        "requiresStableIdentifier": false,
+        "targetUrlIncludes": [
+          "/business/businesslist"
+        ],
+        "titleIncludes": [
+          "批量加入通讯录",
+          "我的通讯录"
+        ],
+        "summaryIncludes": [
+          "商机列表",
+          "批量加入通讯录",
+          "加入通讯录",
+          "我的通讯录",
+          "通讯录",
+          "手机号",
+          "联系人"
+        ],
+        "requiredActions": [
+          "find_table_row"
+        ],
+        "preferredHelpers": [
+          "__e2e.findAntdTableRow",
+          "__e2e.clickAntdRowCheckbox",
+          "__e2e.resolvePrimaryRecord"
+        ],
+        "capabilitySlugs": [
+          "ui.find-antd-table-row",
+          "ui.click-antd-row-checkbox",
+          "assert.resolve-primary-record"
+        ]
+      },
+      "requiredContext": [
+        "当前页面为商机列表，且存在可勾选真实商机行；若默认阶段为空，任务允许切到有数量阶段。",
+        "必须从目标商机行提取 `contactPhone`，手机号缺失时才回退 `contactName / businessId`。",
+        "最终验收必须进入我的通讯录，按同一手机号或联系人检索命中目标联系人。"
+      ],
+      "executorPlan": [
+        "进入商机列表并等待表格、搜索面与“批量加入通讯录”按钮稳定。",
+        "如果当前阶段没有可用数据，切换到有数量的商机进展阶段后重新等待表格行。",
+        "用 `__e2e.findAntdTableRow(...)` 命中包含手机号的真实业务行，并读取该行 `contactPhone / contactName / rowKey`。",
+        "用 `__e2e.clickAntdRowCheckbox(...)` 勾选同一行，不要直接点击第一条可见 checkbox。",
+        "点击顶部“批量加入通讯录”；toast 只允许作为可选日志，不允许等待 toast 作为阻断；无论是否出现反馈都继续终态验收。",
+        "进入我的通讯录，按同一 `contactPhone` 搜索并等待列表刷新。",
+        "在通讯录结果中稳定命中同一手机号或同一联系人，作为最终通过证据。"
+      ],
+      "verifierPlan": [
+        "成功标准 1：已命中真实商机表格行，且该行提供 `contactPhone` 或明确 fallback identity。",
+        "成功标准 2：被勾选的是同一目标行，而不是固定第一行或 fixed-column clone。",
+        "成功标准 3：批量加入通讯录动作已触发，并保留页面反馈或响应收敛证据。",
+        "成功标准 4：已进入我的通讯录列表，并按同一 `contactPhone` 或 `contactName` 执行检索。",
+        "成功标准 5：通讯录结果中稳定命中目标联系人；toast 不能单独作为最终成功。"
+      ],
+      "knownPitfalls": [
+        "不要等待“批量加入通讯录”toast 作为必经断言；toast 可能不出现或很快消失。",
+        "不要只看“批量加入通讯录”toast 或“已存在您的通讯录”提示就结束。",
+        "不要直接点击第一条可见 checkbox；必须先命中目标行再 scoped 勾选。",
+        "不要在商机列表为空时直接判 unknown；若有阶段计数，先切到有数量阶段再继续。",
+        "不要用联系人姓名模糊命中替代手机号验收；手机号缺失时才允许 fallback。"
+      ],
+      "successRate": 100,
+      "lastVerifiedAt": "2026-04-30T03:00:00.000Z"
+    },
+    {
+      "version": 1,
       "slug": "intent.modal-or-drawer-save.visible-container",
       "title": "在当前可见 modal / drawer 内完成编辑保存，并以提交收敛和容器关闭/页面稳定态作为最终成功证据。",
       "description": "用于 `modal_or_drawer_save` family 的项目级 deterministic recipe。主路径固定为：定位当前可见 modal/drawer -> scoped 填写 -> 保存 -> 观察提交收敛 -> 必要时继续详情/列表验收。",

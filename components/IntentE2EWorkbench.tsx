@@ -58,6 +58,7 @@ import { buildIntentProjectRecipeMergeInputsFromPlaybookCandidates } from '@/lib
 import { buildWorkspaceProjectPath } from '@/lib/workspace-platform-query-state';
 import { buildIntentE2EPromotionCoverageSummary } from '@/lib/intent-e2e-promotion-coverage';
 import type { IntentSuccessfulRunKnowledgePromotionReceipt } from '@/lib/intent-successful-run-knowledge-promotion-receipt';
+import type { IntentE2EPriorityScenarioFamily } from '@/lib/intent-e2e-priority-scenario-family';
 
 type StepResult = {
   title: string;
@@ -633,6 +634,7 @@ type IntentDraftLaunchDetail = {
   projectUid: string;
   moduleUid: string;
   scenarioCard: ScenarioCard | null;
+  scenarioLlmMeta: Record<string, unknown>;
   planCode: string;
   attachments: Array<{
     name?: string;
@@ -1272,6 +1274,54 @@ type IntentE2EInsightFailureClassStat = {
   latestRepairObservationVerifierCheckUids: string[];
 };
 
+type IntentE2EInsightFailureTraceGovernanceCategory =
+  | 'environment'
+  | 'data_contract'
+  | 'verifier_gap'
+  | 'workflow_gap'
+  | 'execution_gap'
+  | 'unknown_triage';
+
+type IntentE2EInsightFailureTraceGovernanceSeverity = 'high' | 'medium' | 'low';
+
+type IntentE2EInsightFailureTracePromotionTarget =
+  | 'environment_runbook'
+  | 'fixture_contract'
+  | 'verifier_recipe'
+  | 'workflow_recipe'
+  | 'execution_guard'
+  | 'manual_triage';
+
+type IntentE2EInsightFailureTraceGovernanceItem = {
+  governanceId: string;
+  failureClass: string;
+  category: IntentE2EInsightFailureTraceGovernanceCategory;
+  severity: IntentE2EInsightFailureTraceGovernanceSeverity;
+  promotionTarget: IntentE2EInsightFailureTracePromotionTarget;
+  count: number;
+  latestObservedAt: string;
+  representativeRunIds: string[];
+  affectedScenarioFamilies: IntentE2EScenarioFamily[];
+  affectedPriorityScenarioFamilies: IntentE2EPriorityScenarioFamily[];
+  summary: string;
+  recommendation: string;
+  antiPatterns: string[];
+  latestRepairObservationAt: string;
+  latestRepairObservationSummary: string;
+  latestRepairObservationVerifierCheckUids: string[];
+};
+
+type IntentE2EInsightFailureTraceGovernanceOverview = {
+  generatedFromRuns: number;
+  totalItems: number;
+  highSeverityCount: number;
+  mediumSeverityCount: number;
+  lowSeverityCount: number;
+  needsTriageCount: number;
+  promotionCandidateCount: number;
+  items: IntentE2EInsightFailureTraceGovernanceItem[];
+};
+
 type IntentE2EInsightTraceAttemptOutcome = 'passed' | 'failed' | 'unknown';
 
 type IntentE2EInsightRecentTraceAttempt = {
@@ -1664,6 +1714,7 @@ type IntentE2EInsightsResponse = {
   verificationIntents: IntentE2EInsightVerificationIntentStat[];
   capabilityVerificationIntents: IntentE2EInsightCapabilityVerificationIntentStat[];
   failureClasses: IntentE2EInsightFailureClassStat[];
+  failureTraceGovernance: IntentE2EInsightFailureTraceGovernanceOverview;
   mergeProvenanceStats: IntentE2EInsightMergeProvenanceStat[];
   riskLifecycleRules: IntentE2EInsightRiskLifecycleRule[];
   probationRules: IntentE2EInsightProbationRule[];
@@ -1714,6 +1765,67 @@ type IntentE2EInsightsResponse = {
   };
   suppressedStarterHelperGovernanceSummary?: IntentE2EInsightSuppressedStarterHelperGovernanceSummary;
   runtimeGovernanceStatus?: IntentProjectRuntimeGovernanceStatus;
+  error?: string;
+};
+
+type IntentE2EReleaseReadinessStatus = 'ready' | 'attention' | 'blocked';
+
+type IntentE2EReleaseCheckStatus = 'passed' | 'warning' | 'failed' | 'skipped';
+
+type IntentE2EReleaseStatusCheck = {
+  id: string;
+  title: string;
+  status: IntentE2EReleaseCheckStatus;
+  blocking: boolean;
+  message: string;
+  evidencePath?: string;
+};
+
+type IntentE2EReleaseStatusFamily = {
+  priorityScenarioFamily: string;
+  releaseGuard: {
+    status: IntentE2EReleaseCheckStatus;
+    baselineId: string;
+    currentRunCount: number;
+    currentTerminalPassRate: number;
+    currentFirstPassPassRate: number;
+    failures: string[];
+  } | null;
+  knowledgeHit: {
+    status: IntentE2EReleaseCheckStatus;
+    evidenceId: string;
+    expectedRuleIds: string[];
+    matchedRuleIds: string[];
+    knowledgeHitRate: number;
+    failures: string[];
+  } | null;
+};
+
+type IntentE2EReleaseStatusResponse = {
+  generatedAt: string;
+  projectUid: string;
+  status: IntentE2EReleaseReadinessStatus;
+  canRelease: boolean;
+  summary: {
+    checkCount: number;
+    passedChecks: number;
+    warningChecks: number;
+    failedChecks: number;
+    skippedChecks: number;
+    familyCount: number;
+    readyFamilies: number;
+    attentionFamilies: number;
+    blockedFamilies: number;
+  };
+  currentCompare: {
+    status: 'passed' | 'failed' | 'missing' | 'skipped';
+    reportPath: string;
+    generatedAt: string;
+    passed: boolean;
+    message: string;
+  };
+  checks: IntentE2EReleaseStatusCheck[];
+  families: IntentE2EReleaseStatusFamily[];
   error?: string;
 };
 
@@ -2037,6 +2149,62 @@ function regressionWatchlistSourceLabel(source: IntentE2EInsightRegressionWatchl
   }
 }
 
+function failureTraceGovernanceSeverityTone(severity: IntentE2EInsightFailureTraceGovernanceSeverity): string {
+  switch (severity) {
+    case 'high':
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+    case 'medium':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-600';
+  }
+}
+
+function failureTraceGovernanceSeverityLabel(severity: IntentE2EInsightFailureTraceGovernanceSeverity): string {
+  switch (severity) {
+    case 'high':
+      return '高风险';
+    case 'medium':
+      return '观察';
+    default:
+      return '低风险';
+  }
+}
+
+function failureTraceGovernanceCategoryLabel(category: IntentE2EInsightFailureTraceGovernanceCategory): string {
+  switch (category) {
+    case 'environment':
+      return '环境治理';
+    case 'data_contract':
+      return '数据契约';
+    case 'verifier_gap':
+      return '验收缺口';
+    case 'workflow_gap':
+      return '流程缺口';
+    case 'execution_gap':
+      return '执行护栏';
+    default:
+      return '待 triage';
+  }
+}
+
+function failureTracePromotionTargetLabel(target: IntentE2EInsightFailureTracePromotionTarget): string {
+  switch (target) {
+    case 'environment_runbook':
+      return 'Runbook';
+    case 'fixture_contract':
+      return 'Fixture';
+    case 'verifier_recipe':
+      return 'Verifier recipe';
+    case 'workflow_recipe':
+      return 'Workflow recipe';
+    case 'execution_guard':
+      return 'Execution guard';
+    default:
+      return 'Manual triage';
+  }
+}
+
 function rolloutStrategyStageTone(stage: IntentE2EInsightRolloutStrategyStage): string {
   switch (stage) {
     case 'full_release':
@@ -2079,6 +2247,136 @@ function rolloutStrategyGateLabel(status: IntentE2EInsightRolloutStrategyGateSta
     default:
       return '阻断';
   }
+}
+
+function releaseReadinessLabel(status: IntentE2EReleaseReadinessStatus): string {
+  switch (status) {
+    case 'ready':
+      return '可发布';
+    case 'attention':
+      return '需复核';
+    default:
+      return '阻断';
+  }
+}
+
+function releaseReadinessTone(status: IntentE2EReleaseReadinessStatus): string {
+  switch (status) {
+    case 'ready':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'attention':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    default:
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+  }
+}
+
+function releaseReadinessPanelTone(status: IntentE2EReleaseReadinessStatus): string {
+  switch (status) {
+    case 'ready':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-800';
+    case 'attention':
+      return 'border-amber-200 bg-amber-50 text-amber-800';
+    default:
+      return 'border-rose-200 bg-rose-50 text-rose-800';
+  }
+}
+
+function releaseReadinessSummaryText(status: IntentE2EReleaseReadinessStatus): string {
+  switch (status) {
+    case 'ready':
+      return 'release guard、knowledge-hit 与最近 compare 证据当前齐全。';
+    case 'attention':
+      return '当前没有阻塞项，但仍有需要复核的证据或 compare 状态。';
+    default:
+      return '存在阻塞证据，先处理失败项再进入发布。';
+  }
+}
+
+function releaseReadinessDetailText(status: IntentE2EReleaseReadinessStatus, summary: IntentE2EReleaseStatusResponse['summary']): string {
+  const checkText = `checks ${summary.passedChecks}/${summary.checkCount}`;
+  const familyText = `families ${summary.readyFamilies}/${summary.familyCount}`;
+  switch (status) {
+    case 'ready':
+      return `${checkText} 通过，${familyText} 就绪；blocked family=${summary.blockedFamilies}。`;
+    case 'attention':
+      return `${checkText} 通过，warning=${summary.warningChecks + summary.skippedChecks}；${familyText} 就绪。`;
+    default:
+      return `${checkText} 通过，failed=${summary.failedChecks}；blocked family=${summary.blockedFamilies}。`;
+  }
+}
+
+function releaseCheckStatusLabel(status: IntentE2EReleaseCheckStatus): string {
+  switch (status) {
+    case 'passed':
+      return '通过';
+    case 'warning':
+      return '观察';
+    case 'skipped':
+      return '跳过';
+    default:
+      return '失败';
+  }
+}
+
+function releaseCheckStatusTone(status: IntentE2EReleaseCheckStatus): string {
+  switch (status) {
+    case 'passed':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'warning':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    case 'skipped':
+      return 'border-slate-200 bg-slate-50 text-slate-600';
+    default:
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+  }
+}
+
+function releaseStatusErrorTitle(message: string): string {
+  if (/权限|permission|forbidden|unauthor/i.test(message)) {
+    return '无权查看发布状态';
+  }
+  if (/no such file|ENOENT|not found|missing|找不到|不存在|未找到/i.test(message)) {
+    return '发布证据尚未配置';
+  }
+  return '发布状态暂不可用';
+}
+
+function releaseStatusErrorDescription(message: string): string {
+  if (/权限|permission|forbidden|unauthor/i.test(message)) {
+    return '当前账号没有该项目的 viewer 权限，面板不会尝试绕过 API 读取本地证据。';
+  }
+  if (/no such file|ENOENT|not found|missing|找不到|不存在|未找到/i.test(message)) {
+    return '当前项目缺少 release guard 或 knowledge-hit tracked artifacts，面板先保持空状态。';
+  }
+  return '服务端没有返回可消费的 release status，先保留原始错误用于排查。';
+}
+
+function releaseFamilyIssueMessages(family: IntentE2EReleaseStatusFamily): string[] {
+  const messages: string[] = [];
+  if (!family.releaseGuard) {
+    messages.push('release guard evidence 缺失');
+  } else if (family.releaseGuard.status !== 'passed') {
+    messages.push(`release guard ${releaseCheckStatusLabel(family.releaseGuard.status)}`);
+  }
+  for (const failure of family.releaseGuard?.failures || []) {
+    if (failure.trim()) {
+      messages.push(`release：${failure.trim()}`);
+    }
+  }
+
+  if (!family.knowledgeHit) {
+    messages.push('knowledge-hit evidence 缺失');
+  } else if (family.knowledgeHit.status !== 'passed') {
+    messages.push(`knowledge-hit ${releaseCheckStatusLabel(family.knowledgeHit.status)}`);
+  }
+  for (const failure of family.knowledgeHit?.failures || []) {
+    if (failure.trim()) {
+      messages.push(`knowledge：${failure.trim()}`);
+    }
+  }
+
+  return messages.slice(0, 6);
 }
 
 function rolloutStrategyGateSourceLabel(source: IntentE2EInsightRolloutStrategyGateSource): string {
@@ -2649,6 +2947,14 @@ function intentLaunchDecisionReasonLabel(reason: string): string {
       return '任务描述缺少目标、入口或成功标准';
     case 'recent_repeated_model_failure':
       return '最近相似任务连续失败';
+    case 'recent_repeated_data_block':
+      return '最近相似任务连续卡在前置数据缺口';
+    case 'recent_repeated_auth_block':
+      return '最近相似任务连续卡在登录态';
+    case 'recent_repeated_permission_block':
+      return '最近相似任务连续卡在权限';
+    case 'recent_repeated_environment_block':
+      return '最近相似任务连续卡在环境稳定性';
     case 'high_failure_pressure':
       return '相似任务近期失败压力偏高';
     default:
@@ -2760,6 +3066,27 @@ function insightFailureClassLabel(failureClass: string): string {
   if (!failureClass) return '—';
   const label = intentFailureClassLabel(failureClass as IntentFailureTriage['failureClass']);
   return label === '未分类' && failureClass !== 'unknown' ? failureClass : label;
+}
+
+function priorityScenarioFamilyLabel(family: IntentE2EPriorityScenarioFamily): string {
+  switch (family) {
+    case 'business_create_list_verify':
+      return '新建商机回列表';
+    case 'business_to_order':
+      return '商机转订单';
+    case 'business_batch_add_contacts_verify':
+      return '批量加入通讯录';
+    case 'list_search_detail':
+      return '列表搜索详情';
+    case 'modal_or_drawer_save':
+      return '弹层保存';
+    case 'row_action_menu':
+      return '行操作菜单';
+    case 'list_ownership_switch':
+      return '归属切换';
+    default:
+      return '未跟踪';
+  }
 }
 
 function evalCandidatePriorityLabel(priority: IntentE2EEvaluationCandidatePriority): string {
@@ -4307,6 +4634,10 @@ async function fetchIntentDraftLaunchDetail(projectUid: string, draftUid: string
       json.item.scenarioCard && typeof json.item.scenarioCard === 'object' && !Array.isArray(json.item.scenarioCard)
         ? (json.item.scenarioCard as ScenarioCard)
         : null,
+    scenarioLlmMeta:
+      json.item.scenarioLlmMeta && typeof json.item.scenarioLlmMeta === 'object' && !Array.isArray(json.item.scenarioLlmMeta)
+        ? (json.item.scenarioLlmMeta as Record<string, unknown>)
+        : {},
     planCode: typeof json.item.planCode === 'string' ? json.item.planCode : '',
     attachments: Array.isArray(json.item.attachments)
       ? json.item.attachments
@@ -4340,6 +4671,7 @@ function buildIntentDraftLaunchPayload(
     moduleUid: moduleUid || undefined,
     intentDraftUid: draftDetail.intentDraftUid.trim() || undefined,
     prefilledScenarioCard: draftDetail.scenarioCard || undefined,
+    prefilledScenarioLlmMeta: Object.keys(draftDetail.scenarioLlmMeta || {}).length > 0 ? draftDetail.scenarioLlmMeta : undefined,
     prefilledPlanCode: draftDetail.planCode.trim() ? draftDetail.planCode : undefined,
     attachments: draftDetail.attachments.map((item) => ({
       name: item.name,
@@ -4474,6 +4806,24 @@ async function fetchIntentE2EInsights(projectUid = '', runLimit = 50, auditLimit
   }
 
   return json as IntentE2EInsightsResponse;
+}
+
+async function fetchIntentE2EReleaseStatus(projectUid = ''): Promise<IntentE2EReleaseStatusResponse> {
+  const search = new URLSearchParams({
+    requireCurrentCompare: '1',
+  });
+  if (projectUid.trim()) {
+    search.set('projectUid', projectUid.trim());
+  }
+
+  const res = await fetch(`/api/intent-e2e/release-status?${search.toString()}`, { cache: 'no-store' });
+  const json = (await res.json().catch(() => null)) as IntentE2EReleaseStatusResponse | { error?: string } | null;
+
+  if (!res.ok || !json || !('status' in json)) {
+    throw new Error((json as { error?: string } | null)?.error || '读取发布状态失败');
+  }
+
+  return json as IntentE2EReleaseStatusResponse;
 }
 
 async function restoreProjectKnowledgeBackupFromWorkbench(
@@ -4657,6 +5007,9 @@ export default function IntentE2EWorkbench({
   const [insightsLoading, setInsightsLoading] = useState(false);
   const [insightsError, setInsightsError] = useState('');
   const [insights, setInsights] = useState<IntentE2EInsightsResponse | null>(null);
+  const [releaseStatusLoading, setReleaseStatusLoading] = useState(false);
+  const [releaseStatusError, setReleaseStatusError] = useState('');
+  const [releaseStatus, setReleaseStatus] = useState<IntentE2EReleaseStatusResponse | null>(null);
   const [insightsView, setInsightsView] = useState<InsightWorkbenchView>('overview');
   const [railView, setRailView] = useState<WorkbenchRailView>('live');
   const [detailView, setDetailView] = useState<WorkbenchDetailView>('scenario');
@@ -4989,7 +5342,9 @@ export default function IntentE2EWorkbench({
               key: 'overview',
               label: '总览',
               description: '先看能否继续放量，再集中处理 watchlist、评测候选和整体失败模式。',
-              countLabel: `${insights.regressionWatchlist.items.length + insights.rolloutStrategy.gates.length} 项决策`,
+              countLabel: `${
+                insights.regressionWatchlist.items.length + insights.rolloutStrategy.gates.length + insights.failureTraceGovernance.items.length
+              } 项决策`,
             },
             {
               key: 'quality',
@@ -5107,6 +5462,25 @@ export default function IntentE2EWorkbench({
                     : 'border border-emerald-200 bg-emerald-50 text-emerald-700',
             },
             {
+              key: 'failure-trace-governance',
+              title: '失败治理',
+              value:
+                insights.failureTraceGovernance.highSeverityCount > 0
+                  ? `${insights.failureTraceGovernance.highSeverityCount} 个高风险`
+                  : insights.failureTraceGovernance.items.length > 0
+                    ? `${insights.failureTraceGovernance.items.length} 个治理项`
+                    : '暂无失败项',
+              detail:
+                insights.failureTraceGovernance.items[0]?.summary ||
+                '最近终态样本没有需要单独提炼的失败 trace。',
+              toneClassName:
+                insights.failureTraceGovernance.highSeverityCount > 0
+                  ? 'border border-rose-200 bg-rose-50 text-rose-700'
+                  : insights.failureTraceGovernance.mediumSeverityCount > 0
+                    ? 'border border-amber-200 bg-amber-50 text-amber-700'
+                    : 'border border-slate-200 bg-slate-50 text-slate-700',
+            },
+            {
               key: 'rollback',
               title: '回滚状态',
               value: insights.rollbackCandidates.length > 0 ? `${insights.rollbackCandidates.length} 个候选` : '暂无回滚项',
@@ -5176,6 +5550,15 @@ export default function IntentE2EWorkbench({
                   key: 'watchlist',
                   label: '回归焦点',
                   detail: insights.regressionWatchlist.items[0].recommendation || insights.regressionWatchlist.items[0].summary,
+                }
+              : null,
+            insights.failureTraceGovernance.items[0]
+              ? {
+                  key: 'failure-trace-governance',
+                  label: '失败治理',
+                  detail:
+                    insights.failureTraceGovernance.items[0].recommendation ||
+                    insights.failureTraceGovernance.items[0].summary,
                 }
               : null,
             insights.rollbackCandidates[0]
@@ -7034,6 +7417,7 @@ export default function IntentE2EWorkbench({
     if (activeRunId) return;
     if (searchDraftLaunchMode === INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE) return;
     void refreshIntentE2EInsights({ silent: true });
+    void refreshIntentE2EReleaseStatus({ silent: true });
   }, [activeRunId, searchDraftLaunchMode, workspaceProjectUid]);
 
   useEffect(() => {
@@ -7810,6 +8194,32 @@ export default function IntentE2EWorkbench({
     }
   }
 
+  async function refreshIntentE2EReleaseStatus(options?: { silent?: boolean }) {
+    if (releaseStatusLoading) return;
+
+    setReleaseStatusLoading(true);
+    if (!options?.silent) {
+      setReleaseStatusError('');
+    }
+
+    try {
+      const result = await fetchIntentE2EReleaseStatus(workspaceProjectUid);
+      setReleaseStatus(result);
+      setReleaseStatusError('');
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : '读取发布状态失败';
+      if (!options?.silent) {
+        setReleaseStatusError(message);
+        setStreamState((current) => ({
+          ...current,
+          feed: pushFeed(current.feed, message, 'warning'),
+        }));
+      }
+    } finally {
+      setReleaseStatusLoading(false);
+    }
+  }
+
   async function refreshProjectKnowledgeAudits(options?: { silent?: boolean }) {
     if (knowledgeAuditsLoading) return;
 
@@ -8458,6 +8868,7 @@ export default function IntentE2EWorkbench({
 
   const buildCurrentLaunchPayload = useCallback((): Record<string, unknown> => {
     const intentDraftUid = launchedFromIntentDraft ? searchIntentDraftUid.trim() : '';
+    const draftScenarioLlmMeta = launchedFromIntentDraft ? draftLaunchDetailRef.current?.scenarioLlmMeta || {} : {};
 
     return {
       input: input.trim(),
@@ -8465,6 +8876,7 @@ export default function IntentE2EWorkbench({
       projectUid: defaultWorkspaceProjectUid || undefined,
       moduleUid: workspaceModuleUid || undefined,
       intentDraftUid: intentDraftUid || undefined,
+      prefilledScenarioLlmMeta: Object.keys(draftScenarioLlmMeta).length > 0 ? draftScenarioLlmMeta : undefined,
       attachments: attachments.map((item) => ({
         name: item.name,
         dataUrl: item.dataUrl,
@@ -8585,6 +8997,19 @@ export default function IntentE2EWorkbench({
       setRunError(error instanceof Error ? error.message : 'AI 意图驱动 E2E 执行失败');
     }
   }
+
+  const releaseIssueChecks = releaseStatus?.checks.filter((item) => item.status !== 'passed') || [];
+  const releaseIssueFamilies =
+    releaseStatus?.families
+      .map((family) => ({
+        family,
+        messages: releaseFamilyIssueMessages(family),
+      }))
+      .filter((item) => item.messages.length > 0) || [];
+  const releaseStatusBlockingCheckCount = releaseIssueChecks.filter((item) => item.blocking).length;
+  const releaseStatusHasNoIssues = Boolean(releaseStatus && releaseIssueChecks.length === 0 && releaseIssueFamilies.length === 0);
+  const releaseStatusErrorHeading = releaseStatusError ? releaseStatusErrorTitle(releaseStatusError) : '';
+  const releaseStatusErrorBody = releaseStatusError ? releaseStatusErrorDescription(releaseStatusError) : '';
 
   return (
     <main
@@ -9408,17 +9833,217 @@ export default function IntentE2EWorkbench({
                   </div>
                   <button
                     type="button"
-                    onClick={() => void refreshIntentE2EInsights()}
-                    disabled={insightsLoading}
+                    onClick={() => {
+                      void refreshIntentE2EInsights();
+                      void refreshIntentE2EReleaseStatus();
+                    }}
+                    disabled={insightsLoading || releaseStatusLoading}
                     className="inline-flex h-10 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 px-4 text-xs text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {insightsLoading ? '刷新中…' : '刷新洞察'}
+                    {insightsLoading || releaseStatusLoading ? '刷新中…' : '刷新洞察'}
                   </button>
                 </div>
 
                 {insightsError && (
                   <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs leading-5 text-rose-700">
                     {insightsError}
+                  </div>
+                )}
+
+                {(releaseStatus || releaseStatusLoading || releaseStatusError) && (
+                  <div className="mt-4 rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-slate-50 to-emerald-50/60 px-5 py-5">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Release Readiness</p>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <p className="text-lg font-semibold text-slate-950">发布状态</p>
+                          {releaseStatus ? (
+                            <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${releaseReadinessTone(releaseStatus.status)}`}>
+                              {releaseReadinessLabel(releaseStatus.status)}
+                            </span>
+                          ) : (
+                            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-500">
+                              {releaseStatusLoading ? '读取中' : '未加载'}
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-3 text-sm leading-6 text-slate-600">
+                          {releaseStatus
+                            ? `项目 ${releaseStatus.projectUid} · ${releaseStatus.canRelease ? '当前证据允许发布' : '当前仍需处理证据缺口'}`
+                            : '发布状态直接来自 release-status API，前端不重新计算 ready / attention / blocked。'}
+                        </p>
+                        {releaseStatus?.currentCompare?.message && (
+                          <p className="mt-2 text-xs leading-5 text-slate-500">
+                            {releaseStatus.currentCompare.message}
+                            {releaseStatus.currentCompare.generatedAt ? ` · ${formatDateTime(releaseStatus.currentCompare.generatedAt)}` : ''}
+                          </p>
+                        )}
+                        {releaseStatusError && (
+                          <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">
+                            <p className="font-medium">{releaseStatusErrorHeading}</p>
+                            <p className="mt-1">{releaseStatusErrorBody}</p>
+                            <p className="mt-2 break-all text-amber-700">返回信息：{releaseStatusError}</p>
+                          </div>
+                        )}
+                      </div>
+                      {releaseStatus && (
+                        <div className="grid min-w-[260px] grid-cols-3 gap-2 text-center">
+                          <div className="rounded-2xl border border-white/80 bg-white/90 px-3 py-3">
+                            <p className="text-[10px] uppercase tracking-[0.14em] text-slate-400">checks</p>
+                            <p className="mt-1 text-xl font-semibold text-slate-950">{releaseStatus.summary.passedChecks}/{releaseStatus.summary.checkCount}</p>
+                          </div>
+                          <div className="rounded-2xl border border-white/80 bg-white/90 px-3 py-3">
+                            <p className="text-[10px] uppercase tracking-[0.14em] text-slate-400">families</p>
+                            <p className="mt-1 text-xl font-semibold text-slate-950">{releaseStatus.summary.readyFamilies}/{releaseStatus.summary.familyCount}</p>
+                          </div>
+                          <div className="rounded-2xl border border-white/80 bg-white/90 px-3 py-3">
+                            <p className="text-[10px] uppercase tracking-[0.14em] text-slate-400">blocked</p>
+                            <p className="mt-1 text-xl font-semibold text-slate-950">{releaseStatus.summary.blockedFamilies}</p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {releaseStatus && (
+                      <>
+                        <div className={`mt-4 rounded-2xl border px-4 py-3 text-xs leading-5 ${releaseReadinessPanelTone(releaseStatus.status)}`}>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="font-medium">{releaseReadinessSummaryText(releaseStatus.status)}</p>
+                            <span className="rounded-full border border-current/20 bg-white/70 px-2.5 py-1 text-[10px] font-medium">
+                              {releaseStatusBlockingCheckCount > 0 ? `${releaseStatusBlockingCheckCount} 个阻塞 check` : '无阻塞 check'}
+                            </span>
+                          </div>
+                          <p className="mt-1">{releaseReadinessDetailText(releaseStatus.status, releaseStatus.summary)}</p>
+                        </div>
+
+                        <div className="mt-4 grid gap-3 md:grid-cols-3">
+                          {releaseStatus.checks.map((item) => (
+                            <div key={item.id} className="rounded-2xl border border-white/80 bg-white/90 px-4 py-4">
+                              <div className="flex items-center justify-between gap-3">
+                                <p className="min-w-0 truncate text-sm font-medium text-slate-900">{item.title}</p>
+                                <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[10px] font-medium ${releaseCheckStatusTone(item.status)}`}>
+                                  {releaseCheckStatusLabel(item.status)}
+                                </span>
+                              </div>
+                              <p className={`mt-2 text-xs leading-5 text-slate-500 ${item.status === 'passed' ? 'line-clamp-2' : ''}`}>{item.message}</p>
+                              {item.status !== 'passed' && (
+                                <div className="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
+                                  <span className={`rounded-full border px-2 py-0.5 ${item.blocking ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
+                                    {item.blocking ? '阻塞项' : '提示项'}
+                                  </span>
+                                  {item.evidencePath && (
+                                    <span className="min-w-0 max-w-full truncate rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-slate-500">
+                                      {item.evidencePath}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="mt-4 grid gap-3 md:grid-cols-3">
+                          {releaseStatus.families.map((family) => {
+                            const familyIssueMessages = releaseFamilyIssueMessages(family);
+                            return (
+                              <div
+                                key={family.priorityScenarioFamily}
+                                className={`rounded-2xl border px-4 py-4 ${
+                                  familyIssueMessages.length > 0 ? 'border-amber-200 bg-amber-50/70' : 'border-slate-200 bg-white/90'
+                                }`}
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <p className="min-w-0 break-all font-mono text-xs font-semibold text-slate-900">{family.priorityScenarioFamily}</p>
+                                  <span
+                                    className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium ${
+                                      familyIssueMessages.length > 0
+                                        ? family.releaseGuard?.status === 'failed' || family.knowledgeHit?.status === 'failed'
+                                          ? 'border-rose-200 bg-rose-50 text-rose-700'
+                                          : 'border-amber-200 bg-amber-50 text-amber-700'
+                                        : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                    }`}
+                                  >
+                                    {familyIssueMessages.length > 0 ? '需处理' : '证据齐全'}
+                                  </span>
+                                </div>
+                                <div className="mt-3 space-y-2 text-xs leading-5 text-slate-600">
+                                  <p>
+                                    release：
+                                    {family.releaseGuard ? (
+                                      <>
+                                        <span className={`ml-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${releaseCheckStatusTone(family.releaseGuard.status)}`}>
+                                          {releaseCheckStatusLabel(family.releaseGuard.status)}
+                                        </span>
+                                        <span className="ml-1 text-slate-500">
+                                          {family.releaseGuard.currentRunCount} runs · first pass {formatRatePercent(family.releaseGuard.currentFirstPassPassRate)}
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <span className="ml-1 text-amber-700">缺证据</span>
+                                    )}
+                                  </p>
+                                  <p>
+                                    knowledge：
+                                    {family.knowledgeHit ? (
+                                      <>
+                                        <span className={`ml-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${releaseCheckStatusTone(family.knowledgeHit.status)}`}>
+                                          {releaseCheckStatusLabel(family.knowledgeHit.status)}
+                                        </span>
+                                        <span className="ml-1 text-slate-500">{formatRatePercent(family.knowledgeHit.knowledgeHitRate)}</span>
+                                      </>
+                                    ) : (
+                                      <span className="ml-1 text-amber-700">缺证据</span>
+                                    )}
+                                  </p>
+                                </div>
+                                {familyIssueMessages.length > 0 && (
+                                  <div className="mt-3 rounded-xl border border-white/80 bg-white/80 px-3 py-2 text-xs leading-5 text-amber-800">
+                                    {familyIssueMessages.slice(0, 3).map((message, index) => (
+                                      <p key={`${family.priorityScenarioFamily}-${index}-${message}`} className="break-words">
+                                        {message}
+                                      </p>
+                                    ))}
+                                    {familyIssueMessages.length > 3 && <p className="text-amber-700">另有 {familyIssueMessages.length - 3} 条原因。</p>}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <div
+                          className={`mt-4 rounded-2xl border px-4 py-3 text-xs leading-5 ${
+                            releaseStatusHasNoIssues
+                              ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                              : releaseStatus.status === 'blocked'
+                                ? 'border-rose-200 bg-rose-50 text-rose-800'
+                                : 'border-amber-200 bg-amber-50 text-amber-800'
+                          }`}
+                        >
+                          {releaseStatusHasNoIssues ? (
+                            <p className="font-medium">当前没有未通过 check 或 family 证据缺口。</p>
+                          ) : (
+                            <>
+                              <p className="font-medium">
+                                需要关注 {releaseIssueChecks.length} 个 check、{releaseIssueFamilies.length} 条 family。
+                              </p>
+                              <div className="mt-2 grid gap-2 md:grid-cols-2">
+                                {releaseIssueChecks.map((item) => (
+                                  <p key={item.id} className="break-words">
+                                    {item.title}：{item.message}
+                                  </p>
+                                ))}
+                                {releaseIssueFamilies.map((item) => (
+                                  <p key={item.family.priorityScenarioFamily} className="break-words">
+                                    {item.family.priorityScenarioFamily}：{item.messages[0]}
+                                  </p>
+                                ))}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
 
@@ -9981,6 +10606,104 @@ export default function IntentE2EWorkbench({
                                   )}
                                 </div>
                               ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {insights.failureTraceGovernance.items.length > 0 && (
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium text-slate-900">Failure Trace Governance</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                              把失败 trace 从纯统计桶拆成可治理对象，明确哪些该进入 runbook、fixture、verifier recipe、workflow recipe 或人工 triage。
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600">
+                            高风险 {insights.failureTraceGovernance.highSeverityCount} · 待 triage {insights.failureTraceGovernance.needsTriageCount} · 候选{' '}
+                            {insights.failureTraceGovernance.promotionCandidateCount}
+                          </span>
+                        </div>
+
+                        <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                          当前失败治理来自最近 {insights.failureTraceGovernance.generatedFromRuns} 次终态运行。
+                        </p>
+
+                        <div className="mt-4 grid items-start gap-3 xl:grid-cols-2">
+                          {insights.failureTraceGovernance.items.map((item) => (
+                            <div key={item.governanceId} className="self-start overflow-hidden rounded-2xl border border-white/80 bg-white px-4 py-4">
+                              <div className="flex flex-wrap items-start gap-2">
+                                <div className="min-w-0 flex-1">
+                                  <p title={item.failureClass} className="line-clamp-1 text-sm font-medium leading-6 text-slate-900">
+                                    {insightFailureClassLabel(item.failureClass)}
+                                  </p>
+                                  <p title={item.summary} className="mt-1 line-clamp-2 text-[12px] leading-5 text-slate-500">
+                                    {item.summary}
+                                  </p>
+                                </div>
+                                <span className={`rounded-full border px-3 py-1 text-[11px] font-medium ${failureTraceGovernanceSeverityTone(item.severity)}`}>
+                                  {failureTraceGovernanceSeverityLabel(item.severity)}
+                                </span>
+                              </div>
+
+                              <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-500">
+                                <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
+                                  {failureTraceGovernanceCategoryLabel(item.category)}
+                                </span>
+                                <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
+                                  {failureTracePromotionTargetLabel(item.promotionTarget)}
+                                </span>
+                                <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
+                                  {item.count} 次
+                                </span>
+                                {item.latestObservedAt ? (
+                                  <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
+                                    {formatDateTime(item.latestObservedAt)}
+                                  </span>
+                                ) : null}
+                              </div>
+
+                              <div className="mt-3 rounded-2xl border border-slate-100 bg-slate-50/80 px-3 py-3">
+                                <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-slate-400">建议</p>
+                                <p title={item.recommendation} className="mt-2 line-clamp-3 text-[12px] leading-5 text-slate-600">
+                                  {item.recommendation}
+                                </p>
+                              </div>
+
+                              {item.antiPatterns.length > 0 && (
+                                <div className="mt-3 rounded-2xl border border-amber-100 bg-amber-50/70 px-3 py-3">
+                                  <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-amber-600">避免</p>
+                                  <p title={item.antiPatterns.join(' · ')} className="mt-2 line-clamp-2 text-[12px] leading-5 text-amber-800">
+                                    {summarizeTextList(item.antiPatterns, 2)}
+                                  </p>
+                                </div>
+                              )}
+
+                              {item.latestRepairObservationSummary ? (
+                                <p className="mt-3 text-[11px] leading-5 text-slate-500">
+                                  最近 repair：{item.latestRepairObservationSummary}
+                                  {item.latestRepairObservationVerifierCheckUids.length > 0
+                                    ? ` · verifier ${summarizeTextList(item.latestRepairObservationVerifierCheckUids, 2)}`
+                                    : ''}
+                                </p>
+                              ) : null}
+
+                              <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-500">
+                                <span
+                                  title={`代表运行：${item.representativeRunIds.join(' · ')}`}
+                                  className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1"
+                                >
+                                  代表运行 {summarizeIdList(item.representativeRunIds)}
+                                </span>
+                                <span
+                                  title={`优先 family：${item.affectedPriorityScenarioFamilies.map(priorityScenarioFamilyLabel).join(' · ')}`}
+                                  className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1"
+                                >
+                                  family {summarizeTextList(item.affectedPriorityScenarioFamilies.map(priorityScenarioFamilyLabel), 2)}
+                                </span>
+                              </div>
                             </div>
                           ))}
                         </div>

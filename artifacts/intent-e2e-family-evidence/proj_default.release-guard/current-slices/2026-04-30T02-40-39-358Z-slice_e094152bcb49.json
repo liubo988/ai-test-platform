@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "sliceUid": "slice_e094152bcb49",
+  "projectUid": "proj_default",
+  "benchmarkUid": "bench_6a39fe026233",
+  "benchmarkPath": "artifacts/intent-e2e-family-evidence/proj_default.release-guard/benchmarks/2026-04-30T02-40-10-980Z-bench_6a39fe026233.json",
+  "priorityScenarioFamily": "business_batch_add_contacts_verify",
+  "proofWindow": "non_weak",
+  "afterTerminalRunId": "intent-run-602e43e8-6baf-45b9-81d4-50e033b78851",
+  "afterFinishedAt": "2026-04-30T01:32:29.970Z",
+  "declaredReason": "exclude pre-phase503 business batch-add-contacts evidence",
+  "createdFromCompareReport": "artifacts/intent-e2e-family-evidence/proj_default.knowledge-hit/business-batch-add-contacts-phase503-rerun.json",
+  "createdAt": "2026-04-30T02:40:39.358Z"
+}

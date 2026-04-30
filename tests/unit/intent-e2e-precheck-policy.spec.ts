@@ -91,6 +91,58 @@ describe('intent-e2e-precheck-policy', () => {
     });
   });
 
+  it('allows data_missing bypass for list flows that explicitly recover from an empty result set', () => {
+    expect(
+      resolveIntentE2EPrecheckPolicy({
+        scenarioCard: buildScenarioCard({
+          title: '商机列表批量加入通讯录并校验结果',
+          featureDescription:
+            '若当前筛选结果为空，则先切换到当前有数量的商机进展阶段，再随机勾选一条带手机号的商机并批量加入通讯录。',
+          expectedOutcome: '最终在我的通讯录列表按手机号检索到目标联系人。',
+          steps: [
+            {
+              stepUid: 'step_1',
+              stepType: 'ui',
+              title: '进入商机列表页',
+              target: 'https://example.com/#/business/businesslist',
+              instruction: '进入商机列表页并等待搜索框可见。',
+              expectedResult: '当前页面可执行列表操作。',
+              extractVariable: '',
+            },
+            {
+              stepUid: 'step_2',
+              stepType: 'ui',
+              title: '空结果时切换到有数量阶段并选择目标行',
+              target: '商机列表',
+              instruction:
+                '若当前筛选结果为空，则切换到当前有数量的商机进展阶段，再随机选择一条带手机号的商机并勾选。',
+              expectedResult: '列表恢复到有数据状态且目标行已选中。',
+              extractVariable: '',
+            },
+            {
+              stepUid: 'step_3',
+              stepType: 'assert',
+              title: '按手机号检索通讯录结果',
+              target: '我的通讯录',
+              instruction: '进入我的通讯录并按手机号搜索确认联系人可见。',
+              expectedResult: '通讯录中能检索到目标手机号。',
+              extractVariable: '',
+            },
+          ],
+          successCriteria: ['若当前结果为空可先切换到有数量的阶段', '最终必须在通讯录按手机号检索到目标记录'],
+          targetUrl: 'https://example.com/#/business/businesslist',
+          entryUrl: 'https://example.com/#/business/businesslist',
+        }),
+        targetUrl: 'https://example.com/#/business/businesslist',
+        precheckUrl: 'https://example.com/#/business/businesslist',
+      })
+    ).toEqual({
+      kind: 'recoverable_list_empty_state',
+      ignoreFailureClasses: ['data_missing'],
+      policyNotes: ['前置检查策略：已声明“结果为空时切换到有数据列表视角”的场景允许列表页空态绕过 data_missing 阻断，继续执行显式切换步骤。'],
+    });
+  });
+
   it('keeps the default policy for non-create flows on the same route', () => {
     expect(
       resolveIntentE2EPrecheckPolicy({

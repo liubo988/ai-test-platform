@@ -64,6 +64,7 @@ export type KnowledgeStatus = 'active' | 'archived';
 export type ProjectKnowledgeSourceType = 'manual' | 'notes' | 'execution' | 'system';
 export type ProjectIntentDraftStatus = 'active' | 'imported' | 'archived';
 export type IntentE2ERunSnapshotStatus = 'created' | 'running' | 'passed' | 'failed' | 'canceled';
+export type IntentE2ERunSnapshotProjection = 'full' | 'benchmark';
 
 export interface TestProjectInput {
   name: string;
@@ -731,6 +732,7 @@ export interface ListIntentE2ERunSnapshotsParams {
   moduleUid?: string;
   status?: IntentE2ERunSnapshotStatus | 'active' | 'terminal' | 'all';
   limit?: number;
+  projection?: IntentE2ERunSnapshotProjection;
 }
 
 function safeJsonParse<T>(value: unknown, fallback: T): T {
@@ -3471,6 +3473,39 @@ export async function getIntentE2ERunSnapshotByRunId(runId: string): Promise<Int
   return normalizeIntentE2ERunSnapshotRow(row);
 }
 
+const BENCHMARK_RUN_SNAPSHOT_JSON_REMOVE_PATHS = [
+  '$.events',
+  '$.request',
+  '$.taskPlatform',
+  '$.result.llmMeta',
+  '$.result.ciReport',
+  '$.result.testCase',
+  '$.result.testSpec',
+  '$.result.failureCta',
+  '$.result.repairBudget',
+  '$.result.resolvedUrls',
+  '$.result.artifactIndex',
+  '$.result.artifactContract',
+  '$.result.knowledgeCandidates',
+  '$.result.compiledTemplate',
+  '$.result.verificationContract',
+];
+
+function buildIntentE2ERunSnapshotStateSelectSql(projection: IntentE2ERunSnapshotProjection): string {
+  if (projection !== 'benchmark') {
+    return 'state_json';
+  }
+
+  const removePathsSql = BENCHMARK_RUN_SNAPSHOT_JSON_REMOVE_PATHS.map((item) => `'${item}'`).join(', ');
+  return `CAST(
+    CASE
+      WHEN state_json IS NULL OR state_json = '' OR JSON_VALID(state_json) = 0 THEN state_json
+      ELSE JSON_REMOVE(CAST(state_json AS JSON), ${removePathsSql})
+    END
+    AS CHAR CHARACTER SET utf8mb4
+  )`;
+}
+
 export async function listIntentE2ERunSnapshots(params: ListIntentE2ERunSnapshotsParams = {}): Promise<IntentE2ERunSnapshotRecord[]> {
   await ensureIntentE2ERunTables();
   const pool = getDbPool();
@@ -3480,6 +3515,8 @@ export async function listIntentE2ERunSnapshots(params: ListIntentE2ERunSnapshot
   const moduleUid = params.moduleUid?.trim() || '';
   const status = params.status || 'all';
   const limit = Math.max(1, Math.min(200, Math.floor(params.limit || 50)));
+  const projection: IntentE2ERunSnapshotProjection = params.projection === 'benchmark' ? 'benchmark' : 'full';
+  const stateSelectSql = buildIntentE2ERunSnapshotStateSelectSql(projection);
 
   if (projectUid) {
     where.push('project_uid = ?');
@@ -3501,7 +3538,20 @@ export async function listIntentE2ERunSnapshots(params: ListIntentE2ERunSnapshot
   }
 
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT *
+    `SELECT
+       run_id,
+       project_uid,
+       module_uid,
+       status,
+       stage,
+       request_input,
+       target_url,
+       ${stateSelectSql} AS state_json,
+       error_message,
+       started_at,
+       ended_at,
+       created_at,
+       updated_at
      FROM intent_e2e_runs
      ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
      ORDER BY updated_at DESC, id DESC

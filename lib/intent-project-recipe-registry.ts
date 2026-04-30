@@ -184,6 +184,7 @@ function normalizeProjectUid(value: unknown): string {
 function normalizeRecipeFamily(value: unknown): IntentRecipe['family'] {
   return value === 'business_create_list_verify' ||
     value === 'business_to_order' ||
+    value === 'business_batch_add_contacts_verify' ||
     value === 'list_search_detail' ||
     value === 'modal_or_drawer_save' ||
     value === 'row_action_menu' ||

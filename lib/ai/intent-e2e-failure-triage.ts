@@ -496,6 +496,7 @@ const TRIAGE_RULES: TriageRule[] = [
 function collectFailureText(result: TestResult, logs: Array<{ level: string; message: string }>): string {
   return [
     result.error || '',
+    ...result.steps.map((step) => step.title || ''),
     ...result.steps.map((step) => step.error || ''),
     ...logs.map((log) => log.message || ''),
   ]
@@ -558,6 +559,55 @@ export function classifyIntentE2EFailure(
   }
 
   if (
+    /跳过[:：]?\s*前置数据不足|前置数据不足|前置不满足[：:][\s\S]*(?:筛选|无可用订单行|无可勾选订单行)|筛选[“"']?待申请[”"']?后无可用订单行|无可用订单行|筛选结果中无可勾选订单行/i.test(
+      source
+    )
+  ) {
+    const triage: IntentE2EFailureTriage = {
+      failureClass: 'data_missing',
+      repairable: false,
+      summary: '判定为数据阻塞：当前筛选条件下缺少可执行业务数据，本次不继续把它当作脚本定位问题修复。',
+      matchedSignals: uniqueStrings([
+        /跳过[:：]?\s*前置数据不足|前置数据不足|前置不满足[：:][\s\S]*(?:筛选|无可用订单行|无可勾选订单行)/i.test(source)
+          ? 'precondition data missing'
+          : '',
+        /筛选[“"']?待申请[”"']?后无可用订单行|无可用订单行/i.test(source) ? 'order list no actionable rows after filter' : '',
+        /筛选结果中无可勾选订单行/i.test(source) ? 'order list no selectable rows after filter' : '',
+        looksLikeOrderListContext(context) ? 'order list context' : '',
+      ]),
+      diagnosis: null,
+    };
+    return {
+      ...triage,
+      diagnosis: buildIntentE2EFailureDiagnosis(triage, result, context),
+    };
+  }
+
+  if (
+    /未成功切换到[“"]关联产品意向信息[”"]步骤|未检测到第二步字段锚点|未检测到[“"]企业名称[”"]字段锚点/i.test(
+      source
+    ) &&
+    (looksLikeBusinessListContext(context) || /businesslist|商机列表|商机联系人信息|关联产品意向信息/i.test(source))
+  ) {
+    const triage: IntentE2EFailureTriage = {
+      failureClass: 'workflow_gap',
+      repairable: true,
+      summary: '判定为商机创建表单流转缺口：第一步联系人信息提交后没有稳定进入关联产品意向信息步骤，继续自动修复脚本。',
+      matchedSignals: uniqueStrings([
+        'business create tab transition missing',
+        /关联产品意向信息/i.test(source) ? '关联产品意向信息锚点缺失' : '',
+        /企业名称|意向产品|商机权重/i.test(source) ? '第二步字段锚点缺失' : '',
+        looksLikeBusinessListContext(context) ? 'business list context' : '',
+      ]),
+      diagnosis: null,
+    };
+    return {
+      ...triage,
+      diagnosis: buildIntentE2EFailureDiagnosis(triage, result, context),
+    };
+  }
+
+  if (
     /状态证据缺失|未读取到详情字段|详情字段缺失：|列表响应未返回状态|列表响应未命中状态|列表响应、详情抽屉与详情页都未返回状态|列表响应和详情字段都未返回状态|列表响应未命中记录且未提供详情入口|无法从列表响应或详情获取状态|未出现可用详情弹层或详情页|未进入该订单对应详情页\/详情抽屉/i.test(
       source
     )
@@ -576,6 +626,30 @@ export function classifyIntentE2EFailure(
           : '',
         /列表响应未命中记录且未提供详情入口/i.test(source) ? '列表响应未命中记录且未提供详情入口' : '',
         /列表响应和详情字段都未返回状态/i.test(source) ? '列表响应和详情字段都未返回状态' : '',
+      ]),
+      diagnosis: null,
+    };
+    return {
+      ...triage,
+      diagnosis: buildIntentE2EFailureDiagnosis(triage, result, context),
+    };
+  }
+
+  if (
+    /测试执行超时|timeout|timed out/i.test(source) &&
+    /Step\s*5[:：]?.*进入订单详情|进入订单详情并核对字段|订单详情|详情页|详情抽屉/i.test(source) &&
+    (looksLikeOrderListContext(context) || /#\/order\/list|order\/list|订单列表/i.test(source))
+  ) {
+    const triage: IntentE2EFailureTriage = {
+      failureClass: 'response_missing',
+      repairable: true,
+      summary: '判定为订单详情入口响应缺失：目标订单行已命中并触发查看动作，但详情页或详情抽屉没有在时限内形成可验收证据，继续自动修复脚本。',
+      matchedSignals: uniqueStrings([
+        '详情入口超时',
+        /Step\s*5[:：]?.*进入订单详情|进入订单详情并核对字段/i.test(source) ? 'order detail step timeout' : '',
+        /row action clicked/i.test(source) ? 'row action clicked' : '',
+        /查看/i.test(source) ? '查看动作已触发' : '',
+        looksLikeOrderListContext(context) ? 'order list context' : '',
       ]),
       diagnosis: null,
     };
