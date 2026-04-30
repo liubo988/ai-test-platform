@@ -143,6 +143,60 @@ describe('intent-e2e-precheck-policy', () => {
     });
   });
 
+  it('allows data_missing bypass for generated cards that say switch the business stage to a dataful list', () => {
+    expect(
+      resolveIntentE2EPrecheckPolicy({
+        scenarioCard: buildScenarioCard({
+          title: '商机列表批量加入通讯录并在我的通讯录按手机号校验可见',
+          featureDescription:
+            '在商机列表中确保存在可操作数据后，随机勾选一条带联系人手机号的商机执行“批量加入通讯录”，再进入我的通讯录按该手机号搜索并验证联系人在列表中可见。',
+          expectedOutcome: '在我的通讯录中通过手机号搜索可查到从商机列表批量加入的联系人。',
+          steps: [
+            {
+              stepUid: 'step_1',
+              stepType: 'ui',
+              title: '打开商机列表页面',
+              target: '商机列表页',
+              instruction: '打开URL并等待页面加载完成，定位标题“商机列表”及列表表头“联系人手机号”。',
+              expectedResult: '页面可见“商机列表”与“联系人手机号”列。',
+              extractVariable: '',
+            },
+            {
+              stepUid: 'step_2',
+              stepType: 'ui',
+              title: '确保列表有可操作商机数据',
+              target: '商机进展筛选与列表',
+              instruction: '检查当前筛选结果是否有可勾选行；若为空则切换“商机进展”到有数量的阶段并等待列表刷新。',
+              expectedResult: '列表中至少存在1条可勾选记录，已记录目标手机号。',
+              extractVariable: '',
+            },
+            {
+              stepUid: 'step_3',
+              stepType: 'assert',
+              title: '校验联系人在通讯录列表可见',
+              target: '我的通讯录-结果列表',
+              instruction: '在“我的通讯录”手机号搜索框输入前面记录的手机号并触发搜索。',
+              expectedResult: '列表中可见匹配的联系人行。',
+              extractVariable: '',
+            },
+          ],
+          successCriteria: [
+            '若当前筛选结果为空，切换商机进展后列表出现至少1条可勾选商机记录',
+            '在“我的通讯录”按提取手机号搜索后，列表中出现该手机号对应联系人记录',
+          ],
+          targetUrl: 'https://example.com/#/business/businesslist',
+          entryUrl: 'https://example.com/#/business/businesslist',
+        }),
+        targetUrl: 'https://example.com/#/business/businesslist',
+        precheckUrl: 'https://example.com/#/business/businesslist',
+      })
+    ).toEqual({
+      kind: 'recoverable_list_empty_state',
+      ignoreFailureClasses: ['data_missing'],
+      policyNotes: ['前置检查策略：已声明“结果为空时切换到有数据列表视角”的场景允许列表页空态绕过 data_missing 阻断，继续执行显式切换步骤。'],
+    });
+  });
+
   it('keeps the default policy for non-create flows on the same route', () => {
     expect(
       resolveIntentE2EPrecheckPolicy({

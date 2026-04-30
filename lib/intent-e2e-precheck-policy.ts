@@ -98,7 +98,7 @@ function looksLikeRecoverableListEmptyStateBypass(card: ScenarioCard, targetUrl:
       fullFlowText
     );
   const mentionsExplicitDatafulSwitch =
-    /(切换到当前有数量|切换到有数量|切换到.*有数量|切换到.*有数据|切换到.*非空|切到.*有数量|切到.*有数据|改到.*有数量|选择.*有数量)/i.test(
+    /(切换到当前有数量|切换到有数量|切换到.*有数量|切换到.*有数据|切换到.*非空|切换.*到.*有数量|切换.*到.*有数据|切换.*到.*非空|切换.*至少\s*1\s*条|切换.*可勾选|切换.*可操作|切到.*有数量|切到.*有数据|改到.*有数量|选择.*有数量)/i.test(
       fullFlowText
     );
   const mentionsFollowupSelectionOrVerification =
