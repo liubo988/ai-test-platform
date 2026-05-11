@@ -38,6 +38,15 @@
       "expectedRuleIds": ["business.batch-add-contacts"],
       "minKnowledgeHitRate": 100,
       "requirePassed": true
+    },
+    {
+      "id": "modal-service-commission-phase22-knowledge-hit",
+      "priorityScenarioFamily": "modal_or_drawer_save",
+      "evidenceType": "rerun_report",
+      "evidencePath": "artifacts/intent-e2e-family-evidence/proj_default.knowledge-hit/modal-formal-task-real-click-seed-2026-05-07.json",
+      "expectedRuleIds": ["commission.service-ratio-config"],
+      "minKnowledgeHitRate": 100,
+      "requirePassed": true
     }
   ]
 }

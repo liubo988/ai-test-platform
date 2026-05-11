@@ -20,7 +20,15 @@ import {
   createIntentCapabilityLaunchToken,
   stashIntentCapabilityPreset,
 } from '@/lib/intent-capability-preset';
-import { defaultLlmConfigDraft, toLlmDraft, type LLMConfigDraft, type LLMConfigResponse } from '@/lib/llm-config-browser';
+import {
+  defaultLlmConfigDraft,
+  formatLlmProviderOption,
+  getLlmProviderOptions,
+  isLlmProviderImplemented,
+  toLlmDraft,
+  type LLMConfigDraft,
+  type LLMConfigResponse,
+} from '@/lib/llm-config-browser';
 import { buildIntentStarterCapabilityPreset } from '@/lib/intent-starter-capability-preset';
 import {
   canPromoteIntentStarterAssetToProjectCapability,
@@ -41,6 +49,13 @@ import {
   shouldOverrideDraftAutoRunLaunchDecision,
   shouldTreatQueryLaunchDecisionAsHardBlock,
 } from '@/lib/intent-e2e-draft-launch';
+import {
+  getIntentE2EReleaseCheckStatusLabel as releaseCheckStatusLabel,
+  getIntentE2EReleaseFamilyIssueMessages as releaseFamilyIssueMessages,
+  getIntentE2EReleaseReadinessDetailText as releaseReadinessDetailText,
+  getIntentE2EReleaseReadinessLabel as releaseReadinessLabel,
+  getIntentE2EReleaseReadinessSummaryText as releaseReadinessSummaryText,
+} from '@/lib/intent-e2e-release-status-view';
 import {
   isIntentProjectKnowledgeDraftCandidateDeferredByDefault,
   isIntentProjectKnowledgeDraftCandidateDeprioritized,
@@ -612,11 +627,48 @@ type IntentLaunchDecisionSignals = {
   repeatedFailureReason?: string;
 };
 
+type IntentNewIntentReadinessRecommendedMode =
+  | 'direct_generate'
+  | 'recipe_assisted'
+  | 'exploration_run'
+  | 'needs_bootstrap'
+  | 'needs_fixture'
+  | 'needs_clarify'
+  | 'draft_only';
+
+type IntentNewIntentReadiness = {
+  recommendedMode: IntentNewIntentReadinessRecommendedMode;
+  confidence: 'high' | 'medium' | 'low';
+  missingContracts: string[];
+  failureRecoveryPlan: Array<{
+    className: string;
+    severity: 'high' | 'medium' | 'low';
+    recommendation: string;
+  }>;
+  fixtureBootstrap?: {
+    fixtureId: string;
+    strategy: string;
+    owner: string;
+    idempotencyKey: string;
+    setupRef: string;
+    cleanupRef: string;
+    requiredStableIdentifiers: string[];
+    nextActions: string[];
+  } | null;
+  signals?: {
+    source?: string;
+    priorityScenarioFamily?: string;
+    documentFamily?: string;
+    preferredRecipeSlugs?: string[];
+  };
+};
+
 type IntentLaunchDecisionResponse = {
   decision: IntentLaunchDecisionValue;
   reasons: string[];
   signals?: IntentLaunchDecisionSignals;
   assetAvailability?: IntentProjectAssetAvailability | null;
+  newIntentReadiness?: IntentNewIntentReadiness | null;
   error?: string;
 };
 
@@ -2080,7 +2132,7 @@ function mergeIntentLaunchLlmOverride(base: LLMConfigDraft, override?: IntentLau
   const next: LLMConfigDraft = { ...base };
   if (typeof override.provider === 'string' && override.provider.trim()) {
     next.provider = override.provider.trim();
-    next.providerImplemented = next.provider === 'openai';
+    next.providerImplemented = isLlmProviderImplemented(next.provider);
   }
   if (typeof override.model === 'string') next.model = override.model;
   if (typeof override.baseUrl === 'string') next.baseUrl = override.baseUrl;
@@ -2249,17 +2301,6 @@ function rolloutStrategyGateLabel(status: IntentE2EInsightRolloutStrategyGateSta
   }
 }
 
-function releaseReadinessLabel(status: IntentE2EReleaseReadinessStatus): string {
-  switch (status) {
-    case 'ready':
-      return '可发布';
-    case 'attention':
-      return '需复核';
-    default:
-      return '阻断';
-  }
-}
-
 function releaseReadinessTone(status: IntentE2EReleaseReadinessStatus): string {
   switch (status) {
     case 'ready':
@@ -2279,43 +2320,6 @@ function releaseReadinessPanelTone(status: IntentE2EReleaseReadinessStatus): str
       return 'border-amber-200 bg-amber-50 text-amber-800';
     default:
       return 'border-rose-200 bg-rose-50 text-rose-800';
-  }
-}
-
-function releaseReadinessSummaryText(status: IntentE2EReleaseReadinessStatus): string {
-  switch (status) {
-    case 'ready':
-      return 'release guard、knowledge-hit 与最近 compare 证据当前齐全。';
-    case 'attention':
-      return '当前没有阻塞项，但仍有需要复核的证据或 compare 状态。';
-    default:
-      return '存在阻塞证据，先处理失败项再进入发布。';
-  }
-}
-
-function releaseReadinessDetailText(status: IntentE2EReleaseReadinessStatus, summary: IntentE2EReleaseStatusResponse['summary']): string {
-  const checkText = `checks ${summary.passedChecks}/${summary.checkCount}`;
-  const familyText = `families ${summary.readyFamilies}/${summary.familyCount}`;
-  switch (status) {
-    case 'ready':
-      return `${checkText} 通过，${familyText} 就绪；blocked family=${summary.blockedFamilies}。`;
-    case 'attention':
-      return `${checkText} 通过，warning=${summary.warningChecks + summary.skippedChecks}；${familyText} 就绪。`;
-    default:
-      return `${checkText} 通过，failed=${summary.failedChecks}；blocked family=${summary.blockedFamilies}。`;
-  }
-}
-
-function releaseCheckStatusLabel(status: IntentE2EReleaseCheckStatus): string {
-  switch (status) {
-    case 'passed':
-      return '通过';
-    case 'warning':
-      return '观察';
-    case 'skipped':
-      return '跳过';
-    default:
-      return '失败';
   }
 }
 
@@ -2350,33 +2354,6 @@ function releaseStatusErrorDescription(message: string): string {
     return '当前项目缺少 release guard 或 knowledge-hit tracked artifacts，面板先保持空状态。';
   }
   return '服务端没有返回可消费的 release status，先保留原始错误用于排查。';
-}
-
-function releaseFamilyIssueMessages(family: IntentE2EReleaseStatusFamily): string[] {
-  const messages: string[] = [];
-  if (!family.releaseGuard) {
-    messages.push('release guard evidence 缺失');
-  } else if (family.releaseGuard.status !== 'passed') {
-    messages.push(`release guard ${releaseCheckStatusLabel(family.releaseGuard.status)}`);
-  }
-  for (const failure of family.releaseGuard?.failures || []) {
-    if (failure.trim()) {
-      messages.push(`release：${failure.trim()}`);
-    }
-  }
-
-  if (!family.knowledgeHit) {
-    messages.push('knowledge-hit evidence 缺失');
-  } else if (family.knowledgeHit.status !== 'passed') {
-    messages.push(`knowledge-hit ${releaseCheckStatusLabel(family.knowledgeHit.status)}`);
-  }
-  for (const failure of family.knowledgeHit?.failures || []) {
-    if (failure.trim()) {
-      messages.push(`knowledge：${failure.trim()}`);
-    }
-  }
-
-  return messages.slice(0, 6);
 }
 
 function rolloutStrategyGateSourceLabel(source: IntentE2EInsightRolloutStrategyGateSource): string {
@@ -2934,6 +2911,62 @@ function intentLaunchDecisionActionHint(decision: IntentLaunchDecisionValue): st
     case 'auto_run':
     default:
       return '';
+  }
+}
+
+function intentNewIntentReadinessModeLabel(mode: IntentNewIntentReadinessRecommendedMode): string {
+  switch (mode) {
+    case 'direct_generate':
+      return '直接生成';
+    case 'recipe_assisted':
+      return 'Recipe 辅助';
+    case 'exploration_run':
+      return '探索运行';
+    case 'needs_bootstrap':
+      return '补冷启动';
+    case 'needs_fixture':
+      return '补前置数据';
+    case 'needs_clarify':
+      return '补描述';
+    case 'draft_only':
+      return '先留草稿';
+    default:
+      return mode;
+  }
+}
+
+function intentNewIntentReadinessConfidenceLabel(confidence: IntentNewIntentReadiness['confidence']): string {
+  switch (confidence) {
+    case 'high':
+      return '高';
+    case 'medium':
+      return '中';
+    case 'low':
+    default:
+      return '低';
+  }
+}
+
+function intentNewIntentMissingContractLabel(contract: string): string {
+  switch (contract) {
+    case 'target_url':
+      return '目标 URL';
+    case 'explicit_verifier':
+      return '明确验收标准';
+    case 'stable_family_or_document_path':
+      return '稳定 family / 文档路径';
+    case 'fixture_contract':
+      return 'fixture 契约';
+    case 'project_assets':
+      return '项目冷启动资产';
+    case 'stable_identifier':
+      return '稳定身份字段';
+    case 'recipe':
+      return 'Recipe';
+    case 'auth_context':
+      return '登录态 / 权限上下文';
+    default:
+      return contract;
   }
 }
 
@@ -4530,6 +4563,7 @@ async function requestIntentLaunchDecision(payload: Record<string, unknown>): Pr
       reasons: Array.isArray(json.reasons) ? json.reasons : [],
       signals: json.signals,
       assetAvailability: json.assetAvailability || null,
+      newIntentReadiness: json.newIntentReadiness || null,
     };
   } catch (error: unknown) {
     if (error instanceof DOMException && error.name === 'AbortError') {
@@ -4964,6 +4998,7 @@ export default function IntentE2EWorkbench({
   const [configError, setConfigError] = useState('');
   const [configResponse, setConfigResponse] = useState<LLMConfigResponse | null>(null);
   const [llmConfig, setLlmConfig] = useState<LLMConfigDraft>(defaultLlmConfigDraft);
+  const providerOptions = useMemo(() => getLlmProviderOptions(configResponse), [configResponse]);
   const [running, setRunning] = useState(false);
   const [canceling, setCanceling] = useState(false);
   const [runError, setRunError] = useState('');
@@ -5652,7 +5687,8 @@ export default function IntentE2EWorkbench({
     () => summarizeIntentStarterAssetPromotionDecisions(starterCapabilityLaunches.map((launch) => launch.promotionDecision)),
     [starterCapabilityLaunches]
   );
-  const providerIsImplemented = llmConfig.provider === 'openai' && llmConfig.providerImplemented;
+  const providerIsImplemented = llmConfig.providerImplemented;
+  const activeProviderOption = providerOptions.find((option) => option.provider === llmConfig.provider);
   const hasDisplayDetails = Boolean(displayScenarioCard || displayDescription || displayCompiledTemplate || displayAttempts.length > 0);
   const knowledgeDraftBusy = knowledgeDraftLoading || knowledgeDraftWriting || knowledgeDraftMerging || knowledgeBackupsLoading || knowledgeBackupRestoring;
   const knowledgeDraftDisplayCandidates = useMemo(
@@ -6062,6 +6098,9 @@ export default function IntentE2EWorkbench({
           ? buildWorkspaceProjectPath({ projectUid: blockedProjectUid })
           : '/';
     const assetAvailability = displayLaunchDecision.assetAvailability;
+    const newIntentReadiness = displayLaunchDecision.newIntentReadiness || null;
+    const topRecovery = newIntentReadiness?.failureRecoveryPlan?.[0] || null;
+    const fixtureBootstrap = newIntentReadiness?.fixtureBootstrap || null;
 
     return (
       <div className={`rounded-[28px] border px-5 py-5 shadow-[0_16px_36px_rgba(15,23,42,0.06)] ${intentLaunchDecisionTone(displayLaunchDecision.decision)}`}>
@@ -6086,6 +6125,49 @@ export default function IntentE2EWorkbench({
               <p className="mt-2 text-xs leading-6 text-slate-500">
                 {intentLaunchDecisionActionHint(displayLaunchDecision.decision)}
               </p>
+            ) : null}
+          </div>
+        )}
+
+        {newIntentReadiness && (
+          <div className="mt-3 rounded-2xl border border-current/10 bg-white/60 px-4 py-3 text-xs leading-6 text-slate-600">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full border border-current/10 bg-white/70 px-2.5 py-1 font-medium text-slate-700">
+                {intentNewIntentReadinessModeLabel(newIntentReadiness.recommendedMode)}
+              </span>
+              <span className="rounded-full border border-current/10 bg-white/70 px-2.5 py-1 font-medium text-slate-700">
+                信心 {intentNewIntentReadinessConfidenceLabel(newIntentReadiness.confidence)}
+              </span>
+              {newIntentReadiness.signals?.priorityScenarioFamily ? (
+                <span className="rounded-full border border-current/10 bg-white/70 px-2.5 py-1 font-mono text-[11px] text-slate-600">
+                  {newIntentReadiness.signals.priorityScenarioFamily}
+                </span>
+              ) : null}
+              {newIntentReadiness.signals?.documentFamily ? (
+                <span className="rounded-full border border-current/10 bg-white/70 px-2.5 py-1 font-mono text-[11px] text-slate-600">
+                  {newIntentReadiness.signals.documentFamily}
+                </span>
+              ) : null}
+            </div>
+            {newIntentReadiness.missingContracts.length > 0 ? (
+              <p className="mt-2">
+                缺口：{newIntentReadiness.missingContracts.map((item) => intentNewIntentMissingContractLabel(item)).join('；')}
+              </p>
+            ) : null}
+            {topRecovery ? <p className="mt-2">补救：{topRecovery.recommendation}</p> : null}
+            {fixtureBootstrap ? (
+              <div className="mt-3 border-t border-current/10 pt-3">
+                <p className="font-medium text-slate-700">Fixture 草稿：{fixtureBootstrap.fixtureId}</p>
+                <p className="mt-1 break-all font-mono text-[11px] text-slate-500">
+                  setup {fixtureBootstrap.setupRef}
+                </p>
+                <p className="mt-1 break-all font-mono text-[11px] text-slate-500">
+                  cleanup {fixtureBootstrap.cleanupRef}
+                </p>
+                <p className="mt-1 break-all font-mono text-[11px] text-slate-500">
+                  idempotency {fixtureBootstrap.idempotencyKey}
+                </p>
+              </div>
             ) : null}
           </div>
         )}
@@ -7218,6 +7300,7 @@ export default function IntentE2EWorkbench({
         reasons: uniqueStrings(decision.reasons || []),
         signals: decision.signals,
         assetAvailability: decision.assetAvailability || null,
+        newIntentReadiness: decision.newIntentReadiness || null,
         source: options?.source || 'route',
       };
       setLaunchDecisionResult(normalized);
@@ -9405,14 +9488,14 @@ export default function IntentE2EWorkbench({
                                 setLlmConfig((current) => ({
                                   ...current,
                                   provider: targetEvent.target.value,
-                                  providerImplemented: targetEvent.target.value === 'openai',
+                                  providerImplemented: isLlmProviderImplemented(targetEvent.target.value, providerOptions),
                                 }))
                               }
                               className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
                             >
-                              {(configResponse?.availableProviders || ['openai', 'gemini', 'claude']).map((item) => (
-                                <option key={item} value={item}>
-                                  {item === 'openai' ? 'openai（已实现）' : `${item}（预留）`}
+                              {providerOptions.map((item) => (
+                                <option key={item.provider} value={item.provider}>
+                                  {formatLlmProviderOption(item)}
                                 </option>
                               ))}
                             </select>
@@ -9495,7 +9578,7 @@ export default function IntentE2EWorkbench({
 
                         {!providerIsImplemented && (
                           <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">
-                            当前仅 `openai` provider 已实现；`gemini / claude` 已预留配置位，但尚未接入实际 adapter。
+                            {activeProviderOption?.note || '当前 provider 已预留配置位，但尚未接入实际 adapter。'}
                           </div>
                         )}
                       </div>

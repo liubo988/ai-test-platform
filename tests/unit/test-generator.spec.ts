@@ -6996,6 +6996,9 @@ Error: element(s) not found`,
     expect(template).toContain("await row.locator('td').allInnerTexts()");
     expect(template).toContain("const rowKey = ((await row.getAttribute('data-row-key')) || '').trim();");
     expect(template).toContain("const stageLabels = ['新入库', '需跟踪', '确认意向', '邀约成功', '面谈成功', '签约成功'];");
+    expect(template).toContain('async function resetBusinessListFilters()');
+    expect(template).toContain("page.getByText(/^全部清除$/)");
+    expect(template).toContain("[BATCH-CONTACTS-FILTER-RESET]");
     expect(template).toContain("[BATCH-CONTACTS-STAGE-DEBUG]");
     expect(template).toContain("[BATCH-CONTACTS-ROW-DEBUG]");
     expect(template).toContain("[BATCH-CONTACTS-FEEDBACK]");
@@ -7006,6 +7009,39 @@ Error: element(s) not found`,
     expect(template).not.toContain('page.goto(LOGIN_URL');
     expect(template).not.toContain('短信验证码登录');
     expect(template).not.toContain('getByPlaceholder(/请输入手机号|手机号|手机号码/i)');
+  });
+
+  it('reuses the deterministic project knowledge document import-preview template', () => {
+    const template = resolveDeterministicTemplate(
+      {
+        url: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+        title: 'Scenario Smoke Project',
+        forms: [],
+        buttons: [{ text: '需求编排', id: '', type: 'button', ariaLabel: '', title: '', className: '', isIconOnly: false }],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: 'Scenario Smoke Project' }],
+        bodyTextExcerpt: '需求编排 知识文档 导入知识文档 当前预览 文档块预览',
+        screenshot: '',
+      },
+      '打开项目知识文档工作台，导入一篇名为“真实文档采集手册”的知识文档，内容包含“真实 document-like real_click 采集锚点”，导入后重新预览该知识文档并校验标题和正文锚点可见。',
+      '',
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+        expectedOutcome: '知识文档已导入并且预览正文锚点可见',
+        cleanupNotes: '',
+        scenarioSummary: '打开项目页 -> 需求编排 -> 知识文档 -> 导入文档 -> 预览校验',
+      }
+    );
+
+    expect(template).toContain("test('项目知识文档：导入后预览正文锚点'");
+    expect(template).toContain("const TARGET_URL = \"http://127.0.0.1:3666/projects/proj_default?intentView=knowledge\";");
+    expect(template).toContain("page.getByRole('button', { name: '需求编排', exact: true }).first()");
+    expect(template).toContain("workbench.getByLabel('知识文档名称')");
+    expect(template).toContain("workbench.getByLabel('知识文档内容')");
+    expect(template).toContain("workbench.getByLabel('搜索文档块')");
+    expect(template).toContain('真实 document-like real_click 采集锚点');
   });
 
   it('prefers matched recipes for deterministic templates even when legacy description heuristics do not fire', () => {
@@ -7091,6 +7127,48 @@ Error: element(s) not found`,
     );
 
     expect(template).toBe('');
+  });
+
+  it('reuses the validated create-business list verification template for pure create-list tasks', () => {
+    const snapshot = {
+      url: 'https://uat.example.com/#/business/businesslist',
+      title: '商机列表',
+      forms: [],
+      buttons: [{ text: '新建商机', id: '', type: 'button', ariaLabel: '', title: '', className: 'ant-btn', isIconOnly: false }],
+      tooltipElements: [],
+      links: [],
+      headings: [{ level: 'H1', text: '商机列表' }],
+      bodyTextExcerpt: '商机列表 新建商机 我创建的 商机进展 新入库',
+      screenshot: '',
+    };
+    const description =
+      '参考已跑通正式任务「商机222」重新发起真实 AI E2E：登录后台后在商机列表页发起新建商机并保存，随后切换到“我创建的”Tab，等待列表加载完成，校验新建商机记录出现在列表中且“商机进展”为“新入库”。';
+    const context = {
+      taskMode: 'scenario' as const,
+      scenarioEntryUrl: 'https://uat.example.com/#/business/businesslist',
+      expectedOutcome: '新建商机记录出现在“我创建的”列表中，且商机进展为新入库。',
+      cleanupNotes: '',
+      scenarioSummary: '1. 进入商机列表\n2. 新建商机\n3. 切换我创建的\n4. 校验新入库',
+      sharedVariables: ['contactPhone', 'businessId'],
+    };
+    const stableTemplate = [
+      "import { test, expect } from '@playwright/test';",
+      '',
+      "test('创建商机：无附件提交并在商机列表校验落库', async ({ page }) => {",
+      "  const CREATE_URL = 'https://uat-service.yikaiye.com/#/business/createbusiness';",
+      "  const LIST_URL = 'https://uat-service.yikaiye.com/#/business/businesslist';",
+      "  await __e2e.ensureLoggedIn(page, { targetUrl: CREATE_URL });",
+      "  await page.locator('input#businessList_keywords:visible').first().fill(contactPhone);",
+      "});",
+    ].join('\n');
+
+    const planning = resolveIntentPromptPlanningContext(snapshot, description, context);
+    const template = resolveDeterministicTemplate(snapshot, description, stableTemplate, context, planning);
+
+    expect(template).toContain("test('创建商机：无附件提交并在商机列表校验落库'");
+    expect(template).toContain("__e2e.ensureLoggedIn(page, { targetUrl: CREATE_URL })");
+    expect(template).toContain("input#businessList_keywords:visible");
+    expect(template).not.toContain('createOrder');
   });
 
   it('does not let status anchors like 签约成功 hijack create-list verification into the create-order template', () => {
@@ -10372,6 +10450,90 @@ test("business_create_list_verify reused company exact label sanitize", async ({
     expect(step3Slot).toContain("artifacts['plan_step_3'] = { selectedCompanyKeyword, selectedCompanyName: shared.selectedCompanyName };");
     expect(step3Slot).not.toContain('companyLabel');
     expect(step3Slot).not.toContain('中铁上海工程局集团有限公司');
+    expect(() => new Script(code)).not.toThrow();
+  });
+
+  it('sanitizes reused business_create_list_verify merged submit slots to accept auto-returned list state', () => {
+    const code = sanitizeGeneratedCode(`
+test("business_create_list_verify reused merged submit sanitize", async ({ page }) => {
+  const TARGET_URL = 'https://uat.example.com/#/business/businesslist';
+  const shared = { createdBusinessKey: '' };
+  const artifacts = Object.create(null);
+
+  await test.step("Step 3: 填写并保存商机", async () => {
+    // SLOT_START: plan_step_3
+    const leadContactName = '自动化商机123456';
+    const leadMobile = '19900001234';
+    artifacts.leadContactName = leadContactName;
+    artifacts.leadMobile = leadMobile;
+
+    const attachmentAnchor = page.getByText(/附件信息|上传录音文件|上传图片/).first();
+    await expect(attachmentAnchor).toBeVisible({ timeout: 20000 });
+
+    let submitButton = null;
+    const deadline = Date.now() + 5000;
+    while (!submitButton && Date.now() < deadline) {
+      const candidates = [
+        page.locator('.ant-tabs-tabpane-active:visible'),
+        page.locator('.ant-modal-footer:visible'),
+        page.locator('.ant-drawer-footer:visible'),
+        page.locator('[class*="footer"]:visible'),
+        page.locator('[class*="action"]:visible'),
+      ];
+      for (const c of candidates) {
+        const btn = c.getByRole('button', { name: /保\\s*存|提\\s*交|确\\s*定/i }).filter({ hasNotText: /保存并继续|上一步/ }).last();
+        if (await btn.count().catch(() => 0)) {
+          submitButton = btn;
+          break;
+        }
+      }
+      if (!submitButton) await page.waitForTimeout(200);
+    }
+    if (!submitButton) throw new Error('未在末页容器内找到最终提交按钮');
+
+    await submitButton.scrollIntoViewIfNeeded();
+    const createResp = __e2e.waitForApiResponse(page, { urlIncludes: '/business', method: 'POST' });
+    await submitButton.click({ force: true });
+    artifacts.plan_step_3 = await createResp;
+
+    await __e2e.observeSubmitState(page, { submitButton, urlIncludes: '#/business/businesslist' });
+
+    if (!page.url().includes('#/business/businesslist')) {
+      await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
+    }
+    await expect(page).toHaveURL(/#\\/business\\/businesslist/i, { timeout: 30000 });
+    // SLOT_END: plan_step_3
+  });
+
+  await test.step("Step 6: 校验新建记录及进展状态", async () => {
+    // SLOT_START: plan_step_6
+    await __e2e.switchBusinessListOwnershipView(page, { label: '我创建的', listUrl: TARGET_URL });
+    const recordCheck = await __e2e.resolvePrimaryRecord(page, {
+      primaryValue: shared.createdBusinessKey || artifacts.leadMobile,
+      keywordInput: page.locator('input#businessList_keywords:visible').first(),
+      searchButton: page.getByRole('button', { name: /搜\\s*索/i }).first(),
+      listResponse: { urlIncludes: '/business', method: 'GET' },
+      rowHasTexts: [shared.createdBusinessKey || artifacts.leadMobile],
+      maxLookupAttempts: 1,
+      retryIntervalMs: 200,
+    });
+    if (recordCheck.mode === 'table_row' && recordCheck.row) {
+      await __e2e.clickAntdRowAction(page, recordCheck.row, '查看');
+    }
+    const statusText = '新入库';
+    expect(statusText).toContain('新入库');
+    // SLOT_END: plan_step_6
+  });
+});
+`.trim());
+
+    const step3Slot = code.match(/\/\/ SLOT_START: plan_step_3([\s\S]*?)\/\/ SLOT_END: plan_step_3/)?.[1] || '';
+
+    expect(step3Slot).toContain("const listReady = alreadyOnBusinessList && (await listKeywordInput.count().catch(() => 0)) > 0;");
+    expect(step3Slot).toContain('artifacts.plan_step_3 = null;');
+    expect(step3Slot).toContain("artifacts.plan_step_3_submitOutcome = 'already_returned_to_business_list';");
+    expect(step3Slot).toContain('} else {');
+    expect(step3Slot).not.toContain("if (!submitButton) throw new Error('未在末页容器内找到最终提交按钮');");
     expect(() => new Script(code)).not.toThrow();
   });
 

@@ -9,6 +9,7 @@ import {
   hasIntentE2EFixtureContract,
   mergeIntentE2ERuntimeGovernance,
 } from '@/lib/intent-e2e-runtime-governance';
+import { applyIntentE2EKnownFixtureGovernance } from '@/lib/intent-e2e-known-fixture-governance';
 import { resolveIntentProjectRuntimeGovernance } from '@/lib/intent-project-runtime-governance';
 import { requireProjectRole } from '@/lib/server/project-actor';
 
@@ -146,27 +147,39 @@ export async function resolveIntentE2EProjectAuth(
     projectUid,
     actor.userUid
   );
+  const requestWithKnownFixtureGovernance = applyIntentE2EKnownFixtureGovernance(
+    {
+      ...request,
+      projectUid,
+      moduleUid: moduleUid || undefined,
+      runtimeGovernance: governanceWithOwnershipDefaults,
+    },
+    actor.userUid
+  );
 
   if (project.authRequired) {
-    const mergedAuth = mergeIntentRequestAuth(request, project);
+    const mergedAuth = mergeIntentRequestAuth(requestWithKnownFixtureGovernance, project);
     return {
       actorUserUid: actor.userUid,
       request: {
-        ...request,
+        ...requestWithKnownFixtureGovernance,
         projectUid,
         moduleUid: moduleUid || undefined,
         auth: mergedAuth,
-        runtimeGovernance: buildProjectCredentialGovernance(governanceWithOwnershipDefaults, project, mergedAuth),
+        runtimeGovernance: buildProjectCredentialGovernance(
+          requestWithKnownFixtureGovernance.runtimeGovernance,
+          project,
+          mergedAuth
+        ),
       },
     };
   }
 
   return {
     request: {
-      ...request,
+      ...requestWithKnownFixtureGovernance,
       projectUid,
       moduleUid: moduleUid || undefined,
-      runtimeGovernance: governanceWithOwnershipDefaults,
     },
     actorUserUid: actor.userUid,
   };

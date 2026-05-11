@@ -1,5 +1,6 @@
 import type { IntentE2EFailureTriage } from '@/lib/ai/intent-e2e-failure-triage';
 import type { IntentE2EAssetReadiness } from '@/lib/intent-e2e-asset-readiness';
+import { resolveIntentE2EQualityGate } from '@/lib/intent-e2e-quality-gate';
 
 export type IntentE2ERepairBudgetReasonCode =
   | 'runtime_limit'
@@ -63,7 +64,7 @@ function describeBudgetSummary(input: {
     case 'asset_missing':
       return `当前项目冷启动资产未就绪，repair budget 已收紧。${budgetTail}`;
     case 'knowledge_no_hit':
-      return `当前项目知识未命中，建议尽快补项目知识；当前不再额外收紧 repair budget。${budgetTail}`;
+      return `当前项目知识未命中，repair budget 已按服务端强门禁收口。${budgetTail}`;
     case 'auth_blocked':
       return `当前失败属于认证阻塞，不继续消耗 repair 配额。${budgetTail}`;
     case 'auth_state_invalid':
@@ -107,34 +108,18 @@ export function resolveIntentE2ERepairBudget(input: ResolveIntentE2ERepairBudget
   const usedRepairAttempts = clampCount(input.usedRepairAttempts);
   const assetStatus = input.assetReadiness?.status || 'ready';
   const triage = input.triage || null;
+  const qualityGate = resolveIntentE2EQualityGate({
+    assetReadiness: input.assetReadiness,
+    failureClass: triage?.failureClass,
+  });
 
   let reasonCode: IntentE2ERepairBudgetReasonCode = 'runtime_limit';
   let stopReason = configuredRepairLimit > 0 ? '按运行配置继续自动修复' : '当前配置未开启自动修复';
   let resolvedCap = configuredRepairLimit;
 
-  if (triage?.failureClass === 'auth_failed') {
-    reasonCode = 'auth_blocked';
-    stopReason = '认证阻塞';
-    resolvedCap = 0;
-  } else if (triage?.failureClass === 'auth_state_invalid') {
-    reasonCode = 'auth_state_invalid';
-    stopReason = '登录态失效';
-    resolvedCap = 0;
-  } else if (triage?.failureClass === 'permission_blocked') {
-    reasonCode = 'permission_blocked';
-    stopReason = '权限阻塞';
-    resolvedCap = 0;
-  } else if (triage?.failureClass === 'env_transient') {
-    reasonCode = 'env_blocked';
-    stopReason = '环境阻塞';
-    resolvedCap = 0;
-  } else if (triage?.failureClass === 'data_missing') {
-    reasonCode = 'data_blocked';
-    stopReason = '数据阻塞';
-    resolvedCap = 0;
-  } else if (triage?.failureClass === 'fixture_contract_missing') {
-    reasonCode = 'fixture_contract_missing';
-    stopReason = 'fixture 契约缺口';
+  if (qualityGate.repairBudgetReasonCode) {
+    reasonCode = qualityGate.repairBudgetReasonCode;
+    stopReason = qualityGate.stopReason;
     resolvedCap = 0;
   } else if (triage?.failureClass === 'response_missing') {
     reasonCode = 'response_missing';

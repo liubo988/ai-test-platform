@@ -4,8 +4,34 @@ import { closeDbPool } from '@/lib/db/client';
 import {
   buildIntentE2ETrafficQualityReport,
   getIntentE2ETrafficQualityReportPath,
+  isIntentE2ETrafficQualityDevelopmentGateReady,
   renderIntentE2ETrafficQualityMarkdown,
+  summarizeIntentE2ETrafficQualityDevelopmentGate,
 } from '@/lib/intent-e2e-traffic-quality';
+import { loadIntentE2ETrafficQualityPriorityFamilyGovernance } from '@/lib/intent-e2e-traffic-quality-governance';
+
+const HELP_TEXT = `
+Usage:
+  npm run intent:traffic-quality -- [options]
+  npm run intent:traffic-quality:development-ready -- [options]
+
+Options:
+  --project-uid <uid>                  Project uid. Defaults to proj_default.
+  --window-days <days>                 Recent window size. Defaults to 7.
+  --terminal-run-limit <count>         Max terminal runs to inspect. Defaults to 200.
+  --historical-draft-limit <count>     Historical draft fallback limit. Defaults to 100.
+  --min-real-click-launches <count>    Sample readiness launch-click threshold. Defaults to 20.
+  --min-real-click-auto-runs <count>   Sample readiness auto-run threshold. Defaults to 10.
+  --min-real-click-terminal-runs <count>
+                                        Sample readiness terminal-run threshold. Defaults to 10.
+  --json-out <path>                    JSON report output path.
+  --md-out <path>                      Markdown report output path.
+  --event-log <path>                   Override traffic-quality event log path.
+  --benchmark-report-dir <path>        Override benchmark report directory.
+  --json                               Also print full JSON report to stdout.
+  --require-development-ready          Exit 1 unless developmentGate.status is ready_*.
+  --help                               Print this help.
+`;
 
 type ParsedArgs = {
   values: Record<string, string | boolean>;
@@ -65,6 +91,11 @@ async function writeFile(filePath: string, content: string): Promise<void> {
 
 async function main() {
   const parsed = parseArgs(process.argv.slice(2));
+  if (parsed.values.help) {
+    console.log(HELP_TEXT.trim());
+    return;
+  }
+
   const projectUid = readString(parsed.values['project-uid']) || 'proj_default';
   const windowDays = readPositiveInt(parsed.values['window-days'], 7);
   const terminalRunLimit = readPositiveInt(parsed.values['terminal-run-limit'], 200);
@@ -76,6 +107,8 @@ async function main() {
   const mdOut = readString(parsed.values['md-out']) || getIntentE2ETrafficQualityReportPath(projectUid, 'md');
   const eventLogPath = readString(parsed.values['event-log']);
   const benchmarkReportDir = readString(parsed.values['benchmark-report-dir']);
+  const requireDevelopmentReady = Boolean(parsed.values['require-development-ready']);
+  const priorityFamilyGovernance = await loadIntentE2ETrafficQualityPriorityFamilyGovernance(projectUid);
 
   const report = await buildIntentE2ETrafficQualityReport({
     projectUid,
@@ -84,6 +117,7 @@ async function main() {
     eventLogPaths: eventLogPath ? [eventLogPath] : undefined,
     benchmarkReportDir: benchmarkReportDir || undefined,
     historicalIntentDraftLimit: historicalDraftLimit,
+    priorityFamilyGovernance,
     minRealClickLaunchClicks,
     minRealClickAutoRunStarts,
     minRealClickTerminalRuns,
@@ -95,14 +129,25 @@ async function main() {
 
   if (parsed.values.json) {
     console.log(JSON.stringify(report, null, 2));
-    return;
+  } else {
+    console.log(`traffic-quality report: ${jsonOut}`);
+    console.log(`traffic-quality markdown: ${mdOut}`);
+    console.log(
+      `summary: real_click=${report.summary.realClickTerminalPassCount}/${report.summary.realClickTerminalRunCount} (${report.summary.realClickTerminalPassRate ?? '-'}%) benchmark_rerun=${report.summary.benchmarkRerunTerminalPassCount}/${report.summary.benchmarkRerunTerminalRunCount} (${report.summary.benchmarkRerunTerminalPassRate ?? '-'}%) replay=${report.summary.replayTerminalPassCount}/${report.summary.replayTerminalRunCount} (${report.summary.replayTerminalPassRate ?? '-'}%) readiness=${report.sampleReadiness.readyForFamilySelection ? 'ready' : 'not_ready'} document_selection=${report.documentFamilySelection.mode} next_plan=${report.nextPlanRecommendation.status} development_gate=${report.nextPlanRecommendation.developmentGate.status} top_families=${report.documentFamilySelection.recommendedTopFamilies.join(',') || '-'} real_click_priority_families=${report.nextPlanRecommendation.realClickPriorityFamilyCandidates.map((candidate) => candidate.family).join(',') || '-'} real_click_priority_governance=${report.nextPlanRecommendation.realClickPriorityFamilyCandidates.map((candidate) => `${candidate.family}:${candidate.governanceStatus}`).join(',') || '-'}`
+    );
   }
 
-  console.log(`traffic-quality report: ${jsonOut}`);
-  console.log(`traffic-quality markdown: ${mdOut}`);
-  console.log(
-    `summary: real_click=${report.summary.realClickTerminalPassCount}/${report.summary.realClickTerminalRunCount} (${report.summary.realClickTerminalPassRate ?? '-'}%) benchmark_rerun=${report.summary.benchmarkRerunTerminalPassCount}/${report.summary.benchmarkRerunTerminalRunCount} (${report.summary.benchmarkRerunTerminalPassRate ?? '-'}%) replay=${report.summary.replayTerminalPassCount}/${report.summary.replayTerminalRunCount} (${report.summary.replayTerminalPassRate ?? '-'}%) readiness=${report.sampleReadiness.readyForFamilySelection ? 'ready' : 'not_ready'} document_selection=${report.documentFamilySelection.mode} top_families=${report.documentFamilySelection.recommendedTopFamilies.join(',') || '-'}`
-  );
+  if (
+    requireDevelopmentReady &&
+    !isIntentE2ETrafficQualityDevelopmentGateReady(report.nextPlanRecommendation.developmentGate.status)
+  ) {
+    console.error(
+      `[intent-e2e/traffic-quality] development gate is not ready: ${summarizeIntentE2ETrafficQualityDevelopmentGate(
+        report.nextPlanRecommendation.developmentGate
+      )}`
+    );
+    process.exitCode = 1;
+  }
 }
 
 main()

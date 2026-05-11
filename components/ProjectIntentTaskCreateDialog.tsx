@@ -130,7 +130,7 @@ export default function ProjectIntentTaskCreateDialog({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
-  const providerIsImplemented = llmConfig.provider === 'openai' && llmConfig.providerImplemented;
+  const providerIsImplemented = llmConfig.providerImplemented;
   const selectedModuleName = useMemo(
     () => activeModules.find((item) => item.moduleUid === moduleUid)?.name || '未选择模块',
     [activeModules, moduleUid]

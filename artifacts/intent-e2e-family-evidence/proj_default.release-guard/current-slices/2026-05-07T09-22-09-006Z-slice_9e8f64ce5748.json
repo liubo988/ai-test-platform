@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "sliceUid": "slice_9e8f64ce5748",
+  "projectUid": "proj_default",
+  "benchmarkUid": "bench_da6e56a79d3c",
+  "benchmarkPath": "artifacts/intent-e2e-family-evidence/proj_default.release-guard/benchmarks/2026-05-07T09-21-49-514Z-bench_da6e56a79d3c.json",
+  "priorityScenarioFamily": "modal_or_drawer_save",
+  "proofWindow": "non_weak",
+  "afterTerminalRunId": "intent-run-e4025a6f-eac1-4975-90e9-189a96289da4",
+  "afterFinishedAt": "2026-05-07T08:56:32.834Z",
+  "declaredReason": "phase22 modal governance current slice after formal-task real-click seed baseline",
+  "createdFromCompareReport": "",
+  "createdAt": "2026-05-07T09:22:09.006Z"
+}

@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   defaultLlmConfigDraft,
+  formatLlmProviderOption,
+  getLlmProviderOptions,
+  isLlmProviderImplemented,
   toLlmDraft,
   type LLMConfigDraft,
   type LLMConfigResponse,
@@ -29,6 +32,8 @@ export default function LLMConfigDialog({ open, onClose }: LLMConfigDialogProps)
     () => (configResponse ? toLlmDraft(configResponse.baseLlm) : defaultLlmConfigDraft),
     [configResponse]
   );
+  const providerOptions = useMemo(() => getLlmProviderOptions(configResponse), [configResponse]);
+  const activeProviderOption = providerOptions.find((option) => option.provider === draft.provider);
 
   useEffect(() => {
     if (!open) {
@@ -212,14 +217,14 @@ export default function LLMConfigDialog({ open, onClose }: LLMConfigDialogProps)
                       updateDraft((current) => ({
                         ...current,
                         provider: event.target.value,
-                        providerImplemented: event.target.value === 'openai',
+                        providerImplemented: isLlmProviderImplemented(event.target.value, providerOptions),
                       }))
                     }
                     className="mt-2 h-11 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-sm text-slate-800 outline-none transition focus:border-slate-400"
                   >
-                    {(configResponse?.availableProviders || ['openai', 'gemini', 'claude']).map((item) => (
-                      <option key={item} value={item}>
-                        {item === 'openai' ? 'openai（已实现）' : `${item}（预留）`}
+                    {providerOptions.map((item) => (
+                      <option key={item.provider} value={item.provider}>
+                        {formatLlmProviderOption(item)}
                       </option>
                     ))}
                   </select>
@@ -310,7 +315,7 @@ export default function LLMConfigDialog({ open, onClose }: LLMConfigDialogProps)
 
               {draft.provider !== 'openai' && (
                 <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">
-                  当前仅 `openai` provider 已实现；`gemini / claude` 仍然只是预留位。
+                  {activeProviderOption?.note || '当前 provider 仍然只是预留位，尚未接入实际 adapter。'}
                 </div>
               )}
             </div>

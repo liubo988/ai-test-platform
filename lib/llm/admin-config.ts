@@ -1,4 +1,5 @@
 import type { WorkspaceLLMSettingsInput } from '@/lib/db/repository';
+import { listLLMProviderOptions } from '@/lib/llm/provider-config';
 import { RequestError } from '@/lib/server/project-actor';
 
 export const AVAILABLE_LLM_PROVIDERS = ['openai', 'gemini', 'claude'] as const;
@@ -43,8 +44,10 @@ export function toWorkspaceLLMSettingsInput(body: Record<string, unknown>): Work
 }
 
 export function buildLLMConfigResponseMeta() {
+  const providerOptions = listLLMProviderOptions();
   return {
-    availableProviders: [...AVAILABLE_LLM_PROVIDERS],
+    availableProviders: providerOptions.map((option) => option.provider),
+    availableProviderOptions: providerOptions,
     availableApiStyles: [...AVAILABLE_LLM_API_STYLES],
   };
 }

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/db/repository', () => ({
   archiveTestConfig: vi.fn(),
@@ -127,6 +127,8 @@ function makePassedScenarioTask(input: {
 
 describe('capability-verification-service', () => {
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-04-08T00:00:00.000Z'));
     vi.clearAllMocks();
     vi.mocked(archiveTestConfig).mockResolvedValue(undefined as never);
     vi.mocked(listTestConfigs).mockResolvedValue({
@@ -159,6 +161,10 @@ describe('capability-verification-service', () => {
     vi.mocked(listProjectActivityLogs).mockResolvedValue([] as never);
     vi.mocked(upsertProjectCapability).mockResolvedValue({} as never);
     vi.mocked(getIntentE2EInsights).mockResolvedValue({ suppressedStarterHelpers: [] } as never);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('writes dependency-chain markers into verification configs', async () => {

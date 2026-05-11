@@ -34,6 +34,13 @@ npm run test:all
 - `npm run intent:release-guard:preflight`
 - `npm run intent:knowledge-hit-guard`
 - `npm run intent:release-status`
+- `npm run intent:release-summary`
+- `npm run intent:formal-task-seeds -- --project-uid <projectUid>`
+- `npm run intent:formal-task-seed-runs -- --project-uid <projectUid> --priority-scenario-family <family>`
+- `npm run intent:document-sample:scout -- --project-uid <projectUid>`
+- `npm run intent:document-family:guard -- --project-uid <projectUid> --require-passed`
+- `npm run intent:fixture-bootstrap -- --project-uid <projectUid> --window-days 30`
+- `npm run intent:priority-triage -- --project-uid <projectUid> --windows 30,90,365`
 
 ## 部署入口
 - Ubuntu 裸机部署：`docs/linux-deploy-super-test-yikaiye-net-2026-04-08.md`
@@ -80,6 +87,7 @@ npm run edge:generate
 - `R0-R7` 的历史主线与高成功率能力收口，统一以 [docs/intent-e2e-high-success-roadmap-2026-03-20.md](docs/intent-e2e-high-success-roadmap-2026-03-20.md) 为准。
 - `R7.5-R14` 的生产化续线、多项目资产隔离、统一测试类型抽象与后续平台化演进，统一以 [docs/intent-e2e-production-roadmap-2026-03-29.md](docs/intent-e2e-production-roadmap-2026-03-29.md) 为准。
 - `AI生成` 阶段性收尾、发布边界和提交前命令，以 [docs/intent-e2e-ai-generate-release-closure-summary-2026-04-30.md](docs/intent-e2e-ai-generate-release-closure-summary-2026-04-30.md) 为准。
+- 当前最终交付状态、真实流量口径和后续观测触发条件，以 [docs/intent-e2e-final-delivery-readiness-summary-2026-05-11.md](docs/intent-e2e-final-delivery-readiness-summary-2026-05-11.md) 为准。
 - 详细的“最近一次联调验证”与阶段回写不再在 README 和多份 roadmap 间重复维护，避免状态漂移。
 - 如果当前任务涉及 `ExecutionPlan / VerificationPlan`、verifier、starter helper、repair memory、project knowledge、run registry / insights，或 `/intent-e2e` 工作台，请先阅读对应 roadmap 的“阶段状态”和最新一条进度更新。
 
@@ -95,11 +103,11 @@ npm run edge:generate
 - repair 阶段会自动命中历史相似失败记忆，把已验证修法与常见误区一起注入到修复 Prompt
 - generate / repair 阶段都会先匹配项目知识规则文件，自动裁剪 DSL、动作库和 Prompt；最近历史通过率更高的规则会被前置，观察期中的新规则会轻微降权，已降级或命中过去可疑回滚候选的高风险规则会被自动跳过
 - generate / repair 阶段还会额外吃到来自已转正或稳定高通过率规则的 starter helper 建议；如果当前步骤语义匹配，会优先复用已验证过的 `__e2e.*` helper，而不是再手写一套脆弱的底层点击 / 等待逻辑
-- starter helper 不再只是自然语言提示：首批通过 catalog 白名单的 helper 会直接回写到 DSL `preferredHelpers`，并把对应 capability 作为 Starter 资产插进高频动作库，连同历史复用次数、通过率和支持规则一起给到模型
+- starter helper 不再只是自然语言提示：通过 catalog 白名单的 helper 会直接回写到 DSL `preferredHelpers`，并把对应 capability 作为 Starter 资产插进高频动作库，连同历史复用次数、通过率和支持规则一起给到模型；当前已覆盖下拉/弹框/iframe、表格行定位/行勾选、提交收敛、响应 JSON 提取和详情字段读取等高频 helper
 - 成功运行后，如果本次确实命中了 Starter 资产，可直接把它们预填到项目能力工作台；保存后会立刻进入项目 capability / recipe 体系，不再只是停留在运行时建议
 - 成功运行后，如果本次命中了多条 Starter 资产，可直接在结果区勾选后批量沉淀到项目能力库；若只想精修某一条，再单独打开对应 capability 草稿
 - 项目能力工作台里可先按来源 / Starter Helper / 验证状态筛出 Starter 能力，再对当前筛选结果做批量归档、批量验证或批量修复失败项，避免沉淀后又只能逐条清理
-- 无论是单条验证还是批量验证 / 修复，顶部“能力验证批次”面板都会持续显示执行状态、等待目录回写数和每条运行入口，直到 capability `meta` 真正同步完成
+- 无论是单条验证还是批量验证 / 修复，顶部“能力验证批次”面板都会持续显示执行状态、等待目录回写数、失败原因聚合和每条运行入口；有未回写终态项时可一键只看未回写项，直到 capability `meta` 真正同步完成
 - repair memory 达到阈值后，可在工作台里直接预览 / 写出项目知识规则草稿，并勾选候选后一键合并回项目规则文件；合并时会自动备份旧文件、展示本次变更预览、给出 merge / restore 前后覆盖对比，并保留最近审计记录
 - 可直接在工作台查看“历史运行洞察”：最近通过率、剔除 blocker 后的 `modelQualityPassRate`、`blockedRate`、知识命中率、推荐 helper 复用率、Starter Helper 建议、Top 规则 / helper / 失败类别，以及疑似导致成功率下滑的规则合并回滚提示
 - 当前运行结果和 recent traces 会额外展示 `qualitySplit` pill，显式区分 `model_quality / auth_blocked / permission_blocked / env_blocked / data_blocked`
@@ -186,7 +194,7 @@ npm run edge:generate
 - 若请求里带 `projectUid`，会优先读 `reports/intent-e2e/projects/<projectUid>/intent-e2e.project-knowledge.json`；项目文件不存在时，运行态读取会回退到当前全局 legacy 文件，但 merge / restore / 后续写回会直接落到项目文件
 - 可通过环境变量 `INTENT_E2E_PROJECT_ASSET_ROOT` 覆盖项目级资产根目录
 - 每条规则可按 URL / 标题 / 页面正文 / iframe URL / 用户意图命中后，自动追加全局规则、步骤约束、首选 helper 和动作库能力
-- 默认知识已覆盖当前 release guard 的四条已治理 family：`business_create_list_verify`、`business_to_order`、`list_search_detail`、`business_batch_add_contacts_verify`；用于把稳定 recipe/playbook 行为同步沉淀成可解释的 knowledge hit
+- 默认知识已覆盖当前 release guard 的五条已治理 family：`business_create_list_verify`、`business_to_order`、`list_search_detail`、`business_batch_add_contacts_verify`、`modal_or_drawer_save`；用于把稳定 recipe/playbook 行为同步沉淀成可解释的 knowledge hit
 - 这是后续最推荐的迭代入口：优先改这份 JSON，而不是直接改 Prompt 大段文案
 
 ### Project Onboarding
@@ -256,26 +264,43 @@ npm run edge:generate
   - `npm run intent:release-guard:preflight`
   - `npm run intent:release-guard -- --config artifacts/intent-e2e-family-evidence/proj_default.release-guard.baselines.json`
   - preflight 不连接数据库，只校验 release guard 配置、tracked benchmark、current-slice 与 recipe asset 是否齐全且匹配；完整 `intent:release-guard` 才执行 current compare。
-  - 默认 `proj_default` 配置覆盖 `business_create_list_verify`、`business_to_order`、`list_search_detail`、`business_batch_add_contacts_verify` 四条已治理 family，输入资产位于 `artifacts/intent-e2e-family-evidence/proj_default.release-guard/`。
+  - 默认 `proj_default` 配置覆盖 `business_create_list_verify`、`business_to_order`、`list_search_detail`、`business_batch_add_contacts_verify`、`modal_or_drawer_save` 五条已治理 family，输入资产位于 `artifacts/intent-e2e-family-evidence/proj_default.release-guard/`。
 - 如果要单独复核默认 project knowledge 是否仍有真实命中证据，可跑：
   - `npm run intent:knowledge-hit-guard`
-  - 默认配置 `artifacts/intent-e2e-family-evidence/proj_default.knowledge-hit-guard.json` 会检查四条 expected rule：`business.create-list-status-detail-entry`、`business.create-order-flow`、`order.list-search-detail-primary-record`、`business.batch-add-contacts`。该命令只校验 knowledge 命中证据，不替代 release compare。
+  - 默认配置 `artifacts/intent-e2e-family-evidence/proj_default.knowledge-hit-guard.json` 会检查五条 expected rule：`business.create-list-status-detail-entry`、`business.create-order-flow`、`order.list-search-detail-primary-record`、`business.batch-add-contacts`、`commission.service-ratio-config`。该命令只校验 knowledge 命中证据，不替代 release compare。
 - 如果需要一眼判断发布状态，可跑统一摘要：
   - `npm run intent:release-status -- --json`
   - `npm run intent:release-status -- --require-current-compare --json`
   - 默认会聚合 release guard preflight、knowledge-hit guard 与最近一次 release guard compare report，输出 `ready / attention / blocked`；缺少 compare report 时默认是 `attention`，加 `--require-current-compare` 后会变成阻塞。
+- 如果需要给 CI / PR 留下一份可读摘要，可跑：
+  - `npm run intent:release-summary -- --skip-current-compare`
+  - 默认写出 `reports/ci/intent-e2e-release-readiness.json` 和 `reports/ci/intent-e2e-release-readiness.md`；CI 静态检查会把这份 Markdown 追加到 GitHub step summary，并上传同名 artifact。它默认用于静态证据可见性，不替代发布前的完整 `intent:release-guard` compare。
 - 如果需要查看真实 AI 生成成功率口径，可跑 traffic-quality 报表：
   - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30 --json`
   - 默认输出到 `reports/intent-e2e/projects/<projectUid>/intent-e2e.traffic-quality-report.latest.json` 和 `.md`。
   - 该报表使用独立 counters：`launch_click_count / draft_generated_count / launch_gate_passed_count / auto_run_started_count / terminal_run_count / terminal_pass_count`。
   - 该报表按 `source=real_click|draft_import|benchmark_rerun|replay`、`attachment=with_image|without_image`、`launchDecision`、`priorityScenarioFamily` 分桶；`benchmark_rerun` runIds 会从 real traffic 终态统计中剔除，不能和 `real_click` 混统。
-  - 报表会额外输出 `Sample Readiness` 和 `Document Family Selection`：只有 `real_click.launch_click_count / auto_run_started_count / terminal_run_count` 达到阈值后，才允许直接从 post-instrumentation `real_click` 选择 document families。
+  - 报表会额外输出 `Sample Readiness`、`Document Family Selection` 和 `Next Plan Recommendation`：只有 `real_click.launch_click_count / auto_run_started_count / terminal_run_count` 达到阈值后，才允许直接从 post-instrumentation `real_click` 选择 document families；next plan 会明确下一步 source policy、分母口径、候选 family、验收条件和 guardrails。若真实分母达标但没有 document-like 请求，`realClickPriorityFamilyCandidates` 会给出可另起治理计划的非 document top family，并标注当前 release guard / knowledge-hit governance 状态；`developmentGate.status` 会给出机器可读的下一步开发准入结论。
+  - 若候选 family 是 document family，可继续运行 `npm run intent:document-family:governance -- --project-uid proj_default --require-ready`。该命令会从 latest traffic-quality 的 `recommendedTopFamilies` 读取候选，输出 `intent-e2e.document-family-governance.latest.json/.md`，目前已固化 `doc_create_reopen_verify`、`doc_search_open_verify`、`doc_edit_save_verify`、`doc_archive_restore_verify` 与 `doc_derive_capability_verify` 的 recipe、fixture 和 verifier 契约。
+  - 若要复核 document family 独立 guard baseline，可运行 `npm run intent:document-family:guard -- --project-uid proj_default --require-passed`。该 guard 只接受 `post_instrumentation_real_click_only`，会同时校验 traffic-quality real_click signals、governance profile 和 admissible passed seed runs，不会改现有 release-readiness summary。
   - 如需覆盖默认阈值，可传：
     - `--min-real-click-launches`
     - `--min-real-click-auto-runs`
     - `--min-real-click-terminal-runs`
     - `--historical-draft-limit`
-  - 如果报表输出 `readiness=not_ready` 或 `document_selection=insufficient_evidence`，说明当前 project 还不具备 document family 治理资格；不要把 release window 的 synthetic benchmark 结果外推成真实 document traffic。
+  - 如果报表输出 `readiness=not_ready`、`document_selection=insufficient_evidence` 或 `document_selection=no_document_candidates`，说明当前 project 还不具备 document family 治理资格；不要把 release window 的 synthetic benchmark 结果外推成真实 document traffic。若选择非 document family，必须引用 `realClickPriorityFamilyCandidates` 的 `source=real_click` 分母；若候选 `governanceStatus=ready` 或 `developmentGate.status=no_admissible_code_work`，不要重复治理同一 family。
+  - 如果要在自动化里强制“只有存在可开发候选才继续”，追加 `--require-development-ready`；当 `developmentGate.status` 不是 `ready_for_document_family_governance` 或 `ready_for_ungoverned_priority_family` 时，命令会返回失败。
+  - 等价短命令：`npm run intent:traffic-quality:development-ready -- --project-uid proj_default --window-days 30`；可用 `npm run intent:traffic-quality -- --help` 查看 CLI 参数。
+- 如果需要评估“全新业务意图”是否适合直接通过 AI 生成开跑，可运行 new-intent readiness 报表：
+  - `npm run intent:new-intent:readiness -- --project-uid proj_default --input "登录后用手机号 13800001111 搜索商机，进入详情并校验状态字段可见" --target-url "https://uat-service.yikaiye.com/#/business/businesslist" --json`
+  - 不传 `--input` 时会读取最近窗口的 traffic-quality `launch_click_count` 事件，默认写出 `reports/intent-e2e/projects/<projectUid>/intent-e2e.new-intent-readiness.latest.json` 和 `.md`。
+  - 报表输出 `recommendedMode`、`confidence`、`missingContracts`、`failureRecoveryPlan`、`fixtureBootstrap` 和关键 signals，并按 `source` 分离 `real_click / draft_import / benchmark_rerun / replay`；它不改变 release-readiness、traffic-quality 成功率或 benchmark harness 既有口径。
+  - 已识别为 document family 且 `documentGovernanceStatus=contract_ready` 的请求，会复用 document governance 契约，不再因为底层 raw priority family 的 `requiresFixture` 被误计为 `fixture_contract` 缺口。
+  - 若只想筛出缺前置数据契约的高收益候选，运行 `npm run intent:fixture-bootstrap -- --project-uid proj_default --window-days 30`；该命令只保留带 `fixtureBootstrap` 的 item，输出 setup / cleanup fixture ref、owner、idempotencyKey 和推荐 runtime governance 草稿，不会自动执行 fixture 脚本。
+  - 当前 `proj_default` 已内置第一条 repo-owned fixture 脚本：`fixture://project/proj_default/modal_or_drawer_save/setup` 与 `cleanup`，用于服务分佣配置这类 `modal_or_drawer_save` 高收益样本的 setup / cleanup 执行留证。`launch-decision` / `/api/intent-e2e/runs` 会对 `proj_default + 服务分佣配置 + modal_or_drawer_save` 窄匹配请求自动补这些 refs；脚本默认只写本地 fixture state（可用 `INTENT_E2E_FIXTURE_STATE_ROOT` 覆盖），不改 traffic-quality / release-readiness 口径。
+  - 服务分佣配置 fixture 还内置 repo-owned 远端恢复 adapter：`fixture://project/proj_default/modal_or_drawer_save/remote-restore`。默认 `INTENT_E2E_FIXTURE_REMOTE_RECOVERY_MODE=contract_only`，不会启动浏览器或修改远端；只有显式设置 `INTENT_E2E_FIXTURE_REMOTE_RECOVERY_MODE=snapshot_restore` 并提供 `INTENT_E2E_FIXTURE_STORAGE_STATE=<已登录 Playwright storage state>` 时，setup 才快照原佣金比例，cleanup 才通过 UI 恢复原值。
+  - 当前还内置第二条 repo-owned fixture：`fixture://project/proj_default/business_create_list_verify/setup` 与 `cleanup`，用于“商机列表新建商机 -> 我创建的列表回查 -> 商机进展=新入库”这类高收益样本。`launch-decision` / `/api/intent-e2e/runs` 会对 `proj_default + business_create_list_verify` 窄匹配请求自动补这些 refs；cleanup 只记录 businessId/contactPhone/contactName 等清理线索，不自动删除或作废远端商机。
+  - 当前还内置第三条 repo-owned fixture：`fixture://project/proj_default/business_to_order/setup` 与 `cleanup`，用于“创建商机 -> 目标行生成订单 -> createOrder 主断言”链路。`launch-decision` / `/api/intent-e2e/runs` 会对 `proj_default + business_to_order` 窄匹配请求自动补这些 refs；cleanup 记录 businessId/orderId/contactPhone/contactName 等清理线索，不自动删除或作废远端订单。
 
 ### System Onboarding & CI/CD
 - repo-owned onboarding manifest registry：`intent-e2e.system-onboarding-manifests.json`
@@ -314,12 +339,15 @@ npm run edge:generate
 - `/projects/:projectUid` 项目工作台顶部也会调用同一份 release-status API，只读展示项目级 release readiness 摘要、check/family 计数、最近 compare message，并提供刷新和跳转 `/intent-e2e?projectUid=...` 查看详情
 - `GET /api/intent-e2e/insights` 当前直接复用已持久化的 run snapshot 和知识审计，不额外建表；新 merge 的规则会进入最多 6 次终态运行的观察期，并结合合并前最多 5 次终态运行做基线对比
 - `GET /api/intent-e2e/insights` 的 `summary` 现会额外返回 `modelQualityEligibleRuns / modelQualityPassRate / modelQualityFailureRuns / blockedRuns / blockedRate / permissionBlockedRuns / dataBlockedRuns / assetMissingRuns / assetMissingRate / noHitRuns / noHitRate`，`recentTraces` 也会带每次运行的 `testType / runnerType + assetReadiness + qualitySplit`
+- `asset_missing / no_hit / blocked split` 已有服务端强门禁契约：项目资产缺失、知识未命中、认证/权限/环境/data blocker 会统一映射到 bootstrap / fixture / draft-only 方向，并在 repair budget 中直接阻止继续盲修
+- 真实预发 E2E 已有独立入口：`npm run test:e2e:preprod` 只运行 `@preprod` 用例；未配置 `E2E_BASE_URL` 时会跳过，避免误跑本地 fallback。可用 `E2E_PREPROD_SMOKE_PATH` 指定轻量健康检查路径，产品创建用例还需要 `E2E_USERNAME` / `E2E_PASSWORD`
+- LLM provider 切换占位已收口为共享配置契约：`GET /api/llm/config` 会返回 `availableProviderOptions`，其中 `openai` 是已实现 adapter，`gemini / claude` 是 placeholder；前端保存和展示可以选择预留 provider，但运行前仍会被 UI 与服务端执行门禁阻止
 - 观察期在满足至少 3 次样本后，如果通过率降到 35% 以下，或相对基线下滑达到 15 个点，会自动标记为 `degraded`；完成 6 次观察且未降级则自动转正
 - `GET /api/intent-e2e/insights` 还会从已转正或稳定高通过率规则里提炼 `starterHelpers`：要求 helper 至少复用 2 次、成功 2 次且通过率不低于 70%，并给出来源规则、复用次数和推荐文案
 - 当前服务端在执行 generate / repair 前，会把最近运行沉淀出的规则表现反馈回规划阶段：高通过率规则会前置进 DSL / Prompt，观察期规则轻微降权，已降级或历史低通过率且命中过回滚候选的规则会被降权甚至跳过；同时把 `starterHelpers` 一起注入规划，让首轮生成优先复用已验证过的 helper
-- 当前 starter helper 还会先经过 runtime helper catalog 过滤：只有执行层真实存在、且能映射到当前 DSL 语义的 helper 才会进入 Prompt / DSL / 动作库；命中的 helper 会被回写进步骤级 `preferredHelpers`，并计入本次推荐 helper 复用统计
+- 当前 starter helper 还会先经过 runtime helper catalog 过滤：只有执行层真实存在、且能映射到当前 DSL 语义的 helper 才会进入 Prompt / DSL / 动作库；命中的 helper 会被回写进步骤级 `preferredHelpers`，并计入本次推荐 helper 复用统计。除下拉、弹框和 iframe 外，catalog 也会识别 `findAntdTableRow / clickAntdRowCheckbox / resolvePrimaryRecord / observeSubmitState / readJsonResponse / pickJsonValue / readDetailField`
 - 当前运行结果里的 `knowledge` 还会额外返回 `starterAssets`，前端结果区既可把它们批量写入项目能力库，也可单条转成 capability 草稿；preset 在 URL / sessionStorage 往返时也会保留 starter 证据元信息
-- 项目工作台里的能力目录现在会解析 capability `meta`：即使某条 Starter 能力后续已经被验证升级，仍会保留 Starter 来源标记，并允许按来源 / Helper / 验证状态继续筛选；当前筛选结果还支持直接批量归档、批量验证和批量修复失败项，验证批次面板也会自动追踪结果回写
+- 项目工作台里的能力目录现在会解析 capability `meta`：即使某条 Starter 能力后续已经被验证升级，仍会保留 Starter 来源标记，并允许按来源 / Helper / 验证状态继续筛选；当前筛选结果还支持直接批量归档、批量验证和批量修复失败项，验证批次面板也会自动追踪结果回写、聚合失败原因，并支持只看未回写终态项
 - 草稿默认只会把“重复出现且至少修成功过一次”的失败模式提炼成候选规则，并标记哪些规则已经被现有知识覆盖
 
 ## GitHub 自动化
@@ -328,8 +356,15 @@ npm run edge:generate
 - `ai-generate-tests.yml`：`edge-cases/**` 变更后自动生成测试并发 PR
 
 ## 下一步建议
-1. 给能力验证批次再补“失败原因聚合 / 一键只看未回写项”视图，减少大批量治理时在目录卡片和运行页之间来回切换
-2. 继续扩充 runtime helper catalog，把更多已稳定高收益的 helper 纳入白名单（如 `select_option`、`enter_frame_context`、`wait_for_visible_modal`）
-3. 决定是否把当前 `asset_missing / no_hit / blocked split` 升级成服务端强门禁，而不只是 workbench / insights 显式信号
-4. 接入真实预发环境 E2E（通过 `E2E_BASE_URL`）
-5. 完善 provider 切换占位（OpenAI / Claude / Gemini），保持执行层不变
+- 当前 README 跟进项已全部收口；最终交付摘要见 [docs/intent-e2e-final-delivery-readiness-summary-2026-05-11.md](docs/intent-e2e-final-delivery-readiness-summary-2026-05-11.md)，完整 handoff 见 [docs/intent-e2e-current-development-closure-handoff-2026-05-07.md](docs/intent-e2e-current-development-closure-handoff-2026-05-07.md)。
+- 后续开发准备入口见 [docs/intent-e2e-next-development-prep-2026-05-07.md](docs/intent-e2e-next-development-prep-2026-05-07.md)。
+- 可先运行 `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30` 生成下一轮开发计划报表。
+- 如需参考项目工作台里已经跑通的正式任务，先运行 `npm run intent:formal-task-seeds -- --project-uid proj_default` 生成 seed audit；这些任务只能作为 seed/reference，不能直接计入 `source=real_click` 分母。
+- 如需把正式任务 seed 转成真实 traffic-quality 分母，使用 `npm run intent:formal-task-seed-runs -- --project-uid proj_default --priority-scenario-family <family>`；该脚本会重新走 `launch-decision -> /api/intent-e2e/runs`，不携带 `intentDraftUid`，因此产生的是 `source=real_click` 事件。
+- 若只想快速确认 30/90/365 天窗口是否存在 document-like `real_click`，可运行 `npm run intent:document-sample:scout -- --project-uid proj_default --windows 30,90,365`；该命令只读 traffic-quality JSONL 和 formal-task seed audit，不连接数据库，不替代完整 traffic-quality 报表。
+- 若要判断高频 `untracked` / `business_to_order` 是否真的具备下一刀治理价值，可运行 `npm run intent:priority-triage -- --project-uid proj_default --windows 30,90,365`；该报表会把 untracked 拆成 `document_like / reroutable_priority_family / unknown_business_or_product`，并复用 latest traffic-quality 的 `business_to_order` 终态成功率与 release / knowledge governance 状态，避免把 document 样本或历史可回填样本误判成新业务 fixture 缺口。
+- 若需要执行 document-like 真实点击采集尝试，可运行 `npm run intent:document-real-click:seed -- --project-uid proj_default --max-samples 1`；需要有界扩样时追加 `--repeat <n>`。默认第一内置样本会打开 `/projects/:projectUid?intentView=knowledge` 的真实知识文档 UI，执行“导入知识文档 -> 当前预览 -> 文档块正文锚点校验”。也可用 `--sample-id project-knowledge-document-search-open-preview`、`--sample-id project-knowledge-document-edit-save-preview`、`--sample-id project-knowledge-document-archive-restore-preview` 或 `--sample-id project-knowledge-document-derive-capability-preview` 定向采集搜索打开、编辑保存、归档恢复、自动沉淀能力链路；这些请求不携带 `intentDraftUid`，会产出 `intent-e2e.document-real-click-seed-report.latest.*`。报告仍会区分 `documentFamily` 与 `admissibility`，避免把“参考知识文档执行业务流”误当作真实 document family 治理证据。
+- 若要复核当前 document family 契约，运行 `npm run intent:document-family:governance -- --project-uid proj_default --require-ready`；当前 `doc_create_reopen_verify`、`doc_search_open_verify`、`doc_edit_save_verify`、`doc_archive_restore_verify` 与 `doc_derive_capability_verify` 已是 `contract_ready`。
+- 若要复核独立 document-family guard，运行 `npm run intent:document-family:guard -- --project-uid proj_default --require-passed`；当前默认阈值为 `minRealClickSignals=3`、`minAdmissiblePassedRuns=3`，latest recommended top-3 `doc_archive_restore_verify / doc_search_open_verify / doc_create_reopen_verify` 均已 `contract_ready` 且独立 guard passed，合计 `30` 条 document-like real_click 信号和 `22` 条 admissible passed seed runs；五个已治理 document family 在 sample scout 中都已达到 `10` 条真实信号。以上仍不代表所有 document family 已发布就绪。
+- 如需先判断一个新业务意图是否适合直接 AI 生成，运行 `npm run intent:new-intent:readiness -- --project-uid proj_default --input "<任务描述>" --target-url "<入口URL>" --json`；工作台的 launch-decision 响应也会返回同一份 `newIntentReadiness` 摘要。当前 30 天窗口 `mode={"direct_generate":99,"draft_only":1}`，`real_click` 无 `needs_fixture`。若后续意图卡在 `needs_fixture`，优先运行 `npm run intent:fixture-bootstrap -- --project-uid proj_default --window-days 30` 查看 fixture 契约草稿；当前 fixture bootstrap 为 `total=0`。
+- 后续如继续建设，先运行 `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30`；当前该命令会阻断重复治理，因为 latest recommended top-3 document 候选 `doc_archive_restore_verify / doc_search_open_verify / doc_create_reopen_verify` 都已 `contract_ready` 且独立 guard passed。若怀疑 `untracked` 或 `business_to_order` 是下一刀，先运行 `intent:priority-triage` 确认是否存在 unknown business/product 或未 ready governance。

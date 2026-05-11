@@ -296,6 +296,226 @@ describe('intent-recipe-registry', () => {
     expect(batchContactsRegistry.items.map((item) => item.recipe.slug)).toContain('business.batch-add-contacts');
   });
 
+  it('selects the project knowledge document import-preview recipe from real document signals', () => {
+    const dsl = buildIntentActionDSL({
+      taskMode: 'scenario',
+      targetUrl: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+      featureDescription:
+        '打开项目知识文档工作台，导入一篇知识文档，导入后校验当前预览和文档块正文锚点，document family 为 doc_create_reopen_verify',
+      expectedOutcome: '知识文档已导入，当前预览切到本次文档，文档块展示正文锚点',
+      steps: [
+        {
+          stepUid: 'step_import_document',
+          stepType: 'ui',
+          title: '导入知识文档',
+          target: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+          instruction: '填写知识文档名称、来源路径和知识文档内容，点击导入知识',
+          expectedResult: '当前预览展示本次文档，文档块展示正文锚点',
+          extractVariable: 'knowledgeDocumentName',
+        },
+      ],
+    });
+
+    const registry = selectIntentRecipeRegistry({
+      dsl,
+      snapshot: {
+        url: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+        title: '项目知识文档',
+        frames: [],
+      },
+      priorityScenarioFamily: 'untracked',
+      narrowToPriorityScenarioFamily: true,
+    });
+
+    const recipe = registry.items.find((item) => item.recipe.slug === 'document.project-knowledge-import-preview');
+    expect(recipe).toBeTruthy();
+    expect(recipe?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'url=/projects/',
+        'url=intentview=knowledge',
+        'intent=知识文档',
+        'intent=doc_create_reopen_verify',
+      ])
+    );
+    expect(recipe?.recipe.verifierPlan.join('\n')).toContain('不能只断言 textarea 原文');
+  });
+
+  it('selects the project knowledge document search-open recipe from real document signals', () => {
+    const dsl = buildIntentActionDSL({
+      taskMode: 'scenario',
+      targetUrl: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+      featureDescription:
+        '打开项目知识文档工作台，在知识目录中打开知识文档，进入文档块预览后搜索正文锚点，document family 为 doc_search_open_verify',
+      expectedOutcome: '当前预览切到目标文档，搜索文档块后展示正文锚点',
+      steps: [
+        {
+          stepUid: 'step_search_open_document',
+          stepType: 'ui',
+          title: '搜索打开知识文档',
+          target: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+          instruction: '在知识目录中点击目标文档预览，然后搜索文档块正文锚点',
+          expectedResult: '当前预览展示目标文档，文档块展示正文锚点',
+          extractVariable: 'knowledgeDocumentName',
+        },
+      ],
+    });
+
+    const registry = selectIntentRecipeRegistry({
+      dsl,
+      snapshot: {
+        url: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+        title: '项目知识文档',
+        frames: [],
+      },
+      priorityScenarioFamily: 'untracked',
+      narrowToPriorityScenarioFamily: true,
+    });
+
+    const recipe = registry.items.find((item) => item.recipe.slug === 'document.project-knowledge-search-open-preview');
+    expect(recipe).toBeTruthy();
+    expect(recipe?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'url=/projects/',
+        'url=intentview=knowledge',
+        'intent=知识文档',
+        'intent=doc_search_open_verify',
+      ])
+    );
+    expect(recipe?.recipe.verifierPlan.join('\n')).toContain('必须校验预览内容');
+  });
+
+  it('selects the project knowledge document edit-save recipe from real document signals', () => {
+    const dsl = buildIntentActionDSL({
+      taskMode: 'scenario',
+      targetUrl: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+      featureDescription:
+        '打开项目知识文档工作台，编辑并保存已有知识文档，校验当前预览、旧正文锚点无匹配、更新正文锚点可见，document family 为 doc_edit_save_verify',
+      expectedOutcome: '保存后当前预览仍是目标文档，文档块展示更新后的正文锚点',
+      steps: [
+        {
+          stepUid: 'step_edit_save_document',
+          stepType: 'ui',
+          title: '编辑保存知识文档',
+          target: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+          instruction: '用同名文档填写更新后的知识内容并保存，然后搜索文档块正文锚点',
+          expectedResult: '当前预览展示目标文档，旧正文锚点不再匹配，更新正文锚点可见',
+          extractVariable: 'knowledgeDocumentName',
+        },
+      ],
+    });
+
+    const registry = selectIntentRecipeRegistry({
+      dsl,
+      snapshot: {
+        url: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+        title: '项目知识文档',
+        frames: [],
+      },
+      priorityScenarioFamily: 'untracked',
+      narrowToPriorityScenarioFamily: true,
+    });
+
+    const recipe = registry.items.find((item) => item.recipe.slug === 'document.project-knowledge-edit-save-preview');
+    expect(recipe).toBeTruthy();
+    expect(recipe?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'url=/projects/',
+        'url=intentview=knowledge',
+        'intent=知识文档',
+        'intent=doc_edit_save_verify',
+      ])
+    );
+    expect(recipe?.recipe.verifierPlan.join('\n')).toContain('旧正文锚点');
+  });
+
+  it('selects the project knowledge document archive-restore recipe from real document signals', () => {
+    const dsl = buildIntentActionDSL({
+      taskMode: 'scenario',
+      targetUrl: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+      featureDescription:
+        '打开项目知识文档工作台，归档并恢复已有知识文档，恢复后重新预览并校验文档块正文锚点，document family 为 doc_archive_restore_verify',
+      expectedOutcome: '目标文档先显示已归档，恢复后重新预览且文档块展示正文锚点',
+      steps: [
+        {
+          stepUid: 'step_archive_restore_document',
+          stepType: 'ui',
+          title: '归档恢复知识文档',
+          target: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+          instruction: '在知识目录中归档目标文档，等待已归档状态，然后恢复并重新预览文档块正文锚点',
+          expectedResult: '文档恢复为启用状态，恢复后文档块预览正文锚点可见',
+          extractVariable: 'knowledgeDocumentName',
+        },
+      ],
+    });
+
+    const registry = selectIntentRecipeRegistry({
+      dsl,
+      snapshot: {
+        url: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+        title: '项目知识文档',
+        frames: [],
+      },
+      priorityScenarioFamily: 'untracked',
+      narrowToPriorityScenarioFamily: true,
+    });
+
+    const recipe = registry.items.find((item) => item.recipe.slug === 'document.project-knowledge-archive-restore-preview');
+    expect(recipe).toBeTruthy();
+    expect(recipe?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'url=/projects/',
+        'url=intentview=knowledge',
+        'intent=知识文档',
+        'intent=doc_archive_restore_verify',
+      ])
+    );
+    expect(recipe?.recipe.verifierPlan.join('\n')).toContain('恢复后重新点击“预览”');
+  });
+
+  it('selects the project knowledge document derive-capability recipe from real document signals', () => {
+    const dsl = buildIntentActionDSL({
+      taskMode: 'scenario',
+      targetUrl: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+      featureDescription:
+        '打开项目知识文档工作台，打开已有知识文档并点击自动沉淀能力，进入能力目录校验知识提炼稳定能力，document family 为 doc_derive_capability_verify',
+      expectedOutcome: '能力目录展示本次文档自动沉淀出的知识提炼能力',
+      steps: [
+        {
+          stepUid: 'step_derive_capability_from_document',
+          stepType: 'ui',
+          title: '自动沉淀知识文档能力',
+          target: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+          instruction: '在当前预览中点击自动沉淀能力，然后在能力目录搜索本次生成的稳定能力',
+          expectedResult: '能力目录展示知识提炼状态的稳定能力',
+          extractVariable: 'derivedCapabilityName',
+        },
+      ],
+    });
+
+    const registry = selectIntentRecipeRegistry({
+      dsl,
+      snapshot: {
+        url: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+        title: '项目知识文档',
+        frames: [],
+      },
+      priorityScenarioFamily: 'untracked',
+      narrowToPriorityScenarioFamily: true,
+    });
+
+    const recipe = registry.items.find((item) => item.recipe.slug === 'document.project-knowledge-derive-capability-preview');
+    expect(recipe).toBeTruthy();
+    expect(recipe?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'url=/projects/',
+        'url=intentview=knowledge',
+        'intent=知识文档',
+        'intent=doc_derive_capability_verify',
+      ])
+    );
+    expect(recipe?.recipe.verifierPlan.join('\n')).toContain('知识提炼');
+  });
+
   it('selects the project playbook recipe for the tracked batch-add-contacts family', () => {
     const previousAssetRoot = process.env.INTENT_E2E_PROJECT_ASSET_ROOT;
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'intent-recipe-playbook-'));

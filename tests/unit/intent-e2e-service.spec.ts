@@ -5303,7 +5303,7 @@ describe('intent-e2e-service stream', () => {
     expect(vi.mocked(repairTest)).not.toHaveBeenCalled();
   });
 
-  it('does not additionally cap repair budget when project knowledge is a no_hit', async () => {
+  it('stops blind repair when project knowledge is a no_hit', async () => {
     vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 3 } as any);
     vi.mocked(resolveIntentPromptPlanningContext).mockReturnValue(
       createPlanningContext({
@@ -5369,19 +5369,19 @@ describe('intent-e2e-service stream', () => {
       status: 'no_hit',
       knowledgeMatchCount: 0,
     });
-    expect(result.attempts).toHaveLength(4);
+    expect(result.attempts).toHaveLength(1);
     expect(result.repairBudget).toMatchObject({
-      maxRepairAttempts: 3,
-      usedRepairAttempts: 3,
+      maxRepairAttempts: 0,
+      usedRepairAttempts: 0,
       exhausted: true,
       reasonCode: 'knowledge_no_hit',
     });
-    expect(result.repairBudget?.summary).toContain('当前不再额外收紧 repair budget');
+    expect(result.repairBudget?.summary).toContain('repair budget 已按服务端强门禁收口');
     expect(result.failureCta).toMatchObject({
       primaryAction: 'preview_knowledge_draft',
     });
-    expect(result.failureCta?.summary).toContain('当前不再额外收紧 repair budget');
-    expect(vi.mocked(repairTest)).toHaveBeenCalledTimes(3);
+    expect(result.failureCta?.summary).toContain('repair budget 已按服务端强门禁收口');
+    expect(vi.mocked(repairTest)).not.toHaveBeenCalled();
     expect(events.some((event) => event.type === 'attempt_log' && event.log.message.includes('项目知识未命中'))).toBe(true);
   });
 

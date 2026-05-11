@@ -50,6 +50,8 @@ export const INTENT_E2E_TRAFFIC_QUALITY_LAUNCH_DECISIONS = [
 export const INTENT_E2E_TRAFFIC_QUALITY_DOCUMENT_FAMILIES = [
   'doc_create_reopen_verify',
   'doc_edit_save_verify',
+  'doc_archive_restore_verify',
+  'doc_derive_capability_verify',
   'doc_share_permission_verify',
   'doc_export_verify',
   'doc_search_open_verify',
@@ -71,6 +73,27 @@ export type IntentE2ETrafficQualityDocumentSelectionMode =
   | 'historical_intent_drafts_fallback'
   | 'no_document_candidates'
   | 'insufficient_evidence';
+export type IntentE2ETrafficQualityNextPlanStatus =
+  | 'ready_for_document_family_governance'
+  | 'bootstrap_real_click_samples'
+  | 'collect_document_real_click'
+  | 'insufficient_evidence';
+export type IntentE2ETrafficQualityNextPlanSourcePolicy =
+  | 'post_instrumentation_real_click_only'
+  | 'historical_drafts_seed_only'
+  | 'collect_more_real_click'
+  | 'none';
+export type IntentE2ETrafficQualityNextDevelopmentGateStatus =
+  | 'ready_for_document_family_governance'
+  | 'ready_for_ungoverned_priority_family'
+  | 'blocked_on_real_click_readiness'
+  | 'blocked_on_document_real_click'
+  | 'no_admissible_code_work';
+
+export const INTENT_E2E_TRAFFIC_QUALITY_DEVELOPMENT_READY_GATE_STATUSES = [
+  'ready_for_document_family_governance',
+  'ready_for_ungoverned_priority_family',
+] as const satisfies readonly IntentE2ETrafficQualityNextDevelopmentGateStatus[];
 
 export type IntentE2ETrafficQualityCounterMap = Record<IntentE2ETrafficQualityCounterName, number>;
 
@@ -198,6 +221,72 @@ export interface IntentE2ETrafficQualityDocumentFamilySelection {
   candidates: IntentE2ETrafficQualityDocumentFamilyCandidate[];
 }
 
+export interface IntentE2ETrafficQualityPriorityFamilyCandidate {
+  family: IntentE2EPriorityScenarioFamily;
+  launchClickCount: number;
+  autoRunStartedCount: number;
+  terminalRunCount: number;
+  terminalPassCount: number;
+  terminalPassRate: number | null;
+  withImageLaunchClickCount: number;
+  withoutImageLaunchClickCount: number;
+  governanceStatus: 'ready' | 'attention' | 'blocked' | 'unknown';
+  releaseGuardStatus: 'passed' | 'warning' | 'failed' | 'skipped' | 'missing';
+  knowledgeHitStatus: 'passed' | 'warning' | 'failed' | 'skipped' | 'missing';
+  governanceEvidencePaths: string[];
+  selectionReason: string;
+}
+
+export interface IntentE2ETrafficQualityPriorityFamilyGovernance {
+  family: IntentE2EPriorityScenarioFamily;
+  governanceStatus: 'ready' | 'attention' | 'blocked' | 'unknown';
+  releaseGuardStatus: 'passed' | 'warning' | 'failed' | 'skipped' | 'missing';
+  knowledgeHitStatus: 'passed' | 'warning' | 'failed' | 'skipped' | 'missing';
+  evidencePaths?: string[];
+}
+
+export interface IntentE2ETrafficQualityNextDevelopmentGateEligibleFamily {
+  family: string;
+  familyType: 'document' | 'priority';
+  reason: string;
+}
+
+export interface IntentE2ETrafficQualityNextDevelopmentGate {
+  status: IntentE2ETrafficQualityNextDevelopmentGateStatus;
+  eligibleFamilies: IntentE2ETrafficQualityNextDevelopmentGateEligibleFamily[];
+  blockingReasons: string[];
+  requiredEvidence: string[];
+}
+
+export function isIntentE2ETrafficQualityDevelopmentGateReady(
+  status: IntentE2ETrafficQualityNextDevelopmentGateStatus
+): boolean {
+  return INTENT_E2E_TRAFFIC_QUALITY_DEVELOPMENT_READY_GATE_STATUSES.includes(
+    status as (typeof INTENT_E2E_TRAFFIC_QUALITY_DEVELOPMENT_READY_GATE_STATUSES)[number]
+  );
+}
+
+export function summarizeIntentE2ETrafficQualityDevelopmentGate(
+  gate: IntentE2ETrafficQualityNextDevelopmentGate
+): string {
+  const eligible = gate.eligibleFamilies.map((item) => `${item.family}:${item.familyType}`).join(',') || '-';
+  const blockers = gate.blockingReasons.join('; ') || '-';
+  return `development_gate=${gate.status} eligible=${eligible} blockers=${blockers}`;
+}
+
+export interface IntentE2ETrafficQualityNextPlanRecommendation {
+  status: IntentE2ETrafficQualityNextPlanStatus;
+  sourcePolicy: IntentE2ETrafficQualityNextPlanSourcePolicy;
+  candidateFamilies: IntentE2ETrafficQualityDocumentFamily[];
+  realClickPriorityFamilyCandidates: IntentE2ETrafficQualityPriorityFamilyCandidate[];
+  developmentGate: IntentE2ETrafficQualityNextDevelopmentGate;
+  recommendedAction: string;
+  denominatorPolicy: string;
+  blockingReasons: string[];
+  acceptanceCriteria: string[];
+  guardrails: string[];
+}
+
 export interface IntentE2ETrafficQualityReport {
   version: 1;
   generatedAt: string;
@@ -235,6 +324,7 @@ export interface IntentE2ETrafficQualityReport {
   imageRouteMetrics: IntentE2ETrafficQualityImageRouteMetrics;
   ocrMetrics: IntentE2ETrafficQualityOcrMetrics;
   documentFamilySelection: IntentE2ETrafficQualityDocumentFamilySelection;
+  nextPlanRecommendation: IntentE2ETrafficQualityNextPlanRecommendation;
   sourceSummaries: Record<IntentE2ETrafficQualitySource, IntentE2ETrafficQualitySourceSummary>;
   buckets: IntentE2ETrafficQualityBucket[];
   benchmarkRerunReports: IntentE2ETrafficQualityBenchmarkRerunSummary[];
@@ -269,6 +359,7 @@ export interface BuildIntentE2ETrafficQualityReportOptions {
   terminalRunLimit?: number;
   historicalIntentDrafts?: ProjectIntentDraftSummaryRecord[];
   historicalIntentDraftLimit?: number;
+  priorityFamilyGovernance?: IntentE2ETrafficQualityPriorityFamilyGovernance[];
   minRealClickLaunchClicks?: number;
   minRealClickAutoRunStarts?: number;
   minRealClickTerminalRuns?: number;
@@ -400,34 +491,74 @@ function addCounter(
   counters[counter] += increment;
 }
 
-function isLikelyDocumentSurface(input: { input: string; targetUrl: string }): boolean {
-  const haystack = `${normalizeString(input.input)}\n${normalizeString(input.targetUrl)}`;
-  if (!haystack) return false;
+function hasDocumentTargetUrl(targetUrl: string): boolean {
+  const normalized = normalizeString(targetUrl);
+  if (!normalized) return false;
 
   return (
-    /(文档|文稿|在线文档|协作文档|共享文档|企业微信文档|知识文档|智能表格|文档库|docid|wedoc|smartsheet|spreadsheet|document(?!ary))/i.test(
-      haystack
+    /(在线文档|协作文档|共享文档|企业微信文档|知识文档|智能表格|文档库|docid|wedoc|smartsheet|spreadsheet|document(?!ary))/i.test(
+      normalized
     ) ||
-    /(?:^|[/?#._-])docs?(?:[/?#._-]|$)/i.test(haystack) ||
-    /docs\.qq\.com/i.test(haystack)
+    /(?:^|[/?#._-])docs?(?:[/?#._-]|$)/i.test(normalized) ||
+    /docs\.qq\.com/i.test(normalized)
   );
 }
 
-function classifyTrafficQualityDocumentFamily(input: {
+function hasDocumentOperationIntent(input: string): boolean {
+  const normalized = normalizeString(input);
+  if (!normalized) return false;
+
+  const documentNoun = '(?:文档|文稿|在线文档|协作文档|共享文档|企业微信文档|知识文档|智能表格|文档库|docid|wedoc|smartsheet|spreadsheet|document(?!ary))';
+  const operation = '(?:新建|创建|新增|导入|上传|生成|复制|编辑|修改|更新|填写|写入|覆写|保存|归档|恢复|还原|删除|移除|分享|共享|授权|邀请|导出|下载|打印|搜索|查找|打开|进入|查看|浏览|检索|沉淀|提炼|派生|设为来源|设为能力来源)';
+
+  return (
+    new RegExp(`${operation}.{0,8}${documentNoun}`, 'i').test(normalized) ||
+    new RegExp(`${documentNoun}.{0,8}${operation}`, 'i').test(normalized)
+  );
+}
+
+function isDocumentReferenceOnly(input: string): boolean {
+  const normalized = normalizeString(input);
+  if (!normalized) return false;
+
+  const hasReferencePrefix = /(参考|依据|按照|根据).{0,18}(知识文档|知识目录|操作手册|使用手册|产品手册|文档)/i.test(
+    normalized
+  );
+  if (!hasReferencePrefix) return false;
+
+  return !hasDocumentOperationIntent(normalized);
+}
+
+function isLikelyDocumentSurface(input: { input: string; targetUrl: string }): boolean {
+  const requestInput = normalizeString(input.input);
+  const targetUrl = normalizeString(input.targetUrl);
+  if (!requestInput && !targetUrl) return false;
+
+  if (hasDocumentTargetUrl(targetUrl)) return true;
+  if (isDocumentReferenceOnly(requestInput)) return false;
+
+  return hasDocumentOperationIntent(requestInput);
+}
+
+export function classifyTrafficQualityDocumentFamily(input: {
   input: string;
   targetUrl: string;
 }): IntentE2ETrafficQualityDocumentFamily | '' {
   const text = `${normalizeString(input.input)}\n${normalizeString(input.targetUrl)}`;
   if (!isLikelyDocumentSurface(input)) return '';
 
-  const hasCreate = /(新建|创建|新增|生成|复制新文档|创建文档|创建表格)/i.test(text);
+  const hasCreate = /(新建|创建|新增|导入|上传|生成|复制新文档|创建文档|创建表格|导入知识文档|上传文档)/i.test(text);
   const hasEditOrSave = /(编辑|修改|更新|填写|写入|覆写|保存|另存)/i.test(text);
+  const hasArchiveRestore = /(归档|恢复|还原|删除|移除|archive|restore|delete|remove)/i.test(text);
+  const hasDeriveCapability = /(自动沉淀|沉淀能力|生成能力|稳定能力|能力来源|设为来源|设为能力来源|知识提炼|提炼|派生|derive)/i.test(text);
   const hasSharePermission = /(分享|共享|权限|授权|协作|邀请|可见范围|阅读权限|编辑权限|访问权限)/i.test(text);
   const hasExport = /(导出|下载|打印|导出为|另存为|导出文件|export|download)/i.test(text);
   const hasSearchOpen = /(搜索|查找|打开|进入|查看|浏览|打开文档|打开表格|检索)/i.test(text);
 
   if (hasSharePermission) return 'doc_share_permission_verify';
   if (hasExport) return 'doc_export_verify';
+  if (hasArchiveRestore) return 'doc_archive_restore_verify';
+  if (hasDeriveCapability) return 'doc_derive_capability_verify';
   if (hasCreate) return 'doc_create_reopen_verify';
   if (hasEditOrSave) return 'doc_edit_save_verify';
   if (hasSearchOpen) return 'doc_search_open_verify';
@@ -624,6 +755,7 @@ export async function safeRecordIntentE2ELaunchDecisionTrafficQuality(input: {
   request: IntentE2ERunRequest;
   launchDecision: { decision: IntentE2ELaunchDecisionValue };
   priorityScenarioFamily?: IntentE2EPriorityScenarioFamily;
+  newIntentReadiness?: unknown;
 }): Promise<void> {
   const source = resolveIntentE2ETrafficQualitySourceFromRequest(input.request);
   const attachment = resolveIntentE2ETrafficQualityAttachment({ attachments: input.request.attachments });
@@ -652,6 +784,7 @@ export async function safeRecordIntentE2ELaunchDecisionTrafficQuality(input: {
       attachmentCount: Array.isArray(input.request.attachments) ? input.request.attachments.length : 0,
       hasImageAttachment: attachment === 'with_image',
       scenarioLlmMeta: input.request.prefilledScenarioLlmMeta || null,
+      newIntentReadiness: input.newIntentReadiness || null,
       ...buildTrafficQualityOcrMetadata({
         attachments: input.request.attachments,
         llmConfig: input.request.llmConfig,
@@ -1441,6 +1574,77 @@ function resolveRecommendedTopDocumentFamilies(
   return (specificFamilies.length > 0 ? specificFamilies : candidates).slice(0, 3).map((item) => item.family);
 }
 
+function buildRealClickPriorityFamilyCandidates(
+  buckets: IntentE2ETrafficQualityBucket[],
+  governance: IntentE2ETrafficQualityPriorityFamilyGovernance[] = []
+): IntentE2ETrafficQualityPriorityFamilyCandidate[] {
+  const candidates = new Map<IntentE2EPriorityScenarioFamily, IntentE2ETrafficQualityPriorityFamilyCandidate>();
+  const governanceByFamily = new Map(
+    governance.map((item) => [
+      item.family,
+      {
+        governanceStatus: item.governanceStatus,
+        releaseGuardStatus: item.releaseGuardStatus,
+        knowledgeHitStatus: item.knowledgeHitStatus,
+        evidencePaths: uniqueStrings(item.evidencePaths || []),
+      },
+    ])
+  );
+
+  for (const bucket of buckets) {
+    if (bucket.source !== 'real_click' || bucket.priorityScenarioFamily === 'untracked') continue;
+    const governanceStatus = governanceByFamily.get(bucket.priorityScenarioFamily);
+
+    const current = candidates.get(bucket.priorityScenarioFamily) || {
+      family: bucket.priorityScenarioFamily,
+      launchClickCount: 0,
+      autoRunStartedCount: 0,
+      terminalRunCount: 0,
+      terminalPassCount: 0,
+      terminalPassRate: null,
+      withImageLaunchClickCount: 0,
+      withoutImageLaunchClickCount: 0,
+      governanceStatus: governanceStatus?.governanceStatus || 'unknown',
+      releaseGuardStatus: governanceStatus?.releaseGuardStatus || 'missing',
+      knowledgeHitStatus: governanceStatus?.knowledgeHitStatus || 'missing',
+      governanceEvidencePaths: governanceStatus?.evidencePaths || [],
+      selectionReason: '',
+    };
+
+    current.launchClickCount += bucket.counters.launch_click_count;
+    current.autoRunStartedCount += bucket.counters.auto_run_started_count;
+    current.terminalRunCount += bucket.counters.terminal_run_count;
+    current.terminalPassCount += bucket.counters.terminal_pass_count;
+    if (bucket.attachment === 'with_image') {
+      current.withImageLaunchClickCount += bucket.counters.launch_click_count;
+    } else {
+      current.withoutImageLaunchClickCount += bucket.counters.launch_click_count;
+    }
+    candidates.set(bucket.priorityScenarioFamily, current);
+  }
+
+  return [...candidates.values()]
+    .filter((item) => item.launchClickCount > 0 || item.autoRunStartedCount > 0 || item.terminalRunCount > 0)
+    .map((item) => {
+      const terminalPassRate = toPercent(item.terminalPassCount, item.terminalRunCount);
+      return {
+        ...item,
+        terminalPassRate,
+        selectionReason: `source=real_click launch_click_count=${item.launchClickCount}, auto_run_started_count=${item.autoRunStartedCount}, terminal_run_count=${item.terminalRunCount}, governance=${item.governanceStatus}`,
+      };
+    })
+    .sort((left, right) => {
+      if (right.launchClickCount !== left.launchClickCount) return right.launchClickCount - left.launchClickCount;
+      if (right.autoRunStartedCount !== left.autoRunStartedCount) {
+        return right.autoRunStartedCount - left.autoRunStartedCount;
+      }
+      if (right.terminalRunCount !== left.terminalRunCount) return right.terminalRunCount - left.terminalRunCount;
+      if (right.terminalPassCount !== left.terminalPassCount) return right.terminalPassCount - left.terminalPassCount;
+      return left.family.localeCompare(right.family);
+    })
+    .slice(0, 3);
+}
+
 function buildDocumentFamilySelection(input: {
   sampleReadiness: IntentE2ETrafficQualitySampleReadiness;
   realClickSignals: IntentE2ETrafficQualityDocumentSignal[];
@@ -1503,6 +1707,176 @@ function buildDocumentFamilySelection(input: {
       '当前既没有满足阈值的 post-instrumentation real_click 样本，也没有可复核的 document-like 历史意图草稿，暂时不能继续 document family 选择。',
     ],
     candidates: [],
+  };
+}
+
+function buildNextPlanRecommendation(input: {
+  sampleReadiness: IntentE2ETrafficQualitySampleReadiness;
+  documentFamilySelection: IntentE2ETrafficQualityDocumentFamilySelection;
+  realClickPriorityFamilyCandidates: IntentE2ETrafficQualityPriorityFamilyCandidate[];
+}): IntentE2ETrafficQualityNextPlanRecommendation {
+  const selection = input.documentFamilySelection;
+  const realClickPriorityFamilyCandidates = input.realClickPriorityFamilyCandidates;
+  const topPriorityFamilyNames = realClickPriorityFamilyCandidates.map((item) => item.family).join(', ');
+  const openPriorityFamilyNames = realClickPriorityFamilyCandidates
+    .filter((item) => item.governanceStatus !== 'ready')
+    .map((item) => item.family)
+    .join(', ');
+  const sharedGuardrails = [
+    'real_click 成功率必须和 draft_import / benchmark_rerun / replay 分开，不能混统。',
+    '未达到 post-instrumentation real_click readiness 前，不进入 document recipe / fixture / verifier / OCR 主链路。',
+    'historical intent drafts 只能作为 seed corpus 或选题线索，不能作为真实 AI 生成成功率分母。',
+  ];
+  const sharedDocumentRequiredEvidence = [
+    '需要 post-instrumentation source=real_click 的 document-like launch samples。',
+    '需要每个候选 family 的 recipe / fixture / verifier 验收口径。',
+    '需要独立 release guard baseline，不复用 synthetic benchmark 当真实分母。',
+  ];
+
+  if (selection.mode === 'post_instrumentation_real_click') {
+    return {
+      status: 'ready_for_document_family_governance',
+      sourcePolicy: 'post_instrumentation_real_click_only',
+      candidateFamilies: selection.recommendedTopFamilies,
+      realClickPriorityFamilyCandidates,
+      developmentGate: {
+        status: 'ready_for_document_family_governance',
+        eligibleFamilies: selection.recommendedTopFamilies.map((family) => ({
+          family,
+          familyType: 'document',
+          reason: 'document-like source=real_click candidate is present and sample readiness is met',
+        })),
+        blockingReasons: [],
+        requiredEvidence: sharedDocumentRequiredEvidence,
+      },
+      recommendedAction: '从 recommendedTopFamilies 选择 top-1/top-3 document family，单独定义 recipe / fixture / verifier / guard 的开发切片。',
+      denominatorPolicy:
+        '下一阶段分母只允许使用 post-instrumentation source=real_click 的 launch_click / auto_run_started / terminal_run；benchmark_rerun、replay 和 draft_import 只能作为辅助诊断。',
+      blockingReasons: [],
+      acceptanceCriteria: [
+        '新 family 治理前必须保留 traffic-quality report 作为选题证据。',
+        '每个候选 family 需要先固定 recipe / fixture / verifier 的验收口径，再进入 release guard。',
+        '任何成功率结论必须标明 source=real_click 和窗口范围。',
+      ],
+      guardrails: sharedGuardrails,
+    };
+  }
+
+  if (selection.mode === 'historical_intent_drafts_fallback') {
+    return {
+      status: 'bootstrap_real_click_samples',
+      sourcePolicy: 'historical_drafts_seed_only',
+      candidateFamilies: selection.recommendedTopFamilies,
+      realClickPriorityFamilyCandidates,
+      developmentGate: {
+        status: 'blocked_on_real_click_readiness',
+        eligibleFamilies: [],
+        blockingReasons: input.sampleReadiness.blockingReasons,
+        requiredEvidence: [
+          '补齐 real_click launch_click_count / auto_run_started_count / terminal_run_count 阈值。',
+          'historical document-like drafts 只能转成 seed，不允许直接进入 release guard。',
+        ],
+      },
+      recommendedAction: '先把 historical document-like intent drafts 转成真实点击种子样本，补齐 real_click readiness，再重新生成 traffic-quality report。',
+      denominatorPolicy:
+        '历史意图草稿只作为 seed，不计入真实成功率分母；下一阶段是否治理 document family 必须等待 real_click.launch_click_count / auto_run_started_count / terminal_run_count 达标。',
+      blockingReasons: input.sampleReadiness.blockingReasons,
+      acceptanceCriteria: [
+        '补样后重新生成 traffic-quality report。',
+        'readiness 仍为 not_ready 时只能继续积累真实点击样本，不能冻结 document baseline。',
+        '若候选 family 来自 historical drafts，报告或任务 brief 必须显式标注 fallback。',
+      ],
+      guardrails: sharedGuardrails,
+    };
+  }
+
+  if (selection.mode === 'no_document_candidates') {
+    const openPriorityFamilyCandidates = realClickPriorityFamilyCandidates.filter(
+      (item) => item.governanceStatus !== 'ready'
+    );
+    const developmentGate: IntentE2ETrafficQualityNextDevelopmentGate =
+      openPriorityFamilyCandidates.length > 0
+        ? {
+            status: 'ready_for_ungoverned_priority_family',
+            eligibleFamilies: openPriorityFamilyCandidates.map((candidate) => ({
+              family: candidate.family,
+              familyType: 'priority',
+              reason: `source=real_click candidate is present with governance=${candidate.governanceStatus}`,
+            })),
+            blockingReasons: ['最近窗口没有 document-like real_click 请求。'],
+            requiredEvidence: [
+              '非 document family 治理 brief 必须引用 realClickPriorityFamilyCandidates 的 source=real_click 分母。',
+              '进入治理前必须固定 recipe / fixture / verifier / release guard 口径。',
+            ],
+          }
+        : {
+            status: realClickPriorityFamilyCandidates.length > 0
+              ? 'no_admissible_code_work'
+              : 'blocked_on_document_real_click',
+            eligibleFamilies: [],
+            blockingReasons: [
+              '最近窗口没有 document-like real_click 请求。',
+              ...(realClickPriorityFamilyCandidates.length > 0
+                ? ['真实流量 top priority families 已经 release / knowledge ready。']
+                : ['最近窗口没有可推荐的非 document real_click priority family。']),
+            ],
+            requiredEvidence: [
+              '收集 document-like source=real_click 请求，或扩大窗口寻找未治理 priority family。',
+              '出现新候选后重新生成 traffic-quality report。',
+            ],
+          };
+
+    return {
+      status: 'collect_document_real_click',
+      sourcePolicy: 'collect_more_real_click',
+      candidateFamilies: [],
+      realClickPriorityFamilyCandidates,
+      developmentGate,
+      recommendedAction: openPriorityFamilyNames
+        ? `当前 real_click 分母达标但没有 document-like 请求；下一阶段应先收集真实 document traffic，或从 realClickPriorityFamilyCandidates 选择尚未 ready 的非 document top family（当前候选：${openPriorityFamilyNames}）。`
+        : topPriorityFamilyNames
+          ? `当前 real_click 分母达标但没有 document-like 请求；但真实 top priority families 已具备 release / knowledge ready（当前 top：${topPriorityFamilyNames}），下一阶段应继续收集 document traffic、扩大窗口，或寻找未治理的新真实流量 family。`
+        : '当前 real_click 分母达标但没有 document-like 请求；下一阶段应先收集真实 document traffic 或选择非 document top family。',
+      denominatorPolicy:
+        '已有 real_click readiness 可用于 top family 选择，但 document family 仍没有真实候选；非 document family 只能使用 realClickPriorityFamilyCandidates 中的 source=real_click 计数作为选题证据，不能凭空创建 document baseline。',
+      blockingReasons: ['最近窗口没有 document-like real_click 请求。'],
+      acceptanceCriteria: [
+        '出现 document-like real_click 请求后重新生成 traffic-quality report。',
+        '若真实 top family 不是 document 且 governanceStatus 不是 ready，应另起非 document family 治理计划，并在 brief 中引用 realClickPriorityFamilyCandidates 的 source=real_click 分母。',
+        '若真实 top family 已是 ready，不要重复治理同一 family；应转向补真实 document traffic 或寻找未治理 family。',
+      ],
+      guardrails: sharedGuardrails,
+    };
+  }
+
+  return {
+    status: 'insufficient_evidence',
+    sourcePolicy: 'none',
+    candidateFamilies: [],
+    realClickPriorityFamilyCandidates,
+    developmentGate: {
+      status: 'blocked_on_real_click_readiness',
+      eligibleFamilies: [],
+      blockingReasons: input.sampleReadiness.blockingReasons.length > 0
+        ? input.sampleReadiness.blockingReasons
+        : ['缺少可复核 document-like evidence。'],
+      requiredEvidence: [
+        '补齐 real_click launch_click_count / auto_run_started_count / terminal_run_count 阈值。',
+        '至少出现一个 document-like real_click 请求或一个未治理 priority family 候选。',
+      ],
+    },
+    recommendedAction: '先积累真实点击样本，当前不具备 document family 选择或治理资格。',
+    denominatorPolicy:
+      '当前既没有达标的 post-instrumentation real_click 分母，也没有可复核的 document-like historical draft seed；不得外推 release window 或 synthetic benchmark 成功率。',
+    blockingReasons: input.sampleReadiness.blockingReasons.length > 0
+      ? input.sampleReadiness.blockingReasons
+      : ['缺少可复核 document-like evidence。'],
+    acceptanceCriteria: [
+      '补齐 real_click launch_click_count / auto_run_started_count / terminal_run_count 阈值。',
+      '至少出现一个 document-like real_click 请求或明确选择非 document top family。',
+      '重新生成 traffic-quality report 并在下一阶段 brief 中引用。',
+    ],
+    guardrails: sharedGuardrails,
   };
 }
 
@@ -1648,6 +2022,15 @@ export async function buildIntentE2ETrafficQualityReport(
     documentLikeHistoricalDraftCount: historicalDocumentSignals.documentLikeHistoricalDraftCount,
     historicalSignals: historicalDocumentSignals.signals,
   });
+  const realClickPriorityFamilyCandidates = buildRealClickPriorityFamilyCandidates(
+    finalizedBuckets,
+    options.priorityFamilyGovernance
+  );
+  const nextPlanRecommendation = buildNextPlanRecommendation({
+    sampleReadiness,
+    documentFamilySelection,
+    realClickPriorityFamilyCandidates,
+  });
   const allCounters = finalizedBuckets.reduce((acc, bucket) => {
     for (const counter of INTENT_E2E_TRAFFIC_QUALITY_COUNTERS) {
       acc[counter] += bucket.counters[counter];
@@ -1692,6 +2075,7 @@ export async function buildIntentE2ETrafficQualityReport(
     imageRouteMetrics,
     ocrMetrics,
     documentFamilySelection,
+    nextPlanRecommendation,
     sourceSummaries,
     buckets: finalizedBuckets,
     benchmarkRerunReports: benchmark.summaries,
@@ -1726,6 +2110,7 @@ export function renderIntentE2ETrafficQualityMarkdown(report: IntentE2ETrafficQu
   const imageRouteMetrics = report.imageRouteMetrics;
   const ocrMetrics = report.ocrMetrics;
   const selection = report.documentFamilySelection;
+  const nextPlan = report.nextPlanRecommendation;
   const bucketRows = report.buckets.map((bucket) =>
     [
       bucket.source,
@@ -1756,6 +2141,39 @@ export function renderIntentE2ETrafficQualityMarkdown(report: IntentE2ETrafficQu
   const readinessBlockingLines =
     readiness.blockingReasons.length > 0 ? readiness.blockingReasons.map((item) => `- ${item}`) : ['- none'];
   const selectionNotes = selection.notes.length > 0 ? selection.notes.map((item) => `- ${item}`) : ['- none'];
+  const nextPlanBlockingLines =
+    nextPlan.blockingReasons.length > 0 ? nextPlan.blockingReasons.map((item) => `- ${item}`) : ['- none'];
+  const nextPlanDevelopmentGateBlockingLines =
+    nextPlan.developmentGate.blockingReasons.length > 0
+      ? nextPlan.developmentGate.blockingReasons.map((item) => `- ${item}`)
+      : ['- none'];
+  const nextPlanDevelopmentGateEvidenceLines =
+    nextPlan.developmentGate.requiredEvidence.length > 0
+      ? nextPlan.developmentGate.requiredEvidence.map((item) => `- ${item}`)
+      : ['- none'];
+  const nextPlanDevelopmentGateFamilyRows = nextPlan.developmentGate.eligibleFamilies.map((candidate) =>
+    [candidate.family, candidate.familyType, candidate.reason].join(' | ')
+  );
+  const nextPlanAcceptanceLines =
+    nextPlan.acceptanceCriteria.length > 0 ? nextPlan.acceptanceCriteria.map((item) => `- ${item}`) : ['- none'];
+  const nextPlanGuardrailLines =
+    nextPlan.guardrails.length > 0 ? nextPlan.guardrails.map((item) => `- ${item}`) : ['- none'];
+  const nextPlanPriorityFamilyRows = nextPlan.realClickPriorityFamilyCandidates.map((candidate) =>
+    [
+      candidate.family,
+      formatNumber(candidate.launchClickCount),
+      formatNumber(candidate.autoRunStartedCount),
+      formatNumber(candidate.terminalRunCount),
+      formatNumber(candidate.terminalPassCount),
+      formatRate(candidate.terminalPassRate),
+      formatNumber(candidate.withImageLaunchClickCount),
+      formatNumber(candidate.withoutImageLaunchClickCount),
+      candidate.governanceStatus,
+      candidate.releaseGuardStatus,
+      candidate.knowledgeHitStatus,
+      candidate.selectionReason,
+    ].join(' | ')
+  );
   const selectionExampleLines =
     selection.candidates.length > 0
       ? selection.candidates.flatMap((candidate) => [
@@ -1848,6 +2266,43 @@ export function renderIntentE2ETrafficQualityMarkdown(report: IntentE2ETrafficQu
     '',
     '- recentExamples:',
     ...selectionExampleLines,
+    '',
+    '## Next Plan Recommendation',
+    '',
+    `- status: ${nextPlan.status}`,
+    `- sourcePolicy: ${nextPlan.sourcePolicy}`,
+    `- candidateFamilies: ${nextPlan.candidateFamilies.length > 0 ? nextPlan.candidateFamilies.join(', ') : '-'}`,
+    `- realClickPriorityFamilyCandidates: ${
+      nextPlan.realClickPriorityFamilyCandidates.length > 0
+        ? nextPlan.realClickPriorityFamilyCandidates.map((candidate) => candidate.family).join(', ')
+        : '-'
+    }`,
+    `- developmentGate.status: ${nextPlan.developmentGate.status}`,
+    `- recommendedAction: ${nextPlan.recommendedAction}`,
+    `- denominatorPolicy: ${nextPlan.denominatorPolicy}`,
+    '- blockingReasons:',
+    ...nextPlanBlockingLines,
+    '- developmentGate.blockingReasons:',
+    ...nextPlanDevelopmentGateBlockingLines,
+    '- developmentGate.requiredEvidence:',
+    ...nextPlanDevelopmentGateEvidenceLines,
+    '',
+    'eligible_family | family_type | reason',
+    '--- | --- | ---',
+    ...(nextPlanDevelopmentGateFamilyRows.length > 0
+      ? nextPlanDevelopmentGateFamilyRows
+      : ['none | - | -']),
+    '',
+    '- acceptanceCriteria:',
+    ...nextPlanAcceptanceLines,
+    '- guardrails:',
+    ...nextPlanGuardrailLines,
+    '',
+    'family | launch_click | auto_run_started | terminal_run | terminal_pass | terminal_pass_rate | with_image_launch | without_image_launch | governance | release_guard | knowledge_hit | selection_reason',
+    '--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | ---',
+    ...(nextPlanPriorityFamilyRows.length > 0
+      ? nextPlanPriorityFamilyRows
+      : ['none | 0 | 0 | 0 | 0 | - | 0 | 0 | unknown | missing | missing | -']),
     '',
     '## Source Summary',
     '',

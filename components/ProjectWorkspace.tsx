@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import ProjectIntentTaskCreateDialog, {
@@ -40,25 +40,17 @@ import {
   type IntentSuccessfulRunKnowledgePromotionReceipt,
 } from '@/lib/intent-successful-run-knowledge-promotion-receipt';
 import {
-  buildPlatformMaterializedQueryIndex,
-  createEmptyPlatformMaterializedQueryIndex,
-  normalizePlatformContractIdFilterType,
   normalizePlatformMaterializedQuery,
-  normalizePlatformMaterializedQueryIndex,
-  type PlatformMaterializedQueryIndex,
   type PlatformMaterializedQuery,
   type PlatformQuerySource,
 } from '@/lib/test-platform-query-contract';
 import {
-  buildWorkspacePlatformQueryParams,
   normalizeWorkspacePlatformRunnerType,
   normalizeWorkspacePlatformTestType,
   readWorkspaceExecutionHistoryQueryState,
   readWorkspaceTaskPlatformQueryState,
   writeWorkspaceExecutionHistoryQueryState,
   writeWorkspaceTaskPlatformQueryState,
-  type WorkspacePlatformIdFilterType,
-  type WorkspacePlatformQueryFilters,
   type WorkspacePlatformRunnerType,
   type WorkspacePlatformTestType,
 } from '@/lib/workspace-platform-query-state';
@@ -76,7 +68,6 @@ type ConfigStatus = 'active' | 'archived';
 type IntentDraftActiveRunStatus = 'created' | 'running' | '';
 type WorkspacePlatformQuerySource = PlatformQuerySource;
 type WorkspacePlatformQuery = PlatformMaterializedQuery;
-type WorkspacePlatformIndex = PlatformMaterializedQueryIndex;
 
 type ProjectItem = {
   projectUid: string;
@@ -307,14 +298,12 @@ type TaskListResponse = {
   total: number;
   items: TaskItem[];
   platformSummary?: WorkspacePlatformSummary | null;
-  platformIndex?: WorkspacePlatformIndex | null;
   error?: string;
 };
 
 type ExecutionHistoryResponse = {
   items: ExecutionRow[];
   platformSummary?: WorkspacePlatformSummary | null;
-  platformIndex?: WorkspacePlatformIndex | null;
   error?: string;
 };
 
@@ -408,25 +397,6 @@ const workspacePlatformRunnerTypeValues: WorkspacePlatformRunnerType[] = [
   'http_runner',
   'repo_test_runner',
   'contract_runner',
-];
-
-const workspaceArtifactKindValues = [
-  'scenario_card',
-  'execution_plan',
-  'verification_plan',
-  'compiled_template',
-  'attempt_trace',
-  'final_result',
-  'screenshot',
-  'structured_patch',
-  'repair_observation',
-];
-
-const workspacePlatformIdFilterOptions: Array<{ value: WorkspacePlatformIdFilterType; label: string }> = [
-  { value: '', label: '全部平台 ID' },
-  { value: 'test_case', label: 'Test Case' },
-  { value: 'test_spec', label: 'Test Spec' },
-  { value: 'verification_contract', label: 'Verification Contract' },
 ];
 
 function createDefaultFlowDefinition(entryUrl = ''): FlowDefinition {
@@ -542,19 +512,6 @@ function workspaceArtifactKindLabel(value?: string): string {
       return 'Repair Observation';
     default:
       return (value || '').trim();
-  }
-}
-
-function workspacePlatformIdFilterPlaceholder(filterType: WorkspacePlatformIdFilterType): string {
-  switch (filterType) {
-    case 'test_case':
-      return '输入 Test Case ID';
-    case 'test_spec':
-      return '输入 Test Spec ID';
-    case 'verification_contract':
-      return '输入 Verification Contract ID';
-    default:
-      return '先选择平台 ID 字段';
   }
 }
 
@@ -707,36 +664,8 @@ function normalizeWorkspacePlatformSummary(value: unknown): WorkspacePlatformSum
   };
 }
 
-function createEmptyWorkspacePlatformIndex(scopeCount = 0): WorkspacePlatformIndex {
-  return createEmptyPlatformMaterializedQueryIndex(scopeCount);
-}
-
-function normalizeWorkspacePlatformIndex(value: unknown): WorkspacePlatformIndex {
-  return normalizePlatformMaterializedQueryIndex(value);
-}
-
-function buildWorkspacePlatformIndex(queries: Array<WorkspacePlatformQuery | null | undefined>, scopeCount = queries.length): WorkspacePlatformIndex {
-  return buildPlatformMaterializedQueryIndex(queries, scopeCount);
-}
-
 function workspacePlatformQuerySourceLabel(source: WorkspacePlatformQuerySource): string {
   return source === 'latest_plan_prompt' ? 'Prompt Query' : 'Artifact Query';
-}
-
-function workspacePlatformIndexSuggestions(
-  index: WorkspacePlatformIndex,
-  filterType: WorkspacePlatformIdFilterType
-): string[] {
-  switch (filterType) {
-    case 'test_case':
-      return index.byTestCaseId.map((item) => item.id);
-    case 'test_spec':
-      return index.byTestSpecId.map((item) => item.id);
-    case 'verification_contract':
-      return index.byVerificationContractId.map((item) => item.id);
-    default:
-      return [];
-  }
 }
 
 function buildWorkspacePlatformSearchText(
@@ -859,48 +788,6 @@ function WorkspacePlatformSummaryPills({
           {workspaceArtifactKindLabel(item.artifactKind)} {item.count}
         </span>
       ))}
-    </div>
-  );
-}
-
-function WorkspacePlatformIndexPills({ index }: { index: WorkspacePlatformIndex }) {
-  if (
-    index.bySource.length === 0 &&
-    index.byTestCaseId.length === 0 &&
-    index.byTestSpecId.length === 0 &&
-    index.byVerificationContractId.length === 0
-  ) {
-    return null;
-  }
-
-  return (
-    <div className="flex flex-wrap items-center gap-2 text-[11px]">
-      <span className="rounded-full bg-slate-50 px-2.5 py-1 font-medium text-slate-500 ring-1 ring-slate-200">
-        Query Index
-      </span>
-      {index.bySource.map((item) => (
-        <span
-          key={`platform-source-${item.source}`}
-          className="rounded-full bg-sky-50 px-2.5 py-1 font-medium text-sky-700 ring-1 ring-sky-100"
-        >
-          {workspacePlatformQuerySourceLabel(item.source)} {item.count}
-        </span>
-      ))}
-      {index.byTestCaseId.length > 0 && (
-        <span className="rounded-full bg-slate-100 px-2.5 py-1 font-medium text-slate-600 ring-1 ring-slate-200">
-          Case IDs {index.byTestCaseId.length}
-        </span>
-      )}
-      {index.byTestSpecId.length > 0 && (
-        <span className="rounded-full bg-slate-100 px-2.5 py-1 font-medium text-slate-600 ring-1 ring-slate-200">
-          Spec IDs {index.byTestSpecId.length}
-        </span>
-      )}
-      {index.byVerificationContractId.length > 0 && (
-        <span className="rounded-full bg-slate-100 px-2.5 py-1 font-medium text-slate-600 ring-1 ring-slate-200">
-          Contract IDs {index.byVerificationContractId.length}
-        </span>
-      )}
     </div>
   );
 }
@@ -1526,34 +1413,11 @@ function permissionHint(role: ProjectActorRole): string {
 
 const ALL_MODULES_UID = '__all__';
 
-function buildWorkspaceTaskQuerySyncKey(input: {
-  moduleUid?: string;
-  filters?: WorkspacePlatformQueryFilters;
-}): string {
-  const params = new URLSearchParams();
-  writeWorkspaceTaskPlatformQueryState(params, {
-    moduleUid: input.moduleUid === ALL_MODULES_UID ? '' : input.moduleUid,
-    filters: input.filters,
-  });
-  return params.toString();
-}
-
 export default function ProjectWorkspace({ projectUid }: { projectUid: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const initialTaskQueryState = readWorkspaceTaskPlatformQueryState(searchParams);
-  const initialHistoryQueryState = readWorkspaceExecutionHistoryQueryState(searchParams);
   const initialModuleUid = initialTaskQueryState.moduleUid || ALL_MODULES_UID;
-  const initialTaskPlatformTestTypeFilter = initialTaskQueryState.filters.platformTestType || '';
-  const initialTaskPlatformRunnerTypeFilter = initialTaskQueryState.filters.platformRunnerType || '';
-  const initialTaskPlatformArtifactKindFilter = initialTaskQueryState.filters.platformArtifactKind || '';
-  const initialTaskPlatformIdFilterType = initialTaskQueryState.filters.platformContractIdType || '';
-  const initialTaskPlatformIdFilterValue = initialTaskQueryState.filters.platformContractId || '';
-  const initialHistoryPlatformTestTypeFilter = initialHistoryQueryState.filters.platformTestType || '';
-  const initialHistoryPlatformRunnerTypeFilter = initialHistoryQueryState.filters.platformRunnerType || '';
-  const initialHistoryPlatformArtifactKindFilter = initialHistoryQueryState.filters.platformArtifactKind || '';
-  const initialHistoryPlatformIdFilterType = initialHistoryQueryState.filters.platformContractIdType || '';
-  const initialHistoryPlatformIdFilterValue = initialHistoryQueryState.filters.platformContractId || '';
   const intentPresetRaw = searchParams.get('capabilityPreset');
   const intentToken = searchParams.get('intentToken') || intentPresetRaw || '';
   const rawIntentView = searchParams.get('intentView');
@@ -1569,18 +1433,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   const [loadingTasks, setLoadingTasks] = useState(false);
   const [loadingIntentDrafts, setLoadingIntentDrafts] = useState(false);
   const [taskKeyword, setTaskKeyword] = useState('');
-  const [taskPlatformTestTypeFilter, setTaskPlatformTestTypeFilter] = useState<WorkspacePlatformTestType | ''>(
-    initialTaskPlatformTestTypeFilter
-  );
-  const [taskPlatformRunnerTypeFilter, setTaskPlatformRunnerTypeFilter] = useState<WorkspacePlatformRunnerType | ''>(
-    initialTaskPlatformRunnerTypeFilter
-  );
-  const [taskPlatformArtifactKindFilter, setTaskPlatformArtifactKindFilter] = useState(initialTaskPlatformArtifactKindFilter);
-  const [taskPlatformIdFilterType, setTaskPlatformIdFilterType] = useState<WorkspacePlatformIdFilterType>(initialTaskPlatformIdFilterType);
-  const [taskPlatformIdFilterValue, setTaskPlatformIdFilterValue] = useState(initialTaskPlatformIdFilterValue);
-  const [taskPlatformIdDraftValue, setTaskPlatformIdDraftValue] = useState(initialTaskPlatformIdFilterValue);
   const [taskPlatformSummary, setTaskPlatformSummary] = useState<WorkspacePlatformSummary>(() => createEmptyWorkspacePlatformSummary());
-  const [taskPlatformIndex, setTaskPlatformIndex] = useState<WorkspacePlatformIndex>(() => createEmptyWorkspacePlatformIndex());
   const [error, setError] = useState('');
   const [actionNotice, setActionNotice] = useState('');
   const [actioningUid, setActioningUid] = useState('');
@@ -1623,22 +1476,7 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   const [historyConfigUid, setHistoryConfigUid] = useState('');
   const [historyTaskName, setHistoryTaskName] = useState('');
   const [historyKeyword, setHistoryKeyword] = useState('');
-  const [historyPlatformTestTypeFilter, setHistoryPlatformTestTypeFilter] = useState<WorkspacePlatformTestType | ''>(
-    initialHistoryPlatformTestTypeFilter
-  );
-  const [historyPlatformRunnerTypeFilter, setHistoryPlatformRunnerTypeFilter] = useState<WorkspacePlatformRunnerType | ''>(
-    initialHistoryPlatformRunnerTypeFilter
-  );
-  const [historyPlatformArtifactKindFilter, setHistoryPlatformArtifactKindFilter] = useState(
-    initialHistoryPlatformArtifactKindFilter
-  );
-  const [historyPlatformIdFilterType, setHistoryPlatformIdFilterType] = useState<WorkspacePlatformIdFilterType>(
-    initialHistoryPlatformIdFilterType
-  );
-  const [historyPlatformIdFilterValue, setHistoryPlatformIdFilterValue] = useState(initialHistoryPlatformIdFilterValue);
-  const [historyPlatformIdDraftValue, setHistoryPlatformIdDraftValue] = useState(initialHistoryPlatformIdFilterValue);
   const [historyPlatformSummary, setHistoryPlatformSummary] = useState<WorkspacePlatformSummary>(() => createEmptyWorkspacePlatformSummary());
-  const [historyPlatformIndex, setHistoryPlatformIndex] = useState<WorkspacePlatformIndex>(() => createEmptyWorkspacePlatformIndex());
   const [historyEventKeyword, setHistoryEventKeyword] = useState('');
   const [historyExpandedUid, setHistoryExpandedUid] = useState('');
   const [historyEventMap, setHistoryEventMap] = useState<Record<string, ExecutionEvent[]>>({});
@@ -1661,7 +1499,6 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   const [memberActioningUid, setMemberActioningUid] = useState('');
   const [switchingActor, setSwitchingActor] = useState(false);
   const [stashedIntentPreset, setStashedIntentPreset] = useState<IntentCapabilityPreset | null>(null);
-  const pendingTaskQuerySyncKeyRef = useRef('');
   const PAGE_SIZE = 10;
   const intentLaunchPreset = useMemo(() => {
     const capabilityPreset = parseIntentCapabilityPreset(intentPresetRaw) || stashedIntentPreset;
@@ -1756,13 +1593,6 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
       filteredTasks.length
     );
   }, [filteredTasks, taskKeyword, taskPlatformSummary]);
-  const visibleTaskPlatformIndex = useMemo(() => {
-    if (!taskKeyword.trim()) return taskPlatformIndex;
-    return buildWorkspacePlatformIndex(
-      filteredTasks.map((item) => item.platformQuery),
-      filteredTasks.length
-    );
-  }, [filteredTasks, taskKeyword, taskPlatformIndex]);
   const visibleHistoryPlatformSummary = useMemo(() => {
     if (!historyKeyword.trim()) return historyPlatformSummary;
     return buildWorkspacePlatformSummary(
@@ -1775,21 +1605,6 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
       filteredHistoryRows.length
     );
   }, [filteredHistoryRows, historyKeyword, historyPlatformSummary]);
-  const visibleHistoryPlatformIndex = useMemo(() => {
-    if (!historyKeyword.trim()) return historyPlatformIndex;
-    return buildWorkspacePlatformIndex(
-      filteredHistoryRows.map((item) => item.platformQuery),
-      filteredHistoryRows.length
-    );
-  }, [filteredHistoryRows, historyKeyword, historyPlatformIndex]);
-  const taskPlatformIdSuggestions = useMemo(
-    () => workspacePlatformIndexSuggestions(visibleTaskPlatformIndex, taskPlatformIdFilterType),
-    [visibleTaskPlatformIndex, taskPlatformIdFilterType]
-  );
-  const historyPlatformIdSuggestions = useMemo(
-    () => workspacePlatformIndexSuggestions(visibleHistoryPlatformIndex, historyPlatformIdFilterType),
-    [visibleHistoryPlatformIndex, historyPlatformIdFilterType]
-  );
   const previewPlanTask = previewPlan ? tasks.find((item) => item.configUid === previewPlan.configUid) || null : null;
   const previewPlanIsCurrent = Boolean(previewPlan && previewPlanTask && previewPlanTask.latestPlanUid === previewPlan.planUid);
   const previewPlanCanRestore = Boolean(canEditContent && previewPlan && previewPlanTask && !previewPlanIsCurrent);
@@ -1800,53 +1615,14 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
       ? '当前内容来自需求编排工作台回填。你可以在保存前继续微调模块、描述、URL 和业务流步骤。'
       : '这是手动录入入口。若只想输入一句需求，建议使用上方“AI 生成”入口。';
   const taskSubmitLabel = taskSaving ? '保存中...' : editingTaskUid ? '保存' : taskFormEntrySource === 'intent' ? '保存到工作台' : '创建';
-  function currentTaskPlatformFilters(): WorkspacePlatformQueryFilters {
-    return {
-      ...(taskPlatformTestTypeFilter ? { platformTestType: taskPlatformTestTypeFilter } : {}),
-      ...(taskPlatformRunnerTypeFilter ? { platformRunnerType: taskPlatformRunnerTypeFilter } : {}),
-      ...(taskPlatformArtifactKindFilter ? { platformArtifactKind: taskPlatformArtifactKindFilter } : {}),
-      ...(taskPlatformIdFilterType && taskPlatformIdFilterValue
-        ? {
-            platformContractIdType: taskPlatformIdFilterType,
-            platformContractId: taskPlatformIdFilterValue,
-          }
-        : {}),
-    };
-  }
-
-  function currentHistoryPlatformFilters(): WorkspacePlatformQueryFilters {
-    return {
-      ...(historyPlatformTestTypeFilter ? { platformTestType: historyPlatformTestTypeFilter } : {}),
-      ...(historyPlatformRunnerTypeFilter ? { platformRunnerType: historyPlatformRunnerTypeFilter } : {}),
-      ...(historyPlatformArtifactKindFilter ? { platformArtifactKind: historyPlatformArtifactKindFilter } : {}),
-      ...(historyPlatformIdFilterType && historyPlatformIdFilterValue
-        ? {
-            platformContractIdType: historyPlatformIdFilterType,
-            platformContractId: historyPlatformIdFilterValue,
-          }
-        : {}),
-    };
-  }
-
   function replaceWorkspaceQueryStateInUrl(input?: {
     moduleUid?: string;
-    taskFilters?: WorkspacePlatformQueryFilters;
     historyConfigUid?: string;
-    historyFilters?: WorkspacePlatformQueryFilters;
   }) {
-    const nextTaskQuerySyncKey = buildWorkspaceTaskQuerySyncKey({
-      moduleUid: input?.moduleUid ?? activeModuleUid,
-      filters: input?.taskFilters ?? currentTaskPlatformFilters(),
-    });
-    const currentTaskQueryState = readWorkspaceTaskPlatformQueryState(searchParams);
-    const currentTaskQuerySyncKey = buildWorkspaceTaskQuerySyncKey({
-      moduleUid: currentTaskQueryState.moduleUid || ALL_MODULES_UID,
-      filters: currentTaskQueryState.filters,
-    });
+    const nextModuleUid = input?.moduleUid ?? activeModuleUid;
     const nextParams = new URLSearchParams(searchParams.toString());
     writeWorkspaceTaskPlatformQueryState(nextParams, {
-      moduleUid: (input?.moduleUid ?? activeModuleUid) === ALL_MODULES_UID ? '' : (input?.moduleUid ?? activeModuleUid),
-      filters: input?.taskFilters ?? currentTaskPlatformFilters(),
+      moduleUid: nextModuleUid === ALL_MODULES_UID ? '' : nextModuleUid,
     });
     writeWorkspaceExecutionHistoryQueryState(nextParams, {
       configUid:
@@ -1855,15 +1631,11 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
           : historyOpen
             ? historyConfigUid
             : '',
-      filters: input?.historyFilters ?? currentHistoryPlatformFilters(),
     });
 
     const nextQuery = nextParams.toString();
     const currentQuery = searchParams.toString();
     if (nextQuery === currentQuery) return;
-    if (nextTaskQuerySyncKey !== currentTaskQuerySyncKey) {
-      pendingTaskQuerySyncKeyRef.current = nextTaskQuerySyncKey;
-    }
     const nextUrl = nextQuery ? `/projects/${projectUid}?${nextQuery}` : `/projects/${projectUid}`;
     router.replace(nextUrl, { scroll: false });
   }
@@ -1875,21 +1647,13 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
     setHistoryConfigUid('');
     setHistoryTaskName('');
     setHistoryKeyword('');
-    setHistoryPlatformTestTypeFilter('');
-    setHistoryPlatformRunnerTypeFilter('');
-    setHistoryPlatformArtifactKindFilter('');
-    setHistoryPlatformIdFilterType('');
-    setHistoryPlatformIdFilterValue('');
-    setHistoryPlatformIdDraftValue('');
     setHistoryPlatformSummary(createEmptyWorkspacePlatformSummary());
-    setHistoryPlatformIndex(createEmptyWorkspacePlatformIndex());
     setHistoryExpandedUid('');
     setHistoryEventKeyword('');
     setHistoryEventMap({});
     setHistoryEventLoadingUid('');
     replaceWorkspaceQueryStateInUrl({
       historyConfigUid: '',
-      historyFilters: {},
     });
   }
 
@@ -1975,52 +1739,25 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
     }
   }
 
-  async function loadTasks(
-    moduleUid: string,
-    filters?: {
-      platformTestType?: WorkspacePlatformTestType | '';
-      platformRunnerType?: WorkspacePlatformRunnerType | '';
-      platformArtifactKind?: string;
-      platformIdFilterType?: WorkspacePlatformIdFilterType;
-      platformIdFilterValue?: string;
-    }
-  ) {
+  async function loadTasks(moduleUid: string) {
     if (!moduleUid) {
       setTasks([]);
       setTaskPlatformSummary(createEmptyWorkspacePlatformSummary());
-      setTaskPlatformIndex(createEmptyWorkspacePlatformIndex());
       return;
     }
     setLoadingTasks(true);
     try {
       const qsParams: Record<string, string> = { projectUid, page: '1', pageSize: '100', status: 'active' };
       if (moduleUid !== ALL_MODULES_UID) qsParams.moduleUid = moduleUid;
-      const platformTestType = filters?.platformTestType ?? taskPlatformTestTypeFilter;
-      const platformRunnerType = filters?.platformRunnerType ?? taskPlatformRunnerTypeFilter;
-      const platformArtifactKind = filters?.platformArtifactKind ?? taskPlatformArtifactKindFilter;
-      const platformIdFilterType = filters?.platformIdFilterType ?? taskPlatformIdFilterType;
-      const platformIdFilterValue = filters?.platformIdFilterValue ?? taskPlatformIdFilterValue;
-      Object.assign(
-        qsParams,
-        buildWorkspacePlatformQueryParams({
-          platformTestType,
-          platformRunnerType,
-          platformArtifactKind,
-          platformContractIdType: platformIdFilterType,
-          platformContractId: platformIdFilterValue,
-        })
-      );
       const qs = new URLSearchParams(qsParams);
       const res = await fetch(`/api/test-configs?${qs.toString()}`);
       const json = (await res.json()) as TaskListResponse;
       if (!res.ok) throw new Error(json.error || '加载任务失败');
       setTasks(((json.items || []) as TaskItem[]).map(normalizeTaskItem));
       setTaskPlatformSummary(normalizeWorkspacePlatformSummary(json.platformSummary));
-      setTaskPlatformIndex(normalizeWorkspacePlatformIndex(json.platformIndex));
       setError('');
     } catch (err: unknown) {
       setTaskPlatformSummary(createEmptyWorkspacePlatformSummary());
-      setTaskPlatformIndex(createEmptyWorkspacePlatformIndex());
       setError(err instanceof Error ? err.message : '加载任务失败');
     } finally {
       setLoadingTasks(false);
@@ -2085,90 +1822,24 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   useEffect(() => {
     const nextTaskQueryState = readWorkspaceTaskPlatformQueryState(searchParams);
     const nextModuleUid = nextTaskQueryState.moduleUid || ALL_MODULES_UID;
-    const nextTaskQuerySyncKey = buildWorkspaceTaskQuerySyncKey({
-      moduleUid: nextModuleUid,
-      filters: nextTaskQueryState.filters,
-    });
-    const currentTaskQuerySyncKey = buildWorkspaceTaskQuerySyncKey({
-      moduleUid: activeModuleUid,
-      filters: currentTaskPlatformFilters(),
-    });
-    const pendingTaskQuerySyncKey = pendingTaskQuerySyncKeyRef.current;
-
-    if (pendingTaskQuerySyncKey) {
-      if (nextTaskQuerySyncKey === pendingTaskQuerySyncKey) {
-        pendingTaskQuerySyncKeyRef.current = '';
-      } else if (currentTaskQuerySyncKey === pendingTaskQuerySyncKey) {
-        return;
-      } else {
-        pendingTaskQuerySyncKeyRef.current = '';
-      }
-    }
-
-    const nextTaskPlatformTestTypeFilter = nextTaskQueryState.filters.platformTestType || '';
-    const nextTaskPlatformRunnerTypeFilter = nextTaskQueryState.filters.platformRunnerType || '';
-    const nextTaskPlatformArtifactKindFilter = nextTaskQueryState.filters.platformArtifactKind || '';
-    const nextTaskPlatformIdFilterType = nextTaskQueryState.filters.platformContractIdType || '';
-    const nextTaskPlatformIdFilterValue = nextTaskQueryState.filters.platformContractId || '';
-    const moduleChanged = activeModuleUid !== nextModuleUid;
-    const filterChanged =
-      taskPlatformTestTypeFilter !== nextTaskPlatformTestTypeFilter ||
-      taskPlatformRunnerTypeFilter !== nextTaskPlatformRunnerTypeFilter ||
-      taskPlatformArtifactKindFilter !== nextTaskPlatformArtifactKindFilter ||
-      taskPlatformIdFilterType !== nextTaskPlatformIdFilterType ||
-      taskPlatformIdFilterValue !== nextTaskPlatformIdFilterValue;
-    const queryStateChanged = moduleChanged || filterChanged;
-
-    if (!queryStateChanged) return;
-
+    if (activeModuleUid === nextModuleUid) return;
     setActiveModuleUid(nextModuleUid);
-    setTaskPlatformTestTypeFilter(nextTaskPlatformTestTypeFilter);
-    setTaskPlatformRunnerTypeFilter(nextTaskPlatformRunnerTypeFilter);
-    setTaskPlatformArtifactKindFilter(nextTaskPlatformArtifactKindFilter);
-    setTaskPlatformIdFilterType(nextTaskPlatformIdFilterType);
-    setTaskPlatformIdFilterValue(nextTaskPlatformIdFilterValue);
-    setTaskPlatformIdDraftValue(nextTaskPlatformIdFilterValue);
     setCurrentPage(1);
-
-    if (!nextModuleUid || moduleChanged || !filterChanged) return;
-    void loadTasks(nextModuleUid, {
-      platformTestType: nextTaskPlatformTestTypeFilter,
-      platformRunnerType: nextTaskPlatformRunnerTypeFilter,
-      platformArtifactKind: nextTaskPlatformArtifactKindFilter,
-      platformIdFilterType: nextTaskPlatformIdFilterType,
-      platformIdFilterValue: nextTaskPlatformIdFilterValue,
-    });
   }, [
     searchParams,
+    activeModuleUid,
   ]);
   useEffect(() => {
     const nextHistoryQueryState = readWorkspaceExecutionHistoryQueryState(searchParams);
     const nextHistoryOpen = Boolean(nextHistoryQueryState.configUid);
-    const nextHistoryPlatformTestTypeFilter = nextHistoryQueryState.filters.platformTestType || '';
-    const nextHistoryPlatformRunnerTypeFilter = nextHistoryQueryState.filters.platformRunnerType || '';
-    const nextHistoryPlatformArtifactKindFilter = nextHistoryQueryState.filters.platformArtifactKind || '';
-    const nextHistoryPlatformIdFilterType = nextHistoryQueryState.filters.platformContractIdType || '';
-    const nextHistoryPlatformIdFilterValue = nextHistoryQueryState.filters.platformContractId || '';
     const openChanged = historyOpen !== nextHistoryOpen;
     const configChanged = historyConfigUid !== nextHistoryQueryState.configUid;
-    const filterChanged =
-      historyPlatformTestTypeFilter !== nextHistoryPlatformTestTypeFilter ||
-      historyPlatformRunnerTypeFilter !== nextHistoryPlatformRunnerTypeFilter ||
-      historyPlatformArtifactKindFilter !== nextHistoryPlatformArtifactKindFilter ||
-      historyPlatformIdFilterType !== nextHistoryPlatformIdFilterType ||
-      historyPlatformIdFilterValue !== nextHistoryPlatformIdFilterValue;
-    const queryStateChanged = openChanged || configChanged || filterChanged;
+    const queryStateChanged = openChanged || configChanged;
 
     if (!queryStateChanged) return;
 
     setHistoryOpen(nextHistoryOpen);
     setHistoryConfigUid(nextHistoryQueryState.configUid);
-    setHistoryPlatformTestTypeFilter(nextHistoryPlatformTestTypeFilter);
-    setHistoryPlatformRunnerTypeFilter(nextHistoryPlatformRunnerTypeFilter);
-    setHistoryPlatformArtifactKindFilter(nextHistoryPlatformArtifactKindFilter);
-    setHistoryPlatformIdFilterType(nextHistoryPlatformIdFilterType);
-    setHistoryPlatformIdFilterValue(nextHistoryPlatformIdFilterValue);
-    setHistoryPlatformIdDraftValue(nextHistoryPlatformIdFilterValue);
     setHistoryExpandedUid('');
     setHistoryEventMap({});
     setHistoryEventLoadingUid('');
@@ -2177,27 +1848,16 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
       setHistoryRows([]);
       setHistoryTaskName('');
       setHistoryPlatformSummary(createEmptyWorkspacePlatformSummary());
-      setHistoryPlatformIndex(createEmptyWorkspacePlatformIndex());
       return;
     }
 
     void loadExecutionHistory(nextHistoryQueryState.configUid, {
-      platformTestType: nextHistoryPlatformTestTypeFilter,
-      platformRunnerType: nextHistoryPlatformRunnerTypeFilter,
-      platformArtifactKind: nextHistoryPlatformArtifactKindFilter,
-      platformIdFilterType: nextHistoryPlatformIdFilterType,
-      platformIdFilterValue: nextHistoryPlatformIdFilterValue,
       closeOnFailure: true,
     });
   }, [
     searchParams,
     historyOpen,
     historyConfigUid,
-    historyPlatformTestTypeFilter,
-    historyPlatformRunnerTypeFilter,
-    historyPlatformArtifactKindFilter,
-    historyPlatformIdFilterType,
-    historyPlatformIdFilterValue,
   ]);
   useEffect(() => {
     if (!historyConfigUid) return;
@@ -2995,21 +2655,13 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
 
   async function openExecutionHistory(task: TaskItem) {
     setHistoryOpen(true); setHistoryTaskName(task.name); setHistoryConfigUid(task.configUid);
-    setHistoryKeyword(''); setHistoryPlatformTestTypeFilter(''); setHistoryPlatformRunnerTypeFilter(''); setHistoryPlatformArtifactKindFilter('');
-    setHistoryPlatformIdFilterType(''); setHistoryPlatformIdFilterValue(''); setHistoryPlatformIdDraftValue('');
+    setHistoryKeyword('');
     setHistoryPlatformSummary(createEmptyWorkspacePlatformSummary());
-    setHistoryPlatformIndex(createEmptyWorkspacePlatformIndex());
     setHistoryEventKeyword(''); setHistoryExpandedUid(''); setHistoryEventMap({}); setHistoryEventLoadingUid('');
     replaceWorkspaceQueryStateInUrl({
       historyConfigUid: task.configUid,
-      historyFilters: {},
     });
     await loadExecutionHistory(task.configUid, {
-      platformTestType: '',
-      platformRunnerType: '',
-      platformArtifactKind: '',
-      platformIdFilterType: '',
-      platformIdFilterValue: '',
       closeOnFailure: true,
     });
   }
@@ -3017,277 +2669,28 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
   async function loadExecutionHistory(
     configUid: string,
     options?: {
-      platformTestType?: WorkspacePlatformTestType | '';
-      platformRunnerType?: WorkspacePlatformRunnerType | '';
-      platformArtifactKind?: string;
-      platformIdFilterType?: WorkspacePlatformIdFilterType;
-      platformIdFilterValue?: string;
       closeOnFailure?: boolean;
     }
   ) {
     if (!configUid) {
       setHistoryRows([]);
       setHistoryPlatformSummary(createEmptyWorkspacePlatformSummary());
-      setHistoryPlatformIndex(createEmptyWorkspacePlatformIndex());
       return;
     }
     setHistoryLoading(true);
     try {
       const qs = new URLSearchParams({ limit: '50' });
-      const platformTestType = options?.platformTestType ?? historyPlatformTestTypeFilter;
-      const platformRunnerType = options?.platformRunnerType ?? historyPlatformRunnerTypeFilter;
-      const platformArtifactKind = options?.platformArtifactKind ?? historyPlatformArtifactKindFilter;
-      const platformIdFilterType = options?.platformIdFilterType ?? historyPlatformIdFilterType;
-      const platformIdFilterValue = options?.platformIdFilterValue ?? historyPlatformIdFilterValue;
-      for (const [key, value] of Object.entries(
-        buildWorkspacePlatformQueryParams({
-          platformTestType,
-          platformRunnerType,
-          platformArtifactKind,
-          platformContractIdType: platformIdFilterType,
-          platformContractId: platformIdFilterValue,
-        })
-      )) {
-        qs.set(key, value);
-      }
       const res = await fetch(`/api/test-configs/${configUid}/executions?${qs.toString()}`);
       const json = (await res.json()) as ExecutionHistoryResponse;
       if (!res.ok) throw new Error(json.error || '加载执行历史失败');
       setHistoryRows(((json.items || []) as ExecutionRow[]).map(normalizeExecutionRow));
       setHistoryPlatformSummary(normalizeWorkspacePlatformSummary(json.platformSummary));
-      setHistoryPlatformIndex(normalizeWorkspacePlatformIndex(json.platformIndex));
     } catch (err: unknown) {
       setHistoryPlatformSummary(createEmptyWorkspacePlatformSummary());
-      setHistoryPlatformIndex(createEmptyWorkspacePlatformIndex());
       setError(err instanceof Error ? err.message : '加载执行历史失败');
       if (options?.closeOnFailure) closeExecutionHistory();
     }
     finally { setHistoryLoading(false); }
-  }
-
-  function handleTaskPlatformTestTypeFilterChange(value: string) {
-    const nextValue = normalizeWorkspacePlatformTestType(value);
-    setTaskPlatformTestTypeFilter(nextValue);
-    setCurrentPage(1);
-    replaceWorkspaceQueryStateInUrl({
-      taskFilters: {
-        ...currentTaskPlatformFilters(),
-        platformTestType: nextValue,
-      },
-    });
-    if (!activeModuleUid) return;
-    void loadTasks(activeModuleUid, {
-      platformTestType: nextValue,
-      platformRunnerType: taskPlatformRunnerTypeFilter,
-      platformArtifactKind: taskPlatformArtifactKindFilter,
-      platformIdFilterType: taskPlatformIdFilterType,
-      platformIdFilterValue: taskPlatformIdFilterValue,
-    });
-  }
-
-  function handleTaskPlatformRunnerTypeFilterChange(value: string) {
-    const nextValue = normalizeWorkspacePlatformRunnerType(value);
-    setTaskPlatformRunnerTypeFilter(nextValue);
-    setCurrentPage(1);
-    replaceWorkspaceQueryStateInUrl({
-      taskFilters: {
-        ...currentTaskPlatformFilters(),
-        platformRunnerType: nextValue,
-      },
-    });
-    if (!activeModuleUid) return;
-    void loadTasks(activeModuleUid, {
-      platformTestType: taskPlatformTestTypeFilter,
-      platformRunnerType: nextValue,
-      platformArtifactKind: taskPlatformArtifactKindFilter,
-      platformIdFilterType: taskPlatformIdFilterType,
-      platformIdFilterValue: taskPlatformIdFilterValue,
-    });
-  }
-
-  function handleTaskPlatformArtifactKindFilterChange(value: string) {
-    const nextValue = value.trim();
-    setTaskPlatformArtifactKindFilter(nextValue);
-    setCurrentPage(1);
-    replaceWorkspaceQueryStateInUrl({
-      taskFilters: {
-        ...currentTaskPlatformFilters(),
-        platformArtifactKind: nextValue,
-      },
-    });
-    if (!activeModuleUid) return;
-    void loadTasks(activeModuleUid, {
-      platformTestType: taskPlatformTestTypeFilter,
-      platformRunnerType: taskPlatformRunnerTypeFilter,
-      platformArtifactKind: nextValue,
-      platformIdFilterType: taskPlatformIdFilterType,
-      platformIdFilterValue: taskPlatformIdFilterValue,
-    });
-  }
-
-  function handleTaskPlatformIdFilterTypeChange(value: string) {
-    const nextValue = normalizePlatformContractIdFilterType(value) as WorkspacePlatformIdFilterType;
-    setTaskPlatformIdFilterType(nextValue);
-    setTaskPlatformIdFilterValue('');
-    setTaskPlatformIdDraftValue('');
-    setCurrentPage(1);
-    replaceWorkspaceQueryStateInUrl({
-      taskFilters: {
-        ...currentTaskPlatformFilters(),
-        platformContractIdType: nextValue,
-        platformContractId: '',
-      },
-    });
-    if (!activeModuleUid) return;
-    void loadTasks(activeModuleUid, {
-      platformTestType: taskPlatformTestTypeFilter,
-      platformRunnerType: taskPlatformRunnerTypeFilter,
-      platformArtifactKind: taskPlatformArtifactKindFilter,
-      platformIdFilterType: nextValue,
-      platformIdFilterValue: '',
-    });
-  }
-
-  function applyTaskPlatformIdFilter() {
-    const nextValue = taskPlatformIdDraftValue.trim();
-    setTaskPlatformIdFilterValue(nextValue);
-    setTaskPlatformIdDraftValue(nextValue);
-    setCurrentPage(1);
-    replaceWorkspaceQueryStateInUrl({
-      taskFilters: {
-        ...currentTaskPlatformFilters(),
-        platformContractIdType: taskPlatformIdFilterType,
-        platformContractId: nextValue,
-      },
-    });
-    if (!activeModuleUid) return;
-    void loadTasks(activeModuleUid, {
-      platformTestType: taskPlatformTestTypeFilter,
-      platformRunnerType: taskPlatformRunnerTypeFilter,
-      platformArtifactKind: taskPlatformArtifactKindFilter,
-      platformIdFilterType: taskPlatformIdFilterType,
-      platformIdFilterValue: nextValue,
-    });
-  }
-
-  function handleHistoryPlatformTestTypeFilterChange(value: string) {
-    const nextValue = normalizeWorkspacePlatformTestType(value);
-    setHistoryPlatformTestTypeFilter(nextValue);
-    setHistoryExpandedUid('');
-    setHistoryEventMap({});
-    setHistoryEventLoadingUid('');
-    replaceWorkspaceQueryStateInUrl({
-      historyConfigUid,
-      historyFilters: {
-        ...currentHistoryPlatformFilters(),
-        platformTestType: nextValue,
-      },
-    });
-    if (!historyConfigUid) return;
-    void loadExecutionHistory(historyConfigUid, {
-      platformTestType: nextValue,
-      platformRunnerType: historyPlatformRunnerTypeFilter,
-      platformArtifactKind: historyPlatformArtifactKindFilter,
-      platformIdFilterType: historyPlatformIdFilterType,
-      platformIdFilterValue: historyPlatformIdFilterValue,
-    });
-  }
-
-  function handleHistoryPlatformRunnerTypeFilterChange(value: string) {
-    const nextValue = normalizeWorkspacePlatformRunnerType(value);
-    setHistoryPlatformRunnerTypeFilter(nextValue);
-    setHistoryExpandedUid('');
-    setHistoryEventMap({});
-    setHistoryEventLoadingUid('');
-    replaceWorkspaceQueryStateInUrl({
-      historyConfigUid,
-      historyFilters: {
-        ...currentHistoryPlatformFilters(),
-        platformRunnerType: nextValue,
-      },
-    });
-    if (!historyConfigUid) return;
-    void loadExecutionHistory(historyConfigUid, {
-      platformTestType: historyPlatformTestTypeFilter,
-      platformRunnerType: nextValue,
-      platformArtifactKind: historyPlatformArtifactKindFilter,
-      platformIdFilterType: historyPlatformIdFilterType,
-      platformIdFilterValue: historyPlatformIdFilterValue,
-    });
-  }
-
-  function handleHistoryPlatformArtifactKindFilterChange(value: string) {
-    const nextValue = value.trim();
-    setHistoryPlatformArtifactKindFilter(nextValue);
-    setHistoryExpandedUid('');
-    setHistoryEventMap({});
-    setHistoryEventLoadingUid('');
-    replaceWorkspaceQueryStateInUrl({
-      historyConfigUid,
-      historyFilters: {
-        ...currentHistoryPlatformFilters(),
-        platformArtifactKind: nextValue,
-      },
-    });
-    if (!historyConfigUid) return;
-    void loadExecutionHistory(historyConfigUid, {
-      platformTestType: historyPlatformTestTypeFilter,
-      platformRunnerType: historyPlatformRunnerTypeFilter,
-      platformArtifactKind: nextValue,
-      platformIdFilterType: historyPlatformIdFilterType,
-      platformIdFilterValue: historyPlatformIdFilterValue,
-    });
-  }
-
-  function handleHistoryPlatformIdFilterTypeChange(value: string) {
-    const nextValue = normalizePlatformContractIdFilterType(value) as WorkspacePlatformIdFilterType;
-    setHistoryPlatformIdFilterType(nextValue);
-    setHistoryPlatformIdFilterValue('');
-    setHistoryPlatformIdDraftValue('');
-    setHistoryExpandedUid('');
-    setHistoryEventMap({});
-    setHistoryEventLoadingUid('');
-    replaceWorkspaceQueryStateInUrl({
-      historyConfigUid,
-      historyFilters: {
-        ...currentHistoryPlatformFilters(),
-        platformContractIdType: nextValue,
-        platformContractId: '',
-      },
-    });
-    if (!historyConfigUid) return;
-    void loadExecutionHistory(historyConfigUid, {
-      platformTestType: historyPlatformTestTypeFilter,
-      platformRunnerType: historyPlatformRunnerTypeFilter,
-      platformArtifactKind: historyPlatformArtifactKindFilter,
-      platformIdFilterType: nextValue,
-      platformIdFilterValue: '',
-    });
-  }
-
-  function applyHistoryPlatformIdFilter() {
-    const nextValue = historyPlatformIdDraftValue.trim();
-    setHistoryPlatformIdFilterValue(nextValue);
-    setHistoryPlatformIdDraftValue(nextValue);
-    setHistoryExpandedUid('');
-    setHistoryEventMap({});
-    setHistoryEventLoadingUid('');
-    replaceWorkspaceQueryStateInUrl({
-      historyConfigUid,
-      historyFilters: {
-        ...currentHistoryPlatformFilters(),
-        platformContractIdType: historyPlatformIdFilterType,
-        platformContractId: nextValue,
-      },
-    });
-    if (!historyConfigUid) return;
-    void loadExecutionHistory(historyConfigUid, {
-      platformTestType: historyPlatformTestTypeFilter,
-      platformRunnerType: historyPlatformRunnerTypeFilter,
-      platformArtifactKind: historyPlatformArtifactKindFilter,
-      platformIdFilterType: historyPlatformIdFilterType,
-      platformIdFilterValue: nextValue,
-    });
   }
 
   async function toggleHistoryEvents(executionUid: string) {
@@ -3625,94 +3028,14 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
               placeholder="搜索任务名称、URL、描述..."
               className="h-9 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-slate-400"
             />
-            <select
-              value={taskPlatformTestTypeFilter}
-              onChange={(e) => handleTaskPlatformTestTypeFilterChange(e.target.value)}
-              className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-slate-400"
-            >
-              <option value="">全部平台类型</option>
-              {workspacePlatformTestTypeValues.map((value) => (
-                <option key={value} value={value}>
-                  {workspacePlatformTestTypeLabel(value)}
-                </option>
-              ))}
-            </select>
-            <select
-              value={taskPlatformRunnerTypeFilter}
-              onChange={(e) => handleTaskPlatformRunnerTypeFilterChange(e.target.value)}
-              className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-slate-400"
-            >
-              <option value="">全部执行器</option>
-              {workspacePlatformRunnerTypeValues.map((value) => (
-                <option key={value} value={value}>
-                  {workspacePlatformRunnerTypeLabel(value)}
-                </option>
-              ))}
-            </select>
-            <select
-              value={taskPlatformArtifactKindFilter}
-              onChange={(e) => handleTaskPlatformArtifactKindFilterChange(e.target.value)}
-              className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-slate-400"
-            >
-              <option value="">全部产物类型</option>
-              {workspaceArtifactKindValues.map((value) => (
-                <option key={value} value={value}>
-                  {workspaceArtifactKindLabel(value)}
-                </option>
-                ))}
-              </select>
-              <select
-                value={taskPlatformIdFilterType}
-                onChange={(e) => handleTaskPlatformIdFilterTypeChange(e.target.value)}
-                className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-slate-400"
-              >
-                {workspacePlatformIdFilterOptions.map((option) => (
-                  <option key={option.value || 'all'} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <input
-                value={taskPlatformIdDraftValue}
-                onChange={(e) => setTaskPlatformIdDraftValue(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    applyTaskPlatformIdFilter();
-                  }
-                }}
-                placeholder={workspacePlatformIdFilterPlaceholder(taskPlatformIdFilterType)}
-                disabled={!taskPlatformIdFilterType}
-                list={taskPlatformIdFilterType ? 'workspace-task-platform-id-suggestions' : undefined}
-                className="h-9 w-44 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-slate-400 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
-              />
-              <datalist id="workspace-task-platform-id-suggestions">
-                {taskPlatformIdSuggestions.map((value) => (
-                  <option key={`task-platform-id-${value}`} value={value} />
-                ))}
-              </datalist>
-              <button
-                onClick={applyTaskPlatformIdFilter}
-                className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-600 transition hover:bg-slate-50"
-              >
-                应用 ID
-              </button>
-              {taskPlatformIdFilterType && taskPlatformIdSuggestions.length > 0 && (
-                <span className="text-xs text-slate-400">候选 {taskPlatformIdSuggestions.length}</span>
-              )}
-              <span className="flex-shrink-0 text-xs text-slate-400">
-                {activeModuleUid === ALL_MODULES_UID ? '全部模块' : activeModule?.name || '未选模块'} · {filteredTasks.length} 个任务
-              </span>
-            </div>
+            <span className="flex-shrink-0 text-xs text-slate-400">
+              {activeModuleUid === ALL_MODULES_UID ? '全部模块' : activeModule?.name || '未选模块'} · {filteredTasks.length} 个任务
+            </span>
+          </div>
 
           {!loadingTasks && visibleTaskPlatformSummary.scopeCount > 0 && (
             <div className="mb-3">
               <WorkspacePlatformSummaryPills summary={visibleTaskPlatformSummary} entityLabel="任务" />
-            </div>
-          )}
-          {!loadingTasks && visibleTaskPlatformIndex.scopeCount > 0 && (
-            <div className="mb-3">
-              <WorkspacePlatformIndexPills index={visibleTaskPlatformIndex} />
             </div>
           )}
 
@@ -5308,81 +4631,6 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
                   placeholder="搜索"
                   className="h-8 min-w-[144px] flex-1 rounded-lg border border-slate-200 px-3 text-xs outline-none focus:border-slate-400 md:max-w-[220px]"
                 />
-                <select
-                  value={historyPlatformTestTypeFilter}
-                  onChange={(e) => handleHistoryPlatformTestTypeFilterChange(e.target.value)}
-                  className="h-8 min-w-[132px] rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:border-slate-400"
-                >
-                  <option value="">全部平台类型</option>
-                  {workspacePlatformTestTypeValues.map((value) => (
-                    <option key={value} value={value}>
-                      {workspacePlatformTestTypeLabel(value)}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  value={historyPlatformRunnerTypeFilter}
-                  onChange={(e) => handleHistoryPlatformRunnerTypeFilterChange(e.target.value)}
-                  className="h-8 min-w-[124px] rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:border-slate-400"
-                >
-                  <option value="">全部执行器</option>
-                  {workspacePlatformRunnerTypeValues.map((value) => (
-                    <option key={value} value={value}>
-                      {workspacePlatformRunnerTypeLabel(value)}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  value={historyPlatformArtifactKindFilter}
-                  onChange={(e) => handleHistoryPlatformArtifactKindFilterChange(e.target.value)}
-                  className="h-8 min-w-[132px] rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:border-slate-400"
-                >
-                  <option value="">全部产物类型</option>
-                  {workspaceArtifactKindValues.map((value) => (
-                    <option key={value} value={value}>
-                      {workspaceArtifactKindLabel(value)}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  value={historyPlatformIdFilterType}
-                  onChange={(e) => handleHistoryPlatformIdFilterTypeChange(e.target.value)}
-                  className="h-8 min-w-[124px] rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:border-slate-400"
-                >
-                  {workspacePlatformIdFilterOptions.map((option) => (
-                    <option key={option.value || 'all'} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  value={historyPlatformIdDraftValue}
-                  onChange={(e) => setHistoryPlatformIdDraftValue(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      applyHistoryPlatformIdFilter();
-                    }
-                  }}
-                  placeholder={workspacePlatformIdFilterPlaceholder(historyPlatformIdFilterType)}
-                  disabled={!historyPlatformIdFilterType}
-                  list={historyPlatformIdFilterType ? 'workspace-history-platform-id-suggestions' : undefined}
-                  className="h-8 min-w-[144px] flex-1 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:border-slate-400 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400 md:max-w-[220px]"
-                />
-                <datalist id="workspace-history-platform-id-suggestions">
-                  {historyPlatformIdSuggestions.map((value) => (
-                    <option key={`history-platform-id-${value}`} value={value} />
-                  ))}
-                </datalist>
-                <button
-                  onClick={applyHistoryPlatformIdFilter}
-                  className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-600 transition hover:bg-slate-50"
-                >
-                  应用 ID
-                </button>
-                {historyPlatformIdFilterType && historyPlatformIdSuggestions.length > 0 && (
-                  <span className="text-[11px] text-slate-400">候选 {historyPlatformIdSuggestions.length}</span>
-                )}
                 <input
                   value={historyEventKeyword}
                   onChange={(e) => setHistoryEventKeyword(e.target.value)}
@@ -5393,11 +4641,6 @@ export default function ProjectWorkspace({ projectUid }: { projectUid: string })
               {!historyLoading && visibleHistoryPlatformSummary.scopeCount > 0 && (
                 <div className="mt-3">
                   <WorkspacePlatformSummaryPills summary={visibleHistoryPlatformSummary} entityLabel="执行" />
-                </div>
-              )}
-              {!historyLoading && visibleHistoryPlatformIndex.scopeCount > 0 && (
-                <div className="mt-3">
-                  <WorkspacePlatformIndexPills index={visibleHistoryPlatformIndex} />
                 </div>
               )}
             </div>

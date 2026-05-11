@@ -26,4 +26,5 @@ tests/e2e/generated/*
 audit-package-*
 .next-demo/*
 tmp/*.png
+tmp/*.json
 tmp/generate-order-after-confirm.png

@@ -214,6 +214,100 @@ describe('intent-e2e-project-auth', () => {
     });
   });
 
+  it('attaches known modal_or_drawer_save fixture governance for proj_default service commission intents', async () => {
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_default',
+      authRequired: true,
+      loginUrl: 'https://login.example.com',
+      loginUsername: 'owner@example.com',
+      loginPasswordPlain: 'project-secret',
+      loginPasswordMasked: 'p************t',
+      loginDescription: '统一密码登录',
+    } as never);
+    vi.mocked(getModuleByUid).mockResolvedValue({
+      moduleUid: 'mod_commission',
+      projectUid: 'proj_default',
+    } as never);
+
+    const req = new NextRequest('http://localhost/api/intent-e2e/runs');
+    const result = await resolveIntentE2EProjectAuth(req, {
+      input:
+        '进入服务分佣配置页，按关键词379搜索目标服务，打开结果行“分佣配置”弹框，将“商机创建人”佣金比例修改为35%，保存后校验成功提示和弹框关闭。',
+      targetUrl: 'https://uat-service.yikaiye.com/#/commission/subCommissionConfig',
+      projectUid: 'proj_default',
+      moduleUid: 'mod_commission',
+      runtimeGovernance: {
+        environmentProfile: 'test',
+      },
+    });
+
+    expect(result.request.runtimeGovernance).toMatchObject({
+      environmentProfile: 'test',
+      credential: {
+        source: 'project',
+        secretRef: 'project://proj_default/auth/default',
+        accountRef: 'account://project/proj_default/owner%40example.com',
+        sessionMode: 'shared',
+      },
+      fixture: {
+        strategy: 'setup_cleanup',
+        setupRef: 'fixture://project/proj_default/modal_or_drawer_save/setup',
+        cleanupRef: 'fixture://project/proj_default/modal_or_drawer_save/cleanup',
+        owner: 'owner://project/proj_default/members/usr_1',
+      },
+    });
+    expect(result.request.runtimeGovernance?.fixture?.idempotencyKey).toMatch(
+      /^new-intent\.proj_default\.modal_or_drawer_save\.[a-f0-9]{10}$/
+    );
+  });
+
+  it('attaches known business_create_list_verify fixture governance for proj_default business creation intents', async () => {
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_default',
+      authRequired: true,
+      loginUrl: 'https://login.example.com',
+      loginUsername: 'owner@example.com',
+      loginPasswordPlain: 'project-secret',
+      loginPasswordMasked: 'p************t',
+      loginDescription: '统一密码登录',
+    } as never);
+    vi.mocked(getModuleByUid).mockResolvedValue({
+      moduleUid: 'mod_business',
+      projectUid: 'proj_default',
+    } as never);
+
+    const req = new NextRequest('http://localhost/api/intent-e2e/runs');
+    const result = await resolveIntentE2EProjectAuth(req, {
+      input:
+        '参考已跑通正式任务「商机222」重新发起真实 AI E2E：登录后台后在商机列表页发起新建商机并保存，随后切换到“我创建的”Tab，等待列表加载完成，校验新建商机记录出现在列表中且“商机进展”为“新入库”。',
+      targetUrl: 'https://uat-service.yikaiye.com/#/business/businesslist',
+      projectUid: 'proj_default',
+      moduleUid: 'mod_business',
+      runtimeGovernance: {
+        environmentProfile: 'test',
+      },
+    });
+
+    expect(result.request.runtimeGovernance).toMatchObject({
+      environmentProfile: 'test',
+      credential: {
+        source: 'project',
+        secretRef: 'project://proj_default/auth/default',
+        accountRef: 'account://project/proj_default/owner%40example.com',
+        sessionMode: 'shared',
+      },
+      fixture: {
+        strategy: 'setup_cleanup',
+        setupRef: 'fixture://project/proj_default/business_create_list_verify/setup',
+        cleanupRef: 'fixture://project/proj_default/business_create_list_verify/cleanup',
+        owner: 'owner://project/proj_default/members/usr_1',
+      },
+    });
+    expect(result.request.runtimeGovernance?.fixture?.idempotencyKey).toMatch(
+      /^new-intent\.proj_default\.business_create_list_verify\.[a-f0-9]{10}$/
+    );
+  });
+
   it('applies project-level governance defaults even when the project does not require auth', async () => {
     vi.mocked(getProjectByUid).mockResolvedValue({
       projectUid: 'proj_1',

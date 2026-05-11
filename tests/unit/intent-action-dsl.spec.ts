@@ -46,6 +46,36 @@ describe('intent-action-dsl', () => {
     );
   });
 
+  it('adds row checkbox helper constraints for table batch selection steps', () => {
+    const dsl = buildIntentActionDSL({
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/businesslist',
+      featureDescription: '在商机列表勾选目标商机后批量加入通讯录',
+      expectedOutcome: '目标商机已被加入通讯录',
+      steps: [
+        {
+          stepUid: 'step_select_business',
+          stepType: 'ui',
+          title: '勾选目标商机',
+          target: 'https://example.com/#/business/businesslist',
+          instruction: '在商机表格中定位目标行并勾选该行复选框',
+          expectedResult: '目标业务行已被选中',
+          extractVariable: '',
+        },
+      ],
+    });
+
+    expect(dsl.steps[0].allowedActions).toContain('find_table_row');
+    expect(dsl.steps[0].allowedActions).toContain('click_row_checkbox');
+    expect(dsl.steps[0].preferredHelpers).toContain('__e2e.findAntdTableRow');
+    expect(dsl.steps[0].preferredHelpers).toContain('__e2e.clickAntdRowCheckbox');
+    expect(dsl.steps[0].forbiddenPatterns.join('\n')).toContain('直接点击第一条可见 checkbox');
+    expect(dsl.globalRules.join('\n')).toContain('__e2e.clickAntdRowCheckbox');
+    expect(dsl.preferredPrimitives).toContain(
+      'click_row_checkbox(row): 在真实目标表格行内稳定勾选 Ant Design checkbox'
+    );
+  });
+
   it('treats customerCode as a stable identifier for response extraction and list/detail fallback', () => {
     const dsl = buildIntentActionDSL({
       taskMode: 'scenario',
@@ -236,6 +266,34 @@ describe('intent-action-dsl', () => {
     expect(dsl.preferredPrimitives).toContain(
       'observe_submit_state(submitButton?, closeLocator?, successLocator?): 观察提交后按钮 loading、弹层关闭与结果收敛'
     );
+  });
+
+  it('treats knowledge document import as a mutating preview-verification step', () => {
+    const dsl = buildIntentActionDSL({
+      taskMode: 'scenario',
+      targetUrl: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+      featureDescription: '打开项目知识文档工作台，导入知识文档后校验当前预览和文档块正文锚点',
+      expectedOutcome: '知识文档导入成功，当前预览展示本次文档，文档块展示正文锚点',
+      steps: [
+        {
+          stepUid: 'step_import_document',
+          stepType: 'ui',
+          title: '导入知识文档',
+          target: '知识文档导入表单',
+          instruction: '填写知识文档名称、来源路径和正文内容，点击导入知识',
+          expectedResult: '知识文档已导入并可在当前预览中看到文档块正文锚点',
+          extractVariable: 'knowledgeDocumentName',
+        },
+      ],
+    });
+
+    expect(dsl.steps[0].allowedActions).toContain('wait_for_response');
+    expect(dsl.steps[0].allowedActions).toContain('assert_response_ok');
+    expect(dsl.steps[0].allowedActions).toContain('observe_submit_state');
+    expect(dsl.steps[0].preferredHelpers).toContain('__e2e.waitForApiResponse');
+    expect(dsl.steps[0].preferredHelpers).toContain('__e2e.observeSubmitState');
+    expect(dsl.steps[0].forbiddenPatterns.join('\n')).toContain('不校验当前预览或文档块渲染结果');
+    expect(dsl.globalRules.join('\n')).toContain('关键提交步骤优先等待接口成功响应');
   });
 
   it('does not leak global success criteria into every explicit scenario step', () => {

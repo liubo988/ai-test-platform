@@ -224,6 +224,154 @@
       ]
     },
     {
+      "id": "commission.service-ratio-config",
+      "title": "服务分佣配置保存",
+      "match": {
+        "urlIncludes": [
+          "/commission/subcommissionconfig"
+        ],
+        "descriptionIncludes": [
+          "分佣配置",
+          "佣金比例",
+          "商机创建人"
+        ]
+      },
+      "promptNotes": [
+        "服务分佣配置保存必须先按关键词稳定命中目标服务行，再从该行进入“分佣配置”弹框。",
+        "弹框标题可能带有服务名称前缀，等待弹框时只使用稳定片段“服务分佣配置”，不要精确匹配完整标题。",
+        "修改比例和点击保存都必须 scope 到当前可见弹框内的目标角色行；保存后以成功提示、弹框关闭或目标值保留作为收敛证据。"
+      ],
+      "capabilitySlugs": [
+        "ui.click-antd-row-action",
+        "ui.wait-for-visible-antd-modal",
+        "assert.wait-for-api-response",
+        "extract.capture-shared-variable"
+      ],
+      "addGlobalRules": [
+        "命中服务分佣配置知识时，先检索目标服务关键词并定位真实结果行，再点击该行“分佣配置”。",
+        "进入服务分佣配置弹框后，所有角色行、比例输入框和保存按钮定位都必须限定在当前可见弹框/抽屉容器内。",
+        "保存成功不能只靠立即点击结束；至少等待成功提示、弹框关闭或目标佣金比例保留为目标值。"
+      ],
+      "addPreferredPrimitives": [
+        "resolve_commission_service_row(keyword): 在服务分佣配置列表按关键词定位目标服务行",
+        "assert_commission_ratio_saved(role, ratio): 在服务分佣配置弹框内校验目标角色佣金比例保存收敛"
+      ],
+      "addOutputContract": [
+        "服务分佣配置场景必须记录 searchKeyword、targetRole、targetRatio 三个关键变量。",
+        "最终通过证据必须包含目标角色比例值已更新，以及成功提示/弹框关闭/值保留三类收敛信号之一。"
+      ],
+      "stepPatches": [
+        {
+          "whenStepTypes": [
+            "ui",
+            "assert",
+            "extract"
+          ],
+          "stepTextIncludes": [
+            "分佣配置",
+            "服务分佣配置",
+            "佣金比例",
+            "商机创建人",
+            "保存"
+          ],
+          "addAllowedActions": [
+            "find_table_row",
+            "click_row_action",
+            "wait_for_visible_modal",
+            "fill_input",
+            "wait_for_response",
+            "assert_response_ok",
+            "assert_state",
+            "extract_text",
+            "store_variable"
+          ],
+          "addPreferredHelpers": [
+            "__e2e.findAntdTableRow",
+            "__e2e.clickAntdRowAction",
+            "__e2e.waitForVisibleAntdModal",
+            "__e2e.waitForApiResponse"
+          ],
+          "addRequiredAssertions": [
+            "按 searchKeyword 命中目标服务行后再打开分佣配置",
+            "服务分佣配置弹框以 titleIncludes=服务分佣配置 等待可见",
+            "目标角色行内佣金比例输入框保存为 targetRatio",
+            "保存后观察成功提示、弹框关闭或目标值保留"
+          ],
+          "addForbiddenPatterns": [
+            "未定位目标服务行就全局点击第一个“分佣配置”",
+            "对完整弹框标题做精确匹配",
+            "在整页范围查找角色输入框或保存按钮",
+            "只点击保存但不等待任何收敛证据"
+          ]
+        }
+      ],
+      "recordLookupHints": [
+        {
+          "stableIdentifiers": [
+            "searchKeyword",
+            "targetServiceName",
+            "targetRole",
+            "targetRatio"
+          ],
+          "whenStepTypes": [
+            "ui",
+            "assert",
+            "extract"
+          ],
+          "stepTextIncludes": [
+            "分佣配置",
+            "服务分佣配置",
+            "佣金比例",
+            "商机创建人"
+          ],
+          "rowHasTexts": [
+            "searchKeyword",
+            "targetServiceName"
+          ],
+          "searchSurface": {
+            "keywordInput": {
+              "selector": "input#service-data-item_keyWord:visible"
+            },
+            "searchButton": {
+              "textIncludes": "搜索"
+            }
+          },
+          "detailReadyLocator": {
+            "textIncludes": "服务分佣配置"
+          },
+          "detailEntry": {
+            "trigger": "row_action",
+            "actionLabel": "分佣配置",
+            "target": "drawer_or_modal"
+          }
+        }
+      ],
+      "detailSurfaceHints": [
+        {
+          "stableIdentifiers": [
+            "targetRole",
+            "targetRatio"
+          ],
+          "whenStepTypes": [
+            "ui",
+            "assert"
+          ],
+          "stepTextIncludes": [
+            "分佣配置",
+            "服务分佣配置",
+            "佣金比例",
+            "商机创建人"
+          ],
+          "titleIncludes": "服务分佣配置",
+          "scopeHints": [
+            "服务分佣配置弹框",
+            "当前可见弹框",
+            "Modal"
+          ]
+        }
+      ]
+    },
+    {
       "id": "embedded.easyindex-search",
       "title": "搜企业 iframe 业务页",
       "match": {

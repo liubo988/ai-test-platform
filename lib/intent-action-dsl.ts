@@ -119,6 +119,13 @@ function needsRowActionHelper(text: string): boolean {
   return /(列表|表格|行操作|三点|更多|生成订单|查看|详情|菜单)/i.test(text);
 }
 
+function needsRowCheckboxHelper(text: string): boolean {
+  return (
+    /(勾选|复选框|checkbox|选中|批量加入|批量申请|批量操作|批量)/i.test(text) &&
+    /(列表|表格|目标行|业务行|商机|订单|通讯录|row|table)/i.test(text)
+  );
+}
+
 function needsBusinessListOwnershipViewHelper(text: string): boolean {
   return /(我创建的|我跟进的|归属|范围)/i.test(text) && /(商机|businesslist|business\/businesslist)/i.test(text);
 }
@@ -142,21 +149,24 @@ function hasMutatingActionSignal(text: string): boolean {
     return true;
   }
 
-  if (/\b(save|submit|update|delete|remove|publish|checkout)\b/i.test(text)) {
+  if (/\b(save|submit|update|delete|remove|publish|checkout|import|upload)\b/i.test(text)) {
     return true;
   }
 
-  if (/(保存|提交|修改|更新|删除|移除|作废|发布|下单)/i.test(text)) {
+  if (/(保存|提交|修改|更新|删除|移除|作废|发布|下单|导入|上传)/i.test(text)) {
     return true;
   }
 
-  if (/\b(create|add|generate)\b/i.test(text) && /\b(success|done|submitted|saved|created|updated|deleted|order|record|item)\b/i.test(text)) {
+  if (
+    /\b(create|add|generate|import|upload)\b/i.test(text) &&
+    /\b(success|done|submitted|saved|created|updated|deleted|imported|uploaded|order|record|item|document|preview)\b/i.test(text)
+  ) {
     return true;
   }
 
   return (
-    /(新建|新增|创建|添加|生成)/i.test(text) &&
-    /(成功|完成|提交|保存|校验|断言|结果|提交成功|保存成功|创建成功|新增成功|更新成功|删除成功|生成订单|提交订单|下单成功)/i.test(text)
+    /(新建|新增|创建|添加|生成|导入|上传)/i.test(text) &&
+    /(成功|完成|提交|保存|校验|断言|结果|预览|文档块|提交成功|保存成功|创建成功|新增成功|更新成功|删除成功|导入成功|上传成功|生成订单|提交订单|下单成功)/i.test(text)
   );
 }
 
@@ -214,6 +224,7 @@ function buildAllowedActions(step: IntentActionStepInput, input: BuildIntentActi
   const responseAssertionNeeded = needsResponseAssertion(stepHaystack, contextHaystack);
   const submitStateObservationNeeded = needsSubmitStateObservation(step);
   const stableIdentifierVerificationNeeded = hasStableIdentifierVerificationContext(step, input);
+  const rowCheckboxNeeded = needsRowCheckboxHelper(haystack);
   const baseActions =
     step.stepType === 'api'
       ? ['wait_for_response', 'assert_response_ok', 'assert_payload']
@@ -234,6 +245,7 @@ function buildAllowedActions(step: IntentActionStepInput, input: BuildIntentActi
     needsDetailFieldHelper(haystack) ? 'read_detail_field' : null,
     needsRowActionHelper(haystack) ? 'find_table_row' : null,
     stableIdentifierVerificationNeeded ? 'resolve_primary_record' : null,
+    rowCheckboxNeeded ? 'click_row_checkbox' : null,
     needsRowActionHelper(haystack) ? 'click_row_action' : null,
     responseAssertionNeeded ? 'wait_for_response' : null,
     responseAssertionNeeded ? 'assert_response_ok' : null,
@@ -253,6 +265,7 @@ function buildPreferredHelpers(step: IntentActionStepInput, input: BuildIntentAc
   const submitStateObservationNeeded = needsSubmitStateObservation(step);
   const responseJsonExtractionNeeded = needsResponseJsonExtraction(step, input);
   const stableIdentifierVerificationNeeded = hasStableIdentifierVerificationContext(step, input);
+  const rowCheckboxNeeded = needsRowCheckboxHelper(haystack);
 
   return uniqueStrings([
     needsDropdownHelper(haystack) ? '__e2e.openAntdDropdown' : null,
@@ -262,6 +275,7 @@ function buildPreferredHelpers(step: IntentActionStepInput, input: BuildIntentAc
     needsBusinessListOwnershipViewHelper(haystack) ? '__e2e.switchBusinessListOwnershipView' : null,
     needsVisibleModalHelper(haystack) ? '__e2e.waitForVisibleAntdModal' : null,
     needsDetailFieldHelper(haystack) ? '__e2e.readDetailField' : null,
+    rowCheckboxNeeded ? '__e2e.clickAntdRowCheckbox' : null,
     needsRowActionHelper(haystack) ? '__e2e.clickAntdRowAction' : null,
     responseAssertionNeeded ? '__e2e.waitForApiResponse' : null,
     submitStateObservationNeeded ? '__e2e.observeSubmitState' : null,
@@ -287,6 +301,7 @@ function buildForbiddenPatterns(step: IntentActionStepInput, input: BuildIntentA
   const submitStateObservationNeeded = needsSubmitStateObservation(step);
   const responseJsonExtractionNeeded = needsResponseJsonExtraction(step, input);
   const stableIdentifierVerificationNeeded = hasStableIdentifierVerificationContext(step, input);
+  const rowCheckboxNeeded = needsRowCheckboxHelper(haystack);
 
   return uniqueStrings([
     'page.waitForTimeout(...) 作为主同步手段',
@@ -303,8 +318,12 @@ function buildForbiddenPatterns(step: IntentActionStepInput, input: BuildIntentA
     needsRowActionHelper(haystack)
       ? "对 Ant Design 表格直接写 `page.locator('tbody tr').filter({ hasText: ... }).first()` 作为唯一目标行定位"
       : null,
+    rowCheckboxNeeded ? '表格批量动作前直接点击第一条可见 checkbox，不先命中真实业务行' : null,
     needsRowActionHelper(haystack) ? '不先定位目标行就直接点击“查看/生成订单/更多”' : null,
     submitStateObservationNeeded ? '提交后只看 toast 或 page.getByText(/成功/i).first()，不观察按钮 loading、弹层关闭或结果列表收敛' : null,
+    /(知识文档|文档块|当前预览|导入知识|document)/i.test(haystack)
+      ? '文档导入后只断言输入框/textarea 里的原始内容，不校验当前预览或文档块渲染结果'
+      : null,
     needsExtraction(haystack, step) ? '编造共享变量或用随机值替代真实提取结果' : null,
     responseJsonExtractionNeeded
       ? '提交/查询接口已经返回 JSON，却继续从整行模糊文本或宽泛文案反推共享稳定标识（如 businessId / orderId / recordUid / customerCode / serialNo）'
@@ -338,6 +357,7 @@ export function buildIntentActionDSL(input: BuildIntentActionDSLInput): IntentAc
   const anyVisibleModalStep = steps.some((step) => step.preferredHelpers.includes('__e2e.waitForVisibleAntdModal'));
   const anyDetailFieldStep = steps.some((step) => step.preferredHelpers.includes('__e2e.readDetailField'));
   const anyRowActionStep = steps.some((step) => step.preferredHelpers.includes('__e2e.clickAntdRowAction'));
+  const anyRowCheckboxStep = steps.some((step) => step.preferredHelpers.includes('__e2e.clickAntdRowCheckbox'));
   const anyResponseStep = steps.some((step) => step.allowedActions.includes('wait_for_response'));
   const anySubmitStateStep = steps.some((step) => step.preferredHelpers.includes('__e2e.observeSubmitState'));
   const anyExtractStep = steps.some((step) => step.allowedActions.includes('store_variable'));
@@ -361,6 +381,7 @@ export function buildIntentActionDSL(input: BuildIntentActionDSLInput): IntentAc
       anyBusinessOwnershipStep ? '涉及商机列表“我创建的 / 我跟进的 / 归属 / 范围”切换时，优先使用 __e2e.switchBusinessListOwnershipView。' : null,
       anyVisibleModalStep ? '涉及标题可能动态拼接的 Ant Design 弹框时，优先使用 __e2e.waitForVisibleAntdModal，只匹配稳定标题片段。' : null,
       anyDetailFieldStep ? '涉及详情页 / 详情抽屉字段校验时，优先使用 __e2e.readDetailField 按 label 读取真实字段值。' : null,
+      anyRowCheckboxStep ? '涉及 Ant Design 表格行勾选时，先用目标行业务文本命中真实行，再使用 __e2e.clickAntdRowCheckbox。' : null,
       anyRowActionStep ? '涉及列表行末操作菜单时，优先使用 __e2e.clickAntdRowAction，而不是臆造行内按钮。' : null,
       anyResponseStep ? '关键提交步骤优先等待接口成功响应，再做 UI 成功断言，避免只看模糊成功文案。' : null,
       anySubmitStateStep ? '保存/提交/生成类步骤在接口成功后，还要用 __e2e.observeSubmitState 观察按钮 loading、弹层关闭、URL/列表结果收敛。' : null,
@@ -384,6 +405,7 @@ export function buildIntentActionDSL(input: BuildIntentActionDSLInput): IntentAc
       anyBusinessOwnershipStep ? 'switch_business_list_ownership_view(label): 通过 helper 稳定切换商机列表归属视角' : null,
       anyVisibleModalStep ? 'wait_for_visible_modal(titleIncludes): 通过 helper 等待真实可见的 Ant Design Modal' : null,
       anyDetailFieldStep ? 'read_detail_field(label): 在详情页 / 详情抽屉按字段标签读取真实值' : null,
+      anyRowCheckboxStep ? 'click_row_checkbox(row): 在真实目标表格行内稳定勾选 Ant Design checkbox' : null,
       anyRowActionStep ? 'click_row_action(row, label): 在目标表格行内点击查看/生成订单等动作' : null,
       anyResponseStep ? 'wait_for_response(matcher): 等待关键接口成功返回' : null,
       anySubmitStateStep ? 'observe_submit_state(submitButton?, closeLocator?, successLocator?): 观察提交后按钮 loading、弹层关闭与结果收敛' : null,

@@ -165,6 +165,70 @@ const PRIORITY_SCENARIO_FAMILY_ASSET_PROFILES: Partial<
       ],
     },
   },
+  business_to_order: {
+    family: 'business_to_order',
+    preferredCapabilitySlugs: [
+      'assert.wait-for-api-response',
+      'assert.watch-submit-state',
+      'ui.click-antd-row-action',
+      'assert.resolve-primary-record',
+    ],
+    preferredRecipeSlugs: [
+      'business.create-to-order',
+      'business.create',
+      'assert.antd-table-primary-key-search',
+      'intent.ui-antd-modal-drawer-save',
+    ],
+    executionRules: [
+      '命中 family=business_to_order 时，首轮优先沿“创建商机 -> 回列表定位目标商机 -> 行操作生成订单 -> 确定订单信息 Drawer 确认”固定骨架执行。',
+      '生成订单前必须先定位本次创建或回查命中的目标商机行，不允许全局点击第一个“生成订单”。',
+      '主断言绑定 createOrder 响应成功、Drawer/Modal 收敛和订单生成后的稳定态，不要把“签约成功”标签或 toast 单独当最终通过。',
+    ],
+    preferredPrimitives: [
+      'extract_stable_identifier(responseJson, primaryPaths[], fallbackVariables[]): 优先提取 businessId，缺失时保留联系人/手机号 fallback identity',
+      'resolve_primary_record(primaryValue, rowHasTexts?, detailEntry?): 回列表稳定命中目标商机行后再触发行操作',
+      'observe_submit_state(trigger, response?, surface?): 绑定 createOrder 响应、按钮 loading 和 Drawer 关闭',
+    ],
+    outputContract: [
+      '最终通过必须覆盖：商机创建或回查目标身份、目标行生成订单动作、createOrder 成功响应，以及确定订单信息 Drawer 关闭或结果页稳定。',
+      '如果 createOrder 成功后原商机行发生状态变化或不再保持原文案，不允许回头强依赖旧行文案完全一致。',
+      '若当前环境无法安全写入订单数据，应显式暴露 fixture/data gap，不要只靠 Prompt 继续盲跑。',
+    ],
+    stableIdentifier: {
+      primaryVariables: ['businessId', 'orderId'],
+      fallbackVariables: ['contactPhone', 'contactName'],
+      responsePathHints: ['data.businessId', 'data.orderId', 'data.id', 'result.businessId', 'result.orderId', 'result.id'],
+      detailFieldLabels: ['商机进展', '订单号', '状态'],
+      listResponseUrlIncludes: '/business',
+      detailUrlTemplate: '/business/detail/{{primaryValue}}',
+      detailTitleIncludes: '商机详情',
+    },
+    verifier: {
+      requiredEvidence: ['business_identity', 'create_order_response', 'order_drawer_closed_or_stable_surface'],
+      policyNotes: [
+        '当前 family = business_to_order：主成功条件是 createOrder 响应成功 + 订单确认 Drawer 收敛，不允许只看 toast。',
+        '当前 family = business_to_order：生成订单入口必须作用在目标商机行上，不能全局点击任意“生成订单”。',
+      ],
+      expectedFieldLabels: ['商机进展', '订单号', '状态'],
+      detailEntry: {
+        trigger: 'row_action',
+        actionLabel: '生成订单',
+        target: 'drawer_or_modal',
+      },
+    },
+    readiness: {
+      requirements: [
+        '需要登录态和可进入商机列表或创建页',
+        '需要可观测的商机创建响应或可回查的目标商机身份',
+        '需要目标行生成订单入口和 createOrder 响应可被监听',
+        '需要订单确认 Drawer/Modal 的提交收敛信号',
+      ],
+      fixtureContract: 'project_data_dependency_explicit',
+      notes: [
+        '该 family 会真实写入 UAT 商机与订单数据；必须保留 fixture owner、idempotencyKey 和清理线索。',
+      ],
+    },
+  },
   business_batch_add_contacts_verify: {
     family: 'business_batch_add_contacts_verify',
     preferredCapabilitySlugs: [
@@ -464,7 +528,7 @@ function classifyPriorityScenarioFamilyFromHaystack(haystack: string): IntentE2E
   const hasBusinessBatchAddContacts =
     /(批量加入通讯录|加入通讯录|收录到通讯录|通讯录校验|联系人收录)/i.test(normalizedHaystack);
   const hasContactsVerification =
-    /(按手机号|手机号搜索|检索到目标联系人|搜索确认联系人可见|mailslist|mail-list_keywords)/i.test(normalizedHaystack) ||
+    /(按手机号|手机号搜索|手机号.{0,12}搜索|搜索.{0,12}手机号|检索到目标联系人|查询到对应联系人|联系人记录|搜索确认联系人可见|mailslist|mail-list_keywords)/i.test(normalizedHaystack) ||
     (/(我的通讯录|通讯录列表)/i.test(normalizedHaystack) &&
       /(确认联系人可见|确认联系人已可见|联系人可见|联系人已可见|命中联系人|找到联系人|确认可见|检索命中|搜索命中)/i.test(
         normalizedHaystack

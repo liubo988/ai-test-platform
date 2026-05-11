@@ -1,6 +1,7 @@
 import { createResponsesRequest, getOpenAIHeaders } from './openai-responses.js';
 import {
   assertSupportedLLMProvider,
+  getLLMProviderOption,
   getLLMRuntimeConfig,
   type LLMRuntimeConfig,
   type LLMRuntimeOverrides,
@@ -532,6 +533,7 @@ async function callLLMStructuredChat<T>(
 
 export function getPublicLLMConfig(runtimeOverrides?: LLMRuntimeOverrides) {
   const config = getLLMRuntimeConfig(runtimeOverrides);
+  const providerOption = getLLMProviderOption(config.provider);
   return {
     provider: config.provider,
     model: config.model,
@@ -540,6 +542,7 @@ export function getPublicLLMConfig(runtimeOverrides?: LLMRuntimeOverrides) {
     visionEnabled: config.visionEnabled,
     selfHealRetries: config.selfHealRetries,
     maxPlanSteps: config.maxPlanSteps,
-    providerImplemented: config.provider === 'openai',
+    providerImplemented: providerOption.implemented,
+    providerAdapterStatus: providerOption.adapterStatus,
   };
 }

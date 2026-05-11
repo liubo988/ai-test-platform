@@ -58,6 +58,7 @@ describe('resolveIntentE2ELaunchDecision', () => {
         hasTrackedPriorityScenarioFamily: true,
         hasPriorityScenarioFamilyConflict: false,
         hasStablePriorityScenarioPath: true,
+        hasStableDocumentScenarioPath: false,
         hasExplicitVerifierSignal: true,
         hasHighFailurePressure: false,
         hasRepeatedFailureSuppression: false,
@@ -150,6 +151,35 @@ describe('resolveIntentE2ELaunchDecision', () => {
     expect(decision.reasons).toEqual(['missing_stable_verifier_path', 'missing_stable_family_path', 'untracked_family_requires_draft']);
     expect(decision.signals.hasExplicitVerifierSignal).toBe(false);
     expect(decision.signals.hasStablePriorityScenarioPath).toBe(false);
+    expect(decision.signals.hasStableDocumentScenarioPath).toBe(false);
+  });
+
+  it('allows current project knowledge document import-preview real-click tasks to auto run', () => {
+    const decision = resolveIntentE2ELaunchDecision({
+      input:
+        '打开项目知识文档工作台，导入一篇名为“真实文档采集手册”的知识文档，内容包含“真实 document-like real_click 采集锚点”，导入后重新预览该知识文档并校验标题和正文锚点可见。',
+      targetUrl: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+      projectUid: 'proj_checkout',
+      assetAvailability: readyProjectAssets,
+      priorityScenarioFamilyRoute: {
+        family: 'untracked',
+        textFamily: 'untracked',
+        visualFamily: 'untracked',
+        source: 'text_only',
+        clarifySignals: [],
+      },
+    });
+
+    expect(decision.decision).toBe('auto_run');
+    expect(decision.reasons).toEqual(['launch_ready']);
+    expect(decision.signals).toMatchObject({
+      requiresFixture: true,
+      priorityScenarioFamily: 'untracked',
+      hasTrackedPriorityScenarioFamily: false,
+      hasStablePriorityScenarioPath: false,
+      hasStableDocumentScenarioPath: true,
+      hasExplicitVerifierSignal: true,
+    });
   });
 
   it('keeps image-led generic requests blocked until the user adds real task context', () => {
@@ -271,6 +301,7 @@ describe('resolveIntentE2ELaunchDecision', () => {
         hasTrackedPriorityScenarioFamily: true,
         hasPriorityScenarioFamilyConflict: false,
         hasStablePriorityScenarioPath: true,
+        hasStableDocumentScenarioPath: false,
         hasExplicitVerifierSignal: true,
         hasHighFailurePressure: true,
         hasRepeatedFailureSuppression: true,

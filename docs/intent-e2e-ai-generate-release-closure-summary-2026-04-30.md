@@ -43,7 +43,9 @@
   - `realClickTerminalPassRate=83.1%`
 
 ## 用户可见边界
-- 项目工作台 release readiness 面板现在直接展示 `AI生成守护范围`，内容来自 release-status 的 family evidence。
+- `/projects/:projectUid` 项目工作台顶部会只读展示 release readiness 摘要，内容来自 release-status 的服务端报告。
+- `/intent-e2e` 工作台的“历史运行洞察”区会展开 check / family evidence 明细；blocked 分支会直接展示阻塞 check、失败 family 和需要关注的 issue summary。
+- CI 的 `intent:release-summary` 会写出 JSON / Markdown artifact，并在 `skip-current-compare` 时明确标注静态摘要不能当作 release approval。
 - `AI生成` 按钮仍可处理开放式请求，但只有命中已治理 family 并通过 guard 的范围可以作为发布承诺。
 - 文档类 / OCR 场景当前没有足够真实 document family 证据；下一步必须先看 `traffic-quality` 的真实流量候选，再补 recipe / fixture / verifier / guard。
 
@@ -51,10 +53,13 @@
 - `npm run build`
 - `npm run build:web`
 - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-seed-real-click-samples.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/intent-e2e-release-status.spec.ts tests/unit/api-intent-e2e-release-status-route.spec.ts tests/unit/intent-e2e-release-guard.spec.ts tests/unit/intent-e2e-knowledge-hit-guard.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts`
+- `npx vitest run tests/unit/intent-e2e-release-status-view.spec.ts tests/unit/intent-e2e-release-status.spec.ts`
+- `npx playwright test tests/e2e/scenario-task-smoke.spec.ts --grep "release status summary|blocked release readiness"`
 - `npm run intent:release-guard:preflight`
 - `npm run intent:knowledge-hit-guard -- --config artifacts/intent-e2e-family-evidence/proj_default.knowledge-hit-guard.json`
 - `npm run intent:release-guard -- --config artifacts/intent-e2e-family-evidence/proj_default.release-guard.baselines.json`
 - `npm run intent:release-status -- --require-current-compare --json`
+- `npm run intent:release-summary -- --skip-current-compare`
 - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30 --json`
 - `node scripts/check-doc-links.mjs`
 - `node scripts/check-roadmap-progress.mjs`
@@ -62,26 +67,59 @@
 - `git diff --check`
 
 ## 最终验证
+> 最近一次完整提交前验证：2026-05-07。
+
 - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-seed-real-click-samples.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/intent-e2e-release-status.spec.ts tests/unit/api-intent-e2e-release-status-route.spec.ts tests/unit/intent-e2e-release-guard.spec.ts tests/unit/intent-e2e-knowledge-hit-guard.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts`
   - 通过，`9` files / `301` tests。
 - `npm run build`
   - 通过。
 - `npm run build:web`
   - 通过。
+- `npm run test:integration`
+  - 通过，`8` files / `24` tests。
 - `npm run intent:release-guard:preflight`
   - 通过，`baselines=4`、`files=10`、`errors=0`、`warnings=0`。
 - `npm run intent:knowledge-hit-guard -- --config artifacts/intent-e2e-family-evidence/proj_default.knowledge-hit-guard.json`
   - 通过，`evidences=4`、`passedEvidences=4`、`failedEvidences=0`、`missingRules=0`。
 - `npm run intent:release-guard -- --config artifacts/intent-e2e-family-evidence/proj_default.release-guard.baselines.json`
-  - 通过，report：`reports/intent-e2e/projects/proj_default/intent-e2e.release-guard-reports/2026-04-30T07-38-08-583Z-phase11-cross-family-release-guard.json`。
+  - 通过，report：`reports/intent-e2e/projects/proj_default/intent-e2e.release-guard-reports/2026-05-07T01-15-47-269Z-phase11-cross-family-release-guard.json`。
   - `baselines=4`、`passedBaselines=4`、`failedBaselines=0`、`regressed=0`、`missing=0`、`insufficient=0`。
 - `npm run intent:release-status -- --require-current-compare --json`
   - 通过，`status=ready`、`canRelease=true`、`passedChecks=3/3`、`readyFamilies=4/4`。
 - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30 --json`
   - 通过，latest report：`reports/intent-e2e/projects/proj_default/intent-e2e.traffic-quality-report.latest.json`。
   - `realClickTerminalPasses=49/59`、`realClickTerminalPassRate=83.1%`。
+  - `benchmarkRerunTerminalPasses=455/627`、`benchmarkRerunTerminalPassRate=72.6%`。
   - `realClickWithImageTerminalPasses=19/25`、`imageTerminalPassRate=76.0%`。
   - `documentFamilySelection.mode=no_document_candidates`。
+- `bash scripts/check-boundaries.sh`
+  - 通过。
+- `node scripts/check-doc-links.mjs`
+  - 通过，`6` files checked。
+- `node scripts/check-roadmap-progress.mjs`
+  - 通过，`518` updates checked。
+- `git diff --check`
+  - 通过。
+
+## Post Release Readiness Hardening
+> 2026-05-07 后续收口补丁。
+
+- CI 已新增 `intent:release-summary` artifact：
+  - 默认写出 `reports/ci/intent-e2e-release-readiness.json`
+  - 默认写出 `reports/ci/intent-e2e-release-readiness.md`
+  - `--skip-current-compare` 摘要会显示 `attention`，并明确说明不是 release approval。
+- release readiness 的用户可见出口已补齐：
+  - 项目页顶部摘要。
+  - `/intent-e2e` 工作台详情。
+  - CI Markdown / JSON artifact。
+- readiness label、summary/detail、check status label 和 family issue 摘要已下沉到共享 helper，避免项目页、工作台和 CI Markdown 口径漂移。
+- 追加验证：
+  - `npx vitest run tests/unit/intent-e2e-release-status-view.spec.ts tests/unit/intent-e2e-release-status.spec.ts`
+    - 通过，`2` files / `10` tests。
+  - `npx playwright test tests/e2e/scenario-task-smoke.spec.ts --grep "release status summary|blocked release readiness"`
+    - 通过，`2` tests。
+  - `npm run intent:release-summary -- --skip-current-compare --generated-at 2026-05-07T03:30:00.000Z --title "Intent E2E Release Readiness (CI static evidence)"`
+    - 通过，`status=attention`、`currentCompare=skipped`。
 
 ## 收尾结论
 - 当前阶段可以收尾并准备提交。

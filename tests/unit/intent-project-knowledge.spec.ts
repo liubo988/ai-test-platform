@@ -1128,6 +1128,68 @@ describe('intent-project-knowledge', () => {
         expect.arrayContaining(['__e2e.selectAntdOption', '__e2e.resolvePrimaryRecord', '__e2e.readDetailField'])
       );
       expect(patchedOrderList.outputContract.join('\n')).toContain('selectedOrderNo 的来源');
+
+      const commissionDsl = buildIntentActionDSL({
+        taskMode: 'scenario',
+        targetUrl: 'https://uat-service.yikaiye.com/#/commission/subCommissionConfig',
+        featureDescription:
+          '登录后进入服务分佣配置页，按关键词379搜索目标服务，打开结果行“分佣配置”弹框，将“商机创建人”佣金比例修改为35%，点击保存并校验成功提示及弹框关闭。',
+        expectedOutcome: '目标服务的商机创建人佣金比例保存成功，服务分佣配置弹框关闭或目标值保留。',
+        sharedVariables: ['searchKeyword', 'targetRole', 'targetRatio'],
+        steps: [
+          {
+            stepUid: 'step_1',
+            stepType: 'ui',
+            title: '搜索目标服务并打开分佣配置弹框',
+            target: '服务分佣配置列表',
+            instruction: '按关键词379搜索目标服务，从命中结果行点击“分佣配置”，等待服务分佣配置弹框打开。',
+            expectedResult: '服务分佣配置弹框可见',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step_2',
+            stepType: 'assert',
+            title: '保存商机创建人佣金比例',
+            target: '服务分佣配置弹框',
+            instruction: '在当前可见弹框内定位“商机创建人”角色行，将佣金比例改为35%，点击保存并等待成功提示、弹框关闭或目标值保留。',
+            expectedResult: '商机创建人佣金比例已保存为35%',
+            extractVariable: '',
+          },
+        ],
+      });
+      const commissionResolution = resolveIntentProjectKnowledge(
+        {
+          snapshot: {
+            url: 'https://uat-service.yikaiye.com/#/commission/subCommissionConfig',
+            title: '服务分佣配置',
+            buttons: [],
+            headings: [{ level: 'H1', text: '服务分佣配置' }],
+            bodyTextExcerpt: '服务分佣配置 请输入关键词 分佣配置 商机创建人 佣金比例 保存',
+            frames: [],
+          },
+          description:
+            '登录后进入服务分佣配置页，按关键词379搜索目标服务，打开结果行“分佣配置”弹框，将“商机创建人”佣金比例修改为35%，点击保存并校验成功提示及弹框关闭。',
+          dsl: commissionDsl,
+        },
+        { projectUid: 'proj_default' }
+      );
+      const commissionMatch = commissionResolution.matches.find((item) => item.ruleId === 'commission.service-ratio-config');
+      const patchedCommission = applyIntentProjectKnowledgeToDsl(commissionDsl, commissionResolution);
+
+      expect(commissionMatch).toBeTruthy();
+      expect(commissionMatch?.capabilitySlugs).toEqual(
+        expect.arrayContaining(['ui.click-antd-row-action', 'ui.wait-for-visible-antd-modal'])
+      );
+      expect(commissionMatch?.recordLookupHints?.[0]?.detailEntry).toEqual({
+        trigger: 'row_action',
+        actionLabel: '分佣配置',
+        target: 'drawer_or_modal',
+      });
+      expect(commissionMatch?.detailSurfaceHints?.[0]?.titleIncludes).toBe('服务分佣配置');
+      expect(patchedCommission.steps[1].preferredHelpers).toEqual(
+        expect.arrayContaining(['__e2e.waitForVisibleAntdModal', '__e2e.waitForApiResponse'])
+      );
+      expect(patchedCommission.outputContract.join('\n')).toContain('targetRole');
     } finally {
       if (previousKnowledgePath) {
         process.env.INTENT_E2E_PROJECT_KNOWLEDGE_PATH = previousKnowledgePath;

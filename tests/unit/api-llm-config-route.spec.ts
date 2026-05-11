@@ -89,6 +89,12 @@ describe('GET/PUT /api/llm/config', () => {
       updatedAt: '2026-03-17T03:10:00.000Z',
       updatedByLabel: 'Owner',
     });
+    expect(json.availableProviders).toEqual(['openai', 'gemini', 'claude']);
+    expect(json.availableProviderOptions).toEqual([
+      expect.objectContaining({ provider: 'openai', adapterStatus: 'implemented', implemented: true }),
+      expect.objectContaining({ provider: 'gemini', adapterStatus: 'placeholder', implemented: false }),
+      expect.objectContaining({ provider: 'claude', adapterStatus: 'placeholder', implemented: false }),
+    ]);
     expect(json.llm).toMatchObject({
       model: 'gpt-4.1-mini',
       baseUrl: 'https://proxy.example.com/v1',

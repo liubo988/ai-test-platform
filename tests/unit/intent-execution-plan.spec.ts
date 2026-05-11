@@ -324,6 +324,94 @@ describe('intent-execution-plan', () => {
     expect(renderedVerificationPlan).toContain('assert.antd-table-primary-key-search');
   });
 
+  it('pushes the document import-preview recipe into execution and verification plans', () => {
+    const dsl = {
+      version: 1 as const,
+      mode: 'scenario' as const,
+      targetUrl: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+      summary: '导入知识文档后校验当前预览和文档块正文锚点，doc_create_reopen_verify',
+      globalRules: [],
+      preferredPrimitives: [],
+      outputContract: [],
+      steps: [
+        {
+          stepUid: 'step_import_document',
+          stepType: 'ui' as const,
+          title: '导入知识文档',
+          target: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+          goal: '填写知识文档内容并点击导入知识，随后校验当前预览和文档块正文锚点',
+          allowedActions: ['fill', 'click', 'wait_for_response', 'assert_text', 'observe_submit_state'],
+          preferredHelpers: ['__e2e.waitForApiResponse', '__e2e.observeSubmitState'],
+          requiredAssertions: ['当前预览展示本次文档', '文档块展示正文锚点'],
+          sharedVariables: ['knowledgeDocumentName'],
+          forbiddenPatterns: ['不能只断言 textarea 原文'],
+        },
+      ],
+    };
+    const recipes = selectIntentRecipeRegistry({
+      dsl,
+      snapshot: {
+        url: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+        title: '项目知识文档',
+        frames: [],
+      },
+      priorityScenarioFamily: 'untracked',
+      narrowToPriorityScenarioFamily: true,
+    }).items;
+
+    const executionPlan = buildIntentExecutionPlan({
+      taskMode: 'scenario',
+      targetUrl: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+      featureDescription: '导入知识文档后校验当前预览和文档块正文锚点',
+      expectedOutcome: '知识文档导入后可在文档块预览区验收',
+      successCriteria: ['当前预览展示本次文档', '文档块展示正文锚点'],
+      sharedVariables: ['knowledgeDocumentName'],
+      scenarioSteps: [
+        {
+          stepUid: 'step_import_document',
+          stepType: 'ui',
+          title: '导入知识文档',
+          target: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+          instruction: '填写知识文档内容并点击导入知识',
+          expectedResult: '当前预览展示本次文档，文档块展示正文锚点',
+          extractVariable: 'knowledgeDocumentName',
+        },
+      ],
+      recipes,
+      dsl,
+    });
+    const verificationPlan = buildIntentVerificationPlan(
+      {
+        taskMode: 'scenario',
+        targetUrl: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+        featureDescription: '导入知识文档后校验当前预览和文档块正文锚点',
+        expectedOutcome: '知识文档导入后可在文档块预览区验收',
+        successCriteria: ['当前预览展示本次文档', '文档块展示正文锚点'],
+        sharedVariables: ['knowledgeDocumentName'],
+        scenarioSteps: [
+          {
+            stepUid: 'step_import_document',
+            stepType: 'ui',
+            title: '导入知识文档',
+            target: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+            instruction: '填写知识文档内容并点击导入知识',
+            expectedResult: '当前预览展示本次文档，文档块展示正文锚点',
+            extractVariable: 'knowledgeDocumentName',
+          },
+        ],
+        recipes,
+        dsl,
+      },
+      executionPlan
+    );
+
+    expect(executionPlan.matchedRecipeSlugs).toContain('document.project-knowledge-import-preview');
+    expect(executionPlan.globalRules.join('\n')).toContain('命中 deterministic recipe document.project-knowledge-import-preview');
+    expect(verificationPlan.matchedRecipeSlugs).toContain('document.project-knowledge-import-preview');
+    expect((verificationPlan.policyNotes || []).join('\n')).toContain('文档块预览区搜索正文锚点');
+    expect(renderIntentVerificationPlan(verificationPlan)).toContain('document.project-knowledge-import-preview');
+  });
+
   it('structures stableIdentifiers and expectedFields for detail-fallback checks', () => {
     const executionPlan = buildIntentExecutionPlan({
       taskMode: 'scenario',

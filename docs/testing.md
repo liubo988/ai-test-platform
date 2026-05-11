@@ -4,6 +4,7 @@
 - `npm run test:unit`：纯逻辑、服务逻辑、route 单测。默认最快，优先在本地频繁运行。
 - `npm run test:integration`：真实 MySQL 环境下验证 route、repository、service 链路。
 - `npm run test:e2e`：Playwright 端到端和 smoke 流程。
+- `npm run test:e2e:preprod`：只运行带 `@preprod` 标签的真实预发 E2E；未配置 `E2E_BASE_URL` 时会跳过，避免误跑本地 fallback。
 - `npm run test:all`：顺序执行 unit + integration + e2e。
 
 ## 构建与静态验证
@@ -54,7 +55,8 @@
 ### E2E
 - 需要安装 Playwright 浏览器：`npx playwright install --with-deps`
 - `tests/e2e/scenario-task-smoke.spec.ts` 会自己 build 并启动本地 smoke server。
-- `tests/e2e/product-create.spec.ts` 依赖 `E2E_USERNAME` / `E2E_PASSWORD`，未配置时会自动跳过。
+- 真实预发入口使用 `npm run test:e2e:preprod`，至少需要 `E2E_BASE_URL`；可用 `E2E_PREPROD_SMOKE_PATH` 指定轻量健康检查路径。
+- `tests/e2e/product-create.spec.ts` 属于 `@preprod` 用例，依赖 `E2E_BASE_URL` 与 `E2E_USERNAME` / `E2E_PASSWORD`，未配置时会自动跳过；可用 `E2E_LOGIN_URL` / `E2E_PRODUCTS_URL` 覆盖登录和产品页路径。
 
 ## 生成产物
 - `npm run edge:generate` 会更新 `tests/integration/generated/*.spec.ts`。

@@ -4,8 +4,11 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   buildIntentE2ETrafficQualityReport,
+  classifyTrafficQualityDocumentFamily,
+  isIntentE2ETrafficQualityDevelopmentGateReady,
   recordIntentE2ETrafficQualityCounter,
   renderIntentE2ETrafficQualityMarkdown,
+  summarizeIntentE2ETrafficQualityDevelopmentGate,
   type IntentE2ETrafficQualityEvent,
 } from '@/lib/intent-e2e-traffic-quality';
 import type { IntentE2ERunSnapshotRecord, ProjectIntentDraftSummaryRecord } from '@/lib/db/repository';
@@ -103,6 +106,40 @@ function makeHistoricalIntentDraft(input: {
 }
 
 describe('intent e2e traffic quality', () => {
+  it('does not treat reference-only knowledge documents in business flows as document family signals', () => {
+    expect(
+      classifyTrafficQualityDocumentFamily({
+        input:
+          '参考知识文档《管帮手PC端操作手册》中关于商机批量加入通讯录的说明，在商机列表随机勾选一条带联系人手机号的商机，执行“批量加入通讯录”，然后进入我的通讯录按手机号搜索并验证该联系人可见。',
+        targetUrl: 'https://uat-service.yikaiye.com/#/business/businesslist',
+      })
+    ).toBe('');
+    expect(
+      classifyTrafficQualityDocumentFamily({
+        input: '在企业微信文档中搜索销售SOP，打开后校验标题和正文可见',
+        targetUrl: 'https://docs.qq.com/doc/search',
+      })
+    ).toBe('doc_search_open_verify');
+    expect(
+      classifyTrafficQualityDocumentFamily({
+        input: '打开项目知识文档工作台，导入一篇知识文档后重新预览并校验正文可见',
+        targetUrl: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+      })
+    ).toBe('doc_create_reopen_verify');
+    expect(
+      classifyTrafficQualityDocumentFamily({
+        input: '打开项目知识文档工作台，归档并恢复一篇知识文档，恢复后重新预览并校验正文可见',
+        targetUrl: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+      })
+    ).toBe('doc_archive_restore_verify');
+    expect(
+      classifyTrafficQualityDocumentFamily({
+        input: '打开项目知识文档工作台，点击自动沉淀能力，再到能力目录校验新生成的知识提炼稳定能力可见',
+        targetUrl: 'http://127.0.0.1:3666/projects/proj_default?intentView=knowledge',
+      })
+    ).toBe('doc_derive_capability_verify');
+  });
+
   it('keeps real clicks, benchmark reruns, and replay buckets separated', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'intent-traffic-quality-'));
     try {
@@ -444,6 +481,16 @@ describe('intent e2e traffic quality', () => {
       'doc_create_reopen_verify',
       'doc_edit_save_verify',
     ]);
+    expect(report.nextPlanRecommendation).toMatchObject({
+      status: 'bootstrap_real_click_samples',
+      sourcePolicy: 'historical_drafts_seed_only',
+      candidateFamilies: ['doc_create_reopen_verify', 'doc_edit_save_verify'],
+      developmentGate: {
+        status: 'blocked_on_real_click_readiness',
+        eligibleFamilies: [],
+      },
+    });
+    expect(report.nextPlanRecommendation.denominatorPolicy).toContain('历史意图草稿只作为 seed');
     expect(report.documentFamilySelection.candidates[0]).toMatchObject({
       family: 'doc_create_reopen_verify',
       historicalIntentDraftCount: 1,
@@ -549,6 +596,23 @@ describe('intent e2e traffic quality', () => {
         'doc_export_verify',
         'doc_share_permission_verify',
       ]);
+      expect(report.nextPlanRecommendation).toMatchObject({
+        status: 'ready_for_document_family_governance',
+        sourcePolicy: 'post_instrumentation_real_click_only',
+        candidateFamilies: ['doc_export_verify', 'doc_share_permission_verify'],
+        developmentGate: {
+          status: 'ready_for_document_family_governance',
+          eligibleFamilies: [
+            expect.objectContaining({ family: 'doc_export_verify', familyType: 'document' }),
+            expect.objectContaining({ family: 'doc_share_permission_verify', familyType: 'document' }),
+          ],
+        },
+        blockingReasons: [],
+      });
+      expect(isIntentE2ETrafficQualityDevelopmentGateReady(report.nextPlanRecommendation.developmentGate.status)).toBe(
+        true
+      );
+      expect(report.nextPlanRecommendation.denominatorPolicy).toContain('source=real_click');
       expect(report.documentFamilySelection.candidates).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -562,6 +626,222 @@ describe('intent e2e traffic quality', () => {
             withoutImageCount: 1,
           }),
         ])
+      );
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('recommends real_click priority family candidates when document traffic is absent', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'intent-traffic-quality-priority-family-'));
+    try {
+      const eventLogPath = path.join(tempDir, 'traffic.jsonl');
+      const base = {
+        projectUid: 'proj_traffic',
+        moduleUid: 'mod_traffic',
+        source: 'real_click' as const,
+        attachment: 'without_image' as const,
+        launchDecision: 'auto_run' as const,
+      };
+
+      for (const occurredAt of ['2026-04-29T10:00:00.000Z', '2026-04-29T10:01:00.000Z']) {
+        await recordIntentE2ETrafficQualityCounter(
+          {
+            ...base,
+            counter: 'launch_click_count',
+            priorityScenarioFamily: 'business_batch_add_contacts_verify',
+            occurredAt,
+            metadata: {
+              input: '进入商机列表随机勾选一条带手机号的商机，批量加入通讯录后按手机号搜索确认联系人可见',
+              targetUrl: 'https://example.test/#/business/businesslist',
+            },
+          },
+          { eventLogPath }
+        );
+        await recordIntentE2ETrafficQualityCounter(
+          {
+            ...base,
+            counter: 'auto_run_started_count',
+            priorityScenarioFamily: 'business_batch_add_contacts_verify',
+            runId: `intent-run-batch-${occurredAt}`,
+            occurredAt,
+            metadata: {
+              input: '进入商机列表随机勾选一条带手机号的商机，批量加入通讯录后按手机号搜索确认联系人可见',
+              targetUrl: 'https://example.test/#/business/businesslist',
+            },
+          },
+          { eventLogPath }
+        );
+      }
+
+      await recordIntentE2ETrafficQualityCounter(
+        {
+          ...base,
+          counter: 'launch_click_count',
+          priorityScenarioFamily: 'business_to_order',
+          occurredAt: '2026-04-29T10:02:00.000Z',
+          metadata: {
+            input: '进入商机详情后点击转订单并校验订单创建成功',
+            targetUrl: 'https://example.test/#/business/detail',
+          },
+        },
+        { eventLogPath }
+      );
+      await recordIntentE2ETrafficQualityCounter(
+        {
+          ...base,
+          counter: 'auto_run_started_count',
+          priorityScenarioFamily: 'business_to_order',
+          runId: 'intent-run-order',
+          occurredAt: '2026-04-29T10:02:30.000Z',
+          metadata: {
+            input: '进入商机详情后点击转订单并校验订单创建成功',
+            targetUrl: 'https://example.test/#/business/detail',
+          },
+        },
+        { eventLogPath }
+      );
+
+      const report = await buildIntentE2ETrafficQualityReport({
+        projectUid: 'proj_traffic',
+        generatedAt: '2026-04-29T10:10:00.000Z',
+        windowDays: 1,
+        eventLogPaths: [eventLogPath],
+        benchmarkReportPaths: [],
+        terminalSnapshots: [],
+        historicalIntentDrafts: [],
+        minRealClickLaunchClicks: 3,
+        minRealClickAutoRunStarts: 3,
+        minRealClickTerminalRuns: 0,
+      });
+
+      expect(report.sampleReadiness.readyForFamilySelection).toBe(true);
+      expect(report.documentFamilySelection.mode).toBe('no_document_candidates');
+      expect(report.nextPlanRecommendation).toMatchObject({
+        status: 'collect_document_real_click',
+        sourcePolicy: 'collect_more_real_click',
+        candidateFamilies: [],
+        developmentGate: {
+          status: 'ready_for_ungoverned_priority_family',
+          eligibleFamilies: [
+            expect.objectContaining({
+              family: 'business_batch_add_contacts_verify',
+              familyType: 'priority',
+            }),
+            expect.objectContaining({
+              family: 'business_to_order',
+              familyType: 'priority',
+            }),
+          ],
+        },
+      });
+      expect(report.nextPlanRecommendation.realClickPriorityFamilyCandidates.map((candidate) => candidate.family)).toEqual([
+        'business_batch_add_contacts_verify',
+        'business_to_order',
+      ]);
+      expect(report.nextPlanRecommendation.realClickPriorityFamilyCandidates[0]).toMatchObject({
+        family: 'business_batch_add_contacts_verify',
+        launchClickCount: 2,
+        autoRunStartedCount: 2,
+        governanceStatus: 'unknown',
+        releaseGuardStatus: 'missing',
+        knowledgeHitStatus: 'missing',
+      });
+      expect(report.nextPlanRecommendation.denominatorPolicy).toContain('realClickPriorityFamilyCandidates');
+      expect(report.nextPlanRecommendation.recommendedAction).toContain('business_batch_add_contacts_verify');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('marks governed priority family candidates so ready families are not repeated as next work', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'intent-traffic-quality-priority-governance-'));
+    try {
+      const eventLogPath = path.join(tempDir, 'traffic.jsonl');
+
+      await recordIntentE2ETrafficQualityCounter(
+        {
+          counter: 'launch_click_count',
+          projectUid: 'proj_traffic',
+          moduleUid: 'mod_traffic',
+          source: 'real_click',
+          attachment: 'without_image',
+          launchDecision: 'auto_run',
+          priorityScenarioFamily: 'business_batch_add_contacts_verify',
+          occurredAt: '2026-04-29T10:00:00.000Z',
+          metadata: {
+            input: '进入商机列表随机勾选一条带手机号的商机，批量加入通讯录后按手机号搜索确认联系人可见',
+            targetUrl: 'https://example.test/#/business/businesslist',
+          },
+        },
+        { eventLogPath }
+      );
+      await recordIntentE2ETrafficQualityCounter(
+        {
+          counter: 'auto_run_started_count',
+          projectUid: 'proj_traffic',
+          moduleUid: 'mod_traffic',
+          source: 'real_click',
+          attachment: 'without_image',
+          launchDecision: 'auto_run',
+          priorityScenarioFamily: 'business_batch_add_contacts_verify',
+          runId: 'intent-run-batch-ready',
+          occurredAt: '2026-04-29T10:01:00.000Z',
+          metadata: {
+            input: '进入商机列表随机勾选一条带手机号的商机，批量加入通讯录后按手机号搜索确认联系人可见',
+            targetUrl: 'https://example.test/#/business/businesslist',
+          },
+        },
+        { eventLogPath }
+      );
+
+      const report = await buildIntentE2ETrafficQualityReport({
+        projectUid: 'proj_traffic',
+        generatedAt: '2026-04-29T10:10:00.000Z',
+        windowDays: 1,
+        eventLogPaths: [eventLogPath],
+        benchmarkReportPaths: [],
+        terminalSnapshots: [],
+        historicalIntentDrafts: [],
+        priorityFamilyGovernance: [
+          {
+            family: 'business_batch_add_contacts_verify',
+            governanceStatus: 'ready',
+            releaseGuardStatus: 'passed',
+            knowledgeHitStatus: 'passed',
+            evidencePaths: ['reports/ready-release.json', 'artifacts/ready-knowledge.json'],
+          },
+        ],
+        minRealClickLaunchClicks: 1,
+        minRealClickAutoRunStarts: 1,
+        minRealClickTerminalRuns: 0,
+      });
+
+      expect(report.documentFamilySelection.mode).toBe('no_document_candidates');
+      expect(report.nextPlanRecommendation.realClickPriorityFamilyCandidates[0]).toMatchObject({
+        family: 'business_batch_add_contacts_verify',
+        governanceStatus: 'ready',
+        releaseGuardStatus: 'passed',
+        knowledgeHitStatus: 'passed',
+        governanceEvidencePaths: ['reports/ready-release.json', 'artifacts/ready-knowledge.json'],
+      });
+      expect(report.nextPlanRecommendation.developmentGate).toMatchObject({
+        status: 'no_admissible_code_work',
+        eligibleFamilies: [],
+        blockingReasons: expect.arrayContaining([
+          '最近窗口没有 document-like real_click 请求。',
+          '真实流量 top priority families 已经 release / knowledge ready。',
+        ]),
+      });
+      expect(isIntentE2ETrafficQualityDevelopmentGateReady(report.nextPlanRecommendation.developmentGate.status)).toBe(
+        false
+      );
+      expect(summarizeIntentE2ETrafficQualityDevelopmentGate(report.nextPlanRecommendation.developmentGate)).toContain(
+        'development_gate=no_admissible_code_work'
+      );
+      expect(report.nextPlanRecommendation.recommendedAction).toContain('已具备 release / knowledge ready');
+      expect(report.nextPlanRecommendation.acceptanceCriteria).toEqual(
+        expect.arrayContaining(['若真实 top family 已是 ready，不要重复治理同一 family；应转向补真实 document traffic 或寻找未治理 family。'])
       );
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -593,6 +873,12 @@ describe('intent e2e traffic quality', () => {
     expect(markdown).toContain('## OCR Metrics');
     expect(markdown).toContain('draft_generated.ocr_used_rate');
     expect(markdown).toContain('## Document Family Selection');
+    expect(markdown).toContain('## Next Plan Recommendation');
+    expect(markdown).toContain('denominatorPolicy');
+    expect(markdown).toContain('realClickPriorityFamilyCandidates');
+    expect(markdown).toContain('developmentGate.status');
+    expect(markdown).toContain('eligible_family | family_type | reason');
+    expect(markdown).toContain('governance | release_guard | knowledge_hit');
     expect(markdown).toContain('real_click');
     expect(markdown).toContain('source | attachment | launchDecision | priorityScenarioFamily');
   });

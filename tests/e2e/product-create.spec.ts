@@ -2,11 +2,13 @@ import { test, expect } from '@playwright/test';
 
 const LOGIN_URL = process.env.E2E_LOGIN_URL || '/login';
 const PRODUCTS_URL = process.env.E2E_PRODUCTS_URL || '/ai-sales-assist/products';
+const BASE_URL = process.env.E2E_BASE_URL;
 const USERNAME = process.env.E2E_USERNAME;
 const PASSWORD = process.env.E2E_PASSWORD;
 
-test('新增产品：保存成功', async ({ page }) => {
+test('新增产品：保存成功 @preprod', async ({ page }) => {
   test.setTimeout(90_000);
+  test.skip(!BASE_URL, '请先设置 E2E_BASE_URL');
   test.skip(!USERNAME || !PASSWORD, '请先设置 E2E_USERNAME / E2E_PASSWORD');
 
   const productName = `自动化测试产品-${Date.now()}`;

@@ -1,0 +1,152 @@
+{
+  "version": 1,
+  "benchmarkUid": "bench_da6e56a79d3c",
+  "label": "phase22-modal-formal-real-click-governance-baseline",
+  "releaseCandidate": "phase22-modal-real-click-governance-2026-05-07",
+  "frozenAt": "2026-05-07T09:21:49.514Z",
+  "scope": {
+    "projectUid": "proj_default",
+    "moduleUid": "",
+    "testTypes": [],
+    "runnerTypes": [],
+    "priorityScenarioFamily": "modal_or_drawer_save"
+  },
+  "proofWindow": {
+    "mode": "non_weak",
+    "note": "non_weak proof window 仅纳入 taskMode 明确且 stepCount > 0 的 benchmark cases；unknown taskMode / no_steps case 会被显式隔离，不主导 family gate。",
+    "excludedWeakCaseCount": 0,
+    "excludedWeakCases": []
+  },
+  "source": {
+    "runLimit": 200,
+    "generatedFromRuns": 88,
+    "candidateClusters": 5,
+    "recommendedCount": 5,
+    "recommendedFamilies": [
+      "complex_enterprise_flow"
+    ],
+    "selectionNote": "固定评测候选按 snapshot signature 聚类，优先保留高频、复杂、失败或依赖 repair 的真实业务流。 当前冻结显式启用了 non_weak proof window，会隔离 taskMode=unknown 或 stepCount=0 的 weak case。",
+    "selectedEvalCaseIds": [
+      "eval_complex_enterprise_flow_scenario_commission_subcommissionconfig_ui_assert"
+    ]
+  },
+  "summary": {
+    "caseCount": 1,
+    "runCount": 18,
+    "passedRuns": 18,
+    "failedRuns": 0,
+    "canceledRuns": 0,
+    "repairAttemptedRuns": 0,
+    "blockedRuns": 0,
+    "blockedRate": 0,
+    "knowledgeHitRuns": 6,
+    "knowledgeHitRate": 33.3,
+    "experienceHitRuns": 18,
+    "experienceHitRate": 100,
+    "experienceHelpedFirstPassRuns": 18,
+    "experienceHelpedFirstPassRate": 100,
+    "experienceHelpedTerminalPassRuns": 18,
+    "experienceHelpedTerminalPassRate": 100,
+    "recipeHitRuns": 18,
+    "recipeHitRate": 100,
+    "playbookHitRuns": 18,
+    "playbookHitRate": 100,
+    "untrackedRuns": 0,
+    "untrackedRate": 0,
+    "reviewWrittenRuns": 18,
+    "reviewWriteRate": 100,
+    "latestFinishedAt": "2026-05-07T09:19:48.142Z",
+    "firstPassPassedRuns": 18,
+    "firstPassPassRate": 100,
+    "repairedPassRuns": 0,
+    "repairedPassRate": 0,
+    "terminalPassRate": 100,
+    "topFailureReasons": []
+  },
+  "cases": [
+    {
+      "evalCaseId": "eval_complex_enterprise_flow_scenario_commission_subcommissionconfig_ui_assert",
+      "snapshotSignature": "complex_enterprise_flow|scenario|/commission/subCommissionConfig|ui+assert",
+      "scenarioFamily": "complex_enterprise_flow",
+      "scenarioFamilyLabel": "复杂企业流程",
+      "priorityScenarioFamily": "modal_or_drawer_save",
+      "taskMode": "scenario",
+      "targetPath": "/commission/subCommissionConfig",
+      "stepTypes": [
+        "ui",
+        "assert"
+      ],
+      "stepCount": 6,
+      "moduleUids": [
+        "mod_1773388880716_36c8bb73"
+      ],
+      "testTypes": [
+        "browser_e2e"
+      ],
+      "runnerTypes": [
+        "playwright_runner"
+      ],
+      "representativeScenarioTitle": "修改服务分佣配置-商机创建人比例为35%",
+      "representativeRequestInput": "参考已跑通正式任务「修改分佣配置」重新发起真实 AI E2E：登录后进入服务分佣配置页，按关键词379搜索目标服务，打开结果行“分佣配置”弹框，将“商机创建人”佣金比例修改为35%，点击保存并校验成功提示及弹框关闭。",
+      "representativeRunIds": [
+        "intent-run-0f259057-ac8a-4a21-8246-1a783a103715",
+        "intent-run-2e932406-2d72-44ca-ac30-08b09b57d7dc",
+        "intent-run-34753096-dbd0-43f7-9fed-d8f4790d15f6"
+      ],
+      "matchedRecipeSlugs": [
+        "commission.service-ratio-config",
+        "intent.intent-modal-or-drawer-save-visible-container",
+        "intent.modal-or-drawer-save.visible-container",
+        "ui.antd-modal-drawer-save"
+      ],
+      "matchedRuleIds": [
+        "commission.service-ratio-config"
+      ],
+      "matchedRuleTitles": [
+        "服务分佣配置保存"
+      ],
+      "usedHelpers": [
+        "__e2e.clickAntdRowAction",
+        "__e2e.ensureLoggedIn",
+        "__e2e.waitForVisibleAntdModal"
+      ],
+      "keySignals": [
+        "ant_modal_resolved"
+      ],
+      "failureClasses": [],
+      "priority": "p0",
+      "selectionReason": "复杂企业流程；高频样本 18 runs",
+      "frozenMetrics": {
+        "runCount": 18,
+        "passedRuns": 18,
+        "failedRuns": 0,
+        "canceledRuns": 0,
+        "repairAttemptedRuns": 0,
+        "blockedRuns": 0,
+        "blockedRate": 0,
+        "knowledgeHitRuns": 6,
+        "knowledgeHitRate": 33.3,
+        "experienceHitRuns": 18,
+        "experienceHitRate": 100,
+        "experienceHelpedFirstPassRuns": 18,
+        "experienceHelpedFirstPassRate": 100,
+        "experienceHelpedTerminalPassRuns": 18,
+        "experienceHelpedTerminalPassRate": 100,
+        "recipeHitRuns": 18,
+        "recipeHitRate": 100,
+        "playbookHitRuns": 18,
+        "playbookHitRate": 100,
+        "untrackedRuns": 0,
+        "untrackedRate": 0,
+        "reviewWrittenRuns": 18,
+        "reviewWriteRate": 100,
+        "latestFinishedAt": "2026-05-07T09:19:48.142Z",
+        "firstPassPassedRuns": 18,
+        "firstPassPassRate": 100,
+        "repairedPassRuns": 0,
+        "repairedPassRate": 0,
+        "terminalPassRate": 100
+      }
+    }
+  ]
+}

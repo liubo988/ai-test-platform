@@ -34,6 +34,11 @@ import {
 import { readExecutionEntryNavigationTargets } from '@/lib/execution-entry-navigation';
 import { describeExecutionOutcome } from '@/lib/execution-outcome';
 import {
+  filterCapabilityVerificationBatchItems,
+  summarizeCapabilityVerificationBatchFailures,
+  type CapabilityVerificationBatchItemFilter,
+} from '@/lib/capability-verification-batch-view';
+import {
   collectIntentStarterHelperHealthGovernanceCapabilityItems,
   isIntentStarterHelperHighFailureSuppressed,
   resolveIntentSuppressedStarterHelperGovernanceTargets,
@@ -943,6 +948,20 @@ function capabilityVerificationRecommendationTone(value: CapabilityVerificationR
   }
 }
 
+function executionOutcomeToneClass(value: 'emerald' | 'slate' | 'amber' | 'rose'): string {
+  switch (value) {
+    case 'emerald':
+      return 'bg-emerald-50 text-emerald-700 ring-emerald-200';
+    case 'amber':
+      return 'bg-amber-50 text-amber-700 ring-amber-200';
+    case 'rose':
+      return 'bg-rose-50 text-rose-700 ring-rose-200';
+    case 'slate':
+    default:
+      return 'bg-slate-100 text-slate-600 ring-slate-200';
+  }
+}
+
 function capabilityVerificationQueueFocusLabel(value: CapabilityVerificationQueueFocus): string {
   switch (value) {
     case 'promotion':
@@ -1473,6 +1492,8 @@ export default function ProjectIntentWorkbench({
   const [capabilityVerificationQueueError, setCapabilityVerificationQueueError] = useState('');
   const [capabilityVerificationQueueLoadedProjectUid, setCapabilityVerificationQueueLoadedProjectUid] = useState('');
   const [capabilityVerificationQueueFocus, setCapabilityVerificationQueueFocus] = useState<CapabilityVerificationQueueFocus>('auto');
+  const [capabilityVerificationBatchItemFilter, setCapabilityVerificationBatchItemFilter] =
+    useState<CapabilityVerificationBatchItemFilter>('all');
   const [selectedCapabilityUids, setSelectedCapabilityUids] = useState<string[]>([]);
   const [bulkCapabilityAction, setBulkCapabilityAction] = useState<'' | 'archive' | 'verify' | 'repair'>('');
   const [capabilityVerificationBatches, setCapabilityVerificationBatches] = useState<CapabilityVerificationBatch[]>([]);
@@ -1898,6 +1919,14 @@ export default function ProjectIntentWorkbench({
   };
   const activeCapabilityVerificationBatchCount = useMemo(
     () => capabilityVerificationBatches.filter((item) => !item.completedAt).length,
+    [capabilityVerificationBatches]
+  );
+  const pendingSyncCapabilityVerificationBatchItemCount = useMemo(
+    () =>
+      capabilityVerificationBatches.reduce(
+        (sum, batch) => sum + filterCapabilityVerificationBatchItems(batch.items, 'pending_sync').length,
+        0
+      ),
     [capabilityVerificationBatches]
   );
   const activeCapabilityVerificationBatchSignature = useMemo(
@@ -6632,6 +6661,22 @@ export default function ProjectIntentWorkbench({
             <p className="mt-1 text-[11px] leading-5 text-slate-400">启动后会自动轮询执行状态，并在 capability `meta` 回写完成后刷新目录。</p>
           </div>
           <div className="flex flex-wrap gap-2">
+            {pendingSyncCapabilityVerificationBatchItemCount > 0 && (
+              <button
+                onClick={() =>
+                  setCapabilityVerificationBatchItemFilter((current) => (current === 'pending_sync' ? 'all' : 'pending_sync'))
+                }
+                className={`h-8 rounded-lg border px-3 text-[11px] font-medium transition ${
+                  capabilityVerificationBatchItemFilter === 'pending_sync'
+                    ? 'border-sky-300 bg-sky-50 text-sky-700 hover:bg-sky-100'
+                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                {capabilityVerificationBatchItemFilter === 'pending_sync'
+                  ? '显示全部'
+                  : `只看未回写项 (${pendingSyncCapabilityVerificationBatchItemCount})`}
+              </button>
+            )}
             <button
               onClick={() => void refreshCapabilityVerificationBatches()}
               disabled={activeCapabilityVerificationBatchCount === 0}
@@ -6658,6 +6703,8 @@ export default function ProjectIntentWorkbench({
             const failedCount = batch.items.filter((item) => item.status === 'failed' || item.status === 'canceled').length;
             const syncedCount = batch.items.filter((item) => item.synced).length;
             const pendingSyncCount = batch.items.filter((item) => isTerminalExecutionStatus(item.status) && !item.synced).length;
+            const visibleBatchItems = filterCapabilityVerificationBatchItems(batch.items, capabilityVerificationBatchItemFilter);
+            const failureGroups = summarizeCapabilityVerificationBatchFailures(batch.items);
             const active = !batch.completedAt;
             const batchKind = describeCapabilityVerificationBatchKind({
               mode: batch.mode,
@@ -6739,24 +6786,49 @@ export default function ProjectIntentWorkbench({
                       等待回写 {pendingSyncCount}
                     </span>
                   )}
+                  {capabilityVerificationBatchItemFilter === 'pending_sync' && (
+                    <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] text-sky-700 ring-1 ring-sky-200">
+                      当前只看未回写 {visibleBatchItems.length}
+                    </span>
+                  )}
                 </div>
 
-                <div className="mt-3 grid gap-2 lg:grid-cols-2">
-                  {batch.items.map((item) => {
+                {failureGroups.length > 0 && (
+                  <div className="mt-3 rounded-xl border border-rose-100 bg-rose-50/60 px-3 py-3 text-[11px] leading-5 text-rose-700">
+                    <p className="font-medium text-rose-800">失败原因聚合</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {failureGroups.map((group) => (
+                        <div
+                          key={`${group.kind}-${group.title}`}
+                          className="rounded-lg border border-white/80 bg-white px-2.5 py-2 text-[11px] text-slate-600"
+                        >
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className={`rounded-full px-2 py-0.5 text-[10px] ring-1 ${executionOutcomeToneClass(group.tone)}`}>
+                              {group.shortLabel}
+                            </span>
+                            <span className="font-medium text-slate-800">{group.title}</span>
+                            <span className="text-slate-400">x{group.count}</span>
+                          </div>
+                          <p className="mt-1 text-slate-500">
+                            {group.repairRecommended ? '建议进入修复闭环' : '优先补齐前置条件或环境'}
+                            {group.examples.length > 0 ? `：${summarizeShortTextList(group.examples, 3)}` : ''}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {visibleBatchItems.length > 0 ? (
+                  <div className="mt-3 grid gap-2 lg:grid-cols-2">
+                    {visibleBatchItems.map((item) => {
                     const outcome = describeExecutionOutcome({
                       status: item.status,
                       resultSummary: item.resultSummary,
                       errorMessage: item.errorMessage,
                     });
                     const navigation = readExecutionEntryNavigationTargets(item);
-                    const outcomeToneClass =
-                      outcome.tone === 'emerald'
-                        ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
-                        : outcome.tone === 'amber'
-                          ? 'bg-amber-50 text-amber-700 ring-amber-200'
-                          : outcome.tone === 'rose'
-                            ? 'bg-rose-50 text-rose-700 ring-rose-200'
-                            : 'bg-slate-100 text-slate-600 ring-slate-200';
+                    const outcomeToneClass = executionOutcomeToneClass(outcome.tone);
 
                     return (
                       <div key={`${batch.batchUid}-${item.executionUid}`} className="rounded-xl border border-slate-200 bg-white px-3 py-3">
@@ -6829,7 +6901,12 @@ export default function ProjectIntentWorkbench({
                       </div>
                     );
                   })}
-                </div>
+                  </div>
+                ) : (
+                  <p className="mt-3 rounded-xl border border-sky-100 bg-white px-3 py-3 text-[11px] leading-5 text-slate-500">
+                    当前批次没有未回写的终态执行项。
+                  </p>
+                )}
               </div>
             );
           })}

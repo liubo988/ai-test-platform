@@ -1,5 +1,17 @@
 export type LLMProvider = 'openai' | 'gemini' | 'claude';
 export type LLMApiStyle = 'auto' | 'responses' | 'chat';
+export type LLMProviderAdapterStatus = 'implemented' | 'placeholder';
+
+export interface LLMProviderOption {
+  provider: LLMProvider;
+  label: string;
+  adapterStatus: LLMProviderAdapterStatus;
+  implemented: boolean;
+  defaultModel: string;
+  defaultBaseUrl: string;
+  supportedApiStyles: LLMApiStyle[];
+  note: string;
+}
 
 export interface LLMRuntimeConfig {
   provider: LLMProvider;
@@ -26,9 +38,50 @@ export interface LLMRuntimeOverrides {
   maxPlanSteps?: number;
 }
 
-function normalizeProvider(value: string | undefined): LLMProvider {
+const LLM_PROVIDER_ORDER: LLMProvider[] = ['openai', 'gemini', 'claude'];
+
+const LLM_PROVIDER_OPTIONS: Record<LLMProvider, LLMProviderOption> = {
+  openai: {
+    provider: 'openai',
+    label: 'OpenAI',
+    adapterStatus: 'implemented',
+    implemented: true,
+    defaultModel: 'gpt-4-turbo',
+    defaultBaseUrl: 'https://api.openai.com/v1',
+    supportedApiStyles: ['auto', 'responses', 'chat'],
+    note: '当前唯一已接入执行层的 provider。',
+  },
+  gemini: {
+    provider: 'gemini',
+    label: 'Gemini',
+    adapterStatus: 'placeholder',
+    implemented: false,
+    defaultModel: '',
+    defaultBaseUrl: '',
+    supportedApiStyles: ['auto'],
+    note: '仅预留配置位，尚未接入执行层 adapter。',
+  },
+  claude: {
+    provider: 'claude',
+    label: 'Claude',
+    adapterStatus: 'placeholder',
+    implemented: false,
+    defaultModel: '',
+    defaultBaseUrl: '',
+    supportedApiStyles: ['auto'],
+    note: '仅预留配置位，尚未接入执行层 adapter。',
+  },
+};
+
+function toKnownProvider(value: string | undefined): LLMProvider | null {
   const normalized = `${value || 'openai'}`.trim().toLowerCase();
-  if (normalized === 'gemini' || normalized === 'claude') return normalized;
+  if (normalized === 'openai' || normalized === 'gemini' || normalized === 'claude') return normalized;
+  return null;
+}
+
+function normalizeProvider(value: string | undefined): LLMProvider {
+  const known = toKnownProvider(value);
+  if (known) return known;
   return 'openai';
 }
 
@@ -77,8 +130,21 @@ export function getLLMRuntimeConfig(overrides: LLMRuntimeOverrides = {}): LLMRun
   };
 }
 
+export function listLLMProviderOptions(): LLMProviderOption[] {
+  return LLM_PROVIDER_ORDER.map((provider) => ({ ...LLM_PROVIDER_OPTIONS[provider] }));
+}
+
+export function getLLMProviderOption(provider: string | undefined): LLMProviderOption {
+  return { ...LLM_PROVIDER_OPTIONS[normalizeProvider(provider)] };
+}
+
+export function isLLMProviderImplemented(provider: string | undefined): boolean {
+  const knownProvider = toKnownProvider(provider);
+  return knownProvider ? LLM_PROVIDER_OPTIONS[knownProvider].implemented : false;
+}
+
 export function assertSupportedLLMProvider(config: LLMRuntimeConfig): void {
-  if (config.provider === 'openai') return;
+  if (isLLMProviderImplemented(config.provider)) return;
 
   throw new Error(
     `当前已预留 provider=${config.provider} 的配置位，但仓库目前只实现了 openai 适配器；请先切回 openai，或后续补充 ${config.provider} provider。`

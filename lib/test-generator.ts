@@ -41,6 +41,7 @@ import {
   type IntentE2EPriorityScenarioFamilyRoute,
   type IntentE2EPriorityScenarioFamily,
 } from './intent-e2e-priority-scenario-family';
+import { buildProjectKnowledgeDocumentImportPreviewPlanCode } from './intent-e2e-project-knowledge-document-template';
 import type {
   IntentExecutionBaseCodeSource,
   IntentExecutionStructuredPatch,
@@ -1437,6 +1438,7 @@ function looksLikeBusinessCreateTask(snapshot: PageSnapshot, description: string
 
   return (
     intentHaystack.includes('创建商机') ||
+    intentHaystack.includes('新建商机') ||
     intentHaystack.includes('新增商机') ||
     intentHaystack.includes('createbusiness') ||
     intentHaystack.includes('主链路提交') ||
@@ -1452,6 +1454,38 @@ function looksLikeBusinessBatchAddContactsTask(snapshot: PageSnapshot, descripti
     (intentHaystack.includes('批量加入通讯录') || (intentHaystack.includes('加入通讯录') && intentHaystack.includes('通讯录'))) &&
     (intentHaystack.includes('商机列表') || taskHaystack.includes('/business/businesslist') || taskHaystack.includes('首页商机列表'))
   );
+}
+
+function looksLikeProjectKnowledgeDocumentTask(snapshot: PageSnapshot, description: string, context?: GenerateTestContext): boolean {
+  const intentHaystack = buildIntentHaystack(description, context);
+  const taskHaystack = buildTaskHaystack(snapshot, description, context);
+  const hasProjectKnowledgeSurface =
+    taskHaystack.includes('/projects/') ||
+    taskHaystack.includes('intentview=knowledge') ||
+    taskHaystack.includes('项目知识') ||
+    taskHaystack.includes('知识文档') ||
+    taskHaystack.includes('导入知识文档') ||
+    intentHaystack.includes('项目知识') ||
+    intentHaystack.includes('知识文档');
+  const hasDocumentImportIntent =
+    intentHaystack.includes('导入知识') ||
+    intentHaystack.includes('导入一篇') ||
+    intentHaystack.includes('上传文档') ||
+    intentHaystack.includes('文档导入') ||
+    intentHaystack.includes('知识文档内容');
+  const hasPreviewVerification =
+    intentHaystack.includes('预览') ||
+    intentHaystack.includes('文档块') ||
+    intentHaystack.includes('正文锚点') ||
+    intentHaystack.includes('校验');
+
+  return hasProjectKnowledgeSurface && hasDocumentImportIntent && hasPreviewVerification;
+}
+
+function buildProjectKnowledgeDocumentImportPreviewTemplate(snapshot: PageSnapshot, context?: GenerateTestContext): string {
+  const targetUrl = context?.scenarioEntryUrl?.trim() || snapshot.url?.trim() || '';
+  if (!targetUrl) return '';
+  return buildProjectKnowledgeDocumentImportPreviewPlanCode(targetUrl);
 }
 
 function looksLikeCompanySearchTask(snapshot: PageSnapshot, description: string, context?: GenerateTestContext): boolean {
@@ -1653,6 +1687,41 @@ function buildBusinessBatchAddContactsTemplate(): string {
     return '';
   };
 
+  async function waitForBusinessListToSettle() {
+    await page
+      .waitForFunction(() => !document.querySelector('.ant-spin-spinning'), { timeout: 10000 })
+      .catch(() => {});
+    await page.waitForTimeout(600);
+  }
+
+  async function resetBusinessListFilters() {
+    const keywordInput = page.locator('input#businessList_keywords:visible').first();
+    await keywordInput.fill('').catch(() => {});
+
+    let resetApplied = false;
+    const clearAllFilters = page.getByText(/^全部清除$/).first();
+    if (await clearAllFilters.isVisible({ timeout: 2500 }).catch(() => false)) {
+      await clearAllFilters.click({ timeout: 10000 });
+      resetApplied = true;
+    } else {
+      const resetButton = page.getByRole('button', { name: /重\s*置|清\s*空/ }).first();
+      if (await resetButton.isVisible({ timeout: 1500 }).catch(() => false)) {
+        await resetButton.click({ timeout: 10000 });
+        resetApplied = true;
+      }
+    }
+
+    if (!resetApplied) {
+      const searchButton = page.getByRole('button', { name: /搜\s*索/ }).first();
+      if (await searchButton.isVisible({ timeout: 1500 }).catch(() => false)) {
+        await searchButton.click({ timeout: 10000 });
+      }
+    }
+
+    console.log('[BATCH-CONTACTS-FILTER-RESET]', resetApplied ? 'applied' : 'search_refreshed');
+    await waitForBusinessListToSettle();
+  }
+
   async function waitForRowsOrPlaceholder() {
     await page.waitForFunction(() => {
       const rowCount = document.querySelectorAll('.ant-table .ant-table-tbody > tr').length;
@@ -1705,8 +1774,9 @@ function buildBusinessBatchAddContactsTemplate(): string {
     }, stageLabels);
   }
 
+  await resetBusinessListFilters();
   await waitForRowsOrPlaceholder();
-  await page.waitForTimeout(1500);
+  await waitForBusinessListToSettle();
 
   let { businessRows, rowDebug } = await collectBusinessRows();
   let selectedStage = '';
@@ -2044,6 +2114,13 @@ function buildBusinessCreateToOrderTemplate(existingExample: string): string {
   return next.trim();
 }
 
+function buildBusinessCreateListVerifyTemplate(existingExample: string): string {
+  const template = existingExample.trim();
+  if (!template) return '';
+  if (/createOrder|生成订单|确定订单信息|商机并生成订单/i.test(template)) return '';
+  return template;
+}
+
 type DeterministicRecipeTemplateInput = {
   snapshot: PageSnapshot;
   description: string;
@@ -2055,10 +2132,9 @@ const RECIPE_FIRST_TEMPLATE_RESOLVERS: Record<string, (input: DeterministicRecip
   'business.batch-add-contacts': () => buildBusinessBatchAddContactsTemplate(),
   'commission.service-ratio-config': ({ snapshot, description, context }) =>
     buildServiceCommissionConfigTemplate(snapshot, description, context),
-  'business.create-to-order': ({ snapshot, description, existingExample, context }) =>
-    looksLikeBusinessCreateOrderTask(snapshot, description, context)
-      ? buildBusinessCreateToOrderTemplate(existingExample)
-      : '',
+  'business.create': ({ existingExample }) => buildBusinessCreateListVerifyTemplate(existingExample),
+  'business.create-to-order': ({ existingExample }) =>
+    buildBusinessCreateToOrderTemplate(existingExample),
 };
 
 function resolveDeterministicRecipeTemplate(
@@ -2099,10 +2175,18 @@ export function resolveDeterministicTemplate(
     return buildServiceCommissionConfigTemplate(snapshot, description, context);
   }
 
+  if (looksLikeProjectKnowledgeDocumentTask(snapshot, description, context)) {
+    return buildProjectKnowledgeDocumentImportPreviewTemplate(snapshot, context);
+  }
+
   if (!existingExample.trim()) return '';
 
   if (looksLikeBusinessCreateOrderTask(snapshot, description, context)) {
     return buildBusinessCreateToOrderTemplate(existingExample);
+  }
+
+  if (looksLikeBusinessCreateTask(snapshot, description, context)) {
+    return buildBusinessCreateListVerifyTemplate(existingExample);
   }
 
   return '';
@@ -7414,6 +7498,47 @@ function sanitizeBusinessCreateListVerifyStep3(code: string): string {
   return replaceIntentExecutionSlotCode(code, 'plan_step_3', sanitizeBusinessCreateListVerifyStep3Slot);
 }
 
+function sanitizeBusinessCreateListVerifyMergedStep3SubmitSlot(slotCode: string): string {
+  const hasLegacyMergedSubmitShape =
+    /if\s*\(!submitButton\)\s*throw new Error\(['"]未在末页容器内找到最终提交按钮['"]\);/.test(slotCode) &&
+    /const createResp\s*=\s*__e2e\.waitForApiResponse\(page,\s*\{\s*urlIncludes:\s*['"]\/business['"]/.test(slotCode) &&
+    /artifacts\.plan_step_3\s*=\s*await createResp;/.test(slotCode) &&
+    /__e2e\.observeSubmitState\(page,\s*\{\s*submitButton,\s*urlIncludes:\s*['"]#\/business\/businesslist['"]/.test(slotCode);
+  if (!hasLegacyMergedSubmitShape || /plan_step_3_submitOutcome/.test(slotCode)) {
+    return slotCode;
+  }
+
+  const firstContentLine = slotCode.split('\n').find((line) => line.trim()) || '';
+  const indent = firstContentLine.match(/^\s*/)?.[0] || '    ';
+  const replacement = [
+    `${indent}if (!submitButton) {`,
+    `${indent}  const alreadyOnBusinessList = page.url().includes('#/business/businesslist');`,
+    `${indent}  const listKeywordInput = page.locator('input#businessList_keywords:visible').first();`,
+    `${indent}  const listReady = alreadyOnBusinessList && (await listKeywordInput.count().catch(() => 0)) > 0;`,
+    `${indent}  if (!listReady) throw new Error('未在末页容器内找到最终提交按钮');`,
+    `${indent}  shared.createdBusinessKey = String(shared.createdBusinessKey || artifacts.leadMobile || artifacts.leadContactName || '').trim();`,
+    `${indent}  artifacts.plan_step_3 = null;`,
+    `${indent}  artifacts.plan_step_3_submitOutcome = 'already_returned_to_business_list';`,
+    `${indent}} else {`,
+    `${indent}  await submitButton.scrollIntoViewIfNeeded();`,
+    `${indent}  const createResp = __e2e.waitForApiResponse(page, { urlIncludes: '/business', method: 'POST' });`,
+    `${indent}  await submitButton.click({ force: true });`,
+    `${indent}  artifacts.plan_step_3 = await createResp;`,
+    '',
+    `${indent}  await __e2e.observeSubmitState(page, { submitButton, urlIncludes: '#/business/businesslist' });`,
+    `${indent}}`,
+  ].join('\n');
+
+  return slotCode.replace(
+    /([ \t]*)if\s*\(!submitButton\)\s*throw new Error\(['"]未在末页容器内找到最终提交按钮['"]\);\n\n\s*await submitButton\.scrollIntoViewIfNeeded\(\);\n\s*const createResp\s*=\s*__e2e\.waitForApiResponse\(page,\s*\{\s*urlIncludes:\s*['"]\/business['"],\s*method:\s*['"]POST['"]\s*\}\);\n\s*await submitButton\.click\(\{\s*force:\s*true\s*\}\);\n\s*artifacts\.plan_step_3\s*=\s*await createResp;\n\n\s*await __e2e\.observeSubmitState\(page,\s*\{\s*submitButton,\s*urlIncludes:\s*['"]#\/business\/businesslist['"]\s*\}\);/,
+    replacement
+  );
+}
+
+function sanitizeBusinessCreateListVerifyMergedStep3Submit(code: string): string {
+  return replaceIntentExecutionSlotCode(code, 'plan_step_3', sanitizeBusinessCreateListVerifyMergedStep3SubmitSlot);
+}
+
 function sanitizeBusinessCreateListVerifyStep4Slot(slotCode: string): string {
   const hasCreateOrderContamination =
     /attachmentAnchor/.test(slotCode) &&
@@ -7611,6 +7736,7 @@ export function sanitizeGeneratedCode(code: string): string {
   if (businessCreateListVerify) {
     next = sanitizeBusinessCreateListVerifyStep2(next);
     next = sanitizeBusinessCreateListVerifyStep3(next);
+    next = sanitizeBusinessCreateListVerifyMergedStep3Submit(next);
     next = sanitizeBusinessCreateListVerifyStep4(next);
     next = sanitizeBusinessCreateListVerifyStep6(next);
   }

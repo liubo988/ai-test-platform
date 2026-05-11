@@ -578,6 +578,63 @@ function buildReleaseStatusReport() {
   };
 }
 
+function buildBlockedReleaseStatusReport() {
+  const report = buildReleaseStatusReport();
+  return {
+    ...report,
+    status: 'blocked',
+    canRelease: false,
+    summary: {
+      ...report.summary,
+      passedChecks: 2,
+      failedChecks: 1,
+      readyFamilies: 2,
+      blockedFamilies: 1,
+    },
+    currentCompare: {
+      ...report.currentCompare,
+      status: 'failed',
+      passed: false,
+      summary: {
+        ...report.currentCompare.summary,
+        passedBaselines: 2,
+        failedBaselines: 1,
+        regressedCases: 1,
+      },
+      message: '最近一次 release guard compare 未通过。',
+    },
+    checks: report.checks.map((check) =>
+      check.id === 'release_guard_current_compare'
+        ? {
+            ...check,
+            status: 'failed',
+            blocking: true,
+            message: '最近一次 release guard compare 未通过：list_search_detail 出现回归。',
+            metrics: {
+              ...check.metrics,
+              failedBaselines: 1,
+              regressedCases: 1,
+            },
+          }
+        : check
+    ),
+    families: report.families.map((family) =>
+      family.priorityScenarioFamily === 'list_search_detail'
+        ? {
+            ...family,
+            releaseGuard: {
+              ...family.releaseGuard,
+              status: 'failed',
+              currentTerminalPassRate: 60,
+              currentFirstPassPassRate: 40,
+              failures: ['family:regression:list-search-detail-smoke current pass rate dropped'],
+            },
+          }
+        : family
+    ),
+  };
+}
+
 function buildEmptyCapabilityStarterHelperHealthSnapshotResponse(state: MockState) {
   return {
     snapshot: {
@@ -683,6 +740,7 @@ async function installApiMocks(
   page: Page,
   options?: {
     projectAuth?: Partial<Pick<Project, 'authRequired' | 'loginUrl' | 'loginUsername' | 'loginDescription'>>;
+    releaseStatusReport?: unknown;
   }
 ) {
   const state = makeState();
@@ -733,7 +791,7 @@ async function installApiMocks(
       if (url.searchParams.get('projectUid') && url.searchParams.get('projectUid') !== projectUid) {
         return jsonResponse(route, { error: '项目不匹配' }, 404);
       }
-      return jsonResponse(route, buildReleaseStatusReport());
+      return jsonResponse(route, options?.releaseStatusReport || buildReleaseStatusReport());
     }
 
     if (method === 'GET' && pathname === `/api/projects/${projectUid}/knowledge`) {
@@ -1378,6 +1436,33 @@ test('smoke: standalone intent workbench shows project auth summary from project
   const authOverrideSection = page.locator('section').filter({ hasText: '登录信息覆盖（可选）' }).first();
   await expect(authOverrideSection.getByText('登录信息覆盖（可选）', { exact: true })).toBeVisible();
   await expect(authOverrideSection).toContainText('留空则继续复用上方项目统一认证');
+});
+
+test('smoke: standalone intent workbench explains blocked release readiness evidence @smoke', async ({ page }) => {
+  test.setTimeout(120_000);
+  await installApiMocks(page, {
+    releaseStatusReport: buildBlockedReleaseStatusReport(),
+  });
+
+  await page.goto(`${appOrigin}/intent-e2e?projectUid=${projectUid}&moduleUid=${moduleUid}`, {
+    waitUntil: 'domcontentloaded',
+  });
+
+  await page.getByRole('button', { name: /^治理与学习$/ }).click();
+
+  const releaseCard = page.locator('.rounded-3xl').filter({ hasText: 'Release Readiness' }).first();
+  await expect(releaseCard.getByText('Release Readiness', { exact: true })).toBeVisible();
+  await expect(releaseCard).toContainText('阻断');
+  await expect(releaseCard).toContainText('当前仍需处理证据缺口');
+  await expect(releaseCard).toContainText('最近一次 release guard compare 未通过。');
+  await expect(releaseCard).toContainText('存在阻塞证据，先处理失败项再进入发布。');
+  await expect(releaseCard).toContainText('1 个阻塞 check');
+  await expect(releaseCard).toContainText('checks 2/3 通过，failed=1；blocked family=1。');
+  await expect(releaseCard).toContainText('Latest release compare');
+  await expect(releaseCard).toContainText('失败');
+  await expect(releaseCard).toContainText('list_search_detail');
+  await expect(releaseCard).toContainText('release guard 失败');
+  await expect(releaseCard).toContainText('需要关注 1 个 check、1 条 family。');
 });
 
 test('smoke: intent workbench imports context and creates a scenario task draft @smoke', async ({ page }) => {

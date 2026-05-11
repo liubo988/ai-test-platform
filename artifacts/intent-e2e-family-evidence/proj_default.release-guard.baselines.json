@@ -10,12 +10,12 @@
   },
   "baselines": [
     {
-      "id": "business-create-list-verify-phase9-fresh",
+      "id": "business-create-list-verify-phase22-seed-detector-fix",
       "priorityScenarioFamily": "business_create_list_verify",
-      "benchmarkPath": "artifacts/intent-e2e-family-evidence/proj_default.release-guard/benchmarks/2026-04-28T09-04-31-713Z-bench_409f923ca053.json",
-      "runLimit": 200,
-      "comparedLabel": "phase11-release-guard-business-create-list-verify-current-2026-04-28",
-      "currentSlicePath": "artifacts/intent-e2e-family-evidence/proj_default.release-guard/current-slices/2026-04-30T02-54-12-133Z-slice_02a6ff878d1e.json"
+      "benchmarkPath": "artifacts/intent-e2e-family-evidence/proj_default.release-guard/benchmarks/2026-05-07T09-48-21-117Z-bench_9793bc419926.json",
+      "runLimit": 4,
+      "comparedLabel": "phase22-business-create-formal-seed-recovery-current-2026-05-07",
+      "currentSlicePath": "artifacts/intent-e2e-family-evidence/proj_default.release-guard/current-slices/2026-05-07T09-48-59-583Z-slice_43032b93e4b8.json"
     },
     {
       "id": "business-to-order-phase9-fresh",
@@ -40,6 +40,14 @@
       "runLimit": 200,
       "comparedLabel": "phase507-business-batch-add-contacts-playbook-5run-current-2026-04-30",
       "currentSlicePath": "artifacts/intent-e2e-family-evidence/proj_default.release-guard/current-slices/2026-04-30T06-55-55-522Z-slice_d5c7de05f7e1.json"
+    },
+    {
+      "id": "modal-service-commission-phase22-formal-real-click",
+      "priorityScenarioFamily": "modal_or_drawer_save",
+      "benchmarkPath": "artifacts/intent-e2e-family-evidence/proj_default.release-guard/benchmarks/2026-05-07T09-21-49-514Z-bench_da6e56a79d3c.json",
+      "runLimit": 200,
+      "comparedLabel": "phase22-modal-formal-real-click-governance-current-2026-05-07",
+      "currentSlicePath": "artifacts/intent-e2e-family-evidence/proj_default.release-guard/current-slices/2026-05-07T09-22-09-006Z-slice_9e8f64ce5748.json"
     }
   ]
 }

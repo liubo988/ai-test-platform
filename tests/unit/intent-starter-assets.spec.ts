@@ -218,6 +218,190 @@ describe('intent-starter-assets', () => {
     expect(starterAssets.find((item) => item.helper === '__e2e.waitForVisibleAntdModal')?.matchedStepUids).toContain('step_modal');
   });
 
+  it('resolves high-yield runtime helper catalog entries onto table, submit, extraction, and detail steps', () => {
+    const dsl = buildIntentActionDSL({
+      taskMode: 'scenario',
+      targetUrl: 'https://example.com/#/business/businesslist',
+      featureDescription: '在商机列表勾选目标行，提交批量动作，从响应提取 businessId，并回查详情字段',
+      expectedOutcome: '批量动作提交成功且详情字段验收通过',
+      sharedVariables: ['businessId'],
+      steps: [
+        {
+          stepUid: 'step_select_row',
+          stepType: 'ui',
+          title: '勾选目标商机',
+          target: 'https://example.com/#/business/businesslist',
+          instruction: '在商机表格里定位目标行并勾选复选框',
+          expectedResult: '目标业务行已选中',
+          extractVariable: '',
+        },
+        {
+          stepUid: 'step_submit',
+          stepType: 'ui',
+          title: '提交批量动作',
+          target: 'https://example.com/#/business/businesslist',
+          instruction: '点击提交保存并等待提交成功',
+          expectedResult: '提交成功并完成状态收敛',
+          extractVariable: '',
+        },
+        {
+          stepUid: 'step_extract_business_id',
+          stepType: 'extract',
+          title: '提取 businessId',
+          target: '批量动作响应',
+          instruction: '从提交响应 JSON 提取 businessId',
+          expectedResult: 'businessId 已提取',
+          extractVariable: 'businessId',
+        },
+        {
+          stepUid: 'step_verify_detail',
+          stepType: 'assert',
+          title: '回查详情字段',
+          target: 'https://example.com/#/business/businesslist',
+          instruction: '在列表用 businessId 回查目标商机，进入详情后按联系人、手机号和状态字段标签验收',
+          expectedResult: '目标商机详情字段验收通过',
+          extractVariable: '',
+        },
+      ],
+    });
+
+    const starterAssets = resolveIntentStarterAssets({
+      dsl,
+      snapshot: {
+        url: 'https://example.com/#/business/businesslist',
+        title: '商机列表',
+        frames: [],
+      },
+      starterHelpers: [
+        {
+          helper: '__e2e.findAntdTableRow',
+          runCount: 8,
+          passedRuns: 8,
+          passRate: 100,
+          suggestedReuseRuns: 6,
+          source: 'promoted',
+          supportingRuleIds: ['business.row'],
+          supportingRuleTitles: ['商机表格目标行定位'],
+          recommendation: '适合作为首轮生成时优先复用的 starter helper。',
+        },
+        {
+          helper: '__e2e.clickAntdRowCheckbox',
+          runCount: 6,
+          passedRuns: 6,
+          passRate: 100,
+          suggestedReuseRuns: 5,
+          source: 'promoted',
+          supportingRuleIds: ['business.row.checkbox'],
+          supportingRuleTitles: ['商机表格行勾选'],
+          recommendation: '适合作为首轮生成时优先复用的 starter helper。',
+        },
+        {
+          helper: '__e2e.observeSubmitState',
+          runCount: 7,
+          passedRuns: 7,
+          passRate: 100,
+          suggestedReuseRuns: 5,
+          source: 'stable',
+          supportingRuleIds: ['business.submit'],
+          supportingRuleTitles: ['提交后状态收敛'],
+          recommendation: '适合作为首轮生成时优先复用的 starter helper。',
+        },
+        {
+          helper: '__e2e.readJsonResponse',
+          runCount: 7,
+          passedRuns: 7,
+          passRate: 100,
+          suggestedReuseRuns: 5,
+          source: 'stable',
+          supportingRuleIds: ['business.response.json'],
+          supportingRuleTitles: ['响应 JSON 读取'],
+          recommendation: '适合作为首轮生成时优先复用的 starter helper。',
+        },
+        {
+          helper: '__e2e.pickJsonValue',
+          runCount: 7,
+          passedRuns: 7,
+          passRate: 100,
+          suggestedReuseRuns: 5,
+          source: 'stable',
+          supportingRuleIds: ['business.response.value'],
+          supportingRuleTitles: ['响应字段提取'],
+          recommendation: '适合作为首轮生成时优先复用的 starter helper。',
+        },
+        {
+          helper: '__e2e.resolvePrimaryRecord',
+          runCount: 9,
+          passedRuns: 9,
+          passRate: 100,
+          suggestedReuseRuns: 7,
+          source: 'promoted',
+          supportingRuleIds: ['business.primary-record'],
+          supportingRuleTitles: ['稳定标识回查'],
+          recommendation: '适合作为首轮生成时优先复用的 starter helper。',
+        },
+        {
+          helper: '__e2e.readDetailField',
+          runCount: 8,
+          passedRuns: 8,
+          passRate: 100,
+          suggestedReuseRuns: 6,
+          source: 'promoted',
+          supportingRuleIds: ['business.detail.field'],
+          supportingRuleTitles: ['详情字段读取'],
+          recommendation: '适合作为首轮生成时优先复用的 starter helper。',
+        },
+      ],
+    });
+
+    expect(starterAssets.map((item) => item.helper)).toEqual(
+      expect.arrayContaining([
+        '__e2e.findAntdTableRow',
+        '__e2e.clickAntdRowCheckbox',
+        '__e2e.observeSubmitState',
+        '__e2e.readJsonResponse',
+        '__e2e.pickJsonValue',
+        '__e2e.resolvePrimaryRecord',
+        '__e2e.readDetailField',
+      ])
+    );
+    expect(collectIntentStarterAssetCapabilitySlugs(starterAssets)).toEqual(
+      expect.arrayContaining([
+        'ui.find-antd-table-row',
+        'ui.click-antd-row-checkbox',
+        'assert.watch-submit-state',
+        'extract.capture-shared-variable',
+        'assert.resolve-primary-record',
+        'assert.read-detail-field',
+      ])
+    );
+    expect(starterAssets.find((item) => item.helper === '__e2e.clickAntdRowCheckbox')?.matchedStepUids).toContain(
+      'step_select_row'
+    );
+    expect(starterAssets.find((item) => item.helper === '__e2e.observeSubmitState')?.matchedStepUids).toContain(
+      'step_submit'
+    );
+    expect(starterAssets.find((item) => item.helper === '__e2e.readJsonResponse')?.matchedStepUids).toContain(
+      'step_extract_business_id'
+    );
+    expect(starterAssets.find((item) => item.helper === '__e2e.resolvePrimaryRecord')?.matchedStepUids).toContain(
+      'step_verify_detail'
+    );
+    expect(starterAssets.find((item) => item.helper === '__e2e.readDetailField')?.matchedStepUids).toContain(
+      'step_verify_detail'
+    );
+
+    const patchedDsl = applyIntentStarterAssetsToDsl(dsl, starterAssets);
+    expect(patchedDsl.steps.find((step) => step.stepUid === 'step_select_row')?.preferredHelpers).toEqual(
+      expect.arrayContaining(['__e2e.findAntdTableRow', '__e2e.clickAntdRowCheckbox'])
+    );
+    expect(patchedDsl.steps.find((step) => step.stepUid === 'step_submit')?.preferredHelpers).toContain(
+      '__e2e.observeSubmitState'
+    );
+    expect(patchedDsl.steps.find((step) => step.stepUid === 'step_extract_business_id')?.preferredHelpers).toEqual(
+      expect.arrayContaining(['__e2e.readJsonResponse', '__e2e.pickJsonValue'])
+    );
+  });
+
   it('resolves ensureLoggedIn onto the first executable step when auth context is present', () => {
     const dsl = buildIntentActionDSL({
       taskMode: 'scenario',

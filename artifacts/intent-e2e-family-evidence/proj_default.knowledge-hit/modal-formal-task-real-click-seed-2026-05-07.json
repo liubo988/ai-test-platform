@@ -1,0 +1,170 @@
+{
+  "version": 1,
+  "generatedAt": "2026-05-07T09:19:51.128Z",
+  "projectUid": "proj_default",
+  "sourcePolicy": "formal_task_seed_to_real_click",
+  "denominatorPolicy": "这些请求通过 launch-decision / runs 入口产生 traffic-quality source=real_click 事件；正式任务执行历史本身仍只作为 seed/reference。",
+  "dryRun": false,
+  "summary": {
+    "sampleCount": 3,
+    "autoRunStarted": 3,
+    "terminalRuns": 3,
+    "passedRuns": 3,
+    "failedRuns": 0,
+    "blockedRuns": 0,
+    "timedOutRuns": 0,
+    "requestCount": 3,
+    "knowledgeHitRuns": 3,
+    "knowledgeHitRate": 100,
+    "recipeHitRuns": 0,
+    "recipeHitRate": 0
+  },
+  "results": [
+    {
+      "sampleId": "cfg_1773802582843_1afc3712-r1",
+      "configUid": "cfg_1773802582843_1afc3712",
+      "moduleUid": "mod_1773388880716_36c8bb73",
+      "name": "修改分佣配置",
+      "targetUrl": "https://uat-service.yikaiye.com/#/commission/subCommissionConfig",
+      "priorityScenarioFamily": "modal_or_drawer_save",
+      "documentFamily": "",
+      "launchDecision": "auto_run",
+      "launchReason": "launch_ready",
+      "runId": "intent-run-34753096-dbd0-43f7-9fed-d8f4790d15f6",
+      "status": "passed",
+      "matchedRuleIds": [
+        "commission.service-ratio-config"
+      ],
+      "matchedRuleTitles": [
+        "服务分佣配置保存"
+      ],
+      "matchedRecipeSlugs": [],
+      "knowledgeHit": true,
+      "recipeHit": false,
+      "errorMessage": "",
+      "timedOut": false
+    },
+    {
+      "sampleId": "cfg_1773817270938_f7af77bb-r1",
+      "configUid": "cfg_1773817270938_f7af77bb",
+      "moduleUid": "mod_1773388880716_36c8bb73",
+      "name": "奋勇333",
+      "targetUrl": "https://uat-service.yikaiye.com/#/commission/subCommissionConfig",
+      "priorityScenarioFamily": "modal_or_drawer_save",
+      "documentFamily": "",
+      "launchDecision": "auto_run",
+      "launchReason": "launch_ready",
+      "runId": "intent-run-2e932406-2d72-44ca-ac30-08b09b57d7dc",
+      "status": "passed",
+      "matchedRuleIds": [
+        "commission.service-ratio-config"
+      ],
+      "matchedRuleTitles": [
+        "服务分佣配置保存"
+      ],
+      "matchedRecipeSlugs": [],
+      "knowledgeHit": true,
+      "recipeHit": false,
+      "errorMessage": "",
+      "timedOut": false
+    },
+    {
+      "sampleId": "cfg_1773802582843_1afc3712-r2",
+      "configUid": "cfg_1773802582843_1afc3712",
+      "moduleUid": "mod_1773388880716_36c8bb73",
+      "name": "修改分佣配置",
+      "targetUrl": "https://uat-service.yikaiye.com/#/commission/subCommissionConfig",
+      "priorityScenarioFamily": "modal_or_drawer_save",
+      "documentFamily": "",
+      "launchDecision": "auto_run",
+      "launchReason": "launch_ready",
+      "runId": "intent-run-0f259057-ac8a-4a21-8246-1a783a103715",
+      "status": "passed",
+      "matchedRuleIds": [
+        "commission.service-ratio-config"
+      ],
+      "matchedRuleTitles": [
+        "服务分佣配置保存"
+      ],
+      "matchedRecipeSlugs": [],
+      "knowledgeHit": true,
+      "recipeHit": false,
+      "errorMessage": "",
+      "timedOut": false
+    }
+  ],
+  "runs": [
+    {
+      "sampleId": "cfg_1773802582843_1afc3712-r1",
+      "configUid": "cfg_1773802582843_1afc3712",
+      "moduleUid": "mod_1773388880716_36c8bb73",
+      "name": "修改分佣配置",
+      "targetUrl": "https://uat-service.yikaiye.com/#/commission/subCommissionConfig",
+      "priorityScenarioFamily": "modal_or_drawer_save",
+      "documentFamily": "",
+      "launchDecision": "auto_run",
+      "launchReason": "launch_ready",
+      "runId": "intent-run-34753096-dbd0-43f7-9fed-d8f4790d15f6",
+      "status": "passed",
+      "matchedRuleIds": [
+        "commission.service-ratio-config"
+      ],
+      "matchedRuleTitles": [
+        "服务分佣配置保存"
+      ],
+      "matchedRecipeSlugs": [],
+      "knowledgeHit": true,
+      "recipeHit": false,
+      "errorMessage": "",
+      "timedOut": false
+    },
+    {
+      "sampleId": "cfg_1773817270938_f7af77bb-r1",
+      "configUid": "cfg_1773817270938_f7af77bb",
+      "moduleUid": "mod_1773388880716_36c8bb73",
+      "name": "奋勇333",
+      "targetUrl": "https://uat-service.yikaiye.com/#/commission/subCommissionConfig",
+      "priorityScenarioFamily": "modal_or_drawer_save",
+      "documentFamily": "",
+      "launchDecision": "auto_run",
+      "launchReason": "launch_ready",
+      "runId": "intent-run-2e932406-2d72-44ca-ac30-08b09b57d7dc",
+      "status": "passed",
+      "matchedRuleIds": [
+        "commission.service-ratio-config"
+      ],
+      "matchedRuleTitles": [
+        "服务分佣配置保存"
+      ],
+      "matchedRecipeSlugs": [],
+      "knowledgeHit": true,
+      "recipeHit": false,
+      "errorMessage": "",
+      "timedOut": false
+    },
+    {
+      "sampleId": "cfg_1773802582843_1afc3712-r2",
+      "configUid": "cfg_1773802582843_1afc3712",
+      "moduleUid": "mod_1773388880716_36c8bb73",
+      "name": "修改分佣配置",
+      "targetUrl": "https://uat-service.yikaiye.com/#/commission/subCommissionConfig",
+      "priorityScenarioFamily": "modal_or_drawer_save",
+      "documentFamily": "",
+      "launchDecision": "auto_run",
+      "launchReason": "launch_ready",
+      "runId": "intent-run-0f259057-ac8a-4a21-8246-1a783a103715",
+      "status": "passed",
+      "matchedRuleIds": [
+        "commission.service-ratio-config"
+      ],
+      "matchedRuleTitles": [
+        "服务分佣配置保存"
+      ],
+      "matchedRecipeSlugs": [],
+      "knowledgeHit": true,
+      "recipeHit": false,
+      "errorMessage": "",
+      "timedOut": false
+    }
+  ]
+}

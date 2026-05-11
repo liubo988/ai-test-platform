@@ -17657,6 +17657,16 @@
     - 通过。
   - `npm run build`
     - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `npm run test:unit`
+    - 通过，`142` files / `1091` tests。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，`526` updates checked，latest `524`。
 - 当前阶段状态：
   - 订单批量入账专项 visible-first 搜索框与纯数字订单号提取：已完成
   - 订单批量入账专项补充审计与构建纠偏：已完成（本轮）
@@ -35750,3 +35760,2567 @@
 - 下一步：
   - 跑提交前验证链：build、web build、focused unit、release guard、release status、traffic quality、doc/roadmap/boundary/diff checks。
   - 只修阻塞校验失败；全部通过后即可通知准备提交。
+
+## 2026-05-07 第五百一十六次更新（AI生成阶段性发布提交前验证闭环）
+
+- 本轮目标：
+  - 按上一轮收尾要求执行提交前验证链，不再扩展新 family、不改 OCR / document 主链路。
+  - 确认 `AI生成` 当前阶段的 release readiness、真实流量统计口径和文档/边界检查都可通过。
+  - 只在发现阻塞失败时做最小修复；没有阻塞失败则收口为准备提交状态。
+- 已完成：
+  - 已重新跑完提交前验证链，未发现阻塞失败。
+  - 最新 release guard compare 仍覆盖 4 条已治理 family：
+    - `business_create_list_verify`
+    - `business_to_order`
+    - `list_search_detail`
+    - `business_batch_add_contacts_verify`
+  - 最新 traffic-quality 仍把 `real_click`、`draft_import`、`benchmark_rerun`、`replay` 分开统计，没有把真实点击与 benchmark / replay 混统。
+  - 本轮没有改代码；只补充本次最终验证进度记录。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-seed-real-click-samples.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/intent-e2e-release-status.spec.ts tests/unit/api-intent-e2e-release-status-route.spec.ts tests/unit/intent-e2e-release-guard.spec.ts tests/unit/intent-e2e-knowledge-hit-guard.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts`
+    - 通过，`9` files / `301` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `npm run test:integration`
+    - 通过，`8` files / `24` tests。
+  - `npm run intent:release-guard:preflight`
+    - 通过，`baselines=4`、`files=10`、`errors=0`、`warnings=0`。
+  - `npm run intent:knowledge-hit-guard -- --config artifacts/intent-e2e-family-evidence/proj_default.knowledge-hit-guard.json`
+    - 通过，`evidences=4`、`passedEvidences=4`、`failedEvidences=0`、`missingRules=0`。
+  - `npm run intent:release-guard -- --config artifacts/intent-e2e-family-evidence/proj_default.release-guard.baselines.json`
+    - 通过，report：`reports/intent-e2e/projects/proj_default/intent-e2e.release-guard-reports/2026-05-07T01-15-47-269Z-phase11-cross-family-release-guard.json`。
+    - `baselines=4`、`passedBaselines=4`、`failedBaselines=0`、`regressed=0`、`missing=0`、`insufficient=0`。
+  - `npm run intent:release-status -- --require-current-compare --json`
+    - 通过，`status=ready`、`canRelease=true`、`passedChecks=3/3`、`readyFamilies=4/4`。
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30 --json`
+    - 通过，latest report：`reports/intent-e2e/projects/proj_default/intent-e2e.traffic-quality-report.latest.json`。
+    - `realClickTerminalPasses=49/59`、`realClickTerminalPassRate=83.1%`。
+    - `benchmarkRerunTerminalPasses=455/627`、`benchmarkRerunTerminalPassRate=72.6%`。
+    - `realClickWithImageTerminalPasses=19/25`、`imageTerminalPassRate=76.0%`。
+    - `documentFamilySelection.mode=no_document_candidates`。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过，`6` files checked。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，`518` updates checked。
+  - `git diff --check`
+    - 通过。
+- 当前阶段状态：
+  - `AI生成` 阶段性发布收尾已完成，当前可发布范围仍是 4 条已治理 family。
+  - release readiness 当前为 `ready / canRelease=true`。
+  - 真实流量统计当前仍显示 document family 没有候选；开放式 document / OCR 场景不进入本阶段发布承诺。
+- 风险 / 未完成：
+  - 当前工作区仍有大量此前阶段的未跟踪 task brief / tmp 产物；本轮没有清理或回退这些用户既有文件。
+  - 30 天真实 `real_click.with_image=19/25` 仍包含修复前失败样本，不能外推为任意图片请求 100%。
+  - 文档类 family 仍需等真实流量出现候选后，再按新计划补 recipe / fixture / verifier / guard。
+- 下一步：
+  - 当前开发计划内的 AI 生成阶段性收尾任务已经完成，可以准备提交。
+  - 后续如继续建设，应另起新计划，优先基于新的真实流量 top family，而不是继续扩本轮 release readiness 收尾范围。
+
+## 2026-05-07 第五百一十七次更新（Post Release Readiness：CI 静态摘要 artifact）
+
+- 本轮目标：
+  - 在不扩大 `AI生成` 发布承诺范围的前提下，补齐 CI / PR 可见的 release readiness 静态摘要。
+  - 让 GitHub Actions 静态检查 job 产出 Markdown / JSON artifact，并把 Markdown 追加到 step summary。
+  - 保持发布判定语义不变：CI 静态摘要不替代发布前完整 `intent:release-guard` compare。
+- 已完成：
+  - [lib/intent-e2e-release-status.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-release-status.ts) 新增 `renderIntentE2EReleaseStatusMarkdown(...)`：
+    - 输出项目、状态、checks、families 和 current compare 摘要。
+    - 当 CI 使用 `--skip-current-compare` 时，family 的 release guard 显示为 `skipped (compare not loaded)`，避免误报 missing。
+  - 新增 [scripts/intent-e2e-release-summary.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-release-summary.ts) 与 `npm run intent:release-summary`：
+    - 默认写出 `reports/ci/intent-e2e-release-readiness.json`。
+    - 默认写出 `reports/ci/intent-e2e-release-readiness.md`。
+    - 支持 `--github-step-summary`、`--skip-current-compare`、`--require-current-compare`、`--title`。
+  - [.github/workflows/ci.yml](/Users/xiaolongbao/Workspace/ai-test/.github/workflows/ci.yml) 的 `static-and-unit` job 新增：
+    - 生成 `Intent E2E Release Readiness (CI static evidence)` 摘要。
+    - 上传 `intent-e2e-release-readiness` artifact。
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md) 与 [docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md) 已补充 `intent:release-summary` 用法与边界。
+  - 新增 task brief：
+    - [intent-e2e-post-release-readiness-ci-summary-artifact-task-brief-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-post-release-readiness-ci-summary-artifact-task-brief-2026-05-07.md)
+- 验证：
+  - `npm run intent:release-summary -- --skip-current-compare --generated-at 2026-05-07T01:30:00.000Z --title "Intent E2E Release Readiness (CI static evidence)"`
+    - 通过，写出 `reports/ci/intent-e2e-release-readiness.json` 与 `reports/ci/intent-e2e-release-readiness.md`。
+    - 输出 `status=attention`、`currentCompare=skipped`，符合 CI 静态摘要定位。
+  - `npx vitest run tests/unit/intent-e2e-release-status.spec.ts`
+    - 通过，`1` file / `4` tests。
+  - `npm run build`
+    - 通过。
+- 当前阶段状态：
+  - CI 现在能在不依赖本地 ignored reports 的情况下展示 release guard / knowledge-hit 静态证据。
+  - 发布态仍以 `npm run intent:release-guard -- --config ...` 和 `npm run intent:release-status -- --require-current-compare --json` 为准。
+- 风险 / 未完成：
+  - 本轮没有给 PR 添加写评论权限，只使用 step summary 和 artifact，避免扩大 GitHub token 权限。
+  - CI 静态摘要因跳过 current compare 会显示 `attention`，这不是发布失败，而是明确表示 CI 没有执行 live compare。
+- 下一步：
+  - 继续执行 doc / roadmap / diff / build:web 等提交前验证。
+  - 若后续需要更强 PR 可见性，可单独评估是否增加 pull request comment 权限。
+
+## 2026-05-07 第五百一十八次更新（Post Release Readiness：CI 静态摘要边界显性化）
+
+- 本轮目标：
+  - 继续收口上一轮 CI 摘要 artifact，避免 `--skip-current-compare` 摘要被误读成 release approval。
+  - 在 Markdown 摘要里把静态证据和发布前完整 compare 的边界显性化。
+- 已完成：
+  - [lib/intent-e2e-release-status.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-release-status.ts) 的 Markdown renderer 新增边界提示：
+    - `currentCompare=skipped` 时显示“static evidence summary，不是 release approval”。
+    - `currentCompare=missing` 时提示仍需要 current compare。
+  - [tests/unit/intent-e2e-release-status.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-release-status.spec.ts) 新增 skipped compare 摘要测试，确保 family release guard 显示为 `skipped (compare not loaded)`。
+- 验证：
+  - `npm run intent:release-summary -- --skip-current-compare --generated-at 2026-05-07T01:40:00.000Z --title "Intent E2E Release Readiness (CI static evidence)"`
+    - 通过，输出 `status=attention`、`currentCompare=skipped`。
+  - `npx vitest run tests/unit/intent-e2e-release-status.spec.ts`
+    - 通过，`1` file / `5` tests。
+  - `npm run build`
+    - 通过。
+- 当前阶段状态：
+  - CI 摘要 artifact 现在既能展示静态证据，也能明确说明没有执行 release compare。
+  - 发布态边界仍保持不变：完整发布前判断必须跑 release guard compare 和 require-current release status。
+- 风险 / 未完成：
+  - 本轮仍没有增加 PR comment 权限；可见性限制在 step summary 和 artifact。
+- 下一步：
+  - 跑剩余 doc / roadmap / boundary / build:web / diff 检查并收口暂存区。
+
+## 2026-05-07 第五百一十九次更新（Post Release Readiness：项目页摘要与工作台阻断态 smoke）
+
+- 本轮目标：
+  - 继续收口 release readiness 的可见性和前端回归覆盖。
+  - 补回 `/projects/:projectUid` 项目页顶部 release readiness 摘要，确保已有 dashboard smoke 有真实 UI 承载。
+  - 给 standalone `/intent-e2e` 工作台补 blocked release readiness smoke，覆盖阻塞 check、失败 family 和 issue summary 展示。
+- 已完成：
+  - [components/ProjectWorkspace.tsx](/Users/xiaolongbao/Workspace/ai-test/components/ProjectWorkspace.tsx) 现在会调用 `GET /api/intent-e2e/release-status?projectUid=...`：
+    - 只读展示 `ready / attention / blocked`、check/family/blocked 计数和最近 compare message。
+    - 提供刷新按钮和“查看洞察”跳转，不在前端重新计算发布状态。
+  - [tests/e2e/scenario-task-smoke.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/e2e/scenario-task-smoke.spec.ts) 的 release-status mock 支持按用例注入 blocked report。
+  - 新增 blocked 工作台 smoke，断言：
+    - `阻断`
+    - `1 个阻塞 check`
+    - `Latest release compare`
+    - `list_search_detail`
+    - `release guard 失败`
+    - `需要关注 1 个 check、1 条 family`
+  - 新增 task brief：
+    - [intent-e2e-post-release-readiness-workbench-blocked-smoke-task-brief-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-post-release-readiness-workbench-blocked-smoke-task-brief-2026-05-07.md)
+- 验证：
+  - `npm run build`
+    - 通过。
+  - `npx playwright test tests/e2e/scenario-task-smoke.spec.ts --grep "release status summary|blocked release readiness"`
+    - 通过，`2` tests。
+  - `npm run build:web`
+    - 通过。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+- 当前阶段状态：
+  - release readiness 现在覆盖三个只读出口：
+    - CLI / CI 摘要。
+    - 项目页顶部项目级摘要。
+    - `/intent-e2e` 工作台详细 evidence 面板。
+  - 发布判定语义未变，仍以 release-status API 和 release guard compare 为准。
+- 风险 / 未完成：
+  - 本轮只补前端展示与 smoke 覆盖，没有扩大 release family 范围。
+  - CI 静态摘要仍不会替代发布前完整 compare。
+- 下一步：
+  - 跑 doc / roadmap / diff 检查，确认本轮收口改动可暂存。
+
+## 2026-05-07 第五百二十次更新（Post Release Readiness：共享前端解释契约）
+
+- 本轮目标：
+  - 把项目页、`/intent-e2e` 工作台和 CI Markdown 摘要里的 release readiness 展示文案收口到同一套纯函数。
+  - 避免 ready / attention / blocked、check status 和 family issue 摘要在多个出口间继续复制粘贴。
+  - 保持 release-status API、release guard 和 CI 摘要语义不变。
+- 已完成：
+  - 新增 [lib/intent-e2e-release-status-view.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-release-status-view.ts)：
+    - `getIntentE2EReleaseReadinessLabel`
+    - `getIntentE2EReleaseReadinessSummaryText`
+    - `getIntentE2EReleaseReadinessDetailText`
+    - `getIntentE2EReleaseCheckStatusLabel`
+    - `getIntentE2EReleaseFamilyIssueMessages`
+  - [components/ProjectWorkspace.tsx](/Users/xiaolongbao/Workspace/ai-test/components/ProjectWorkspace.tsx)、[components/IntentE2EWorkbench.tsx](/Users/xiaolongbao/Workspace/ai-test/components/IntentE2EWorkbench.tsx) 和 [lib/intent-e2e-release-status.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-release-status.ts) 的 Markdown renderer 已改为复用共享 helper。
+  - CI Markdown 摘要现在会展示 readiness 中文标签、summary/detail 文案，以及 check status 中文标签。
+  - [docs/intent-e2e-ai-generate-release-closure-summary-2026-04-30.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-ai-generate-release-closure-summary-2026-04-30.md) 已补充 post release readiness hardening 出口与追加验证。
+  - 新增 [tests/unit/intent-e2e-release-status-view.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-release-status-view.spec.ts)，固定文案、detail 和 family issue cap。
+  - 新增 task brief：
+    - [intent-e2e-post-release-readiness-shared-view-contract-task-brief-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-post-release-readiness-shared-view-contract-task-brief-2026-05-07.md)
+- 验证：
+  - `npm run build`
+    - 通过。
+  - `npx vitest run tests/unit/intent-e2e-release-status-view.spec.ts tests/unit/intent-e2e-release-status.spec.ts`
+    - 通过，`2` files / `10` tests。
+  - `npm run intent:release-summary -- --skip-current-compare --generated-at 2026-05-07T03:30:00.000Z --title "Intent E2E Release Readiness (CI static evidence)"`
+    - 通过，输出 `status=attention`、`currentCompare=skipped`，Markdown 含共享 readiness label / summary / detail。
+  - `npx playwright test tests/e2e/scenario-task-smoke.spec.ts --grep "release status summary|blocked release readiness"`
+    - 通过，`2` tests。
+  - `npm run build:web`
+    - 通过。
+- 当前阶段状态：
+  - release readiness 的解释口径已经共享化，项目页摘要、工作台详情和 CI Markdown 不会再各自维护一套文案函数。
+  - 发布判定仍只由 release-status 服务端报告决定，前端只读消费。
+- 风险 / 未完成：
+  - CSS tone 仍在各组件内维护，因为它属于各自 UI 层样式，不进入共享纯函数。
+- 下一步：
+  - 跑 doc / roadmap / boundary / diff checks 并暂存本轮共享 helper 改动。
+
+## 2026-05-07 第五百二十一次更新（Post Release Readiness：验证稳定性收口）
+
+- 本轮目标：
+  - 收口 post release readiness hardening 后全量 unit 暴露的稳定性问题。
+  - 确保 recipe-first 确定性模板和 capability verification 失败压力队列不会因为旧启发式或日期推进反复失败。
+- 已完成：
+  - [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 的 `business.create-to-order` recipe-first resolver 现在信任已匹配 recipe：
+    - 命中 `business.create-to-order` 后直接基于已有样例构造确定性模板。
+    - 不再用旧的 `looksLikeBusinessCreateOrderTask(...)` 文案判断二次拦截，避免掉回 LLM Prompt 构造。
+  - [tests/unit/capability-verification-service.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/capability-verification-service.spec.ts) 仅 mock `Date` 当前时间到 `2026-04-08T00:00:00.000Z`：
+    - 固定 14 天 failure pressure 窗口。
+    - 避免 `2026-04-06/07` 测试活动随真实日期推进变成过期样本。
+  - 新增 task brief：
+    - [intent-e2e-post-release-readiness-validation-stability-task-brief-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-post-release-readiness-validation-stability-task-brief-2026-05-07.md)
+- 验证：
+  - `npx vitest run tests/unit/test-generator-structured.spec.ts`
+    - 通过，`1` file / `9` tests。
+  - `npx vitest run tests/unit/capability-verification-service.spec.ts`
+    - 通过，`1` file / `20` tests。
+  - `npm run test:unit`
+    - 通过，`140` files / `1083` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过。
+- 当前阶段状态：
+  - post release readiness 的共享文案、CI 摘要、项目页和工作台出口保持不变。
+  - 额外发现的全量 unit 不稳定点已收口，当前本地 unit / build / web build / boundary / docs / roadmap 均通过。
+- 风险 / 未完成：
+  - 本轮只修验证稳定性和 recipe-first 契约，没有扩大发布 ready 的 family 范围。
+- 下一步：
+  - 补跑 release-status / release-summary / traffic-quality / smoke / diff checks，完成本批整体收口。
+
+## 2026-05-07 第五百二十二次更新（Capability Verification：批次失败聚合与未回写过滤）
+
+- 本轮目标：
+  - 按 README 后续建议继续收口能力验证批次治理体验。
+  - 在不改能力验证 API / 执行器 / release readiness 的前提下，让批次面板能直接回答“失败主要集中在哪里”和“哪些终态结果还没回写”。
+- 已完成：
+  - 新增 [lib/capability-verification-batch-view.ts](/Users/xiaolongbao/Workspace/ai-test/lib/capability-verification-batch-view.ts)：
+    - `summarizeCapabilityVerificationBatchFailures(...)` 按 `describeExecutionOutcome(...)` 的失败类型聚合批次失败，保留数量、是否建议 repair 和示例能力。
+    - `filterCapabilityVerificationBatchItems(...)` 与 `isCapabilityVerificationBatchItemPendingSync(...)` 固定未回写终态项过滤规则。
+  - [components/ProjectIntentWorkbench.tsx](/Users/xiaolongbao/Workspace/ai-test/components/ProjectIntentWorkbench.tsx) 的能力验证批次面板新增：
+    - 失败原因聚合卡片。
+    - “只看未回写项 / 显示全部”切换。
+    - 批次 chip 显示当前未回写过滤命中数量。
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md) 已更新能力验证批次说明，并从“下一步建议”移除已完成的批次 triage 项。
+  - 新增 task brief：
+    - [intent-e2e-capability-verification-batch-triage-view-task-brief-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-capability-verification-batch-triage-view-task-brief-2026-05-07.md)
+- 验证：
+  - `npx vitest run tests/unit/capability-verification-batch-view.spec.ts`
+    - 通过，`1` file / `2` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `npm run test:unit`
+    - 通过，`141` files / `1085` tests。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，`524` updates checked，latest `522`。
+- 当前阶段状态：
+  - 能力验证批次面板现在具备最小 triage 视图，大批量验证后可以先看聚合原因和未回写终态项。
+  - release readiness、traffic-quality、document / OCR 主链路未被本轮改动影响。
+- 风险 / 未完成：
+  - 本轮只做当前打开工作台内的批次可视化，不新增持久化批次历史。
+- 下一步：
+  - 继续扩充 runtime helper catalog，把更多已稳定高收益的 helper 纳入白名单。
+
+## 2026-05-07 第五百二十三次更新（Runtime Helper Catalog：高收益 helper 白名单扩充）
+
+- 本轮目标：
+  - 按 README 后续建议继续扩充 runtime helper catalog。
+  - 把执行层和动作库里已经稳定存在、但 starter asset catalog 尚未覆盖的高收益 helper 接进首轮规划闭环。
+  - 补齐表格行勾选 DSL 语义，避免批量行选择任务继续退回手写 checkbox / fixed-column 细节。
+- 已完成：
+  - [lib/intent-action-dsl.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-action-dsl.ts) 新增表格行勾选识别：
+    - 命中“勾选 / 复选框 / checkbox / 批量”且语义落在列表 / 表格 / 业务行时，写入 `click_row_checkbox`。
+    - 同步写入 `__e2e.clickAntdRowCheckbox`、全局规则、推荐原语和 forbidden pattern。
+  - [lib/intent-starter-assets.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-starter-assets.ts) 扩充 runtime helper catalog：
+    - `__e2e.findAntdTableRow` -> `ui.find-antd-table-row`
+    - `__e2e.clickAntdRowCheckbox` -> `ui.click-antd-row-checkbox`
+    - `__e2e.resolvePrimaryRecord` -> `assert.resolve-primary-record`
+    - `__e2e.observeSubmitState` -> `assert.watch-submit-state`
+    - `__e2e.readJsonResponse` / `__e2e.pickJsonValue` -> `extract.capture-shared-variable`
+    - `__e2e.readDetailField` -> `assert.read-detail-field`
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md) 已更新 starter helper catalog 覆盖范围，并从“下一步建议”移除 runtime helper catalog 扩充项。
+  - 新增 task brief：
+    - [intent-e2e-runtime-helper-catalog-high-yield-expansion-task-brief-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-runtime-helper-catalog-high-yield-expansion-task-brief-2026-05-07.md)
+- 验证：
+  - `npx vitest run tests/unit/intent-action-dsl.spec.ts tests/unit/intent-starter-assets.spec.ts`
+    - 通过，`2` files / `18` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `npm run test:unit`
+    - 通过，`141` files / `1087` tests。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，`525` updates checked，latest `523`。
+- 当前阶段状态：
+  - starter helper 从洞察进入 DSL / 高频动作库的白名单覆盖面已扩到表格定位、表格勾选、提交收敛、响应 JSON 提取、稳定标识回查和详情字段读取。
+  - 本轮没有新增执行器 helper，也没有改 benchmark、release-readiness 或 traffic-quality 语义。
+- 风险 / 未完成：
+  - 本轮只扩白名单和 DSL 语义，不改变 helper 运行时实现；若后续有新的高压失败 helper，还需要继续按验证证据纳入 catalog。
+- 下一步：
+  - 决定是否把当前 `asset_missing / no_hit / blocked split` 升级成服务端强门禁，而不只是 workbench / insights 显式信号。
+
+## 2026-05-07 第五百二十四次更新（Quality Gate：asset / no-hit / blocked split 服务端门禁契约）
+
+- 本轮目标：
+  - 把 `asset_missing / no_hit / blocked split` 从 workbench / insights 展示信号收口成服务端可复用门禁契约。
+  - 让项目知识未命中不再继续消耗自动 repair 配额，避免盲修。
+- 已完成：
+  - 新增 [lib/intent-e2e-quality-gate.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-quality-gate.ts)：
+    - `asset_missing` -> `needs_bootstrap` / `asset_missing`
+    - `no_hit` -> `draft_only` / `knowledge_no_hit`
+    - `auth_blocked / permission_blocked / env_blocked` -> `needs_bootstrap`
+    - `data_blocked / fixture_contract_missing` -> `needs_fixture`
+  - [lib/intent-e2e-repair-budget.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-repair-budget.ts) 接入 quality gate：
+    - 项目资产缺失、项目知识未命中和 blocked split 会优先收口 repair budget。
+    - `knowledge_no_hit` 从“提示补知识但仍允许继续 repair”升级为服务端强门禁，当前 run 不再盲修。
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md) 已补充 quality gate 行为，并从“下一步建议”移除该项。
+  - 新增 task brief：
+    - [intent-e2e-quality-gate-server-contract-task-brief-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-quality-gate-server-contract-task-brief-2026-05-07.md)
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-quality-gate.spec.ts tests/unit/intent-e2e-service.spec.ts`
+    - 通过，`2` files / `62` tests。
+  - `npm run build`
+    - 通过。
+- 当前阶段状态：
+  - asset readiness 与 blocked split 已具备服务端强门禁契约，不再只停留在 UI 和 insights 展示层。
+  - 本轮没有修改 launch-decision API response 结构，也没有改 insights、release-readiness 或 traffic-quality 统计口径。
+- 风险 / 未完成：
+  - launch-decision 对 `no_hit` 仍只能通过历史 repeated failure / run 后 readiness 消费；启动前若没有当前请求的知识匹配上下文，不能硬推断 no-hit。
+- 下一步：
+  - 接入真实预发环境 E2E（通过 `E2E_BASE_URL`）。
+
+## 2026-05-07 第五百二十五次更新（Preprod E2E：E2E_BASE_URL 入口与 @preprod 分组）
+
+- 本轮目标：
+  - 接入真实预发环境 E2E 的最小可验证入口。
+  - 让预发用例和本地 smoke 用例分组清晰，缺少 `E2E_BASE_URL` 时不误跑本地 fallback。
+- 已完成：
+  - [package.json](/Users/xiaolongbao/Workspace/ai-test/package.json) 新增 `npm run test:e2e:preprod`：
+    - 只运行带 `@preprod` 标签的 Playwright 用例。
+  - 新增 [tests/e2e/preprod-smoke.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/e2e/preprod-smoke.spec.ts)：
+    - 读取 `E2E_BASE_URL` 和可选 `E2E_PREPROD_SMOKE_PATH`。
+    - 未配置 `E2E_BASE_URL` 时直接跳过。
+    - 配置后校验预发页面能返回 HTTP response、状态码小于 500，且 `body` 可见。
+  - [tests/e2e/product-create.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/e2e/product-create.spec.ts) 已标记 `@preprod`：
+    - 缺少 `E2E_BASE_URL` 或账号密码时跳过。
+    - 避免产品创建用例在预发命令下落到本地 fallback。
+  - [docs/testing.md](/Users/xiaolongbao/Workspace/ai-test/docs/testing.md)、[docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md) 和 [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md) 已补充预发 E2E 命令与环境变量说明。
+  - 新增 task brief：
+    - [intent-e2e-preprod-e2e-base-url-entry-task-brief-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-preprod-e2e-base-url-entry-task-brief-2026-05-07.md)
+- 验证：
+  - `npx playwright test tests/e2e/preprod-smoke.spec.ts tests/e2e/product-create.spec.ts --grep @preprod`
+    - 通过，`2` tests skipped（本地未配置 `E2E_BASE_URL`，符合预期跳过行为）。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `npm run test:unit`
+    - 通过，`142` files / `1091` tests。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，`527` updates checked，latest `525`。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - 真实预发 E2E 已有独立命令、最小健康检查和产品创建分组。
+  - release readiness、traffic-quality、benchmark 和 document / OCR 主链路未被本轮改动影响。
+- 风险 / 未完成：
+  - 本轮只提供预发入口和最小 smoke；真实产品创建仍依赖预发账号、权限和页面数据状态。
+- 下一步：
+  - 完善 provider 切换占位（OpenAI / Claude / Gemini），保持执行层不变。
+
+## 2026-05-07 第五百二十六次更新（LLM Provider：切换占位契约收口）
+
+- 本轮目标：
+  - 完善 OpenAI / Claude / Gemini 的 provider 切换占位。
+  - 把 provider 实现状态从 UI 硬编码收口为共享配置契约，同时保持执行层不变。
+- 已完成：
+  - [lib/llm/provider-config.ts](/Users/xiaolongbao/Workspace/ai-test/lib/llm/provider-config.ts) 新增 provider catalog：
+    - `openai` 标记为 `implemented`。
+    - `gemini / claude` 标记为 `placeholder`。
+    - `assertSupportedLLMProvider(...)` 继续只允许已实现 provider 进入执行层。
+  - [lib/llm/admin-config.ts](/Users/xiaolongbao/Workspace/ai-test/lib/llm/admin-config.ts) 的配置响应 meta 新增 `availableProviderOptions`：
+    - `availableProviders` 继续保留，兼容旧前端。
+    - 新前端消费结构化 provider option，避免多处硬编码实现状态。
+  - [lib/llm-client.ts](/Users/xiaolongbao/Workspace/ai-test/lib/llm-client.ts) 的 public LLM config 新增 `providerAdapterStatus`：
+    - `providerImplemented` 也改为读取共享 provider catalog。
+  - [lib/llm-config-browser.ts](/Users/xiaolongbao/Workspace/ai-test/lib/llm-config-browser.ts)、[components/LLMConfigDialog.tsx](/Users/xiaolongbao/Workspace/ai-test/components/LLMConfigDialog.tsx)、[components/IntentE2EWorkbench.tsx](/Users/xiaolongbao/Workspace/ai-test/components/IntentE2EWorkbench.tsx) 和 [components/ProjectIntentTaskCreateDialog.tsx](/Users/xiaolongbao/Workspace/ai-test/components/ProjectIntentTaskCreateDialog.tsx) 已切到同一份 provider option / implemented 判断。
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md) 已补充 provider placeholder 契约，并把 README 跟进项标记为全部收口。
+  - 新增 task brief：
+    - [intent-e2e-provider-placeholder-contract-task-brief-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-provider-placeholder-contract-task-brief-2026-05-07.md)
+- 验证：
+  - `npx vitest run tests/unit/provider-config.spec.ts tests/unit/api-llm-config-route.spec.ts tests/unit/api-llm-config-test-route.spec.ts`
+    - 通过，`3` files / `11` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `npm run test:unit`
+    - 通过，`142` files / `1092` tests。
+  - `npm run test:e2e`
+    - 通过，`11` passed / `2` skipped（未配置预发环境，`@preprod` 用例按预期跳过）。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，`528` updates checked，latest `526`。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - provider 切换占位已具备统一服务端 / 前端契约。
+  - 执行层仍保持只支持 OpenAI，不会误把 placeholder provider 当成可运行 adapter。
+- 风险 / 未完成：
+  - 本轮没有实现 Claude / Gemini adapter；选择 placeholder provider 后仍需要切回 OpenAI 才能运行 AI 生成。
+- 下一步：
+  - 当前 README 跟进项已全部收口；后续如继续建设，建议另起新计划并先固定目标、分母和验收口径。
+
+## 2026-05-07 第五百二十七次更新（Next Plan：Traffic Quality 推荐契约）
+
+- 本轮目标：
+  - 在 README 跟进项全部收口后，启动下一阶段的最小计划契约。
+  - 基于 traffic-quality 现有真实流量分母、sample readiness 和 document family selection，固定下一阶段 source policy、分母口径、候选 family、验收条件和 guardrails。
+  - 不进入 document recipe / fixture / verifier / OCR 实现。
+- 已完成：
+  - [lib/intent-e2e-traffic-quality.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-traffic-quality.ts) 新增 `nextPlanRecommendation`：
+    - `ready_for_document_family_governance`：只在 post-instrumentation `real_click` readiness 达标且有 document candidates 时输出。
+    - `bootstrap_real_click_samples`：historical document-like drafts 只作为 seed，不计入真实成功率分母。
+    - `collect_document_real_click`：真实分母达标但没有 document-like real_click 时，要求先收集真实 document traffic 或转向非 document top family。
+    - `insufficient_evidence`：真实分母和历史 seed 都不足时，禁止进入 family 治理。
+  - [renderIntentE2ETrafficQualityMarkdown(...)](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-traffic-quality.ts) 新增 `Next Plan Recommendation` 区块：
+    - 输出 status、sourcePolicy、candidateFamilies、recommendedAction、denominatorPolicy、blockingReasons、acceptanceCriteria 和 guardrails。
+  - [scripts/intent-e2e-traffic-quality-report.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-traffic-quality-report.ts) 的 CLI summary 已追加 `next_plan=<status>`。
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md) 和 [docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md) 已补充 `Next Plan Recommendation` 说明。
+  - 新增 task brief：
+    - [intent-e2e-next-plan-traffic-quality-recommendation-task-brief-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-plan-traffic-quality-recommendation-task-brief-2026-05-07.md)
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-traffic-quality.spec.ts`
+    - 通过，`1` file / `5` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run test:unit`
+    - 通过，`142` files / `1092` tests。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，`529` updates checked，latest `527`。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - 下一阶段不再只是抽象建议，traffic-quality 报表现在能直接告诉调用方是否可进入 document family 治理、是否只能补 real_click 样本，或是否证据不足。
+  - release-readiness、benchmark harness、document verifier 和 OCR 主链路未被本轮改动。
+- 风险 / 未完成：
+  - 本轮只产出下一阶段推荐契约，不自动创建治理任务，也不实现任何 document family recipe / fixture / verifier。
+- 下一步：
+  - 用最新 traffic-quality report 的 `nextPlanRecommendation.status` 决定后续计划：
+    - `ready_for_document_family_governance` 才能进入 document family recipe / fixture / verifier 设计。
+    - 其他状态先补真实流量样本或选择非 document top family。
+
+## 2026-05-07 第五百二十八次更新（Traffic Quality：非 document top family 推荐契约）
+
+- 本轮目标：
+  - 用最新 traffic-quality report 继续收缩下一阶段范围。
+  - 当前 `proj_default` 30 天窗口为 `readiness=ready`、`document_selection=no_document_candidates`、`next_plan=collect_document_real_click`，因此不进入 document recipe / fixture / verifier / OCR。
+  - 在不混统 benchmark / replay / draft_import 的前提下，把可另起治理计划的非 document top family 候选落到报表契约。
+- 已完成：
+  - [lib/intent-e2e-traffic-quality.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-traffic-quality.ts) 的 `nextPlanRecommendation` 新增 `realClickPriorityFamilyCandidates`：
+    - 只从 `source=real_click` buckets 汇总。
+    - 输出 `launchClickCount / autoRunStartedCount / terminalRunCount / terminalPassCount / terminalPassRate / withImageLaunchClickCount / withoutImageLaunchClickCount / selectionReason`。
+    - 候选排序按真实点击 launch / auto-run / terminal / pass 证据降序，最多输出 top-3。
+  - `document_selection=no_document_candidates` 时，`recommendedAction` 和 `denominatorPolicy` 会明确：
+    - 不能凭空创建 document baseline。
+    - 若下一阶段选择非 document family，必须引用 `realClickPriorityFamilyCandidates` 的 `source=real_click` 分母。
+  - [renderIntentE2ETrafficQualityMarkdown(...)](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-traffic-quality.ts) 已在 `Next Plan Recommendation` 下追加非 document priority family 候选表。
+  - [scripts/intent-e2e-traffic-quality-report.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-traffic-quality-report.ts) 的 CLI summary 已追加 `real_click_priority_families=<families>`。
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md) 和 [docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md) 已补充 `realClickPriorityFamilyCandidates` 的使用边界。
+  - 新增 task brief：
+    - [intent-e2e-traffic-quality-non-document-next-plan-task-brief-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-traffic-quality-non-document-next-plan-task-brief-2026-05-07.md)
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-traffic-quality.spec.ts`
+    - 通过，`1` file / `6` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run test:unit`
+    - 通过，`142` files / `1093` tests。
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30`
+    - 通过，summary：`real_click=49/59 (83.1%)`、`benchmark_rerun=455/627 (72.6%)`、`readiness=ready`、`document_selection=no_document_candidates`、`next_plan=collect_document_real_click`、`real_click_priority_families=business_batch_add_contacts_verify,business_to_order,business_create_list_verify`。
+- 当前阶段状态：
+  - 当前项目仍不具备 document family 治理资格，因为最近窗口没有 document-like real_click 请求。
+  - 真实点击分母已经足够支持选择非 document top family；当前 top-3 是 `business_batch_add_contacts_verify`、`business_to_order`、`business_create_list_verify`。
+  - release-readiness、benchmark harness、document verifier 和 OCR 主链路未被本轮改动。
+- 风险 / 未完成：
+  - 本轮只输出非 document top family 选题证据，不自动创建新治理任务。
+  - 如果后续仍坚持 document 方向，需要先收集真实 document traffic 或切换到有 document real_click 的 project。
+- 下一步：
+  - 在继续收集 document traffic 前，优先按真实流量 top-1 `business_batch_add_contacts_verify` 另起非 document family 治理切片；该切片需要先固定 recipe / fixture / verifier / release guard 口径。
+
+## 2026-05-07 第五百二十九次更新（Traffic Quality：priority family governance 状态标注）
+
+- 本轮目标：
+  - 继续沿 traffic-quality `realClickPriorityFamilyCandidates` 往下判断下一阶段。
+  - 用 release-status 复核真实流量 top family 是否已经治理完成，避免把已 ready 的 family 重复推荐为开发缺口。
+  - 保持 release-readiness 既有报表语义不变，traffic-quality 只消费状态并做推荐注解。
+- 已完成：
+  - [lib/intent-e2e-traffic-quality.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-traffic-quality.ts) 的 `realClickPriorityFamilyCandidates` 新增：
+    - `governanceStatus`
+    - `releaseGuardStatus`
+    - `knowledgeHitStatus`
+    - `governanceEvidencePaths`
+  - `document_selection=no_document_candidates` 时，`recommendedAction` 现在会区分：
+    - 候选未 ready：可另起非 document family 治理计划。
+    - 候选已 ready：不要重复治理同一 family，应继续收集 document traffic、扩大窗口，或寻找未治理的新真实流量 family。
+  - [scripts/intent-e2e-traffic-quality-report.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-traffic-quality-report.ts) 生成报表时会读取当前 release-status family 状态，并在 CLI summary 输出 `real_click_priority_governance=<family>:<status>`。
+  - [renderIntentE2ETrafficQualityMarkdown(...)](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-traffic-quality.ts) 的 priority family 表已追加 governance / release_guard / knowledge_hit 列。
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md) 和 [docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md) 已补充：`governanceStatus=ready` 的候选不要重复治理。
+  - 新增 task brief：
+    - [intent-e2e-traffic-quality-priority-family-governance-status-task-brief-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-traffic-quality-priority-family-governance-status-task-brief-2026-05-07.md)
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-traffic-quality.spec.ts`
+    - 通过，`1` file / `7` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run test:unit`
+    - 通过，`142` files / `1094` tests。
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30`
+    - 通过，summary：`real_click=49/59 (83.1%)`、`benchmark_rerun=455/627 (72.6%)`、`readiness=ready`、`document_selection=no_document_candidates`、`next_plan=collect_document_real_click`、`real_click_priority_families=business_batch_add_contacts_verify,business_to_order,business_create_list_verify`、`real_click_priority_governance=business_batch_add_contacts_verify:ready,business_to_order:ready,business_create_list_verify:ready`。
+  - `npm run intent:release-status -- --require-current-compare --json`
+    - 通过，`status=ready`、`canRelease=true`、`readyFamilies=4/4`。
+- 当前阶段状态：
+  - 当前项目仍没有 document-like real_click，所以不进入 document family 治理。
+  - 真实流量 top-3 非 document family 当前都已经 release / knowledge ready；继续开发不应重复治理 `business_batch_add_contacts_verify`、`business_to_order` 或 `business_create_list_verify`。
+  - release-readiness、benchmark harness、document verifier 和 OCR 主链路未被本轮改动。
+- 风险 / 未完成：
+  - 非 `proj_default` project 若没有 release-status 配置，traffic-quality candidate governance 会保持 `unknown`。
+  - 本轮只阻止重复推荐已 ready family，不自动发现新的未治理 family。
+- 下一步：
+  - 继续收集真实 document traffic，或扩大 traffic-quality 窗口寻找未治理 priority family；在没有新真实候选前，不新增 recipe / verifier / OCR 开发切片。
+
+## 2026-05-07 第五百三十次更新（Traffic Quality：下一步开发准入门禁）
+
+- 本轮目标：
+  - 将“当前是否还有可继续开发的 admissible family”固化成机器可读字段。
+  - 避免在 30 / 90 / 365 天窗口都没有 document-like real_click、且真实 top priority families 都已 ready 时继续误开 recipe / verifier / OCR 开发切片。
+- 已完成：
+  - [lib/intent-e2e-traffic-quality.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-traffic-quality.ts) 的 `nextPlanRecommendation` 新增 `developmentGate`：
+    - `ready_for_document_family_governance`
+    - `ready_for_ungoverned_priority_family`
+    - `blocked_on_real_click_readiness`
+    - `blocked_on_document_real_click`
+    - `no_admissible_code_work`
+  - `developmentGate` 同时输出：
+    - `eligibleFamilies`
+    - `blockingReasons`
+    - `requiredEvidence`
+  - [renderIntentE2ETrafficQualityMarkdown(...)](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-traffic-quality.ts) 已在 `Next Plan Recommendation` 中输出 development gate 状态、阻断原因、所需证据和 eligible family 表。
+  - [scripts/intent-e2e-traffic-quality-report.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-traffic-quality-report.ts) 的 CLI summary 已追加 `development_gate=<status>`。
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md) 和 [docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md) 已补充 `developmentGate.status` 的使用边界。
+  - 新增 task brief：
+    - [intent-e2e-traffic-quality-development-gate-task-brief-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-traffic-quality-development-gate-task-brief-2026-05-07.md)
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-traffic-quality.spec.ts`
+    - 通过，`1` file / `7` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run test:unit`
+    - 通过，`142` files / `1094` tests。
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30`
+    - 通过，summary：`development_gate=no_admissible_code_work`。
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 90`
+    - 通过，summary：`development_gate=no_admissible_code_work`。
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 365`
+    - 通过，summary：`development_gate=no_admissible_code_work`。
+- 当前阶段状态：
+  - 当前项目在 30 / 90 / 365 天窗口均没有 document-like real_click。
+  - 真实 top priority families 均已 release / knowledge ready。
+  - 机器可读结论已固定为：`developmentGate.status=no_admissible_code_work`。
+  - release-readiness、benchmark harness、document verifier 和 OCR 主链路未被本轮改动。
+- 风险 / 未完成：
+  - `no_admissible_code_work` 是当前项目和当前证据窗口的结论，不代表以后不会出现新候选。
+  - 后续只有出现新的 document-like real_click 或未治理 priority family，才应重新开启 recipe / fixture / verifier / release guard 开发切片。
+- 下一步：
+  - 暂停新增代码治理任务；先收集真实 document traffic 或等待新的未治理 real_click family。重新生成 traffic-quality report 后，只有 `developmentGate.status` 从 `no_admissible_code_work` 变为 `ready_*`，才进入下一轮开发。
+
+## 2026-05-07 第五百三十一次更新（Traffic Quality：development-ready CLI gate）
+
+- 本轮目标：
+  - 将 `developmentGate.status` 接到可自动化阻断入口。
+  - 默认 traffic-quality reporting 行为保持不变；只有显式要求 development-ready 时才失败。
+- 已完成：
+  - [lib/intent-e2e-traffic-quality.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-traffic-quality.ts) 新增：
+    - `INTENT_E2E_TRAFFIC_QUALITY_DEVELOPMENT_READY_GATE_STATUSES`
+    - `isIntentE2ETrafficQualityDevelopmentGateReady(...)`
+    - `summarizeIntentE2ETrafficQualityDevelopmentGate(...)`
+  - [scripts/intent-e2e-traffic-quality-report.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-traffic-quality-report.ts) 新增 `--require-development-ready`：
+    - 当 `developmentGate.status` 不是 `ready_for_document_family_governance` 或 `ready_for_ungoverned_priority_family` 时，命令返回失败。
+    - JSON / Markdown 报表仍会正常写出。
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md) 和 [docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md) 已补充该 gate 的使用方式。
+  - 新增 task brief：
+    - [intent-e2e-traffic-quality-development-ready-cli-gate-task-brief-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-traffic-quality-development-ready-cli-gate-task-brief-2026-05-07.md)
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-traffic-quality.spec.ts`
+    - 通过，`1` file / `7` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30`
+    - 通过，summary：`development_gate=no_admissible_code_work`。
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30 --require-development-ready`
+    - 预期失败，退出码 `1`；失败信息包含 `development_gate=no_admissible_code_work` 和 blocker：最近窗口没有 document-like real_click，真实流量 top priority families 已经 ready。
+- 当前阶段状态：
+  - 当前项目仍然没有 admissible development work；现在自动化也能直接识别并阻断继续开发。
+  - 默认报表生成不受影响。
+- 风险 / 未完成：
+  - 该 gate 只负责阻断无证据开发，不负责制造真实流量样本。
+- 下一步：
+  - 等待新真实流量证据；如果后续 `--require-development-ready` 通过，再进入对应 family 的 recipe / fixture / verifier / release guard 开发切片。
+
+## 2026-05-07 第五百三十二次更新（Traffic Quality：development-ready script alias and help）
+
+- 本轮目标：
+  - 将 traffic-quality development-ready gate 收口成稳定 npm script，减少自动化和人工执行时遗漏 `--require-development-ready` 的风险。
+  - 增加 CLI help，明确 report / gate / threshold 参数，不改变默认 reporting 语义。
+- 已完成：
+  - [package.json](/Users/xiaolongbao/Workspace/ai-test/package.json) 新增：
+    - `npm run intent:traffic-quality:development-ready`
+    - 该命令等价于执行 traffic-quality report 并默认追加 `--require-development-ready`。
+  - [scripts/intent-e2e-traffic-quality-report.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-traffic-quality-report.ts) 新增 `--help`：
+    - 输出 `project-uid / window-days / threshold / output / development-ready gate` 等参数说明。
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md) 和 [docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md) 已同步短命令和 help 入口。
+  - 新增 task brief：
+    - [intent-e2e-traffic-quality-development-ready-script-alias-task-brief-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-traffic-quality-development-ready-script-alias-task-brief-2026-05-07.md)
+- 验证：
+  - `npm run intent:traffic-quality -- --help`
+    - 通过，成功输出 traffic-quality CLI 参数。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `npx vitest run tests/unit/intent-e2e-traffic-quality.spec.ts`
+    - 通过，`1` file / `7` tests。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，latest 为本轮第五百三十二次更新。
+  - `npm run intent:traffic-quality:development-ready -- --project-uid proj_default --window-days 30`
+    - 预期失败，退出码 `1`。
+    - summary：`real_click=49/59 (83.1%)`，`benchmark_rerun=455/627 (72.6%)`，`readiness=ready`，`document_selection=no_document_candidates`，`development_gate=no_admissible_code_work`。
+    - blocker：最近窗口没有 document-like real_click 请求；真实流量 top priority families 已经 release / knowledge ready。
+- 当前阶段状态：
+  - traffic-quality 现在同时具备默认 reporting 入口、显式 gate 参数和稳定 development-ready npm 短命令。
+  - 当前证据仍不允许继续 document family / OCR / verifier 开发；机器可读结论仍为 `developmentGate.status=no_admissible_code_work`。
+  - release-readiness、benchmark harness、document verifier 和 OCR 主链路未被本轮改动。
+- 风险 / 未完成：
+  - 该短命令只降低执行门槛，不改变数据事实；当前项目仍需要新真实流量证据才能出现下一轮可开发候选。
+- 下一步：
+  - 继续等待或采集真实 document-like real_click，或等待新的未治理 top priority family；只有短命令返回通过时，才进入下一轮 recipe / fixture / verifier / release guard 开发切片。
+
+## 2026-05-07 第五百三十三次更新（Traffic Quality：current closure handoff and full validation）
+
+- 本轮目标：
+  - 将当前“发布证据 ready，但 traffic-quality development gate 阻断新增开发”的状态固定成 repo 内 handoff。
+  - 补齐发布侧、integration、e2e smoke 与全量 e2e 验证记录，避免后续重复打开无证据开发切片。
+- 已完成：
+  - 新增当前开发收口交接文档：
+    - [intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md)
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md) 的“下一步建议”已指向 handoff，并要求后续先跑：
+    - `npm run intent:traffic-quality:development-ready -- --project-uid proj_default --window-days 30`
+  - 本轮没有修改业务主链路、release-readiness 语义、benchmark harness、document verifier 或 OCR 主链路。
+- 验证：
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `npm run test:unit`
+    - 通过，`142` files / `1094` tests。
+  - `npm run test:integration`
+    - 通过，`8` files / `24` tests。
+  - `npx playwright test --grep @smoke`
+    - 通过，`11` tests。
+  - `npm run test:e2e`
+    - 通过，`11` passed / `2` skipped；跳过项为缺少 preprod 环境变量的 `@preprod` 用例。
+  - `npm run intent:release-guard:preflight`
+    - 通过，`baselines=4`、`files=10`、`errors=0`、`warnings=0`。
+  - `npm run intent:knowledge-hit-guard`
+    - 通过，`evidences=4`、`passedEvidences=4`。
+  - `npm run intent:release-status -- --require-current-compare --json`
+    - 通过，`status=ready`、`canRelease=true`。
+  - `npm run intent:release-summary`
+    - 通过，`status=ready`、`canRelease=yes`、`checks=3/3`、`families=4/4`。
+  - `npm run intent:traffic-quality:development-ready -- --project-uid proj_default --window-days 30`
+    - 预期失败，退出码 `1`。
+    - summary：`real_click=49/59 (83.1%)`、`benchmark_rerun=455/627 (72.6%)`、`document_selection=no_document_candidates`、`development_gate=no_admissible_code_work`。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - 当前可发布范围仍为四条已治理 family。
+  - 当前项目没有新的 admissible development work。
+  - 下一轮只有在 `developmentGate.status` 变为 `ready_for_document_family_governance` 或 `ready_for_ungoverned_priority_family` 后才允许启动。
+- 风险 / 未完成：
+  - `@preprod` e2e 依赖 `E2E_BASE_URL / E2E_USERNAME / E2E_PASSWORD`，当前本地未配置，因此全量 e2e 中该两条按设计跳过。
+  - `no_admissible_code_work` 是当前窗口结论；后续真实流量变化后需要重新生成 traffic-quality report。
+- 下一步：
+  - 停止新增代码治理任务；先采集真实 document-like `real_click` 或等待新的未治理 top priority family。
+  - 若用户继续要求开发，先以 development-ready 短命令作为准入判断，不再凭主观判断开启 document / OCR / verifier 开发。
+
+## 2026-05-07 第五百三十四次更新（Traffic Quality：next development preparation pack）
+
+- 本轮目标：
+  - 在不绕过 `developmentGate.status=no_admissible_code_work` 的前提下，完成后续开发所需的准备材料。
+  - 把下一轮开发准入、证据要求、brief 模板、验证命令和 stop conditions 固化到 repo。
+- 已完成：
+  - [package.json](/Users/xiaolongbao/Workspace/ai-test/package.json) 新增：
+    - `npm run intent:next-dev:check`
+    - 该命令等价于 traffic-quality development-ready gate，用作后续开发统一准入入口。
+  - 新增后续开发准备文档：
+    - [intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md)
+    - 固化 gate 结果处理、后续切片必备证据、固定非目标和当前状态。
+  - 新增下一轮开发切片 brief 模板：
+    - [intent-e2e-next-development-slice-brief-template-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-slice-brief-template-2026-05-07.md)
+    - 固化准入结论、候选 family、验收标准、验证命令和 stop conditions。
+  - 新增本轮 task brief：
+    - [intent-e2e-next-development-prep-pack-task-brief-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-pack-task-brief-2026-05-07.md)
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md) 的“下一步建议”已指向后续开发准备入口，并改用 `npm run intent:next-dev:check` 作为统一准入命令。
+- 验证：
+  - `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30`
+    - 预期失败，退出码 `1`。
+    - summary：`real_click=49/59 (83.1%)`、`benchmark_rerun=455/627 (72.6%)`、`readiness=ready`、`document_selection=no_document_candidates`、`development_gate=no_admissible_code_work`。
+  - `npm run build`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - 后续开发所需的文档、模板和准入命令已准备完毕。
+  - 当前项目仍没有新的 admissible development work；本轮没有修改 document / OCR / verifier 主链路。
+- 风险 / 未完成：
+  - 准备包不制造真实流量；后续仍需要真实 document-like `real_click` 或未治理 top priority family 才能启动开发。
+- 下一步：
+  - 后续继续时先跑 `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30`。
+  - 若 gate 通过，复制 brief 模板另起一个明确 family 的开发切片；若 gate 仍失败，继续停留在真实流量采集 / 项目切换 / 交接状态。
+
+## 2026-05-07 第五百三十五次更新（Traffic Quality：next-development plan report automation）
+
+- 本轮目标：
+  - 把后续开发准备包从静态文档升级为可执行报表。
+  - 让调用方一条命令拿到下一刀是否可开、候选 family、阻断原因、所需证据、验证命令和 stop conditions。
+- 已完成：
+  - 新增 next-development plan 纯逻辑：
+    - [intent-e2e-next-development-plan.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-next-development-plan.ts)
+    - 从 traffic-quality report 派生 `developmentReady / decision / eligibleFamilies / requiredEvidence / commands / stopConditions`。
+  - 新增 traffic-quality governance 共享 helper：
+    - [intent-e2e-traffic-quality-governance.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-traffic-quality-governance.ts)
+    - 供 traffic-quality CLI 与 next-development plan CLI 共同读取 release-status family governance。
+  - 新增报表脚本：
+    - [intent-e2e-next-development-plan.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-next-development-plan.ts)
+    - `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30`
+    - 默认写出：
+      - `reports/intent-e2e/projects/proj_default/intent-e2e.next-development-plan.latest.json`
+      - `reports/intent-e2e/projects/proj_default/intent-e2e.next-development-plan.latest.md`
+    - 同步刷新 latest traffic-quality JSON / Markdown。
+  - `npm run intent:next-dev:check` 已切到同一脚本的 `--require-ready` 模式：
+    - 既写 next-development plan report，也按 gate 返回成功 / 失败。
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md)、[docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md) 和 [intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md) 已同步 plan / check 命令。
+  - 新增单测：
+    - [intent-e2e-next-development-plan.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-next-development-plan.spec.ts)
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-next-development-plan.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts`
+    - 通过，`2` files / `10` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30`
+    - 通过，summary：`ready=no gate=no_admissible_code_work decision=stop_no_admissible_code_work eligible=-`。
+  - `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30`
+    - 预期失败，退出码 `1`。
+    - 同样写出 next-development plan report，并明确 blocker：最近窗口没有 document-like real_click；真实流量 top priority families 已经 ready。
+- 当前阶段状态：
+  - 后续开发的准备内容已经具备“文档 + 模板 + 自动化计划报表 + 准入失败码”。
+  - 当前项目仍没有新的 admissible development work；本轮没有修改 document / OCR / verifier 主链路。
+- 风险 / 未完成：
+  - next-development plan 只消费当前 traffic-quality / release-status 证据，不制造真实样本。
+  - 如果真实流量窗口变化，需要重新运行 plan / check。
+- 下一步：
+  - 后续继续时先看 `intent-e2e.next-development-plan.latest.md`。
+  - 只有 `intent:next-dev:check` 通过后，才复制下一刀 brief 模板并进入明确 family 的开发切片。
+
+## 2026-05-07 第五百三十六次更新（Traffic Quality：real-click sample collection and stability closure）
+
+- 本轮目标：
+  - 完成当前系统合法 real-click 样本采集。
+  - 修复采样暴露的 ready family 稳定性问题。
+  - 重新刷新 traffic-quality / next-development plan，并按 gate 结论决定是否允许继续开发。
+- 已完成：
+  - 当前系统样本采集已完成，scope 仍限制为 `uat-service.yikaiye.com`：
+    - `mixed`：`4/4` 通过，报告 `reports/intent-e2e/projects/proj_default/intent-e2e.real-click-seed-report.2026-05-07T07-58-56-388Z.json`。
+    - `with_image`：`1/1` 通过，报告 `reports/intent-e2e/projects/proj_default/intent-e2e.real-click-seed-report.2026-05-07T07-59-46-431Z.json`。
+  - [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 已补两处采样稳定性修复：
+    - `business_create_list_verify` 复用 submit 槽位时，如果页面已自动返回 `#/business/businesslist` 且列表搜索框存在，视为提交收敛成功，不再误报“未在末页容器内找到最终提交按钮”。
+    - `business_batch_add_contacts_verify` 确定性模板在采集列表行前先清空商机列表残留筛选，优先点击 `全部清除`，再回收带手机号的可勾选行。
+  - [tests/unit/test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts) 已覆盖：
+    - 批量加入通讯录模板的筛选清理逻辑。
+    - `business_create_list_verify` merged submit slot 的自动回列表收敛逻辑。
+  - 新增 task brief：
+    - [intent-e2e-real-click-sample-collection-stability-closure-task-brief-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-real-click-sample-collection-stability-closure-task-brief-2026-05-07.md)
+  - [intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 与 [intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md) 已同步采样后状态。
+- 验证：
+  - `npx vitest run tests/unit/test-generator.spec.ts`
+    - 通过，`1` file / `210` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30`
+    - 通过，summary：`ready=no gate=no_admissible_code_work decision=stop_no_admissible_code_work eligible=-`。
+  - `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30`
+    - 预期失败，退出码 `1`；失败原因：最近窗口没有 document-like real_click，真实流量 top priority families 已经 release / knowledge ready。
+  - `npm run intent:release-status -- --require-current-compare --json`
+    - 通过，`status=ready`、`canRelease=true`、`families=4/4`。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - 样本采集与本轮采样稳定性修复已收口。
+  - 最新 traffic-quality：`real_click=60/72 (83.3%)`，`benchmark_rerun=455/627 (72.6%)`，`document_selection=no_document_candidates`。
+  - 最新 next-development gate 仍为 `no_admissible_code_work`。
+  - 本轮没有进入 document family recipe / fixture / verifier，也没有改 OCR 主链路或 benchmark harness。
+- 风险 / 未完成：
+  - 本轮采样提升的是当前系统 ready family 的真实点击证据，不会凭空制造 document-like real_click。
+  - `business_create_list_verify` 的真实点击窗口历史失败仍计入 30 天分母，所以当前该 family real-click pass rate 不是 100%，但最新采样已验证修复后的路径可通过。
+- 下一步：
+  - 继续停止新增代码治理任务。
+  - 只有出现 document-like real_click，或出现 `governanceStatus != ready` 的真实 top priority family，且 `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30` 通过，才开启下一轮开发切片。
+
+## 2026-05-07 第五百三十七次更新（Traffic Quality：formal task seed audit）
+
+- 本轮目标：
+  - 将项目工作台里已跑通的正式任务纳入后续样本采集参考。
+  - 明确正式任务执行历史只能作为 seed/reference corpus，不直接进入 traffic-quality `source=real_click` 分母。
+  - 输出当前系统正式任务里是否存在 document-like seed 候选。
+- 已完成：
+  - 新增 formal-task seed audit 纯逻辑：
+    - [intent-e2e-formal-task-seed-audit.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-formal-task-seed-audit.ts)
+    - 输出 `sourcePolicy=formal_task_seed_only`、分母策略、当前系统 scope、passed 执行证据、推荐 seed 和 document-like 候选。
+  - 新增报表脚本与 npm 入口：
+    - [intent-e2e-formal-task-seed-audit.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-formal-task-seed-audit.ts)
+    - `npm run intent:formal-task-seeds -- --project-uid proj_default`
+  - [lib/intent-e2e-priority-scenario-family.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-priority-scenario-family.ts) 补强了正式任务里“使用手机号进行搜索，并校验联系人记录”的批量加入通讯录路由信号，避免把已跑通正式任务误归为 `untracked`。
+  - [lib/intent-e2e-traffic-quality.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-traffic-quality.ts) 导出 document family classifier，供正式任务 seed audit 复用同一 document-like 判定口径。
+  - 新增单测：
+    - [intent-e2e-formal-task-seed-audit.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-formal-task-seed-audit.spec.ts)
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md)、[docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md)、[intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md) 和 [intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 已同步正式任务 seed audit 入口和口径。
+  - 新增 task brief：
+    - [intent-e2e-formal-task-seed-audit-task-brief-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-formal-task-seed-audit-task-brief-2026-05-07.md)
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-formal-task-seed-audit.spec.ts tests/unit/intent-e2e-priority-scenario-family.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts`
+    - 通过，`3` files / `17` tests。
+  - `npm run intent:formal-task-seeds -- --project-uid proj_default`
+    - 通过，summary：`formal_tasks=24 seed_eligible=24 document_like=0 source_policy=formal_task_seed_only`。
+  - `npm run build`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - 正式任务可以稳定作为后续采样参考，且不会污染 `real_click` 统计口径。
+  - `proj_default` 当前 24 个 active 正式任务全部在当前系统 scope 内且有 passed 执行证据。
+  - 当前正式任务中 document-like 候选仍为 `0`，因此不能开启 document family / OCR / verifier 开发。
+- 风险 / 未完成：
+  - 正式任务 passed 执行证明的是工作台正式任务可跑通，不等价于 AI 生成真实点击成功率。
+  - 如需把正式任务转为 traffic-quality 分母，必须用这些任务作为 seed/reference 重新走 `launch-decision -> /api/intent-e2e/runs`，生成 `source=real_click` 事件。
+- 下一步：
+  - 后续采样优先从 `intent-e2e.formal-task-seed-audit.latest.md` 的 seed candidates 选取。
+  - 若仍要推进 document family，需要先新增或采集 current-system document-like 正式任务 / real-click 请求；否则继续保持 `no_admissible_code_work`。
+
+## 2026-05-07 第五百三十八次更新（Traffic Quality：formal task real-click seeding and business-create recovery）
+
+- 本轮目标：
+  - 将正式任务 seed 重新发起为可计入 traffic-quality 的 `source=real_click` 样本。
+  - 使用已跑通正式任务补充 `modal_or_drawer_save` 与 `business_create_list_verify` 真实点击证据。
+  - 定位并修复 `商机222` 从“一次成功”变成反复报错的根因。
+- 已完成：
+  - 新增正式任务 seed 转 real-click 运行入口：
+    - [intent-e2e-seed-formal-task-real-click-samples.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-seed-formal-task-real-click-samples.ts)
+    - `npm run intent:formal-task-seed-runs -- --project-uid proj_default --priority-scenario-family <family>`
+    - 该入口只把正式任务作为语义 seed，实际仍重新走 `launch-decision -> /api/intent-e2e/runs`，不携带 `intentDraftUid`，因此产出 `source=real_click` 样本。
+  - [intent-e2e-formal-task-seed-audit.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-formal-task-seed-audit.ts) 已补 `moduleUid` 与 seed plan 构建逻辑，供 seed-run 脚本按 family / repeat 选择样本。
+  - [scripts/intent-e2e-seed-formal-task-real-click-samples.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-seed-formal-task-real-click-samples.ts) 报表已补充 `matchedRuleIds / matchedRecipeSlugs / knowledgeHitRate / runs`，可作为 knowledge-hit guard evidence。
+  - [intent-e2e.project-knowledge.json](/Users/xiaolongbao/Workspace/ai-test/intent-e2e.project-knowledge.json) 新增 `commission.service-ratio-config`，并用 formal-task real-click seed 形成 `modal_or_drawer_save` 的 project knowledge 命中证据。
+  - [lib/test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 已修复 `商机222` 根因：
+    - 旧 detector 漏掉“新建商机”，导致 `商机222` 未复用 create-business list verification 确定性模板，而退回通用 modal/drawer ExecutionPlan。
+    - 现在“新建商机”会归入 `business_create_list_verify` create-business 模板，纯新建商机场景不再误走 create-order 或通用 modal/drawer 路径。
+  - release guard / knowledge-hit artifacts 已更新：
+    - `modal_or_drawer_save` 接入 release guard baseline 与 knowledge-hit guard。
+    - `business_create_list_verify` baseline 已刷新为修复后的 formal-task seed recovery baseline。
+  - 新增 task brief：
+    - [intent-e2e-formal-task-real-click-seeding-and-business-create-recovery-task-brief-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-formal-task-real-click-seeding-and-business-create-recovery-task-brief-2026-05-07.md)
+- 验证：
+  - `npm run intent:formal-task-seed-runs -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --max-samples 12 --repeat 6 --poll-interval-ms 3000`
+    - 通过，`12/12` passed。
+  - `npm run intent:formal-task-seed-runs -- --project-uid proj_default --priority-scenario-family modal_or_drawer_save --max-samples 3 --repeat 3 --poll-interval-ms 3000`
+    - 通过，`3/3` passed，`knowledgeHitRate=100%`。
+  - 修复前 `商机222` seed-run：
+    - 失败，runId=`intent-run-24ef0583-79a9-40e2-995f-7b0aba72473e`，错误为“新建商机表单未出现可见 Modal/Drawer 容器”。
+  - 修复后 `business_create_list_verify` seed-run：
+    - `3/3` passed，其中 `商机222` 两次通过。
+    - 追加 `商机222` 单样本 `1/1` passed，runId=`intent-run-92bb3f5d-a184-48f2-af20-8885d15bbaa2`。
+  - `npx vitest run tests/unit/test-generator.spec.ts --testNamePattern 'create-business list verification|create-to-order deterministic|status anchors|service-commission'`
+    - 通过，`4` tests。
+  - `npm run intent:release-guard -- --config artifacts/intent-e2e-family-evidence/proj_default.release-guard.baselines.json --json`
+    - 通过，`baselineCount=5`、`passedBaselines=5`。
+  - `npm run intent:knowledge-hit-guard -- --json`
+    - 通过，`evidenceCount=5`、`passedEvidences=5`。
+  - `npm run intent:release-status -- --require-current-compare --json`
+    - 通过，`status=ready`、`families=5/5`。
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30 --json`
+    - 通过，`real_click=82/95 (86.3%)`、`benchmark_rerun=455/627 (72.6%)`、`document_selection=no_document_candidates`。
+  - `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30`
+    - 通过，`ready=no gate=no_admissible_code_work decision=stop_no_admissible_code_work eligible=-`。
+- 当前阶段状态：
+  - 默认 project release-ready family 从 `4/4` 扩展到 `5/5`，新增 `modal_or_drawer_save`。
+  - `商机222` 已恢复为确定性 create-business 路径，最新 formal-task real-click 单样本通过。
+  - 当前 next-development gate 仍为 `no_admissible_code_work`；不是实现缺口，而是最近窗口没有 document-like real-click，且真实 top priority families 已经 ready。
+- 风险 / 未完成：
+  - 30 天 traffic-quality 会保留修复前历史失败，因此 business-create 历史 real-click pass rate 不是 100%；这是正确的真实流量口径。
+  - 正式任务中仍无 document-like seed，不能启动 document / OCR / verifier 主链路。
+- 下一步：
+  - 先完成最终构建、受影响测试、文档链接和 roadmap 检查。
+  - 若后续继续开发，仍以 `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30` 作为准入；只有出现 document-like real_click 或未治理真实 top family 时才另起新切片。
+
+## 2026-05-07 第五百三十九次更新（Traffic Quality：document sample scout）
+
+- 本轮目标：
+  - 在 `developmentGate.status=no_admissible_code_work` 下继续推进允许范围内的样本线索准备。
+  - 提供一个不连接数据库的轻量 scout，用 traffic-quality JSONL 和 formal-task seed audit 快速判断 30/90/365 天是否有 document-like 线索。
+- 已完成：
+  - 新增 document sample scout 纯逻辑：
+    - [intent-e2e-document-sample-scout.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-document-sample-scout.ts)
+    - 复用 traffic-quality 的 document family classifier，只扫描 `source=real_click + launch_click_count` 事件。
+  - 新增 CLI：
+    - [intent-e2e-document-sample-scout.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-document-sample-scout.ts)
+    - `npm run intent:document-sample:scout -- --project-uid proj_default --windows 30,90,365`
+    - 输出 `intent-e2e.document-sample-scout.latest.json/.md`。
+  - 新增单测：
+    - [intent-e2e-document-sample-scout.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-document-sample-scout.spec.ts)
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md)、[docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md)、[intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md) 和 [intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 已同步 scout 入口与当前结果。
+  - 新增 task brief：
+    - [intent-e2e-document-sample-scout-task-brief-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-document-sample-scout-task-brief-2026-05-07.md)
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-document-sample-scout.spec.ts`
+    - 通过，`1` file / `3` tests。
+  - `npm run intent:document-sample:scout -- --project-uid proj_default --windows 30,90,365`
+    - 通过，`recommendation=collect_document_real_click windows=30d:0/88 90d:0/88 365d:0/88 formal_document_like=0`。
+- 当前阶段状态：
+  - 当前项目 30 / 90 / 365 天 JSONL 事件窗口均没有 document-like `source=real_click`。
+  - 最新 formal-task seed audit 也没有 document-like seed。
+  - 因此 next-development gate 的阻断结论没有变化：不能启动 document / OCR / verifier 开发。
+- 风险 / 未完成：
+  - scout 是轻量线索扫描，不计算 terminal pass rate，也不替代完整 traffic-quality。
+  - 如果需要正式发布或治理结论，仍需要完整 traffic-quality / release-status / release-guard。
+- 下一步：
+  - 继续只允许采集真实 document-like `real_click` 或等待新的未治理真实 top family。
+  - 若用户继续要求开发，先跑 `intent:document-sample:scout` 和 `intent:next-dev:check`，两者都没有候选时不要硬改 document / OCR / verifier。
+
+## 2026-05-08 第五百四十次更新（Traffic Quality：document-assisted real-click seed and admissibility guard）
+
+- 本轮目标：
+  - 执行当前系统 document-like `real_click` 采集尝试。
+  - 避免把“参考知识文档执行业务流”误算成真实 document family 治理证据。
+  - 刷新 traffic-quality / document sample scout / next-development plan，确认下一步是否允许继续开发。
+- 已完成：
+  - [lib/intent-e2e-traffic-quality.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-traffic-quality.ts) 收紧 document family classifier：
+    - `docs.qq.com / wedoc / smartsheet / docs` 等真实文档页面仍可进入 document family。
+    - “参考知识文档 / 操作手册”后继续执行业务页面流程的样本会被判为 reference-only，不进入 `documentFamilySelection`。
+  - 新增 document real-click seed 纯逻辑：
+    - [intent-e2e-document-real-click-seed.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-document-real-click-seed.ts)
+    - 输出 `provenance / documentFamily / admissibility`，明确 source 分母与 document family 准入是两件事。
+  - 新增 CLI：
+    - [intent-e2e-seed-document-real-click-samples.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-seed-document-real-click-samples.ts)
+    - `npm run intent:document-real-click:seed -- --project-uid proj_default --max-samples 1`
+    - 该入口通过 `launch-decision -> /api/intent-e2e/runs` 发起，不携带 `intentDraftUid`。
+  - 新增单测：
+    - [intent-e2e-document-real-click-seed.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-document-real-click-seed.spec.ts)
+    - [intent-e2e-traffic-quality.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-traffic-quality.spec.ts) 已覆盖 reference-only 业务流不进入 document family。
+  - 新增 task brief：
+    - [intent-e2e-document-real-click-seed-and-admissibility-guard-task-brief-2026-05-08.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-document-real-click-seed-and-admissibility-guard-task-brief-2026-05-08.md)
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md)、[docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md)、[intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md) 和 [intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 已同步入口与当前结论。
+- 采集结果：
+  - `document-assisted-business-batch-add-contacts` 真实执行失败，runId=`intent-run-d2a34a41-de4f-4054-beb9-52a850f5f687`，原因是“页面前置检查失败: 目标页面当前未返回可用数据”。
+  - `document-assisted-business-create-list-verify` 真实执行通过，runId=`intent-run-c9c21395-6e2f-4263-a3b3-01004b817647`。
+  - 成功样本进入 `source=real_click` 分母，但 `admissibility=document_reference_only_business_flow`，不作为 document family 治理候选。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-document-real-click-seed.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts tests/unit/intent-e2e-document-sample-scout.spec.ts`
+    - 通过，`3` files / `13` tests。
+  - `npm run intent:document-real-click:seed -- --project-uid proj_default --max-samples 1 --poll-interval-ms 3000`
+    - 通过，`1/1` passed，`admissibleDocumentSamples=0`。
+  - `npm run intent:document-sample:scout -- --project-uid proj_default --windows 30,90,365`
+    - 通过，`recommendation=collect_document_real_click windows=30d:0/90 90d:0/90 365d:0/90 formal_document_like=0`。
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30 --json`
+    - 通过，`real_click=83/97 (85.6%)`、`benchmark_rerun=455/627 (72.6%)`、`document_selection=no_document_candidates`。
+  - `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30`
+    - 通过，`ready=no gate=no_admissible_code_work decision=stop_no_admissible_code_work eligible=-`。
+  - `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30`
+    - 预期失败，退出码 `1`；失败原因是 `development_gate=no_admissible_code_work`。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - 真实点击分母已刷新到 `real_click=83/97 (85.6%)`。
+  - 30 / 90 / 365 天窗口仍没有 admissible document-like `real_click`。
+  - next-development gate 仍为 `no_admissible_code_work`。
+  - 本轮没有进入 document recipe / fixture / verifier / OCR 主链路。
+- 风险 / 未完成：
+  - 当前项目没有真实文档页面配置；本轮能执行的是 document-assisted 业务流采集，不是文档页面操作采集。
+  - `business_batch_add_contacts_verify` 的数据依赖型样本失败说明当前商机列表阶段仍可能出现空数据；这不是 document 代码缺口。
+- 下一步：
+  - 继续收集真正操作文档页面的 `source=real_click`，或等待出现 `governanceStatus != ready` 的真实 top priority family。
+  - 在 `intent:document-sample:scout` 仍为 `0` 且 `intent:next-dev:check` 未通过前，不启动 document / OCR / verifier 开发。
+
+## 2026-05-08 第五百四十一次更新（Traffic Quality：project knowledge document real-click collection）
+
+- 本轮目标：
+  - 自主解决真实 document-like `real_click` 采集阻塞，使用当前平台已存在的项目知识文档 UI，而不是继续依赖“参考知识文档执行业务流”。
+  - 让真实文档导入/预览样本稳定通过 launch-decision、执行器和 traffic-quality document selection。
+  - 刷新 document scout、traffic-quality 和 next-development gate，确认下一阶段可开发候选。
+- 已完成：
+  - 新增项目知识文档导入/预览确定性脚本模板：
+    - [intent-e2e-project-knowledge-document-template.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-project-knowledge-document-template.ts)
+    - 模板操作 `/projects/:projectUid?intentView=knowledge`，点击“需求编排 -> 知识文档”，填写 `知识文档名称 / 知识来源路径 / 知识文档内容`，点击“导入知识”，再校验 `当前预览` 和文档块正文锚点。
+  - [intent-e2e-document-real-click-seed.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-document-real-click-seed.ts) 已把默认第一样本切到 `project-knowledge-document-import-preview`：
+    - `provenance=document_surface_current_system`
+    - `admissibility=document_family_admissible`
+    - `documentFamily=doc_create_reopen_verify`
+    - 请求仍不携带 `intentDraftUid`，因此成功启动后进入 `source=real_click` 分母。
+  - [intent-e2e-launch-decision.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-launch-decision.ts) 增加稳定 document 场景信号：
+    - 真实知识文档导入/预览请求即使 priority family 为 `untracked`，只要有明确 verifier 信号，也允许 `auto_run`。
+    - `导入 / 上传 / import / upload` 已纳入 mutating intent 识别。
+  - [test-generator.ts](/Users/xiaolongbao/Workspace/ai-test/lib/test-generator.ts) 增加项目知识文档导入/预览 deterministic template 复用，后续同类自然语言请求不再走泛化生成。
+  - [intent-e2e-traffic-quality.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-traffic-quality.ts) 已识别 `导入 / 上传` 文档操作，同时继续排除 reference-only business flow。
+  - 新增/更新单测：
+    - [intent-e2e-document-real-click-seed.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-document-real-click-seed.spec.ts)
+    - [intent-e2e-launch-decision.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-launch-decision.spec.ts)
+    - [intent-e2e-traffic-quality.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-traffic-quality.spec.ts)
+    - [test-generator.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/test-generator.spec.ts)
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md)、[docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md)、[intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md)、[intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 与本 brief 已同步最新状态。
+- 真实执行结果：
+  - `npm run intent:document-real-click:seed -- --project-uid proj_default --max-samples 1 --poll-interval-ms 3000`
+    - 通过，`1/1` passed。
+    - runId=`intent-run-bfbe8058-e8f3-45b4-bd0b-fa08c916f366`。
+    - seed report：`admissibleDocumentSamples=1`、`documentFamily=doc_create_reopen_verify`、`launchDecision=auto_run`。
+  - `npm run intent:document-sample:scout -- --project-uid proj_default --windows 30,90,365`
+    - 通过，`recommendation=ready_with_document_real_click windows=30d:1/91 90d:1/91 365d:1/91 formal_document_like=0`。
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30 --json`
+    - 通过，`real_click=84/98 (85.7%)`、`benchmark_rerun=455/627 (72.6%)`。
+    - `documentFamilySelection.mode=post_instrumentation_real_click`。
+    - `recommendedTopFamilies=doc_create_reopen_verify`。
+  - `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30`
+    - 通过，`ready=yes gate=ready_for_document_family_governance decision=start_document_family_governance eligible=doc_create_reopen_verify`。
+  - `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30`
+    - 通过，`ready=yes gate=ready_for_document_family_governance decision=start_document_family_governance eligible=doc_create_reopen_verify`。
+  - `npm run intent:traffic-quality:development-ready -- --project-uid proj_default --window-days 30`
+    - 通过，`development_gate=ready_for_document_family_governance top_families=doc_create_reopen_verify`。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-document-real-click-seed.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts tests/unit/intent-e2e-launch-decision.spec.ts tests/unit/test-generator.spec.ts`
+    - 通过，`4` files / `238` tests。
+  - `npx vitest run tests/unit/intent-e2e-document-real-click-seed.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts tests/unit/intent-e2e-launch-decision.spec.ts tests/unit/test-generator.spec.ts tests/unit/intent-e2e-document-sample-scout.spec.ts`
+    - 通过，`5` files / `241` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，最新更新为“第五百四十一次”。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - document-like real_click 已从 `0` 变为 `1`，候选 family 已确定为 `doc_create_reopen_verify`。
+  - 下一阶段不再卡在样本采集；可开始 document family recipe / fixture / verifier 第一刀。
+  - 真实点击成功率仍与 benchmark/replay 分离，不能把 `benchmark_rerun=455/627` 外推为真实 AI 生成成功率。
+- 风险 / 未完成：
+  - 当前只有 `doc_create_reopen_verify` 的 1 条真实 document-like real_click 信号；足够启动第一刀，但后续治理必须继续增加同 family real_click / verifier / guard 证据。
+  - 本轮没有做 document family recipe / verifier / fixture 落地，也没有升级 OCR 主链路。
+- 下一步：
+  - 以 `doc_create_reopen_verify` 为第一候选，启动 document family recipe / fixture / verifier / release guard 第一刀。
+  - 第一刀必须继续使用 traffic-quality 报告里的 `source=real_click` 分母，不混入 `benchmark_rerun`、`replay` 或 `draft_import`。
+
+## 2026-05-08 第五百四十二次更新（Document Family：doc_create_reopen_verify first cut）
+
+- 本轮目标：
+  - 基于上一轮真实 `source=real_click` document-like 样本，启动 `doc_create_reopen_verify` 的 document family governance 第一刀。
+  - 固化当前平台项目知识文档“导入后预览校验”的 recipe / fixture / verifier 契约。
+  - 保持真实分母与 `benchmark_rerun / replay / draft_import` 分离，不改 release-readiness 既有口径，不做 OCR-first。
+- 已完成：
+  - [intent-action-dsl.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-action-dsl.ts) 已把 `导入 / 上传 / import / upload` 纳入 mutating action 识别：
+    - 知识文档导入步骤会带出 `wait_for_response / assert_response_ok / observe_submit_state`。
+    - 文档导入场景新增禁止模式：不能只断言 textarea 原文，必须校验当前预览或文档块渲染结果。
+  - [intent-recipe-registry.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-recipe-registry.ts) 新增 deterministic recipe：
+    - `document.project-knowledge-import-preview`
+    - 固定入口 `/projects/:projectUid?intentView=knowledge`
+    - 固定执行链路“需求编排 -> 知识文档 -> 导入知识 -> 当前预览 -> 文档块正文锚点”。
+  - 新增 document family governance service / CLI：
+    - [intent-e2e-document-family-governance.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-document-family-governance.ts)
+    - [intent-e2e-document-family-governance.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-document-family-governance.ts)
+    - `npm run intent:document-family:governance -- --project-uid proj_default --require-ready`
+    - 输出 `intent-e2e.document-family-governance.latest.json/.md`。
+  - `doc_create_reopen_verify` governance profile 已标记 `contract_ready`：
+    - recipe：`document.project-knowledge-import-preview`
+    - fixture：`project-knowledge-document-import-preview-v1`
+    - verifier required evidence：`knowledge_import_notice / current_preview_document_name / document_chunk_body_anchor`
+    - source policy：`post_instrumentation_real_click_only`
+  - [intent-e2e-next-development-plan.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-next-development-plan.ts) 和 CLI 已接入 document governance 报表路径与 candidate `governanceStatus=contract_ready`。
+  - 新增/更新单测：
+    - [intent-e2e-document-family-governance.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-document-family-governance.spec.ts)
+    - [intent-action-dsl.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-action-dsl.spec.ts)
+    - [intent-recipe-registry.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-recipe-registry.spec.ts)
+    - [intent-execution-plan.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-execution-plan.spec.ts)
+    - [intent-e2e-next-development-plan.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-next-development-plan.spec.ts)
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md)、[docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md)、[intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md)、[intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 和本 brief 已同步第一刀状态。
+- 验证：
+  - `npx vitest run tests/unit/intent-action-dsl.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-e2e-document-family-governance.spec.ts tests/unit/intent-e2e-next-development-plan.spec.ts tests/unit/test-generator.spec.ts`
+    - 通过，`6` files / `250` tests。
+  - `npm run intent:document-family:governance -- --project-uid proj_default --require-ready`
+    - 通过，`governed=doc_create_reopen_verify missing=-`。
+  - `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30`
+    - 通过，`ready=yes gate=ready_for_document_family_governance decision=start_document_family_governance eligible=doc_create_reopen_verify`，并同步写出 document-family governance report。
+  - `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30`
+    - 通过，`ready=yes gate=ready_for_document_family_governance decision=start_document_family_governance eligible=doc_create_reopen_verify`。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，最新更新为“第五百四十二次”。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - `doc_create_reopen_verify` 第一刀的 recipe / fixture / verifier 契约已完成。
+  - 当前候选仍来自真实 `source=real_click`，没有把 benchmark / replay / draft_import 混进真实成功率。
+  - release-readiness 仍保持 `5/5` 已治理 priority families；本轮没有改既有 release summary 口径。
+- 风险 / 未完成：
+  - 当前只有 1 条真实 document-like real_click 样本；第一刀足够，但不能直接外推为长期 document family 成功率。
+  - 本轮未新增 document family release guard baseline，也未扩展到 `doc_edit_save_verify / doc_share_permission_verify / doc_export_verify`。
+  - 本轮不做 OCR-first，也不升级 OCR route/verifier。
+- 下一步：
+  - 围绕 `doc_create_reopen_verify` 继续补真实 real_click 样本和 release guard baseline。
+  - 若要进入下一刀，先复跑 `intent:document-family:governance`、`intent:traffic-quality` 和 `intent:next-dev:check`，继续保持 source 分母隔离。
+
+## 2026-05-08 第五百四十三次更新（Document Family：doc_create_reopen_verify real-click top-up and independent guard）
+
+- 本轮目标：
+  - 在第一刀 recipe / fixture / verifier 契约完成后，继续补强 `doc_create_reopen_verify` 的真实 document-like real_click 样本。
+  - 新增独立 document-family guard baseline，不改现有 priority family release-readiness `5/5` summary。
+  - 让 next-development plan 同步写出 document governance 和 document guard 报表。
+- 已完成：
+  - 追加执行真实知识文档 UI 样本：
+    - `npm run intent:document-real-click:seed -- --project-uid proj_default --max-samples 1 --poll-interval-ms 3000`
+    - 通过，runId=`intent-run-5b11cad5-d987-4da1-9ce7-bd055832d4db`。
+    - 当前 `project-knowledge-document-import-preview` 累计 `2/2` 通过，均为 `admissibility=document_family_admissible`。
+  - 新增独立 document-family release guard：
+    - [intent-e2e-document-family-release-guard.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-document-family-release-guard.ts)
+    - [intent-e2e-document-family-release-guard.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-document-family-release-guard.ts)
+    - `npm run intent:document-family:guard -- --project-uid proj_default --require-passed`
+    - 输出 `intent-e2e.document-family-release-guard.latest.json/.md`。
+  - Guard 判定只接受 `post_instrumentation_real_click_only`：
+    - 校验 traffic-quality `documentSelection.mode=post_instrumentation_real_click`。
+    - 校验 family 在 `recommendedTopFamilies` 内。
+    - 校验 governance profile 为 `contract_ready`。
+    - 校验 admissible document seed runs 至少有 passed evidence。
+  - [intent-e2e-next-development-plan.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-next-development-plan.ts) 和 CLI 已同步生成 document guard report：
+    - latest plan 的 `Document Family Candidates` 中 `doc_create_reopen_verify` 为 `governance=contract_ready`、`release_guard=passed`、`knowledge_hit=not_applicable`。
+  - 新增/更新单测：
+    - [intent-e2e-document-family-release-guard.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-document-family-release-guard.spec.ts)
+    - [intent-e2e-next-development-plan.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-next-development-plan.spec.ts)
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md)、[docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md)、[intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md)、[intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 和本 brief 已同步最新状态。
+- 验证：
+  - `npm run intent:document-real-click:seed -- --project-uid proj_default --max-samples 1 --poll-interval-ms 3000`
+    - 通过，`1/1` passed，runId=`intent-run-5b11cad5-d987-4da1-9ce7-bd055832d4db`。
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30`
+    - 通过，`real_click=85/99 (85.9%)`、`benchmark_rerun=455/627 (72.6%)`、`document_selection=post_instrumentation_real_click`、`top_families=doc_create_reopen_verify`。
+  - `npm run intent:document-sample:scout -- --project-uid proj_default --windows 30,90,365`
+    - 通过，`recommendation=ready_with_document_real_click windows=30d:2/92 90d:2/92 365d:2/92 formal_document_like=0`。
+  - `npm run intent:document-family:governance -- --project-uid proj_default --require-ready`
+    - 通过，`governed=doc_create_reopen_verify missing=-`。
+  - `npm run intent:document-family:guard -- --project-uid proj_default --require-passed`
+    - 通过，`passed=yes baselines=1 passedBaselines=1 real_click_signals=2 admissible_passed=2`。
+  - `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30`
+    - 通过，`ready=yes gate=ready_for_document_family_governance decision=start_document_family_governance eligible=doc_create_reopen_verify`，并同步写出 document governance / document guard 报表。
+  - `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30`
+    - 通过，`ready=yes gate=ready_for_document_family_governance decision=start_document_family_governance eligible=doc_create_reopen_verify`，并同步写出 document governance / document guard 报表。
+  - `npx vitest run tests/unit/intent-e2e-document-family-release-guard.spec.ts tests/unit/intent-e2e-document-family-governance.spec.ts tests/unit/intent-e2e-next-development-plan.spec.ts`
+    - 通过，`3` files / `11` tests。
+  - `npx vitest run tests/unit/intent-e2e-document-family-release-guard.spec.ts tests/unit/intent-e2e-document-family-governance.spec.ts tests/unit/intent-e2e-next-development-plan.spec.ts tests/unit/intent-action-dsl.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/test-generator.spec.ts`
+    - 通过，`7` files / `255` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，最新更新为“第五百四十三次”。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - `doc_create_reopen_verify` 现在已有 `2` 条 document-like real_click launch signals 和 `2` 条 admissible passed seed runs。
+  - 独立 document-family guard 已通过，但没有进入既有 priority release-readiness summary。
+  - 真实成功率仍保持 `real_click` 与 `benchmark_rerun / replay / draft_import` 分离。
+- 风险 / 未完成：
+  - 样本量仍然小，当前 guard 是第一版 baseline，不代表所有 document family 或 OCR 场景可发布。
+  - 本轮未覆盖 `doc_edit_save_verify / doc_share_permission_verify / doc_export_verify / doc_search_open_verify`。
+  - 本轮未改 OCR route/verifier，也未改 benchmark harness。
+- 下一步：
+  - 继续围绕 `doc_create_reopen_verify` 扩样到更厚的真实 real-click 窗口，或开始第二个 document family 的候选发现。
+  - 若扩样后 guard 仍稳定，再考虑是否把 document-family guard 纳入更高层 release dashboard，但仍不能混入 priority family `5/5` 口径。
+
+## 2026-05-08 第五百四十四次更新（Document Family：repeatable top-up and guard threshold hardening）
+
+- 本轮目标：
+  - 把 `doc_create_reopen_verify` 的 document real-click seed 从单次尝试扩展为可重复的有界扩样入口。
+  - 将独立 document-family guard 默认阈值提升到 `minRealClickSignals=3`、`minAdmissiblePassedRuns=3`。
+  - 修复扩样中暴露的“需求编排工作台”弹层打开偶发同步失败。
+- 已完成：
+  - [intent-e2e-document-real-click-seed.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-document-real-click-seed.ts) 和 [intent-e2e-seed-document-real-click-samples.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-seed-document-real-click-samples.ts) 已支持 `--repeat <n>`：
+    - `npm run intent:document-real-click:seed -- --project-uid proj_default --max-samples 1 --repeat 3 --poll-interval-ms 3000`
+    - 扩样结果为 `2/3` passed、`1/3` failed；失败 runId=`intent-run-86409b32-6477-4b8a-8368-4ab2f9092a78`。
+  - [intent-e2e-project-knowledge-document-template.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-project-knowledge-document-template.ts) 已加固 deterministic plan：
+    - 点击“需求编排”后按包含 `需求编排工作台` heading 的固定层定位真实工作台。
+    - 最多重试 3 次打开并等待 heading 可见，避免只取最后一个 `fixed` 层导致偶发失败。
+    - 修复后复跑 `npm run intent:document-real-click:seed -- --project-uid proj_default --max-samples 1 --repeat 1 --poll-interval-ms 3000` 通过，runId=`intent-run-a32f8a2d-5123-4875-a3cb-80a9f56af476`。
+  - [intent-e2e-document-family-release-guard.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-document-family-release-guard.ts) 和 CLI 默认阈值已提升：
+    - `DEFAULT_INTENT_E2E_DOCUMENT_FAMILY_GUARD_MIN_REAL_CLICK_SIGNALS=3`
+    - `DEFAULT_INTENT_E2E_DOCUMENT_FAMILY_GUARD_MIN_ADMISSIBLE_PASSED_RUNS=3`
+  - 最新报表已刷新：
+    - traffic-quality：`real_click=88/103 (85.4%)`、`benchmark_rerun=455/627 (72.6%)`、`document_selection=post_instrumentation_real_click`、`top_families=doc_create_reopen_verify`。
+    - document sample scout：`recommendation=ready_with_document_real_click windows=30d:6/96 90d:6/96 365d:6/96 formal_document_like=0`。
+    - document-family guard：`passed=yes baselines=1 passedBaselines=1 real_click_signals=6 admissible_passed=5`。
+    - next-development plan：`ready=yes gate=ready_for_document_family_governance decision=start_document_family_governance eligible=doc_create_reopen_verify`。
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md)、[docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md)、[intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md)、[intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 已同步 `--repeat`、`3/3` guard 阈值和最新证据。
+  - 新增 task brief：
+    - [intent-e2e-doc-create-reopen-verify-repeat-topup-hardening-task-brief-2026-05-08.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-doc-create-reopen-verify-repeat-topup-hardening-task-brief-2026-05-08.md)
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-document-real-click-seed.spec.ts tests/unit/intent-e2e-document-family-release-guard.spec.ts tests/unit/intent-e2e-next-development-plan.spec.ts`
+    - 通过，`3` files / `13` tests。
+  - `npx vitest run tests/unit/intent-e2e-document-real-click-seed.spec.ts tests/unit/intent-e2e-document-family-release-guard.spec.ts tests/unit/intent-e2e-next-development-plan.spec.ts tests/unit/test-generator.spec.ts`
+    - 通过，`4` files / `225` tests。
+  - `npm run intent:document-real-click:seed -- --project-uid proj_default --max-samples 1 --repeat 1 --poll-interval-ms 3000`
+    - 通过，`1/1` passed，runId=`intent-run-a32f8a2d-5123-4875-a3cb-80a9f56af476`。
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30`
+    - 通过，`real_click=88/103 (85.4%)`、`benchmark_rerun=455/627 (72.6%)`、`document_selection=post_instrumentation_real_click`。
+  - `npm run intent:document-sample:scout -- --project-uid proj_default --windows 30,90,365`
+    - 通过，`recommendation=ready_with_document_real_click windows=30d:6/96 90d:6/96 365d:6/96 formal_document_like=0`。
+  - `npm run intent:document-family:governance -- --project-uid proj_default --require-ready`
+    - 通过，`governed=doc_create_reopen_verify missing=-`。
+  - `npm run intent:document-family:guard -- --project-uid proj_default --require-passed`
+    - 通过，`passed=yes baselines=1 passedBaselines=1 real_click_signals=6 admissible_passed=5`。
+  - `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30`
+    - 通过，`ready=yes gate=ready_for_document_family_governance decision=start_document_family_governance eligible=doc_create_reopen_verify`。
+  - `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30`
+    - 通过，`ready=yes gate=ready_for_document_family_governance decision=start_document_family_governance eligible=doc_create_reopen_verify`。
+  - `npx vitest run tests/unit/intent-e2e-document-real-click-seed.spec.ts tests/unit/intent-e2e-document-family-release-guard.spec.ts tests/unit/intent-e2e-document-family-governance.spec.ts tests/unit/intent-e2e-next-development-plan.spec.ts tests/unit/intent-action-dsl.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/test-generator.spec.ts`
+    - 通过，`8` files / `260` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，最新更新为“第五百四十四次”。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - `doc_create_reopen_verify` 现在有 `6` 条 document-like real_click launch signals、`5` 条 admissible passed seed runs，并通过默认 `3/3` guard。
+  - 本轮没有把 document-family guard 并入既有 priority family release-readiness `5/5` summary，也没有混入 benchmark / replay / draft_import。
+- 风险 / 未完成：
+  - 样本仍集中在当前平台知识文档导入/预览这一个 document family；不能外推到所有 document family 或 OCR 场景。
+  - 扩样中保留了 1 条失败 run 作为稳定性证据，已定位并修复对应模板同步问题。
+- 下一步：
+  - 若继续推进 document 主线，可在 `doc_create_reopen_verify` 稳定守住 guard 后，开始第二个真实 document family 的候选发现；若 traffic-quality 仍只推荐当前 family，则应先继续采集真实 document-like real_click。
+
+## 2026-05-08 第五百四十五次更新（Next Development：stop repeated guarded document family）
+
+- 本轮目标：
+  - 修正 next-development plan 对已完成 document family 的重复推荐问题。
+  - 当 traffic-quality 仍只推荐已经 `contract_ready + release_guard=passed` 的 `doc_create_reopen_verify` 时，不再把它作为可开发候选。
+  - 保持 traffic-quality 原始统计口径不变，不改 release-readiness summary。
+- 已完成：
+  - [intent-e2e-next-development-plan.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-next-development-plan.ts) 已新增已完成 document family 判定：
+    - `governanceStatus=contract_ready`
+    - `releaseGuardStatus=passed`
+    - 如果 traffic-quality 只推荐这类已完成 document family，则 `developmentReady=false`、`decision=collect_document_real_click`、`eligibleFamilies=[]`。
+  - [intent-e2e-next-development-plan.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-next-development-plan.ts) 的 `--require-ready` 现在以 next-development plan 的 `developmentReady` 为准，不再只看 raw traffic-quality gate。
+  - [intent-e2e-next-development-plan.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-next-development-plan.spec.ts) 已覆盖 “document family 已 contract_ready + guard passed 时阻断重复治理”。
+  - 新增 task brief：
+    - [intent-e2e-next-development-repeat-guarded-family-stop-gate-task-brief-2026-05-08.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-repeat-guarded-family-stop-gate-task-brief-2026-05-08.md)
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md)、[docs/intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md)、[docs/intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 已同步“已完成 family 不重复治理”的准入规则。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-next-development-plan.spec.ts`
+    - 通过，`1` file / `4` tests。
+  - `npx vitest run tests/unit/intent-e2e-next-development-plan.spec.ts tests/unit/intent-e2e-document-family-release-guard.spec.ts tests/unit/intent-e2e-document-real-click-seed.spec.ts`
+    - 通过，`3` files / `13` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30`
+    - 通过，`ready=no gate=ready_for_document_family_governance decision=collect_document_real_click eligible=-`。
+  - `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30`
+    - 按预期返回非 0：当前唯一 document 候选 `doc_create_reopen_verify` 已 `contract_ready` 且 guard `passed`，没有新的未治理 document code work。
+- 当前阶段状态：
+  - traffic-quality 原始 gate 仍说明存在 document-like real_click，但 next-development 已正确阻断重复治理。
+  - 现在的下一步不是继续改 `doc_create_reopen_verify` 代码，而是采集新的 document-like real_click，直到出现新的未治理 document family，或选择未治理的非 document top family。
+- 风险 / 未完成：
+  - 本轮没有新增第二个 document family 样本；当前仍只有 `doc_create_reopen_verify` 一个 document candidate。
+  - 本轮未改 OCR route/verifier，也未改 benchmark harness。
+- 下一步：
+  - 继续采集新的 document-like `source=real_click`，直到出现未治理 document family。
+  - 如果 traffic-quality 推荐未治理非 document top family，再另起 priority family governance 切片；否则保持 next-dev:check 阻断状态。
+
+## 2026-05-09 第五百四十六次更新（Document Family：doc_search_open_verify first cut and guard closure）
+
+- 本轮目标：
+  - 解决 next-development stop gate 后“只能继续采集真实 document-like real_click”的阻塞点。
+  - 在不做 OCR-first、不改 benchmark harness、不改变 release-readiness 既有 `5/5` 口径的前提下，采集并治理第二个真实 document family。
+  - 让 `doc_search_open_verify` 与 `doc_create_reopen_verify` 一样具备 recipe / fixture / verifier / governance profile / independent guard 证据。
+- 已完成：
+  - [intent-e2e-project-knowledge-document-template.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-project-knowledge-document-template.ts) 新增真实知识文档“搜索打开预览”确定性执行模板：
+    - 每次运行先通过当前项目知识库 API 准备唯一 fixture 文档。
+    - 再打开 `/projects/:projectUid?intentView=knowledge`，进入“知识文档”，按唯一文档名点击“预览”，填写“搜索文档块”，校验当前预览文档名与正文锚点。
+  - [intent-e2e-document-real-click-seed.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-document-real-click-seed.ts) 和 [intent-e2e-seed-document-real-click-samples.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-seed-document-real-click-samples.ts) 已支持 `--sample-id project-knowledge-document-search-open-preview`：
+    - 该样本分类为 `documentFamily=doc_search_open_verify`。
+    - 报表继续标记 `admissibility=document_family_admissible`，不把 reference-only 业务流当作 document family 证据。
+  - [intent-recipe-registry.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-recipe-registry.ts) 新增 recipe `document.project-knowledge-search-open-preview`：
+    - 匹配当前平台项目知识文档目录打开、当前预览、文档块搜索和正文锚点信号。
+    - verifier 要求同时覆盖当前预览文档名、搜索输入和正文锚点，不允许只断言目录名称。
+  - [intent-e2e-document-family-governance.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-document-family-governance.ts) 新增 `doc_search_open_verify` governance profile：
+    - status=`contract_ready`
+    - fixture=`project-knowledge-document-search-open-preview-v1`
+    - source policy=`post_instrumentation_real_click_only`
+  - latest document family guard 现在覆盖两个 baseline：
+    - `doc_create_reopen_verify`：`realClickSignals=6`、`admissiblePassedRuns=5`、`releaseGuard=passed`
+    - `doc_search_open_verify`：`realClickSignals=3`、`admissiblePassedRuns=3`、`releaseGuard=passed`
+  - next-development plan 现在正确阻断重复治理两个已完成 document candidates：
+    - `developmentReady=false`
+    - `decision=collect_document_real_click`
+    - `eligibleFamilies=[]`
+    - 阻断原因为当前 document 候选均已 `contract_ready + release_guard=passed`。
+  - 新增 task brief：
+    - [intent-e2e-doc-search-open-verify-first-cut-and-guard-task-brief-2026-05-09.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-doc-search-open-verify-first-cut-and-guard-task-brief-2026-05-09.md)
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md)、[docs/intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md)、[docs/intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 已同步最新状态。
+- 验证：
+  - `npm run intent:document-real-click:seed -- --project-uid proj_default --sample-id project-knowledge-document-search-open-preview --max-samples 1 --poll-interval-ms 3000`
+    - 通过，`1/1` passed，runId=`intent-run-6e56fb50-b15c-4dee-90fd-101b4d8a0011`。
+  - `npm run intent:document-real-click:seed -- --project-uid proj_default --sample-id project-knowledge-document-search-open-preview --max-samples 1 --repeat 2 --poll-interval-ms 3000`
+    - 通过，`2/2` passed，runIds=`intent-run-07be9964-4e3f-410b-8cec-a7fd2efd4cd2`、`intent-run-8cc08e8c-e706-4025-b40a-a5ad4e450e11`。
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30`
+    - 通过，`real_click=91/106 (85.8%)`、`benchmark_rerun=455/627 (72.6%)`、`document_selection=post_instrumentation_real_click`、`top_families=doc_create_reopen_verify,doc_search_open_verify`。
+  - `npm run intent:document-sample:scout -- --project-uid proj_default --windows 30,90,365`
+    - 通过，`recommendation=ready_with_document_real_click windows=30d:9/99 90d:9/99 365d:9/99 formal_document_like=0`。
+  - `npm run intent:document-family:governance -- --project-uid proj_default --require-ready`
+    - 通过，`governed=doc_create_reopen_verify,doc_search_open_verify missing=-`。
+  - `npm run intent:document-family:guard -- --project-uid proj_default --require-passed`
+    - 通过，`passed=yes baselines=2 passedBaselines=2 real_click_signals=9 admissible_passed=8`。
+  - `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30`
+    - 通过，`ready=no gate=ready_for_document_family_governance decision=collect_document_real_click eligible=-`。
+  - `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30`
+    - 按预期返回非 0：现有 document 候选 `doc_create_reopen_verify / doc_search_open_verify` 均已 `contract_ready` 且独立 guard `passed`，当前没有新的未治理 document code work。
+  - `npx vitest run tests/unit/intent-e2e-document-real-click-seed.spec.ts tests/unit/intent-e2e-document-family-governance.spec.ts tests/unit/intent-e2e-document-family-release-guard.spec.ts tests/unit/intent-e2e-next-development-plan.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-action-dsl.spec.ts tests/unit/test-generator.spec.ts`
+    - 通过，`9` files / `271` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，最新更新为“第五百四十六次”。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - `doc_create_reopen_verify` 与 `doc_search_open_verify` 都已完成 document-family contract 与 independent guard。
+  - 当前 real_click 与 benchmark/replay/draft_import 分母仍完全分离；document guard 不进入既有 priority release-readiness `5/5` summary。
+  - next-development actionable gate 现在是阻断态；在新的未治理 document-like family 出现前，没有继续写 document family 代码的准入。
+- 风险 / 未完成：
+  - 当前只覆盖两个当前平台知识文档 UI family，不能外推为所有 document family 或 OCR 场景可发布。
+  - 本轮没有新增 `doc_edit_save_verify / doc_share_permission_verify / doc_export_verify` 的真实 UI 证据。
+  - 本轮没有改 OCR route/verifier，也没有改 benchmark harness。
+- 下一步：
+  - 继续采集新的 document-like `source=real_click`，直到 traffic-quality 推荐新的未治理 document family。
+  - 如果新的 top family 是非 document 且尚未治理，再另起对应 priority family governance 切片。
+  - 在此之前保持 `intent:next-dev:check` 阻断，不用 benchmark / replay / draft_import 代替真实点击分母。
+
+## 2026-05-09 第五百四十七次更新（Document Family：doc_edit_save_verify first cut and guard closure）
+
+- 本轮目标：
+  - 在 `doc_create_reopen_verify` 与 `doc_search_open_verify` 已完成后，继续采集新的未治理 document-like real_click family。
+  - 基于当前平台知识文档 UI 的“同名文档整篇替换并重新切块”能力，完成 `doc_edit_save_verify` 第一刀。
+  - 继续保持真实点击分母、benchmark/replay/draft_import 分母和 release-readiness `5/5` 口径相互隔离。
+- 已完成：
+  - 新增 task brief：
+    - [intent-e2e-doc-edit-save-verify-first-cut-and-guard-task-brief-2026-05-09.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-doc-edit-save-verify-first-cut-and-guard-task-brief-2026-05-09.md)
+  - [intent-e2e-project-knowledge-document-template.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-project-knowledge-document-template.ts) 新增真实知识文档“编辑保存后预览”确定性执行模板：
+    - fixture setup 先准备一篇唯一已有知识文档。
+    - UI 进入“知识文档”，预览原文锚点。
+    - 用同名文档填写更新内容并点击“导入知识”完成保存。
+    - 搜索旧锚点确认无匹配，再搜索更新锚点确认文档块预览区生效。
+  - [intent-e2e-document-real-click-seed.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-document-real-click-seed.ts) 和 [intent-e2e-seed-document-real-click-samples.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-seed-document-real-click-samples.ts) 已支持：
+    - `--sample-id project-knowledge-document-edit-save-preview`
+    - 该样本分类为 `documentFamily=doc_edit_save_verify`。
+  - [intent-recipe-registry.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-recipe-registry.ts) 新增 recipe `document.project-knowledge-edit-save-preview`。
+  - [intent-e2e-document-family-governance.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-document-family-governance.ts) 新增 `doc_edit_save_verify` governance profile：
+    - status=`contract_ready`
+    - fixture=`project-knowledge-document-edit-save-preview-v1`
+    - source policy=`post_instrumentation_real_click_only`
+  - 初次 `doc_edit_save_verify` real-click 扩样失败 `0/3`，根因为本地 `3666` Next dev server DB 连接池返回 `read ETIMEDOUT`；直连 MySQL 正常，重启 dev server 后恢复。
+  - 修复后 `doc_edit_save_verify` 真实样本 `3/3` 通过：
+    - `intent-run-b707f239-e6cc-47fa-8ea3-22309700470d`
+    - `intent-run-62d8bca2-ee79-44ed-9285-c650d290d7cb`
+    - `intent-run-a483413a-4590-4535-8c93-7735d7713ab6`
+  - latest document family guard 现在覆盖三个 baseline：
+    - `doc_edit_save_verify`：`releaseGuard=passed`
+    - `doc_create_reopen_verify`：`releaseGuard=passed`
+    - `doc_search_open_verify`：`releaseGuard=passed`
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md)、[docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md)、[docs/intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md) 和 [docs/intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 已同步最新状态。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-document-real-click-seed.spec.ts tests/unit/intent-e2e-document-family-governance.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts`
+    - 通过，`4` files / `31` tests。
+  - `npm run intent:document-real-click:seed -- --project-uid proj_default --sample-id project-knowledge-document-edit-save-preview --max-samples 1 --repeat 3 --poll-interval-ms 3000`
+    - 首次运行 `0/3` passed，失败原因为本地 dev server DB 连接池 `read ETIMEDOUT`；重启 dev server 后复跑通过。
+    - 复跑通过，`3/3` passed，runIds=`intent-run-b707f239-e6cc-47fa-8ea3-22309700470d`、`intent-run-62d8bca2-ee79-44ed-9285-c650d290d7cb`、`intent-run-a483413a-4590-4535-8c93-7735d7713ab6`。
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30`
+    - 通过，`real_click=94/112 (83.9%)`、`benchmark_rerun=455/627 (72.6%)`、`document_selection=post_instrumentation_real_click`、`top_families=doc_edit_save_verify,doc_create_reopen_verify,doc_search_open_verify`。
+  - `npm run intent:document-sample:scout -- --project-uid proj_default --windows 30,90,365`
+    - 通过，`recommendation=ready_with_document_real_click windows=30d:15/105 90d:15/105 365d:15/105 formal_document_like=0`。
+  - `npm run intent:document-family:governance -- --project-uid proj_default --require-ready`
+    - 通过，`governed=doc_edit_save_verify,doc_create_reopen_verify,doc_search_open_verify missing=-`。
+  - `npm run intent:document-family:guard -- --project-uid proj_default --require-passed`
+    - 通过，`passed=yes baselines=3 passedBaselines=3 real_click_signals=15 admissible_passed=11`。
+  - `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30`
+    - 通过，`ready=no gate=ready_for_document_family_governance decision=collect_document_real_click eligible=-`。
+  - `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30`
+    - 按预期返回非 0：现有 document 候选 `doc_edit_save_verify / doc_create_reopen_verify / doc_search_open_verify` 均已 `contract_ready` 且独立 guard `passed`，当前没有新的未治理 document code work。
+  - `npx vitest run tests/unit/intent-e2e-document-real-click-seed.spec.ts tests/unit/intent-e2e-document-family-governance.spec.ts tests/unit/intent-e2e-document-family-release-guard.spec.ts tests/unit/intent-e2e-next-development-plan.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-action-dsl.spec.ts tests/unit/test-generator.spec.ts`
+    - 通过，`9` files / `274` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，最新更新为“第五百四十七次”。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - `doc_edit_save_verify / doc_create_reopen_verify / doc_search_open_verify` 都已完成 document-family contract 与 independent guard。
+  - next-development actionable gate 继续阻断重复治理；当前不是继续改已完成 family，而是继续采集新的未治理 document-like real_click。
+  - release-readiness 既有 priority family `5/5` summary 未被改写。
+- 风险 / 未完成：
+  - 当前仍只覆盖当前平台知识文档 UI 的 create/search/edit 三类，不代表所有 document family 或 OCR 场景可发布。
+  - 本轮没有新增 `doc_share_permission_verify / doc_export_verify` 的真实 UI 证据。
+  - 本轮没有改 OCR route/verifier，也没有改 benchmark harness。
+- 下一步：
+  - 继续采集新的 document-like `source=real_click`，直到 traffic-quality 推荐 `doc_share_permission_verify`、`doc_export_verify` 或其他新的未治理 family。
+  - 在此之前保持 `intent:next-dev:check` 阻断，不用 benchmark / replay / draft_import 代替真实点击分母。
+
+## 2026-05-09 第五百四十八次更新（Document Family：doc_archive_restore_verify first cut and next-dev stop gate）
+
+- 本轮目标：
+  - 在 create/search/edit 三个当前平台知识文档 UI family 已完成后，继续采集新的未治理 document-like `source=real_click`。
+  - 基于当前平台知识文档 UI 的“归档 / 恢复 / 恢复后重新预览”能力，完成 `doc_archive_restore_verify` 第一刀。
+  - 修正 next-development stop gate，避免 current top family 已完成时被低优先级非 top candidate 误判为 `developmentReady=true`。
+- 已完成：
+  - 新增 task brief：
+    - [intent-e2e-doc-archive-restore-verify-first-cut-and-guard-task-brief-2026-05-09.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-doc-archive-restore-verify-first-cut-and-guard-task-brief-2026-05-09.md)
+  - [intent-e2e-traffic-quality.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-traffic-quality.ts) 新增 `doc_archive_restore_verify` document family，并把“归档 / 恢复 / 删除 / 移除”等文档操作纳入 document operation intent。
+  - [intent-e2e-project-knowledge-document-template.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-project-knowledge-document-template.ts) 新增真实知识文档“归档恢复后预览”确定性执行模板：
+    - fixture setup 准备一篇唯一已有知识文档。
+    - UI 进入“知识文档”，预览正文锚点。
+    - 通过 `window.confirm = () => true` 自动确认归档弹窗。
+    - 按 `aria-label` 的完整可访问名称定位“归档知识文档 <name> / 恢复知识文档 <name>”按钮。
+    - 恢复后重新预览并校验文档块正文锚点可见。
+  - [intent-e2e-document-real-click-seed.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-document-real-click-seed.ts) 和 [intent-e2e-seed-document-real-click-samples.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-seed-document-real-click-samples.ts) 已支持：
+    - `--sample-id project-knowledge-document-archive-restore-preview`
+    - 该样本分类为 `documentFamily=doc_archive_restore_verify`。
+  - [intent-recipe-registry.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-recipe-registry.ts) 新增 recipe `document.project-knowledge-archive-restore-preview`。
+  - [intent-e2e-document-family-governance.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-document-family-governance.ts) 新增 `doc_archive_restore_verify` governance profile：
+    - status=`contract_ready`
+    - fixture=`project-knowledge-document-archive-restore-preview-v1`
+    - source policy=`post_instrumentation_real_click_only`
+  - 初次 `doc_archive_restore_verify` real-click 扩样失败暴露两个模板问题：
+    - 原生 confirm 不能稳定通过 `page.waitForEvent('dialog')` 捕获。
+    - 归档 / 恢复按钮使用 `aria-label` 作为 role name，不能按可见短文本 `归档 / 恢复` 定位。
+  - 修复后 `doc_archive_restore_verify` 真实样本 `3/3` 通过：
+    - `intent-run-f50ff588-84d4-433c-aa6b-bfa2d50ff8b4`
+    - `intent-run-0716b3cd-6c07-4383-9189-175a96b376c6`
+    - `intent-run-ab435e59-10cb-470f-a9fc-34b965c2c0b7`
+  - [intent-e2e-next-development-plan.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-next-development-plan.ts) 修正已完成 document family stop gate：
+    - `hasOnlyCompletedDocumentCandidates` 现在只检查 traffic-quality development gate 当前推荐的 document eligible families。
+    - 低优先级、非当前 top-family guard baseline 的历史候选不会再让 `developmentReady` 误报为 `true`。
+  - latest document family guard 现在覆盖 current recommended top-3 baseline：
+    - `doc_archive_restore_verify`：`releaseGuard=passed`
+    - `doc_edit_save_verify`：`releaseGuard=passed`
+    - `doc_create_reopen_verify`：`releaseGuard=passed`
+    - `doc_search_open_verify` 仍保留 `contract_ready` profile，且此前已通过独立 guard；当前不在 latest top-3 baseline 中。
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md)、[docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md)、[docs/intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md) 和 [docs/intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 已同步最新状态。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-document-real-click-seed.spec.ts tests/unit/intent-e2e-document-family-governance.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts`
+    - 通过，`4` files / `34` tests。
+  - `npx vitest run tests/unit/intent-e2e-next-development-plan.spec.ts tests/unit/intent-e2e-document-real-click-seed.spec.ts tests/unit/intent-e2e-document-family-governance.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts`
+    - 通过，`5` files / `39` tests。
+  - `npm run intent:document-real-click:seed -- --project-uid proj_default --sample-id project-knowledge-document-archive-restore-preview --max-samples 1 --repeat 3 --poll-interval-ms 3000`
+    - 修复前两轮均 `0/3` passed；失败样本保留为真实 `real_click` 信号，不计入 admissible passed runs。
+    - 修复后通过，`3/3` passed，runIds=`intent-run-f50ff588-84d4-433c-aa6b-bfa2d50ff8b4`、`intent-run-0716b3cd-6c07-4383-9189-175a96b376c6`、`intent-run-ab435e59-10cb-470f-a9fc-34b965c2c0b7`。
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30`
+    - 通过，`real_click=97/121 (80.2%)`、`benchmark_rerun=455/627 (72.6%)`、`document_selection=post_instrumentation_real_click`、`top_families=doc_archive_restore_verify,doc_edit_save_verify,doc_create_reopen_verify`。
+  - `npm run intent:document-sample:scout -- --project-uid proj_default --windows 30,90,365`
+    - 通过，`recommendation=ready_with_document_real_click windows=30d:24/114 90d:24/114 365d:24/114 formal_document_like=0`。
+  - `npm run intent:document-family:governance -- --project-uid proj_default --require-ready`
+    - 通过，`governed=doc_archive_restore_verify,doc_edit_save_verify,doc_create_reopen_verify missing=-`。
+  - `npm run intent:document-family:guard -- --project-uid proj_default --require-passed`
+    - 通过，`passed=yes baselines=3 passedBaselines=3 real_click_signals=21 admissible_passed=11`。
+  - `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30`
+    - 通过，`ready=no gate=ready_for_document_family_governance decision=collect_document_real_click eligible=-`。
+  - `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30`
+    - 按预期返回非 0：latest recommended top-3 document 候选 `doc_archive_restore_verify / doc_edit_save_verify / doc_create_reopen_verify` 均已 `contract_ready` 且独立 guard `passed`，当前没有新的未治理 document code work。
+  - `npx vitest run tests/unit/intent-e2e-document-real-click-seed.spec.ts tests/unit/intent-e2e-document-family-governance.spec.ts tests/unit/intent-e2e-document-family-release-guard.spec.ts tests/unit/intent-e2e-next-development-plan.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-action-dsl.spec.ts tests/unit/test-generator.spec.ts`
+    - 通过，`9` files / `278` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，最新更新为“第五百四十八次”。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - 当前平台知识文档 UI 已完成 create/search/edit/archive-restore 四类 contract，其中 latest recommended top-3 已由 independent guard 验证通过。
+  - next-development actionable gate 继续阻断重复治理；当前不是继续改已完成 family，而是继续采集新的未治理 document-like real_click。
+  - release-readiness 既有 priority family `5/5` summary 未被改写。
+- 风险 / 未完成：
+  - 当前仍只覆盖当前平台知识文档 UI，不代表所有 document family 或 OCR 场景可发布。
+  - 本轮没有新增 `doc_share_permission_verify / doc_export_verify` 的真实 UI 证据。
+  - 本轮没有改 OCR route/verifier，也没有改 benchmark harness。
+- 下一步：
+  - 继续采集新的 document-like `source=real_click`，直到 traffic-quality 推荐 `doc_share_permission_verify`、`doc_export_verify` 或其他新的未治理 family。
+  - 在此之前保持 `intent:next-dev:check` 阻断，不用 benchmark / replay / draft_import 代替真实点击分母。
+
+## 2026-05-09 第五百四十九次更新（Document Family：doc_derive_capability_verify first cut and guard closure）
+
+- 本轮目标：
+  - 在当前平台知识文档 create/search/edit/archive-restore family 已完成后，继续采集新的未治理 document-like `source=real_click`。
+  - 基于当前平台知识文档 UI 的“自动沉淀能力 -> 能力目录 -> 知识提炼”能力，完成 `doc_derive_capability_verify` 第一刀。
+  - 继续保持真实点击分母、benchmark/replay/draft_import 分母和 release-readiness `5/5` 口径相互隔离。
+- 已完成：
+  - 新增 task brief：
+    - [intent-e2e-doc-derive-capability-verify-first-cut-and-guard-task-brief-2026-05-09.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-doc-derive-capability-verify-first-cut-and-guard-task-brief-2026-05-09.md)
+  - [intent-e2e-traffic-quality.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-traffic-quality.ts) 新增 `doc_derive_capability_verify` document family，并把“自动沉淀 / 沉淀能力 / 知识提炼 / 能力来源 / derive”等文档操作纳入 document operation intent。
+  - [intent-e2e-project-knowledge-document-template.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-project-knowledge-document-template.ts) 新增真实知识文档“自动沉淀能力后目录验收”确定性执行模板：
+    - fixture setup 准备一篇唯一已有知识文档。
+    - UI 进入“知识文档”，预览正文锚点。
+    - 点击“自动沉淀能力”，等待“已沉淀 N 条能力”成功信号。
+    - 进入能力目录，搜索本次唯一“商机列表按采集手机号<timestamp>检索”能力，并校验“知识提炼”状态。
+  - [intent-e2e-document-real-click-seed.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-document-real-click-seed.ts) 和 [intent-e2e-seed-document-real-click-samples.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-seed-document-real-click-samples.ts) 已支持：
+    - `--sample-id project-knowledge-document-derive-capability-preview`
+    - 该样本分类为 `documentFamily=doc_derive_capability_verify`。
+  - [intent-recipe-registry.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-recipe-registry.ts) 新增 recipe `document.project-knowledge-derive-capability-preview`。
+  - [intent-e2e-document-family-governance.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-document-family-governance.ts) 新增 `doc_derive_capability_verify` governance profile：
+    - status=`contract_ready`
+    - fixture=`project-knowledge-document-derive-capability-preview-v1`
+    - source policy=`post_instrumentation_real_click_only`
+  - `doc_derive_capability_verify` 真实样本累计 `7/7` 通过：
+    - `intent-run-d09a3c57-66f4-4987-9d96-574a44f32ff3`
+    - `intent-run-c6562a87-d793-4cbf-ada7-d0946810e889`
+    - `intent-run-ed627ba5-8303-441f-913b-7bc44fb8687c`
+    - `intent-run-c624d00f-c158-47c4-ae8a-ea7afe5fe850`
+    - `intent-run-116a9a2e-197d-46bd-92b2-a6d9acf9f460`
+    - `intent-run-84af8a04-fc60-476f-8465-17152471921f`
+    - `intent-run-d35ee4ec-5ede-4639-8621-94d10f7641c2`
+  - latest document family guard 现在覆盖 current recommended top-3 baseline：
+    - `doc_archive_restore_verify`：`releaseGuard=passed`
+    - `doc_derive_capability_verify`：`releaseGuard=passed`
+    - `doc_edit_save_verify`：`releaseGuard=passed`
+    - `doc_create_reopen_verify` 与 `doc_search_open_verify` 仍保留 `contract_ready` profile，且此前已通过独立 guard；当前不在 latest top-3 baseline 中。
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md)、[docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md)、[docs/intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md) 和 [docs/intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 已同步最新状态。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-traffic-quality.spec.ts tests/unit/intent-e2e-document-real-click-seed.spec.ts tests/unit/intent-e2e-document-family-governance.spec.ts tests/unit/intent-recipe-registry.spec.ts`
+    - 通过，`4` files / `37` tests。
+  - `npm run intent:document-real-click:seed -- --project-uid proj_default --sample-id project-knowledge-document-derive-capability-preview --max-samples 1 --repeat 3 --poll-interval-ms 3000`
+    - 通过，`3/3` passed，runIds=`intent-run-d09a3c57-66f4-4987-9d96-574a44f32ff3`、`intent-run-c6562a87-d793-4cbf-ada7-d0946810e889`、`intent-run-ed627ba5-8303-441f-913b-7bc44fb8687c`。
+  - `npm run intent:document-real-click:seed -- --project-uid proj_default --sample-id project-knowledge-document-derive-capability-preview --max-samples 1 --repeat 4 --poll-interval-ms 3000`
+    - 通过，`4/4` passed，runIds=`intent-run-c624d00f-c158-47c4-ae8a-ea7afe5fe850`、`intent-run-116a9a2e-197d-46bd-92b2-a6d9acf9f460`、`intent-run-84af8a04-fc60-476f-8465-17152471921f`、`intent-run-d35ee4ec-5ede-4639-8621-94d10f7641c2`。
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30`
+    - 通过，`real_click=104/128 (81.3%)`、`benchmark_rerun=455/627 (72.6%)`、`document_selection=post_instrumentation_real_click`、`top_families=doc_archive_restore_verify,doc_derive_capability_verify,doc_edit_save_verify`。
+  - `npm run intent:document-sample:scout -- --project-uid proj_default --windows 30,90,365`
+    - 通过，`recommendation=ready_with_document_real_click windows=30d:31/121 90d:31/121 365d:31/121 formal_document_like=0`。
+  - `npm run intent:document-family:governance -- --project-uid proj_default --require-ready`
+    - 通过，`governed=doc_archive_restore_verify,doc_derive_capability_verify,doc_edit_save_verify missing=-`。
+  - `npm run intent:document-family:guard -- --project-uid proj_default --require-passed`
+    - 通过，`passed=yes baselines=3 passedBaselines=3 real_click_signals=22 admissible_passed=13`。
+  - `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30`
+    - 通过，`ready=no gate=ready_for_document_family_governance decision=collect_document_real_click eligible=-`。
+  - `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30`
+    - 按预期返回非 0：latest recommended top-3 document 候选 `doc_archive_restore_verify / doc_derive_capability_verify / doc_edit_save_verify` 均已 `contract_ready` 且独立 guard `passed`，当前没有新的未治理 document code work。
+- 当前阶段状态：
+  - 当前平台知识文档 UI 已完成 create/search/edit/archive-restore/derive-capability 五类 contract，其中 latest recommended top-3 已由 independent guard 验证通过。
+  - next-development actionable gate 继续阻断重复治理；当前不是继续改已完成 family，而是继续采集新的未治理 document-like real_click。
+  - release-readiness 既有 priority family `5/5` summary 未被改写。
+- 风险 / 未完成：
+  - 当前仍只覆盖当前平台知识文档 UI，不代表所有 document family 或 OCR 场景可发布。
+  - 本轮没有新增 `doc_share_permission_verify / doc_export_verify` 的真实 UI 证据。
+  - 本轮没有改 OCR route/verifier，也没有改 benchmark harness。
+- 下一步：
+  - 继续采集新的 document-like `source=real_click`，直到 traffic-quality 推荐 `doc_share_permission_verify`、`doc_export_verify` 或其他新的未治理 family。
+  - 在此之前保持 `intent:next-dev:check` 阻断，不用 benchmark / replay / draft_import 代替真实点击分母。
+
+## 2026-05-09 第五百五十次更新（Document Family：doc_derive_capability_verify validation closure）
+
+- 本轮目标：
+  - 将 `doc_derive_capability_verify` 的 first cut 结果对齐到 latest roadmap 末尾，补齐完整验证闭环。
+  - 确认 latest recommended top-3 document baseline 已更新为 `doc_archive_restore_verify / doc_derive_capability_verify / doc_edit_save_verify`，且独立 guard 全部通过。
+- 已完成：
+  - `doc_derive_capability_verify` 已完成 traffic classifier、deterministic seed template、ScenarioCard seed、recipe 与 governance profile。
+  - 真实样本累计 `7/7` passed，全部来自不携带 `intentDraftUid` 的 `source=real_click` 启动链路。
+  - latest traffic-quality 仍把 `real_click` 与 `benchmark_rerun / replay / draft_import` 完全分离。
+  - latest next-development check 按预期阻断重复治理：当前没有新的未治理 document code work。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-document-real-click-seed.spec.ts tests/unit/intent-e2e-document-family-governance.spec.ts tests/unit/intent-e2e-document-family-release-guard.spec.ts tests/unit/intent-e2e-next-development-plan.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-action-dsl.spec.ts tests/unit/test-generator.spec.ts`
+    - 通过，`9` files / `281` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，最新更新为“第五百五十一次”。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - 当前平台知识文档 UI 已完成 create/search/edit/archive-restore/derive-capability 五类 contract。
+  - latest recommended top-3 document guard：`passed=yes baselines=3 passedBaselines=3 real_click_signals=22 admissible_passed=13`。
+  - release-readiness 既有 priority family `5/5` summary 未被改写。
+- 风险 / 未完成：
+  - 当前仍只覆盖当前平台知识文档 UI，不代表所有 document family 或 OCR 场景可发布。
+  - `doc_share_permission_verify / doc_export_verify` 仍没有真实 UI 证据。
+  - 没有改 OCR route/verifier，也没有改 benchmark harness。
+- 下一步：
+  - 继续采集新的 document-like `source=real_click`；只有出现新的未治理 top document family，或非 document top family 变为未治理候选后，才另起新代码切片。
+
+## 2026-05-09 第五百五十一次更新（Document Family：doc_derive_capability_verify final validation closure）
+
+- 本轮目标：
+  - 将 `doc_derive_capability_verify` 的真实采集、契约和 guard 结果对齐到 latest roadmap 末尾。
+  - 确认 latest recommended top-3 document baseline 已更新为 `doc_archive_restore_verify / doc_derive_capability_verify / doc_edit_save_verify`，且独立 guard 全部通过。
+- 已完成：
+  - `doc_derive_capability_verify` 已完成 traffic classifier、deterministic seed template、ScenarioCard seed、recipe 与 governance profile。
+  - 真实样本累计 `7/7` passed，全部来自不携带 `intentDraftUid` 的 `source=real_click` 启动链路。
+  - latest traffic-quality 仍把 `real_click` 与 `benchmark_rerun / replay / draft_import` 完全分离。
+  - latest next-development check 按预期阻断重复治理：当前没有新的未治理 document code work。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-document-real-click-seed.spec.ts tests/unit/intent-e2e-document-family-governance.spec.ts tests/unit/intent-e2e-document-family-release-guard.spec.ts tests/unit/intent-e2e-next-development-plan.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts tests/unit/intent-recipe-registry.spec.ts tests/unit/intent-execution-plan.spec.ts tests/unit/intent-action-dsl.spec.ts tests/unit/test-generator.spec.ts`
+    - 通过，`9` files / `281` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - 当前平台知识文档 UI 已完成 create/search/edit/archive-restore/derive-capability 五类 contract。
+  - latest recommended top-3 document guard：`passed=yes baselines=3 passedBaselines=3 real_click_signals=22 admissible_passed=13`。
+  - release-readiness 既有 priority family `5/5` summary 未被改写。
+- 风险 / 未完成：
+  - 当前仍只覆盖当前平台知识文档 UI，不代表所有 document family 或 OCR 场景可发布。
+  - `doc_share_permission_verify / doc_export_verify` 仍没有真实 UI 证据。
+  - 没有改 OCR route/verifier，也没有改 benchmark harness。
+- 下一步：
+  - 继续采集新的 document-like `source=real_click`；只有出现新的未治理 top document family，或非 document top family 变为未治理候选后，才另起新代码切片。
+
+## 2026-05-09 第五百五十二次更新（New Intent Readiness Gate and Recovery Bootstrap）
+
+- 本轮目标：
+  - 针对“全新业务意图”通过 AI 生成按钮开跑前的高成功率问题，先补一层短周期、可验证的 readiness 契约。
+  - 复用现有 launch-decision、priority family、document governance 和 traffic-quality 信号，明确推荐模式、信心、缺失契约和失败补救类别。
+  - 不改变 release-readiness、traffic-quality 成功率、benchmark harness、document verifier 或 OCR 主链路。
+- 已完成：
+  - 新增 task brief：
+    - [intent-e2e-new-intent-readiness-gate-bootstrap-task-brief-2026-05-09.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-new-intent-readiness-gate-bootstrap-task-brief-2026-05-09.md)
+  - 新增 [intent-e2e-new-intent-readiness.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-new-intent-readiness.ts)：
+    - 输出 `recommendedMode=direct_generate|recipe_assisted|exploration_run|needs_bootstrap|needs_fixture|needs_clarify|draft_only`。
+    - 输出 `confidence=high|medium|low`、`missingContracts`、`failureRecoveryPlan` 和可追溯 signals。
+    - 对缺 fixture / 缺验收 / 缺稳定 family / 缺 recipe 的新意图给出显式补救类别，避免把未知意图包装成高信心直接生成。
+  - [launch-decision route](/Users/xiaolongbao/Workspace/ai-test/app/api/intent-e2e/launch-decision/route.ts) 已返回 `newIntentReadiness`。
+  - [intent-e2e-traffic-quality.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-traffic-quality.ts) 的 launch-click metadata 已记录 `newIntentReadiness`，但不改变既有 counters / 分母 / 成功率。
+  - 新增 CLI [intent-e2e-new-intent-readiness.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-new-intent-readiness.ts) 与 package script：
+    - `npm run intent:new-intent:readiness -- --project-uid proj_default --input "<任务描述>" --target-url "<入口URL>" --json`
+    - 不传 `--input` 时扫描最近窗口 traffic-quality `launch_click_count`，输出 latest JSON / Markdown。
+  - 工作台阻断态会展示 readiness 的推荐模式、信心、缺口和首条补救建议；`auto_run` 行为不被该展示改写。
+  - README、runbook、next-development prep 和 current handoff 已补充新入口。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-new-intent-readiness.spec.ts tests/unit/intent-e2e-launch-decision.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts`
+    - 通过，`3` files / `28` tests。
+  - `npm run intent:new-intent:readiness -- --project-uid proj_default --input "登录后用手机号 13800001111 搜索商机，进入详情并校验状态字段可见" --target-url "https://uat-service.yikaiye.com/#/business/businesslist" --json`
+    - 通过，单意图输出 `recommendedMode=direct_generate`、`confidence=high`、`priorityScenarioFamily=list_search_detail`。
+  - `npm run intent:new-intent:readiness -- --project-uid proj_default --window-days 30`
+    - 通过，`total=100`，`source={"real_click":94,"draft_import":6}`，`mode={"direct_generate":57,"needs_fixture":42,"draft_only":1}`，source 分桶未混统。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，最新更新为“第五百五十二次”。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - 已完成新意图 readiness 第一刀，能在 AI 生成前稳定区分直接生成、recipe 辅助、探索运行、需补冷启动、需补 fixture、需补描述和草稿优先。
+  - 该能力是开跑前风险判断与补救建议，不是“所有新意图必过”的承诺。
+  - release-readiness 既有 priority family `5/5` summary 与 document-family independent guard 未被改写。
+- 风险 / 未完成：
+  - 尚未把 readiness 作为硬 gate 阻断所有 `auto_run`；当前只对既有 launch-decision 阻断态做可见展示，并在 report / metadata 中留证。
+  - 未新增未知业务 family 的 recipe、fixture 或 verifier。
+  - 历史 launch-click 事件没有 readiness metadata 时，报表会按当前契约重算，只代表当前分析口径。
+- 下一步：
+  - 观察最近窗口 new-intent readiness 报表中 `needs_fixture / recipe / stable_family_or_document_path` 的高频缺口，优先选择短周期、高收益的非 document top family 或新意图 recipe 切片。
+  - 若要把 readiness 从 advisory 提升成硬 gate，需另起切片定义 UI、API 和用户 override 策略。
+
+## 2026-05-09 第五百五十三次更新（Needs Fixture Bootstrap Contract First Cut）
+
+- 本轮目标：
+  - 针对 new-intent readiness 最近窗口中最高频的 `needs_fixture` 缺口，补一层结构化 fixture bootstrap 草稿。
+  - 让缺前置数据契约的新意图不只显示“补 fixture”，还输出 setup / cleanup ref、owner、idempotencyKey、required fields 和 recommended runtime governance。
+  - 保持只生成契约草稿，不自动创建或执行 fixture 脚本，不改变 release-readiness / traffic-quality 成功率口径。
+- 已完成：
+  - 新增 task brief：
+    - [intent-e2e-needs-fixture-bootstrap-contract-task-brief-2026-05-09.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-needs-fixture-bootstrap-contract-task-brief-2026-05-09.md)
+  - [intent-e2e-new-intent-readiness.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-new-intent-readiness.ts) 已为 `fixture_contract` 缺口生成 `fixtureBootstrap`：
+    - `fixtureId`
+    - `strategy=setup_cleanup`
+    - `owner=owner://project/<projectUid>/members/workspace-user`
+    - `setupRef=fixture://project/<projectUid>/<family>/setup`
+    - `cleanupRef=fixture://project/<projectUid>/<family>/cleanup`
+    - `idempotencyKey=new-intent.<projectUid>.<family>.<fingerprint>`
+    - `requiredStableIdentifiers / requiredFields`
+    - `recommendedRuntimeGovernance`
+  - readiness report summary 新增 `fixtureBootstrapStrategies`，Markdown item 展示 fixture 草稿和 refs。
+  - [intent-e2e-new-intent-readiness.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-new-intent-readiness.ts) 新增 `--only-needs-fixture` 过滤。
+  - [package.json](/Users/xiaolongbao/Workspace/ai-test/package.json) 新增脚本：
+    - `npm run intent:fixture-bootstrap -- --project-uid proj_default --window-days 30`
+  - 工作台阻断态会展示 fixture 草稿核心字段：fixtureId、setupRef、cleanupRef、idempotencyKey。
+  - README、runbook、next-development prep 和 current handoff 已同步 fixture bootstrap 入口。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-new-intent-readiness.spec.ts tests/unit/intent-e2e-launch-decision.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts`
+    - 通过，`3` files / `28` tests。
+  - `npm run intent:fixture-bootstrap -- --project-uid proj_default --window-days 30`
+    - 通过，`total=43`，`source={"real_click":42,"draft_import":1}`，`fixture={"setup_cleanup":43}`。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，最新更新为“第五百五十三次”。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - `needs_fixture` 已从纯提示升级为可执行前的契约草稿输出。
+  - 该能力仍是 advisory / bootstrap，不会自动写 project runtime governance manifest，也不会自动执行 setup / cleanup。
+  - release-readiness 既有 priority family `5/5` summary、document-family independent guard 和 traffic-quality 成功率分母未被改写。
+- 风险 / 未完成：
+  - 真实 fixture 脚本仍未落地；当前只提供 repo-owned fixture ref 命名和推荐 governance。
+  - 高频 family 的具体 fixture setup / cleanup 字段仍需下一刀按候选 family 实现。
+  - `draft_import` item 会被 report 单独计数，不能混入 `real_click` 成功率。
+- 下一步：
+  - 从 `intent:fixture-bootstrap` 报表选择 `source=real_click` 且出现次数最高的 family，落一个最小 repo-owned fixture setup / cleanup 脚本和对应 governance 写入流程。
+  - 若继续追求短周期收益，优先治理 `real_click needs_fixture` 中已有稳定 family 和明确 verifier 的样本，不扩未知 document / OCR 主链路。
+
+## 2026-05-09 第五百五十四次更新（Needs Fixture Top Family：modal_or_drawer_save setup / cleanup first cut）
+
+- 本轮目标：
+  - 按 `intent:fixture-bootstrap` 最近窗口 report 选择最高频 `source=real_click` family，并落地第一条 repo-owned fixture setup / cleanup。
+  - 最高频候选为 `modal_or_drawer_save`：`24` 条；其中非 document-like `real_click` 为 `18` 条，主要来自已跑通的服务分佣配置保存样本。
+  - 只补 fixture 执行契约和本地 state 留证，不改 release-readiness、traffic-quality 成功率、benchmark harness、document verifier 或 OCR 主链路。
+- 已完成：
+  - 新增 task brief：
+    - [intent-e2e-modal-or-drawer-save-fixture-first-cut-task-brief-2026-05-09.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-modal-or-drawer-save-fixture-first-cut-task-brief-2026-05-09.md)
+  - 新增 repo-owned fixture 脚本：
+    - [setup.mjs](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-fixtures/project/proj_default/modal_or_drawer_save/setup.mjs)
+    - [cleanup.mjs](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-fixtures/project/proj_default/modal_or_drawer_save/cleanup.mjs)
+    - [_shared.mjs](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-fixtures/project/proj_default/modal_or_drawer_save/_shared.mjs)
+  - `fixture://project/proj_default/modal_or_drawer_save/setup` 会写出按 `idempotencyKey` 隔离的 fixture state，并固定服务分佣配置保存场景 contract：
+    - `scenarioId=commission.service-ratio-config`
+    - `searchKeyword=379`
+    - `targetRole=商机创建人`
+    - required evidence 包含目标服务行命中、服务分佣配置弹框可见、目标角色比例输入框更新/保留、成功提示/弹框关闭/目标值保留。
+  - `fixture://project/proj_default/modal_or_drawer_save/cleanup` 会幂等标记 state cleaned，并输出 cleanup artifact；当前不回滚远端佣金比例。
+  - 新增 [intent-e2e-fixture-executor.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-fixture-executor.spec.ts)，用真实 executor 执行 setup / cleanup refs，证明 repo-owned 脚本解析、env context 注入、state 写入和 cleanup 输出都可用。
+  - [intent-e2e-new-intent-readiness.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-new-intent-readiness.spec.ts) 新增服务分佣配置类意图断言，确认 `modal_or_drawer_save` 仍输出正确 setup / cleanup refs。
+  - README、runbook、next-development prep 与 current handoff 已补充当前 first-cut fixture 状态。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-fixture-executor.spec.ts tests/unit/intent-e2e-new-intent-readiness.spec.ts tests/unit/intent-e2e-launch-decision.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts`
+    - 通过，`4` files / `30` tests。
+  - 直接执行 setup / cleanup 脚本并使用临时 `INTENT_E2E_FIXTURE_STATE_ROOT`
+    - 通过，setup 输出 `modal_or_drawer_save fixture setup ready`，cleanup 输出 `modal_or_drawer_save fixture cleanup completed`。
+  - `npm run intent:fixture-bootstrap -- --project-uid proj_default --window-days 30`
+    - 通过，`total=43`，`source={"real_click":42,"draft_import":1}`，`fixture={"setup_cleanup":43}`。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，最新更新为“第五百五十四次”。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - `needs_fixture` 已从契约草稿推进到第一条 top real-click family 的 repo-owned setup / cleanup 可执行脚本。
+  - 该能力只有在请求或项目 runtime governance 写入对应 fixture refs 时才会执行；它不改变 AI 生成按钮的 real_click 分母或 release-readiness summary。
+  - 当前 first cut 以服务分佣配置保存类样本为主要 contract，其他 `modal_or_drawer_save` 变体仍需按真实 traffic 继续细分。
+- 风险 / 未完成：
+  - 本轮 setup 不直接修改远端业务数据，只记录本地 fixture state 和场景 contract；远端数据准备/回滚需要业务 API 或明确 UI 复原策略后另起切片。
+  - cleanup 当前不回滚佣金比例，不能把它表述为完整业务数据回收。
+  - 没有新增 document family recipe/verifier、OCR route/verifier，也没有改 benchmark harness。
+- 下一步：
+  - 在项目 runtime governance manifest 或具体新意图请求中试挂 `modal_or_drawer_save` fixture refs，观察 `needs_fixture` 是否能转为 `auto_run` 或暴露更精确阻断原因。
+  - 若下一轮继续追求短周期收益，优先补服务分佣配置的远端恢复 adapter 或选择 `business_create_list_verify` 这类次高频 needs_fixture family 落第二条 repo-owned fixture。
+
+## 2026-05-09 第五百五十五次更新（modal_or_drawer_save known fixture governance auto-attach）
+
+- 本轮目标：
+  - 将已落地的 repo-owned fixture setup / cleanup 接入项目认证与 runtime governance 合并链路。
+  - 只对 `proj_default + 服务分佣配置 + modal_or_drawer_save` 窄匹配请求自动补 fixture refs。
+  - 让这类请求的 launch-decision 从缺 fixture 契约转为具备 fixture contract 后可 `auto_run`。
+- 已完成：
+  - 新增 task brief：
+    - [intent-e2e-modal-or-drawer-save-known-fixture-governance-task-brief-2026-05-09.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-modal-or-drawer-save-known-fixture-governance-task-brief-2026-05-09.md)
+  - 新增 [intent-e2e-known-fixture-governance.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-known-fixture-governance.ts)，集中维护 known fixture 的窄匹配与 runtime governance merge：
+    - `fixture.strategy=setup_cleanup`
+    - `setupRef=fixture://project/proj_default/modal_or_drawer_save/setup`
+    - `cleanupRef=fixture://project/proj_default/modal_or_drawer_save/cleanup`
+    - `owner=owner://project/proj_default/members/<actorUserUid>`
+    - `idempotencyKey=new-intent.proj_default.modal_or_drawer_save.<fingerprint>`
+  - [intent-e2e-project-auth.ts](/Users/xiaolongbao/Workspace/ai-test/lib/server/intent-e2e-project-auth.ts) 已在项目 runtime governance 与 fixture ownership defaults 之后应用 known fixture governance，因此 `launch-decision`、`/api/intent-e2e/runs`、sync / stream 主链路都会拿到同一份 fixture 契约。
+  - 新增 [intent-e2e-known-fixture-governance.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-known-fixture-governance.spec.ts)，覆盖服务分佣配置请求自动补 fixture、launch-decision 转 `auto_run`、非 `proj_default` 不误补、显式 fixture 不被覆盖。
+  - [intent-e2e-project-auth.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-project-auth.spec.ts) 已补项目认证链路级断言，确认 `proj_default` 服务分佣配置请求会带出 project credential 与 known fixture refs。
+  - README、runbook、next-development prep 与 current handoff 已同步自动补治理契约的当前状态。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-known-fixture-governance.spec.ts tests/unit/intent-e2e-project-auth.spec.ts tests/unit/intent-e2e-launch-decision.spec.ts tests/unit/intent-e2e-fixture-executor.spec.ts tests/unit/intent-e2e-new-intent-readiness.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts`
+    - 通过，`6` files / `45` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，最新更新为“第五百五十五次”。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - 服务分佣配置类 known fixture 已从 repo-owned 脚本推进到 launch/runs 自动治理补全。
+  - 自动补全只覆盖 `proj_default + 服务分佣配置 + modal_or_drawer_save`，不会泛化到所有 `modal_or_drawer_save` 变体。
+  - 若请求或项目 runtime governance 已显式给出 fixture contract，本轮逻辑不会覆盖用户配置。
+  - release-readiness、traffic-quality 分母与 benchmark harness 既有语义未被改写。
+- 风险 / 未完成：
+  - 当前 setup / cleanup 仍以本地 fixture state 留证为主，不回滚远端佣金比例。
+  - 历史 traffic-quality / readiness 事件不会被回填，只有之后经过项目认证链路的新请求会自动带出 known fixture 契约。
+  - 其他高频 `needs_fixture` family 尚未落 repo-owned fixture。
+- 下一步：
+  - 若继续追求短周期收益，优先补服务分佣配置远端恢复 adapter，或选择 `business_create_list_verify` 这类次高频 needs_fixture family 落第二条 repo-owned fixture。
+  - 同时观察自动补 fixture 后的新 real_click 失败原因是否从 `needs_fixture` 收敛到 verifier / selector / data recovery 等更具体问题。
+
+## 2026-05-09 第五百五十六次更新（modal_or_drawer_save service commission remote recovery adapter first cut）
+
+- 本轮目标：
+  - 为 `proj_default + 服务分佣配置 + modal_or_drawer_save` fixture 补 repo-owned 远端恢复 adapter。
+  - 默认保持 `contract_only`，不启动浏览器、不修改远端业务数据。
+  - 只有显式启用 `snapshot_restore` 且提供已认证 Playwright storage state 时，setup 才快照原佣金比例，cleanup 才通过 UI 恢复原值。
+- 已完成：
+  - 新增 task brief：
+    - [intent-e2e-modal-or-drawer-save-remote-recovery-adapter-task-brief-2026-05-09.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-modal-or-drawer-save-remote-recovery-adapter-task-brief-2026-05-09.md)
+  - 新增 repo-owned adapter：
+    - [remote-restore.mjs](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-fixtures/project/proj_default/modal_or_drawer_save/remote-restore.mjs)
+    - [_remote_recovery.mjs](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-fixtures/project/proj_default/modal_or_drawer_save/_remote_recovery.mjs)
+  - [setup.mjs](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-fixtures/project/proj_default/modal_or_drawer_save/setup.mjs) 已写入 `remoteRecovery` contract；`snapshot_restore` 模式会在 run 前通过 UI 快照目标角色原佣金比例。
+  - [cleanup.mjs](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-fixtures/project/proj_default/modal_or_drawer_save/cleanup.mjs) 已写入 `remoteRecovery` outcome；`snapshot_restore` 模式会读取 setup snapshot，并通过服务分佣配置 UI 恢复原比例。
+  - 远端恢复 adapter 只支持 `commission.service-ratio-config`，并要求：
+    - `INTENT_E2E_FIXTURE_REMOTE_RECOVERY_MODE=snapshot_restore`
+    - `INTENT_E2E_FIXTURE_STORAGE_STATE=<authenticated Playwright storage state>`
+  - [intent-e2e-fixture-executor.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-fixture-executor.spec.ts) 已覆盖 setup / cleanup / remote-restore ref 的 contract-only 执行，确认默认不会触发远端修改。
+  - README、runbook、next-development prep 与 current handoff 已同步远端恢复 adapter 的启用边界。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-fixture-executor.spec.ts tests/unit/intent-e2e-known-fixture-governance.spec.ts tests/unit/intent-e2e-project-auth.spec.ts tests/unit/intent-e2e-launch-decision.spec.ts tests/unit/intent-e2e-new-intent-readiness.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts`
+    - 通过，`6` files / `46` tests。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，最新更新为“第五百五十六次”。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - 服务分佣配置类 fixture 已具备 setup / cleanup / optional remote recovery 三段式契约。
+  - 默认模式仍然不污染远端，也不会把未执行的恢复能力伪装成已回滚。
+  - 显式启用 `snapshot_restore` 后，恢复能力走真实 UI 路径，与现有正式任务跑通路径一致。
+- 风险 / 未完成：
+  - CI 未执行真实 UAT UI restore；真实恢复需要可用登录态和目标系统可访问。
+  - 本轮没有新增业务 API 级恢复 adapter，仍以 UI restore 为第一刀。
+  - 其他 `modal_or_drawer_save` 变体和其它 `needs_fixture` family 尚未拥有远端恢复 adapter。
+- 下一步：
+  - 若继续短周期提升新意图通过率，可选择 `business_create_list_verify` 这类次高频 needs_fixture family 落第二条 repo-owned fixture。
+  - 也可以在受控环境用 `snapshot_restore` 做一次服务分佣配置真实 UI restore smoke，确认登录态、搜索、弹框、保存路径都可用。
+
+## 2026-05-09 第五百五十七次更新（new-intent success hardening four-step closure）
+
+- 本轮目标：
+  - 落第二条 repo-owned fixture：`business_create_list_verify`。
+  - 将 `proj_default + business_create_list_verify` 商机新建回列表验收类请求接入 known fixture governance。
+  - 执行服务分佣配置 `snapshot_restore` 受控 smoke。
+  - 继续采集 document-like `real_click`，并刷新 AI 生成按钮真实失败观察口径。
+- 已完成：
+  - 新增 task brief：
+    - [intent-e2e-new-intent-success-hardening-four-step-closure-task-brief-2026-05-09.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-new-intent-success-hardening-four-step-closure-task-brief-2026-05-09.md)
+  - 新增第二条 repo-owned fixture：
+    - [setup.mjs](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-fixtures/project/proj_default/business_create_list_verify/setup.mjs)
+    - [cleanup.mjs](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-fixtures/project/proj_default/business_create_list_verify/cleanup.mjs)
+    - [_shared.mjs](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-fixtures/project/proj_default/business_create_list_verify/_shared.mjs)
+  - `business_create_list_verify` fixture 固定“商机列表新建商机 -> 我创建的列表回查 -> 商机进展=新入库”契约，写入唯一 seed、required evidence 和 manual cleanup identifiers。
+  - [intent-e2e-known-fixture-governance.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-known-fixture-governance.ts) 已增加 `business_create_list_verify` 窄匹配自动接线：
+    - `setupRef=fixture://project/proj_default/business_create_list_verify/setup`
+    - `cleanupRef=fixture://project/proj_default/business_create_list_verify/cleanup`
+    - `idempotencyKey=new-intent.proj_default.business_create_list_verify.<fingerprint>`
+  - [intent-e2e-project-auth.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-project-auth.spec.ts) 与 [intent-e2e-known-fixture-governance.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-known-fixture-governance.spec.ts) 已覆盖商机新建回列表验收自动接线和 `auto_run`。
+  - 服务分佣配置 `snapshot_restore` smoke 已在现有 Playwright storage state 下通过：setup 完成 UI 快照，cleanup 返回 `remoteRecoveryOutcome=already_restored`。
+  - 本轮 document-like `real_click` 首次采样暴露 document workbench selector drift：旧模板只匹配 `div.fixed.inset-0.z-50`，当前工作台为 `z-[120]`；已在 [intent-e2e-project-knowledge-document-template.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-project-knowledge-document-template.ts) 放宽为 `div.fixed.inset-0`。
+  - 修复后重新采集 `project-knowledge-document-import-preview`，run `intent-run-37b34999-ca7f-48f2-a627-364a5560b2ae` 已 terminal `passed`。
+  - 已刷新：
+    - traffic-quality：`real_click=105/130 (80.8%)`，`benchmark_rerun=455/627 (72.6%)`
+    - new-intent readiness：`total=100`，`direct_generate=55`，`needs_fixture=44`，`draft_only=1`
+    - next-development plan：`developmentReady=false`，`decision=collect_document_real_click`
+  - README、runbook、next-development prep 与 current handoff 已同步第二条 fixture、采样修复和最新观察结果。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-fixture-executor.spec.ts tests/unit/intent-e2e-known-fixture-governance.spec.ts tests/unit/intent-e2e-project-auth.spec.ts tests/unit/intent-e2e-launch-decision.spec.ts tests/unit/intent-e2e-document-real-click-seed.spec.ts tests/unit/intent-e2e-new-intent-readiness.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts`
+    - 通过，`7` files / `58` tests。
+  - `INTENT_E2E_FIXTURE_REMOTE_RECOVERY_MODE=snapshot_restore ... modal_or_drawer_save/setup.mjs && cleanup.mjs`
+    - 通过，setup `remoteRecoveryStatus=completed`，cleanup `remoteRecoveryOutcome=already_restored`。
+  - `npm run intent:document-real-click:seed -- --project-uid proj_default --max-samples 1`
+    - 先暴露 selector drift，修复后通过，新增 passed run `intent-run-37b34999-ca7f-48f2-a627-364a5560b2ae`。
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30`
+    - 通过，`real_click=105/130 (80.8%)`。
+  - `npm run intent:new-intent:readiness -- --project-uid proj_default --window-days 30`
+    - 通过，`total=100`，`mode={"direct_generate":55,"needs_fixture":44,"draft_only":1}`。
+  - `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30`
+    - 通过，`decision=collect_document_real_click`。
+  - `npm run build`
+    - 通过。
+  - `npm run build:web`
+    - 通过。
+  - `bash scripts/check-boundaries.sh`
+    - 通过。
+  - `node scripts/check-doc-links.mjs`
+    - 通过。
+  - `node scripts/check-roadmap-progress.mjs`
+    - 通过，最新更新为“第五百五十七次”。
+  - `git diff --check && git diff --cached --check`
+    - 通过。
+- 当前阶段状态：
+  - `modal_or_drawer_save` 与 `business_create_list_verify` 两条高收益新意图 family 都已有 repo-owned fixture 和 known fixture auto-attach。
+  - 服务分佣配置 remote recovery 已用真实 UI 路径跑通“快照 -> already restored” smoke。
+  - document-like real_click 继续可采，且本轮已把采样暴露的 selector drift 修掉。
+  - next-development 当前仍没有新的未治理 document code work，推荐继续采集新的 document-like real_click。
+- 风险 / 未完成：
+  - `business_create_list_verify` cleanup 不删除或作废远端商机，只记录可清理标识。
+  - new-intent readiness 历史窗口仍包含旧的 `needs_fixture` item，本轮不会回写旧事件。
+  - document family 中 `doc_edit_save_verify / doc_search_open_verify` 在 next-development 表格里仍显示 separate guard 缺口，但当前推荐 top families 的 guard 口径未要求进入重复治理。
+- 下一步：
+  - 继续采集 document-like `source=real_click`，等待出现新的未治理 document family 或新的真实失败 top signature。
+  - 若要继续短周期提升新意图成功率，下一刀优先观察历史 `needs_fixture` 中 remaining `business_to_order / untracked` 是否具备稳定 fixture 化条件。
+
+## 2026-05-09 第五百五十八次更新（document edit-save real-click top-3 promotion）
+
+- 本轮目标：
+  - 按 next-development 的 `collect_document_real_click` 决策继续补充真实 document-like `source=real_click`。
+  - 优先选择已具备 governance contract 与 passed seed evidence、但尚未进入 latest recommended top-3 的 `doc_edit_save_verify`，用最小样本推进推荐窗口。
+- 已完成：
+  - 执行 `project-knowledge-document-edit-save-preview` 单样本真实点击采集，run `intent-run-24eb8f73-d6d7-4ef1-a356-876cc3a59ea5` 已 terminal `passed`，`admissibility=document_family_admissible`。
+  - 刷新 traffic-quality 后，30 天窗口更新为：
+    - `real_click=106/131 (80.9%)`
+    - `benchmark_rerun=455/627 (72.6%)`
+    - `recommendedTopFamilies=doc_archive_restore_verify,doc_create_reopen_verify,doc_edit_save_verify`
+  - 刷新 document-family governance 后，latest top-3 均为 `contract_ready`，`missing=-`。
+  - 刷新 document-family release guard 后，`doc_edit_save_verify` 已进入 latest top-3 baseline 且 `passed`；guard 汇总为 `baselines=3`、`passedBaselines=3`、`real_click_signals=24`、`admissible_passed=13`。
+  - 刷新 next-development plan 后，当前仍为 `developmentReady=false`、`decision=collect_document_real_click`，原因是 latest recommended top-3 已全部 `contract_ready + release_guard=passed`，当前没有新的未治理 document code work。
+  - current handoff 与 next-development prep 已同步本轮样本、推荐窗口和 guard 结果。
+- 验证：
+  - `npm run intent:document-real-click:seed -- --project-uid proj_default --sample-id project-knowledge-document-edit-save-preview --max-samples 1 --repeat 1 --wait-timeout-ms 720000 --poll-interval-ms 5000`
+    - 通过，`1/1` passed，runId=`intent-run-24eb8f73-d6d7-4ef1-a356-876cc3a59ea5`。
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30`
+    - 通过，`real_click=106/131 (80.9%)`，`recommendedTopFamilies=doc_archive_restore_verify,doc_create_reopen_verify,doc_edit_save_verify`。
+  - `npm run intent:document-family:governance -- --project-uid proj_default --require-ready`
+    - 通过，`governed=doc_archive_restore_verify,doc_create_reopen_verify,doc_edit_save_verify missing=-`。
+  - `npm run intent:document-family:guard -- --project-uid proj_default --require-passed`
+    - 通过，`passed=yes baselines=3 passedBaselines=3 failedBaselines=0 real_click_signals=24 admissible_passed=13`。
+  - `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30`
+    - 通过，`decision=collect_document_real_click`。
+  - `npm run intent:document-sample:scout -- --project-uid proj_default --windows 30,90,365`
+    - 通过，`recommendation=ready_with_document_real_click windows=30d:34/124 90d:34/124 365d:34/124 formal_document_like=0`。
+- 当前阶段状态：
+  - 本轮没有新增代码，只补充真实 document-like 样本并刷新报表/交接文档。
+  - `doc_edit_save_verify` 已从候选补样推进为 latest recommended top-3 guard-passed family。
+  - next-development gate 继续阻断重复治理，下一步仍应继续采集新的 document-like real_click 或等待新的未治理 family。
+- 风险 / 未完成：
+  - `doc_search_open_verify` 仍在候选列表中，但当前未进入 latest top-3；它已有 contract 与历史 seed evidence，后续可继续通过真实样本把它推进到推荐窗口。
+  - 当前所有 document family 仍限定在本平台项目知识文档 UI，不代表外部文档系统或 OCR-first 链路已治理。
+- 下一步：
+  - 若继续短周期推进，优先补 `doc_search_open_verify` 的真实 real-click 样本，目标是让它进入 latest recommended top-3 后复核 independent guard。
+  - 若出现新的真实业务 top failure signature，则改走对应 priority family fixture / repair memory 治理，不用 document family 样本替代。
+
+## 2026-05-09 第五百五十九次更新（document search-open real-click top-3 promotion）
+
+- 本轮目标：
+  - 继续执行 next-development 的 `collect_document_real_click`，把 `doc_search_open_verify` 从候选推进到 latest recommended top-3。
+  - 保持 source policy 为 `post_instrumentation_real_click_only`，不混入 benchmark / replay / draft_import。
+- 已完成：
+  - 执行 `project-knowledge-document-search-open-preview --repeat 5` 真实点击采集，`5/5` terminal `passed`，均为 `document_family_admissible`。
+  - 新增 passed runs：
+    - `intent-run-349b92f1-2b99-459c-a5f4-b4f114b05382`
+    - `intent-run-6d35a855-0347-42bb-b57e-0533a80f4b0c`
+    - `intent-run-df916941-f650-4b26-b8db-abfc812b4458`
+    - `intent-run-d3e14859-6f99-4b08-a4b8-45ea1c4068a2`
+    - `intent-run-33d70d86-cc2e-46e7-a360-28d0ee0c6ada`
+  - 刷新 traffic-quality 后，30 天窗口更新为：
+    - `real_click=111/136 (81.6%)`
+    - `benchmark_rerun=455/627 (72.6%)`
+    - `recommendedTopFamilies=doc_archive_restore_verify,doc_search_open_verify,doc_create_reopen_verify`
+  - 刷新 document-family governance 后，latest top-3 均为 `contract_ready`，`missing=-`。
+  - 刷新 document-family release guard 后，`doc_search_open_verify` 已进入 latest top-3 baseline 且 `passed`；guard 汇总为 `baselines=3`、`passedBaselines=3`、`real_click_signals=25`、`admissible_passed=17`。
+  - 刷新 next-development plan 后，当前仍为 `developmentReady=false`、`decision=collect_document_real_click`，原因是 latest recommended top-3 已全部 `contract_ready + release_guard=passed`，当前没有新的未治理 document code work。
+  - current handoff 与 next-development prep 已同步本轮样本、推荐窗口和 guard 结果。
+- 验证：
+  - `npm run intent:document-real-click:seed -- --project-uid proj_default --sample-id project-knowledge-document-search-open-preview --max-samples 1 --repeat 5 --wait-timeout-ms 720000 --poll-interval-ms 5000`
+    - 通过，`5/5` passed。
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30`
+    - 通过，`real_click=111/136 (81.6%)`，`recommendedTopFamilies=doc_archive_restore_verify,doc_search_open_verify,doc_create_reopen_verify`。
+  - `npm run intent:document-family:governance -- --project-uid proj_default --require-ready`
+    - 通过，`governed=doc_archive_restore_verify,doc_search_open_verify,doc_create_reopen_verify missing=-`。
+  - `npm run intent:document-family:guard -- --project-uid proj_default --require-passed`
+    - 通过，`passed=yes baselines=3 passedBaselines=3 failedBaselines=0 real_click_signals=25 admissible_passed=17`。
+  - `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30`
+    - 通过，`decision=collect_document_real_click`。
+  - `npm run intent:document-sample:scout -- --project-uid proj_default --windows 30,90,365`
+    - 通过，`recommendation=ready_with_document_real_click windows=30d:39/129 90d:39/129 365d:39/129 formal_document_like=0`。
+- 当前阶段状态：
+  - 本轮没有新增代码，只补充真实 document-like 样本并刷新报表/交接文档。
+  - `doc_search_open_verify` 已从候选补样推进为 latest recommended top-3 guard-passed family。
+  - 当前五个已治理 document family 都已有真实样本与 contract-ready 口径；next-development 继续阻断重复治理。
+- 风险 / 未完成：
+  - `doc_edit_save_verify` 与 `doc_derive_capability_verify` 当前因为排序不在 latest top-3 baseline 中，但此前均已进入过独立 guard 并通过。
+  - 当前 document family 仍限定在本平台项目知识文档 UI，不代表外部文档系统或 OCR-first 链路已治理。
+- 下一步：
+  - 若继续短周期提高新意图通过率，优先转向最新真实失败/高频 priority family 观察，尤其是 `untracked` 与 `business_to_order` 是否具备稳定 fixture 化或 recipe 化条件。
+  - 若仍按 document 线推进，只能继续采集新的真实 document-like intent，等待出现新的未治理 document family。
+
+## 2026-05-09 第五百六十次更新（Priority Traffic：untracked / business_to_order no actionable gap triage）
+
+- 本轮目标：
+  - 承接上一轮“转向最新真实失败/高频 priority family 观察”的结论，先拆解最近窗口里看起来高频的 `untracked` 与已治理的 `business_to_order`。
+  - 避免把 document-like 样本、历史可回填样本或已 release-ready family 误判成新的 fixture / recipe 开发缺口。
+- 已完成：
+  - 新增 priority traffic triage 纯逻辑：
+    - [intent-e2e-priority-traffic-triage.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-priority-traffic-triage.ts)
+    - 只消费 `source=real_click` traffic-quality JSONL 事件。
+    - 将 raw `priorityScenarioFamily=untracked` 拆成 `document_like / reroutable_priority_family / unknown_business_or_product`。
+    - 复用 latest traffic-quality / release governance，单独输出 `business_to_order` 的 terminal pass rate、release guard 与 knowledge-hit 状态。
+  - 新增 CLI：
+    - [intent-e2e-priority-traffic-triage.ts](/Users/xiaolongbao/Workspace/ai-test/scripts/intent-e2e-priority-traffic-triage.ts)
+    - `npm run intent:priority-triage -- --project-uid proj_default --windows 30,90,365`
+  - 新增单测：
+    - [intent-e2e-priority-traffic-triage.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-priority-traffic-triage.spec.ts)
+    - 覆盖 document-like untracked、可回填 priority family、unknown untracked 与 `business_to_order` governance。
+  - 新增 brief：
+    - [intent-e2e-priority-traffic-triage-no-actionable-gap-task-brief-2026-05-09.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-priority-traffic-triage-no-actionable-gap-task-brief-2026-05-09.md)
+  - 报表输出：
+    - `reports/intent-e2e/projects/proj_default/intent-e2e.priority-traffic-triage.latest.json`
+    - `reports/intent-e2e/projects/proj_default/intent-e2e.priority-traffic-triage.latest.md`
+  - 当前 30 天窗口结论：
+    - `recommendation=no_actionable_priority_gap`
+    - `untracked.launch_click_count=46`
+    - `document_like=32`
+    - `reroutable_priority_family=14`，当前全部可回填到 `business_batch_add_contacts_verify`
+    - `unknown_business_or_product=0`
+    - `business_to_order=10/10 terminal passed`，`terminalPassRate=100%`，`governance=ready`，`releaseGuard=passed`，`knowledgeHit=passed`
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md)、[docs/runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md)、[intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 与 [intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md) 已同步新入口和当前结论。
+- 验证：
+  - `npm run intent:priority-triage -- --project-uid proj_default --windows 30,90,365`
+  - `npx vitest run tests/unit/intent-e2e-priority-traffic-triage.spec.ts`
+  - `npx vitest run tests/unit/intent-e2e-priority-traffic-triage.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts tests/unit/intent-e2e-document-sample-scout.spec.ts`
+  - `npm run build`
+  - `npm run build:web`
+  - `bash scripts/check-boundaries.sh`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+  - `git diff --check && git diff --cached --check`
+- 当前阶段状态：
+  - latest recommended top-3 document family 仍为 `doc_archive_restore_verify / doc_search_open_verify / doc_create_reopen_verify`，均已 `contract_ready + release_guard=passed`。
+  - `untracked` 当前没有未知业务/产品稳定重复样本。
+  - `business_to_order` 当前没有 pass-rate 或 release / knowledge governance 缺口。
+  - 因此本轮不新增 priority family、document verifier 或 OCR-first 切片。
+- 风险 / 未完成：
+  - priority triage 只解释当前 traffic-quality JSONL 与 latest traffic-quality report 能覆盖的窗口；未来真实流量出现新的 `unknown_business_or_product` 时，需要重新判断。
+  - 90 / 365 天 `business_to_order` terminal pass rate 依赖 latest traffic-quality report 覆盖的终态 counters；当前可采信的完整 pass-rate 结论是 30 天窗口。
+- 下一步：
+  - 等待新的真实 top failure signature，或继续采集新的 document-like `source=real_click`。
+  - 若后续 `intent:priority-triage` 出现 `unknown_business_or_product > 0` 的稳定重复样本，或 `business_to_order` 出现 pass-rate / governance 缺口，再另起 priority family first cut。
+
+## 2026-05-11 第五百六十一次更新（Document Family：underrepresented top-up and no-actionable gate recheck）
+
+- 本轮目标：
+  - 在 next-development 已阻断重复治理的前提下，只补充已治理 document family 的真实 `source=real_click` 样本。
+  - 优先补 `doc_edit_save_verify` 与 `doc_derive_capability_verify` 两个相对低样本 family，并刷新真实分母、document guard、priority triage 与 next-development gate。
+- 已完成：
+  - 新增 task brief：
+    - [intent-e2e-document-underrepresented-family-topup-no-actionable-gate-task-brief-2026-05-11.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-document-underrepresented-family-topup-no-actionable-gate-task-brief-2026-05-11.md)
+  - 执行 `project-knowledge-document-edit-save-preview --repeat 3`，`3/3` terminal `passed`，均为 `document_family_admissible`。
+    - `intent-run-adcbec77-e681-4f64-811a-02e44be2211c`
+    - `intent-run-3f128221-38c9-4082-8ef9-1dc49bab5c56`
+    - `intent-run-6f3e992b-2e0d-4f6d-84de-272c893b2093`
+  - 执行 `project-knowledge-document-derive-capability-preview --repeat 3`，`3/3` terminal `passed`，均为 `document_family_admissible`。
+    - `intent-run-df49ffde-9cad-49ac-b941-e4a1e41d0109`
+    - `intent-run-7cae380d-c573-409e-be1d-3d77c9c1559a`
+    - `intent-run-e531e818-76c0-42f0-8b02-c52557918bc1`
+  - 刷新 traffic-quality 后，30 天窗口更新为：
+    - `real_click=117/142 (82.4%)`
+    - `benchmark_rerun=455/627 (72.6%)`
+    - `recommendedTopFamilies=doc_derive_capability_verify,doc_edit_save_verify,doc_archive_restore_verify`
+  - 刷新 document sample scout 后：
+    - `30d:45/135`
+    - `90d:45/135`
+    - `365d:45/135`
+    - family signals：`doc_derive_capability_verify=10`、`doc_edit_save_verify=10`、`doc_archive_restore_verify=9`、`doc_create_reopen_verify=8`、`doc_search_open_verify=8`
+  - 刷新 document-family governance 后，latest top-3 均为 `contract_ready`，`missing=-`。
+  - 刷新 document-family release guard 后，latest top-3 均 `passed`，汇总为 `baselines=3`、`passedBaselines=3`、`real_click_signals=29`、`admissible_passed=20`。
+  - 刷新 priority triage 后仍为 `recommendation=no_actionable_priority_gap`：
+    - 30 天 `untracked=49`
+    - `document_like=35`
+    - `reroutable_priority=14`
+    - `unknown_business=0`
+    - `business_to_order=10/10 (100%)`
+  - 刷新 next-development check 后仍按预期阻断：
+    - `ready=no`
+    - `gate=ready_for_document_family_governance`
+    - `decision=collect_document_real_click`
+    - blocker：latest recommended top-3 均已 `contract_ready + document-family guard=passed`，当前没有新的未治理 document code work。
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md)、[intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 与 [intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md) 已同步最新 top-3、guard 与 no-actionable 结论。
+- 验证：
+  - `npm run intent:document-real-click:seed -- --project-uid proj_default --sample-id project-knowledge-document-edit-save-preview --max-samples 1 --repeat 3 --wait-timeout-ms 720000 --poll-interval-ms 5000`
+  - `npm run intent:document-real-click:seed -- --project-uid proj_default --sample-id project-knowledge-document-derive-capability-preview --max-samples 1 --repeat 3 --wait-timeout-ms 720000 --poll-interval-ms 5000`
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30`
+  - `npm run intent:document-family:governance -- --project-uid proj_default --require-ready`
+  - `npm run intent:document-family:guard -- --project-uid proj_default --require-passed`
+  - `npm run intent:document-sample:scout -- --project-uid proj_default --windows 30,90,365`
+  - `npm run intent:priority-triage -- --project-uid proj_default --windows 30,90,365`
+  - `npm run intent:new-intent:readiness -- --project-uid proj_default --window-days 30`
+  - `npm run intent:fixture-bootstrap -- --project-uid proj_default --window-days 30`
+  - `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30`
+- 当前阶段状态：
+  - 当前没有新的代码开发切片；本轮只增强真实样本证据和刷新门禁。
+  - 五个已治理 document family 均已有 contract-ready 契约和真实样本，latest top-3 独立 guard 通过。
+  - `untracked` 仍没有未知业务/产品稳定重复样本，`business_to_order` 仍无 pass-rate / governance 缺口。
+- 风险 / 未完成：
+  - 这次补样只覆盖当前平台项目知识文档 UI，不代表外部文档系统或 OCR-first 链路。
+  - new-intent readiness 仍显示一批历史 `needs_fixture`，但 priority triage 没有给出新的可执行业务 family 缺口。
+- 下一步：
+  - 继续保持 next-development gate 阻断重复治理。
+  - 只有出现新的未治理 document family、稳定 `unknown_business_or_product`，或已治理 priority family pass-rate / governance 退化时，才开启下一轮代码开发。
+
+## 2026-05-11 第五百六十二次更新（Document Family：balanced five-family signal top-up and no-actionable gate recheck）
+
+- 本轮目标：
+  - 继续在 next-development 阻断重复治理的前提下，补齐剩余低样本 document family。
+  - 让五个已治理 document family 在 30 天窗口中都达到 `10` 条真实 document-like 信号，并再次确认没有新的代码切片。
+- 已完成：
+  - 新增 task brief：
+    - [intent-e2e-document-balanced-family-signal-topup-no-actionable-gate-task-brief-2026-05-11.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-document-balanced-family-signal-topup-no-actionable-gate-task-brief-2026-05-11.md)
+  - 执行 `project-knowledge-document-import-preview --repeat 2`，`2/2` terminal `passed`，均为 `document_family_admissible`。
+    - `intent-run-30f37597-aca0-423b-a6be-78dde63552d6`
+    - `intent-run-10b7af7b-11da-4e11-8f3a-c14c1275cc74`
+  - 执行 `project-knowledge-document-search-open-preview --repeat 2`，`2/2` terminal `passed`，均为 `document_family_admissible`。
+    - `intent-run-55f70f6f-0b7b-49ef-803a-0e904f57df93`
+    - `intent-run-bf67576c-129d-4e33-be24-c17d229be4cf`
+  - 执行 `project-knowledge-document-archive-restore-preview --repeat 1`，`1/1` terminal `passed`，为 `document_family_admissible`。
+    - `intent-run-a1d20c73-d23e-4b16-a565-b35b2e0679f3`
+  - 刷新 traffic-quality 后，30 天窗口更新为：
+    - `real_click=122/147 (83.0%)`
+    - `benchmark_rerun=455/627 (72.6%)`
+    - `recommendedTopFamilies=doc_archive_restore_verify,doc_search_open_verify,doc_create_reopen_verify`
+  - 刷新 document sample scout 后：
+    - `30d:50/140`
+    - `90d:50/140`
+    - `365d:50/140`
+    - family signals：`doc_archive_restore_verify=10`、`doc_create_reopen_verify=10`、`doc_derive_capability_verify=10`、`doc_edit_save_verify=10`、`doc_search_open_verify=10`
+  - 刷新 document-family governance 后，latest top-3 均为 `contract_ready`，`missing=-`。
+  - 刷新 document-family release guard 后，latest top-3 均 `passed`，汇总为 `baselines=3`、`passedBaselines=3`、`real_click_signals=30`、`admissible_passed=22`。
+  - 刷新 priority triage 后仍为 `recommendation=no_actionable_priority_gap`：
+    - 30 天 `untracked=54`
+    - `document_like=40`
+    - `reroutable_priority=14`
+    - `unknown_business=0`
+    - `business_to_order=10/10 (100%)`
+  - 刷新 next-development check 后仍按预期阻断：
+    - `ready=no`
+    - `gate=ready_for_document_family_governance`
+    - `decision=collect_document_real_click`
+    - blocker：latest recommended top-3 均已 `contract_ready + document-family guard=passed`，当前没有新的未治理 document code work。
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md)、[intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 与 [intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md) 已同步最新 top-3、五 family 10-signal 均衡状态、guard 与 no-actionable 结论。
+- 验证：
+  - `npm run intent:document-real-click:seed -- --project-uid proj_default --sample-id project-knowledge-document-import-preview --max-samples 1 --repeat 2 --wait-timeout-ms 720000 --poll-interval-ms 5000`
+  - `npm run intent:document-real-click:seed -- --project-uid proj_default --sample-id project-knowledge-document-search-open-preview --max-samples 1 --repeat 2 --wait-timeout-ms 720000 --poll-interval-ms 5000`
+  - `npm run intent:document-real-click:seed -- --project-uid proj_default --sample-id project-knowledge-document-archive-restore-preview --max-samples 1 --repeat 1 --wait-timeout-ms 720000 --poll-interval-ms 5000`
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30`
+  - `npm run intent:document-family:governance -- --project-uid proj_default --require-ready`
+  - `npm run intent:document-family:guard -- --project-uid proj_default --require-passed`
+  - `npm run intent:document-sample:scout -- --project-uid proj_default --windows 30,90,365`
+  - `npm run intent:priority-triage -- --project-uid proj_default --windows 30,90,365`
+  - `npm run intent:new-intent:readiness -- --project-uid proj_default --window-days 30`
+  - `npm run intent:fixture-bootstrap -- --project-uid proj_default --window-days 30`
+  - `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30`
+- 当前阶段状态：
+  - 当前仍没有新的代码开发切片；本轮只增强真实样本证据和刷新门禁。
+  - 五个已治理 document family 均达到 `10` 条 30 天真实信号。
+  - `untracked` 仍没有未知业务/产品稳定重复样本，`business_to_order` 仍无 pass-rate / governance 缺口。
+- 风险 / 未完成：
+  - 均衡样本仍只覆盖当前平台项目知识文档 UI，不代表外部文档系统或 OCR-first 链路。
+  - latest recommended top-3 的选择会在同分 family 之间随排序策略变化；但五个 family 均已 contract-ready，并且都已有独立 guard 通过证据。
+- 下一步：
+  - 继续保持 next-development gate 阻断重复治理。
+  - 后续只有出现新的未治理 document family、稳定 `unknown_business_or_product`，或已治理 priority family pass-rate / governance 退化时，才开启下一轮代码开发。
+
+## 2026-05-11 第五百六十三次更新（New Intent Readiness：governed document fixture suppression）
+
+- 本轮目标：
+  - 修正 `new-intent readiness` 对已治理 document family 的 fixture 缺口误判。
+  - 避免 `fixture-bootstrap` 报表把已 `contract_ready` 的 document traffic 当作新的 fixture 开发候选。
+  - 保持 traffic-quality、release-readiness 和 benchmark harness 既有口径不变。
+- 已完成：
+  - 新增 task brief：
+    - [intent-e2e-new-intent-readiness-governed-document-fixture-suppression-task-brief-2026-05-11.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-new-intent-readiness-governed-document-fixture-suppression-task-brief-2026-05-11.md)
+  - `resolveMissingContracts` 已把 `documentFamily != '' && documentGovernanceStatus=contract_ready` 视为已有 document governance 契约。
+  - raw priority family 标记 `requiresFixture=true` 时，如果该请求已被识别为 contract-ready document family，不再追加 `fixture_contract` 缺口，也不再进入 `fixtureBootstrap` 候选。
+  - 新增单测覆盖 `doc_edit_save_verify` 这类 contract-ready document traffic 在 raw `modal_or_drawer_save` fixture pressure 下仍应为 `direct_generate`。
+  - 刷新最近 30 天 readiness 后：
+    - 修复前：`total=100`，`mode={"direct_generate":49,"needs_fixture":50,"draft_only":1}`，fixture bootstrap `51` 条。
+    - 修复后：`total=100`，`mode={"direct_generate":69,"needs_fixture":30,"draft_only":1}`，fixture bootstrap `31` 条。
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md)、[runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md)、[intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 与 [intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md) 已同步 governed document fixture suppression 口径。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-new-intent-readiness.spec.ts`
+  - `npm run intent:new-intent:readiness -- --project-uid proj_default --window-days 30`
+  - `npm run intent:fixture-bootstrap -- --project-uid proj_default --window-days 30`
+  - `npx vitest run tests/unit/intent-e2e-new-intent-readiness.spec.ts tests/unit/intent-e2e-launch-decision.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts tests/unit/intent-e2e-document-family-governance.spec.ts`
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30`
+  - `npm run intent:priority-triage -- --project-uid proj_default --windows 30,90,365`
+  - `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30`
+  - `npm run build`
+  - `npm run build:web`
+  - `bash scripts/check-boundaries.sh`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+  - `git diff --check && git diff --cached --check`
+- 当前阶段状态：
+  - readiness 误报已收敛，当前 `needs_fixture` 更接近真实仍缺 fixture 契约的集合。
+  - 五个已治理 document family 仍各有 `10` 条真实信号，latest recommended top-3 仍已 `contract_ready + guard passed`。
+  - 当前仍没有新的可开发 document code slice。
+- 风险 / 未完成：
+  - 这次只修正 readiness 分类口径，不代表剩余 `needs_fixture` 已全部治理。
+  - 剩余 fixture bootstrap 候选仍需要按真实失败签名选择，不应从 document family 已治理样本里强行拆新 fixture。
+- 下一步：
+  - 继续保持 next-development gate 阻断重复治理。
+  - 若后续出现新的稳定 `unknown_business_or_product`、未治理 document family，或已治理 priority family pass-rate / governance 退化，再开启下一轮开发。
+
+## 2026-05-11 第五百六十四次更新（New Intent Readiness：known priority fixture contract closure）
+
+- 本轮目标：
+  - 继续收敛 `new-intent readiness` 中剩余的 `needs_fixture` 候选。
+  - 让历史 traffic-quality event 重算时复用当前 known fixture governance，而不是继续沿用旧 event 的缺 fixture 信号。
+  - 为 `business_to_order` 补齐 priority asset profile、preferred recipe 和 repo-owned fixture contract。
+- 已完成：
+  - 新增 task brief：
+    - [intent-e2e-new-intent-readiness-known-priority-fixture-contract-closure-task-brief-2026-05-11.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-new-intent-readiness-known-priority-fixture-contract-closure-task-brief-2026-05-11.md)
+  - `buildIntentE2ENewIntentReadiness` 与 traffic-quality 重算路径现在会先应用 known fixture governance。
+  - `modal_or_drawer_save`、`business_create_list_verify` 历史 event 重算时能识别当前 repo-owned fixture refs。
+  - `business_to_order` 已新增 priority asset profile：
+    - preferred recipe：`business.create-to-order`
+    - required evidence：`business_identity / create_order_response / order_drawer_closed_or_stable_surface`
+    - fixture contract：`project_data_dependency_explicit`
+  - 新增 `business_to_order` repo-owned fixture：
+    - `fixture://project/proj_default/business_to_order/setup`
+    - `fixture://project/proj_default/business_to_order/cleanup`
+    - cleanup 记录 businessId / orderId / contactPhone / contactName 等清理线索，不自动删除或作废远端订单。
+  - `intent:fixture-bootstrap -- --only-needs-fixture` 过滤语义收紧为只保留 `recommendedMode=needs_fixture && fixtureBootstrap` 的候选，`draft_only` 不再混入。
+  - 刷新最近 30 天 readiness 后：
+    - `total=100`
+    - `mode={"direct_generate":99,"draft_only":1}`
+    - `fixtureBootstrapStrategies={}`
+    - `real_click` 无剩余 `needs_fixture`
+  - 刷新 fixture bootstrap 后：
+    - `total=0`
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md)、[runbook.md](/Users/xiaolongbao/Workspace/ai-test/docs/runbook.md)、[intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 与 [intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md) 已同步最新 readiness / fixture bootstrap 口径。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-new-intent-readiness.spec.ts tests/unit/intent-e2e-known-fixture-governance.spec.ts tests/unit/intent-e2e-fixture-executor.spec.ts tests/unit/intent-e2e-launch-decision.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts tests/unit/intent-recipe-registry.spec.ts`
+  - `npm run intent:new-intent:readiness -- --project-uid proj_default --window-days 30`
+  - `npm run intent:fixture-bootstrap -- --project-uid proj_default --window-days 30`
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30`
+  - `npm run intent:priority-triage -- --project-uid proj_default --windows 30,90,365`
+  - `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30`
+  - `npm run build`
+  - `npm run build:web`
+  - `bash scripts/check-boundaries.sh`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+  - `git diff --check && git diff --cached --check`
+- 当前阶段状态：
+  - `new-intent readiness` 最近窗口中，`real_click` 已无剩余 fixture bootstrap 候选。
+  - 真实成功率和 release-readiness 口径未变：本轮只修正新意图风险评估与 fixture contract 识别。
+  - next-development 仍应阻断重复 document 治理。
+- 风险 / 未完成：
+  - `business_to_order` cleanup 当前只记录清理线索，不执行远端订单删除或作废；如果业务侧要求自动回滚，需要单独设计远端 cleanup adapter。
+  - 当前 `draft_only` 仍保留 1 条历史 draft_import，不能算作 real_click 成功率或直接生成能力证据。
+- 下一步：
+  - 刷新 traffic-quality、priority triage 和 next-development gate。
+  - 若仍无新 `unknown_business_or_product`、未治理 document family 或 pass-rate/governance 退化，则本轮开发进入完成态。
+
+## 2026-05-11 第五百六十五次更新（Next Development：new-intent readiness snapshot in plan）
+
+- 本轮目标：
+  - 把 `new-intent readiness` / `fixture-bootstrap` 的最新状态纳入 next-development plan。
+  - 避免下一轮只看到 document gate，而忽略新意图 fixture bootstrap 是否清零。
+- 已完成：
+  - 新增 task brief：
+    - [intent-e2e-next-development-new-intent-readiness-snapshot-task-brief-2026-05-11.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-new-intent-readiness-snapshot-task-brief-2026-05-11.md)
+  - `IntentE2ENextDevelopmentPlanReport` 新增 `newIntentReadinessSnapshot`：
+    - `total`
+    - `realClickTotal`
+    - `directGenerateCount`
+    - `needsFixtureCount`
+    - `fixtureBootstrapCount`
+    - `realClickFixtureBootstrapCount`
+    - `topFixtureFamilies`
+  - `intent:next-dev:plan/check` 生成 plan 时同步读取最近窗口 new-intent readiness，并在 Markdown 中输出 `New Intent Readiness Snapshot`。
+  - commands 中固定：
+    - `npm run intent:new-intent:readiness -- --project-uid proj_default --window-days 30`
+    - `npm run intent:fixture-bootstrap -- --project-uid proj_default --window-days 30`
+  - stop conditions 增加：如果 new-intent readiness 出现 `real_click` fixtureBootstrap 候选，必须先处理 fixture contract，不能声称 no actionable gap。
+  - 刷新 `intent:next-dev:plan` 后：
+    - `developmentReady=false`
+    - `decision=collect_document_real_click`
+    - `newIntentReadinessSnapshot.total=100`
+    - `directGenerateCount=99`
+    - `needsFixtureCount=0`
+    - `realClickFixtureBootstrapCount=0`
+  - [intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 与 [intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md) 已同步。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-next-development-plan.spec.ts tests/unit/intent-e2e-new-intent-readiness.spec.ts`
+  - `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30`
+  - `npm run build`
+  - `npm run build:web`
+  - `bash scripts/check-boundaries.sh`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+  - `git diff --check && git diff --cached --check`
+- 当前阶段状态：
+  - next-development plan 同时展示 document gate 与 new-intent readiness。
+  - 当前 document gate 仍阻断重复治理，new-intent fixture bootstrap 也无 real-click 候选。
+- 风险 / 未完成：
+  - 本轮只增强计划报告，不新增业务流执行能力。
+  - 若未来 `realClickFixtureBootstrapCount > 0`，需要另起 fixture contract 切片。
+- 下一步：
+  - 维持 no-actionable gate。
+  - 后续只有出现新的未治理 document family、稳定 unknown business/product，或已治理 family pass-rate / governance 退化时，才进入下一轮开发。
+
+## 2026-05-11 第五百六十六次更新（Next Development：new-intent fixture actionable gate）
+
+- 本轮目标：
+  - 让 `newIntentReadinessSnapshot` 不只展示，还能参与 next-development 决策。
+  - 未来一旦出现 `source=real_click` 的 fixture bootstrap 候选，直接开启 fixture contract 切片。
+- 已完成：
+  - 新增 task brief：
+    - [intent-e2e-next-development-new-intent-fixture-actionable-gate-task-brief-2026-05-11.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-new-intent-fixture-actionable-gate-task-brief-2026-05-11.md)
+  - `IntentE2ENextDevelopmentDecision` 新增 `start_new_intent_fixture_contract`。
+  - 当 `newIntentReadinessSnapshot.realClickFixtureBootstrapCount > 0` 时：
+    - `developmentReady=true`
+    - `decision=start_new_intent_fixture_contract`
+    - `eligibleFamilies` 来自 `topFixtureFamilies`
+    - `recommendedAction` 明确优先补 fixture contract
+  - 当前真实窗口仍保持：
+    - `developmentReady=false`
+    - `decision=collect_document_real_click`
+    - `realClickFixtureBootstrapCount=0`
+  - [intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 与 [intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md) 已同步。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-next-development-plan.spec.ts`
+  - `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30`
+  - `npm run build`
+  - `npm run build:web`
+  - `bash scripts/check-boundaries.sh`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+  - `git diff --check && git diff --cached --check`
+- 当前阶段状态：
+  - 当前没有 new-intent fixture contract 切片。
+  - 如果后续真实新意图 fixture 缺口出现，next-development gate 会自动暴露为可开发任务。
+- 风险 / 未完成：
+  - 该门禁只负责识别 fixture contract 候选，不自动生成远端 cleanup adapter。
+- 下一步：
+  - 继续维持 no-actionable gate。
+  - 等待新的真实流量缺口、未治理 document family 或已治理 family 退化信号。
+
+## 2026-05-11 第五百六十七次更新（Final Delivery：closure and observability handoff）
+
+- 本轮目标：
+  - 按当前开发计划做最终交付收口。
+  - 刷新 traffic-quality、new-intent readiness、fixture bootstrap、priority triage、document governance、document guard 与 next-development plan。
+  - 固定后续观测触发条件，避免继续重复治理已完成 family。
+- 已完成：
+  - 新增 task brief：
+    - [intent-e2e-final-delivery-closure-and-observability-task-brief-2026-05-11.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-final-delivery-closure-and-observability-task-brief-2026-05-11.md)
+  - 新增最终交付摘要：
+    - [intent-e2e-final-delivery-readiness-summary-2026-05-11.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-final-delivery-readiness-summary-2026-05-11.md)
+  - 最新 traffic-quality：
+    - `real_click=122/147 (83.0%)`
+    - `benchmark_rerun=455/627 (72.6%)`
+    - `document_selection=post_instrumentation_real_click`
+    - `recommendedTopFamilies=doc_archive_restore_verify,doc_search_open_verify,doc_create_reopen_verify`
+  - 最新 new-intent readiness：
+    - `total=100`
+    - `real_click=93`
+    - `draft_import=7`
+    - `direct_generate=99`
+    - `draft_only=1`
+    - `needs_fixture=0`
+    - `realClickFixtureBootstrap=0`
+  - 最新 fixture bootstrap：`total=0`。
+  - 最新 priority triage：`recommendation=no_actionable_priority_gap`；30 天 `untracked=54`，其中 `document_like=40`、`reroutable_priority_family=14`、`unknown_business_or_product=0`；`business_to_order=10/10 terminal passed`。
+  - 最新 document-family guard：`passed=yes`，`baselines=3`，`passedBaselines=3`，`real_click_signals=30`，`admissible_passed_runs=22`。
+  - 最新 next-development plan：`developmentReady=false`，`decision=collect_document_real_click`，因为 top-3 document candidates 均已 `contract_ready + guard passed`。
+  - [README.md](/Users/xiaolongbao/Workspace/ai-test/README.md)、[intent-e2e-current-development-closure-handoff-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-current-development-closure-handoff-2026-05-07.md) 与 [intent-e2e-next-development-prep-2026-05-07.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-next-development-prep-2026-05-07.md) 已同步最终交付入口。
+- 验证：
+  - `npm run intent:traffic-quality -- --project-uid proj_default --window-days 30`
+  - `npm run intent:new-intent:readiness -- --project-uid proj_default --window-days 30`
+  - `npm run intent:fixture-bootstrap -- --project-uid proj_default --window-days 30`
+  - `npm run intent:document-sample:scout -- --project-uid proj_default --windows 30,90,365`
+  - `npm run intent:priority-triage -- --project-uid proj_default --windows 30,90,365`
+  - `npm run intent:document-family:governance -- --project-uid proj_default --require-ready`
+  - `npm run intent:document-family:guard -- --project-uid proj_default --require-passed`
+  - `npm run intent:next-dev:plan -- --project-uid proj_default --window-days 30`
+  - `npm run intent:next-dev:check -- --project-uid proj_default --window-days 30` 按预期返回非 0，阻断原因是当前没有新的未治理 document code work。
+  - `npx vitest run tests/unit/intent-e2e-next-development-plan.spec.ts tests/unit/intent-e2e-new-intent-readiness.spec.ts tests/unit/intent-e2e-known-fixture-governance.spec.ts tests/unit/intent-e2e-fixture-executor.spec.ts tests/unit/intent-e2e-launch-decision.spec.ts tests/unit/intent-e2e-traffic-quality.spec.ts tests/unit/intent-recipe-registry.spec.ts`
+  - `npm run build`
+  - `npm run build:web`
+  - `bash scripts/check-boundaries.sh`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+  - `git diff --check && git diff --cached --check`
+- 当前阶段状态：
+  - 本轮开发计划完成，当前没有新的可开发代码切片。
+  - 后续进入观测状态，继续刷新真实流量报表与 next-development gate。
+- 风险 / 未完成：
+  - 当前 `real_click=83.0%` 不能外推为“所有 AI 生成 100%”。
+  - 当前 5 个 document family 已完成治理，但不代表所有 document family 都已发布就绪。
+  - `business_create_list_verify` 与 `business_to_order` 的 cleanup 仍只记录清理线索，不自动删除或作废远端业务数据。
+- 下一步：
+  - 只有出现 `realClickFixtureBootstrapCount > 0`、稳定重复 `unknown_business_or_product > 0`、新的未治理 document family、已治理 family 退化，或环境 / 认证 / 数据依赖退化时，再开启下一轮开发。
+  - 在此之前，不做 OCR-first，不重复治理已完成 document family，不混用 benchmark / replay / draft_import 分母。

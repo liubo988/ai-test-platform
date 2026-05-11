@@ -67,6 +67,24 @@ function looksLikeBusinessListOwnershipStep(input: StarterAssetMatcherInput): bo
   return /(我创建的|我跟进的|归属|范围)/i.test(haystack) && /(商机|businesslist|business\/businesslist)/i.test(haystack);
 }
 
+function looksLikeRowCheckboxStep(input: StarterAssetMatcherInput): boolean {
+  const haystack = [
+    input.snapshot.url,
+    input.snapshot.title,
+    input.step.title,
+    input.step.target,
+    input.step.goal,
+    input.step.requiredAssertions.join('\n'),
+  ]
+    .join('\n')
+    .toLowerCase();
+
+  return (
+    /(勾选|复选框|checkbox|选中|批量加入|批量申请|批量操作|批量)/i.test(haystack) &&
+    /(列表|表格|目标行|业务行|商机|订单|通讯录|row|table)/i.test(haystack)
+  );
+}
+
 function looksLikePrimaryLoginTask(dsl: IntentActionDSL, auth?: AuthConfig): boolean {
   const loginUrl = String(auth?.loginUrl || '').trim().toLowerCase();
   if (!loginUrl) return false;
@@ -125,6 +143,91 @@ const STARTER_ASSET_CATALOG: IntentStarterAssetCatalogEntry[] = [
     },
   },
   {
+    helper: '__e2e.observeSubmitState',
+    assetSlug: 'starter.assert.watch-submit-state',
+    capabilitySlug: 'assert.watch-submit-state',
+    assetTitle: '提交后状态收敛观察',
+    matchSummary: '保存、提交、生成等动作后，需要观察按钮 loading、弹层关闭或列表结果收敛。',
+    scope: 'global_runtime',
+    matches({ step }) {
+      return (
+        hasAllowedAction(step, 'observe_submit_state') ||
+        hasPreferredHelper(step, '__e2e.observeSubmitState')
+      );
+    },
+  },
+  {
+    helper: '__e2e.readJsonResponse',
+    assetSlug: 'starter.extract.read-json-response',
+    capabilitySlug: 'extract.capture-shared-variable',
+    assetTitle: '响应 JSON 读取',
+    matchSummary: '步骤需要从真实接口响应 JSON 中读取共享变量或断言字段。',
+    scope: 'global_runtime',
+    matches({ step }) {
+      return (
+        hasAllowedAction(step, 'store_variable') ||
+        hasPreferredHelper(step, '__e2e.readJsonResponse', '__e2e.pickJsonValue')
+      );
+    },
+  },
+  {
+    helper: '__e2e.pickJsonValue',
+    assetSlug: 'starter.extract.pick-json-value',
+    capabilitySlug: 'extract.capture-shared-variable',
+    assetTitle: '响应 JSON 字段提取',
+    matchSummary: '步骤需要从接口 JSON 的多候选 path 中提取 businessId / orderId / code / no 等共享值。',
+    scope: 'global_runtime',
+    matches({ step }) {
+      return (
+        hasAllowedAction(step, 'store_variable') ||
+        hasPreferredHelper(step, '__e2e.readJsonResponse', '__e2e.pickJsonValue')
+      );
+    },
+  },
+  {
+    helper: '__e2e.findAntdTableRow',
+    assetSlug: 'starter.ui.find-antd-table-row',
+    capabilitySlug: 'ui.find-antd-table-row',
+    assetTitle: 'Ant Design 表格目标行定位',
+    matchSummary: '步骤需要在 Ant Design 表格中稳定命中真实业务行，并规避 fixed-column 克隆。',
+    scope: 'global_runtime',
+    matches({ step }) {
+      return (
+        hasAllowedAction(step, 'find_table_row') ||
+        hasPreferredHelper(step, '__e2e.findAntdTableRow')
+      );
+    },
+  },
+  {
+    helper: '__e2e.resolvePrimaryRecord',
+    assetSlug: 'starter.assert.resolve-primary-record',
+    capabilitySlug: 'assert.resolve-primary-record',
+    assetTitle: '稳定标识回查与详情回退',
+    matchSummary: '步骤需要用 businessId / orderId / code / no 等稳定标识完成列表回查和详情 fallback。',
+    scope: 'global_runtime',
+    matches({ step }) {
+      return (
+        hasAllowedAction(step, 'resolve_primary_record') ||
+        hasPreferredHelper(step, '__e2e.resolvePrimaryRecord')
+      );
+    },
+  },
+  {
+    helper: '__e2e.clickAntdRowCheckbox',
+    assetSlug: 'starter.ui.click-antd-row-checkbox',
+    capabilitySlug: 'ui.click-antd-row-checkbox',
+    assetTitle: 'Ant Design 表格行勾选',
+    matchSummary: '步骤需要先命中真实业务行，再稳定勾选该行 checkbox，避免点击第一条可见行或 fixed-column 克隆。',
+    scope: 'global_runtime',
+    matches(input) {
+      return (
+        hasAllowedAction(input.step, 'click_row_checkbox') ||
+        hasPreferredHelper(input.step, '__e2e.clickAntdRowCheckbox') ||
+        looksLikeRowCheckboxStep(input)
+      );
+    },
+  },
+  {
     helper: '__e2e.clickAntdRowAction',
     assetSlug: 'starter.ui.click-antd-row-action',
     capabilitySlug: 'ui.click-antd-row-action',
@@ -177,6 +280,20 @@ const STARTER_ASSET_CATALOG: IntentStarterAssetCatalogEntry[] = [
       return (
         hasAllowedAction(step, 'wait_for_visible_modal') ||
         hasPreferredHelper(step, '__e2e.waitForVisibleAntdModal')
+      );
+    },
+  },
+  {
+    helper: '__e2e.readDetailField',
+    assetSlug: 'starter.assert.read-detail-field',
+    capabilitySlug: 'assert.read-detail-field',
+    assetTitle: '详情字段标签读取',
+    matchSummary: '步骤需要在详情页、详情抽屉或描述列表中按字段标签读取真实字段值。',
+    scope: 'global_runtime',
+    matches({ step }) {
+      return (
+        hasAllowedAction(step, 'read_detail_field') ||
+        hasPreferredHelper(step, '__e2e.readDetailField')
       );
     },
   },

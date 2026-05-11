@@ -60,6 +60,14 @@ jobs:
         run: npm run intent:release-guard:preflight
       - name: Check intent-e2e knowledge hit evidence
         run: npm run intent:knowledge-hit-guard
+      - name: Write intent-e2e release readiness summary
+        run: npm run intent:release-summary -- --skip-current-compare --title "Intent E2E Release Readiness (CI static evidence)" --github-step-summary
+      - name: Upload intent-e2e release readiness summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: intent-e2e-release-readiness
+          path: reports/ci/intent-e2e-release-readiness.*
+          if-no-files-found: error
       - name: Check architectural boundaries
         run: bash scripts/check-boundaries.sh
       - run: npm run build

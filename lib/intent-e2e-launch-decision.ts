@@ -29,6 +29,7 @@ export interface IntentE2ELaunchDecision {
     hasTrackedPriorityScenarioFamily: boolean;
     hasPriorityScenarioFamilyConflict: boolean;
     hasStablePriorityScenarioPath: boolean;
+    hasStableDocumentScenarioPath: boolean;
     hasExplicitVerifierSignal: boolean;
     hasHighFailurePressure: boolean;
     hasRepeatedFailureSuppression: boolean;
@@ -93,7 +94,7 @@ function shouldBlockForMissingFixtureContract(runtimeGovernance?: IntentE2ERunti
 }
 
 function looksLikeMutatingIntentText(value: string): boolean {
-  return /(创建|新建|新增|添加|保存|提交|删除|作废|审批|领取|分配|关闭|开通|下单|支付|结算|编辑|修改|更新|create|new|add|save|submit|delete|remove|approve|assign|close|checkout|edit|update)/i.test(
+  return /(创建|新建|新增|添加|保存|提交|删除|作废|审批|领取|分配|关闭|开通|下单|支付|结算|编辑|修改|更新|导入|上传|create|new|add|save|submit|delete|remove|approve|assign|close|checkout|edit|update|import|upload)/i.test(
     value
   );
 }
@@ -150,6 +151,26 @@ function hasStablePriorityScenarioPath(route: IntentE2EPriorityScenarioFamilyRou
   return route.source === 'text_only' || route.source === 'text_confirmed_by_visual';
 }
 
+function hasStableDocumentScenarioPath(value: string): boolean {
+  const normalized = normalizeString(value);
+  if (!normalized) return false;
+
+  const hasDocumentSurface =
+    /(知识文档|文档块|文档预览|文档导入|项目知识|企业微信文档|在线文档|智能表格|document)/i.test(normalized) ||
+    /intentView=knowledge/i.test(normalized) ||
+    /\/projects\/[^?#/]+/i.test(normalized);
+  if (!hasDocumentSurface) return false;
+
+  const hasDocumentAction = /(导入|上传|新建|创建|打开|进入|预览|查看|编辑|保存|import|upload|create|open|preview|view|save)/i.test(
+    normalized
+  );
+  const hasDocumentVerification = /(校验|验证|断言|检查|可见|成功|正文|标题|锚点|verify|assert|check|visible|success)/i.test(
+    normalized
+  );
+
+  return hasDocumentAction && hasDocumentVerification;
+}
+
 function needsClarify(input: {
   normalizedInput: string;
   hasTargetUrl: boolean;
@@ -199,6 +220,7 @@ function shouldDraftForWeakStructuredPath(input: {
   requiresFixture: boolean;
   hasExplicitVerifierSignal: boolean;
   hasStablePriorityScenarioPath: boolean;
+  hasStableDocumentScenarioPath: boolean;
   hasPriorityScenarioFamilyConflict: boolean;
 }): boolean {
   if (input.hasPriorityScenarioFamilyConflict) {
@@ -209,11 +231,15 @@ function shouldDraftForWeakStructuredPath(input: {
     return false;
   }
 
+  if (input.hasStableDocumentScenarioPath && input.hasExplicitVerifierSignal) {
+    return false;
+  }
+
   if (!input.hasExplicitVerifierSignal) {
     return true;
   }
 
-  if (!input.hasStablePriorityScenarioPath && input.requiresFixture) {
+  if (!input.hasStablePriorityScenarioPath && !input.hasStableDocumentScenarioPath && input.requiresFixture) {
     return true;
   }
 
@@ -237,7 +263,9 @@ export function resolveIntentE2ELaunchDecision(input: ResolveIntentE2ELaunchDeci
   const hasTrackedPriorityScenarioFamily = priorityScenarioFamilyRoute.family !== 'untracked';
   const hasPriorityScenarioConflict = hasPriorityScenarioFamilyConflict(priorityScenarioFamilyRoute);
   const stablePriorityScenarioPath = hasStablePriorityScenarioPath(priorityScenarioFamilyRoute);
-  const explicitVerifierSignal = hasExplicitVerifierSignal([normalizedInput, targetUrl].filter(Boolean).join('\n'));
+  const intentSurfaceText = [normalizedInput, targetUrl].filter(Boolean).join('\n');
+  const stableDocumentScenarioPath = hasStableDocumentScenarioPath(intentSurfaceText);
+  const explicitVerifierSignal = hasExplicitVerifierSignal(intentSurfaceText);
   const hasHighFailurePressure = Boolean(
     input.failurePressureSummary && hasIntentVerificationFailurePressureSummaryHighFailure(input.failurePressureSummary)
   );
@@ -265,6 +293,7 @@ export function resolveIntentE2ELaunchDecision(input: ResolveIntentE2ELaunchDeci
     hasTrackedPriorityScenarioFamily,
     hasPriorityScenarioFamilyConflict: hasPriorityScenarioConflict,
     hasStablePriorityScenarioPath: stablePriorityScenarioPath,
+    hasStableDocumentScenarioPath: stableDocumentScenarioPath,
     hasExplicitVerifierSignal: explicitVerifierSignal,
     hasHighFailurePressure,
     hasRepeatedFailureSuppression: Boolean(repeatedFailureSuppression),
@@ -312,7 +341,7 @@ export function resolveIntentE2ELaunchDecision(input: ResolveIntentE2ELaunchDeci
       decision: repeatedFailureSuppression.recommendedDecision,
       reasons: uniqueStrings([
         repeatedFailureSuppression.reason,
-        !stablePriorityScenarioPath ? 'missing_stable_family_path' : '',
+        !stablePriorityScenarioPath && !stableDocumentScenarioPath ? 'missing_stable_family_path' : '',
         repeatedFailureSuppression.recommendedDecision === 'draft_only' && hasHighFailurePressure ? 'high_failure_pressure' : '',
       ]),
       signals,
@@ -324,6 +353,7 @@ export function resolveIntentE2ELaunchDecision(input: ResolveIntentE2ELaunchDeci
       requiresFixture,
       hasExplicitVerifierSignal: explicitVerifierSignal,
       hasStablePriorityScenarioPath: stablePriorityScenarioPath,
+      hasStableDocumentScenarioPath: stableDocumentScenarioPath,
       hasPriorityScenarioFamilyConflict: hasPriorityScenarioConflict,
     })
   ) {
@@ -331,8 +361,8 @@ export function resolveIntentE2ELaunchDecision(input: ResolveIntentE2ELaunchDeci
       decision: 'draft_only',
       reasons: uniqueStrings([
         !explicitVerifierSignal ? 'missing_stable_verifier_path' : '',
-        !stablePriorityScenarioPath ? 'missing_stable_family_path' : '',
-        !hasTrackedPriorityScenarioFamily ? 'untracked_family_requires_draft' : '',
+        !stablePriorityScenarioPath && !stableDocumentScenarioPath ? 'missing_stable_family_path' : '',
+        !hasTrackedPriorityScenarioFamily && !stableDocumentScenarioPath ? 'untracked_family_requires_draft' : '',
       ]),
       signals,
     };
@@ -343,7 +373,7 @@ export function resolveIntentE2ELaunchDecision(input: ResolveIntentE2ELaunchDeci
       decision: 'draft_only',
       reasons: uniqueStrings([
         'high_failure_pressure',
-        !stablePriorityScenarioPath ? 'missing_stable_family_path' : '',
+        !stablePriorityScenarioPath && !stableDocumentScenarioPath ? 'missing_stable_family_path' : '',
       ]),
       signals,
     };

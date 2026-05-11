@@ -72,4 +72,30 @@ describe('provider-config', () => {
     const { assertSupportedLLMProvider, getLLMRuntimeConfig } = await import('@/lib/llm/provider-config');
     expect(() => assertSupportedLLMProvider(getLLMRuntimeConfig())).toThrow(/只实现了 openai 适配器/);
   });
+
+  it('exposes provider options with explicit adapter status', async () => {
+    const { isLLMProviderImplemented, listLLMProviderOptions } = await import('@/lib/llm/provider-config');
+
+    expect(listLLMProviderOptions()).toEqual([
+      expect.objectContaining({
+        provider: 'openai',
+        adapterStatus: 'implemented',
+        implemented: true,
+      }),
+      expect.objectContaining({
+        provider: 'gemini',
+        adapterStatus: 'placeholder',
+        implemented: false,
+      }),
+      expect.objectContaining({
+        provider: 'claude',
+        adapterStatus: 'placeholder',
+        implemented: false,
+      }),
+    ]);
+    expect(isLLMProviderImplemented('openai')).toBe(true);
+    expect(isLLMProviderImplemented('gemini')).toBe(false);
+    expect(isLLMProviderImplemented('claude')).toBe(false);
+    expect(isLLMProviderImplemented('unknown')).toBe(false);
+  });
 });
