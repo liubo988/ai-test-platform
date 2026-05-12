@@ -104,8 +104,44 @@ const buildPrimaryLookupInputCandidates = compileFunction<(page: FakeLocator, op
 const pickVisiblePrimaryLookupLocator = compileFunction<
   (candidates: FakeLocator[], timeout?: number) => Promise<FakeLocator | null>
 >('pickVisiblePrimaryLookupLocator', { locatorVisible });
+const parseWorkerUrl = compileFunction<(value: string, baseUrl?: string) => URL | null>('parseWorkerUrl');
+const sameWorkerDocumentRoute = compileFunction<(left: URL | null, right: URL | null) => boolean>('sameWorkerDocumentRoute');
+const hasWorkerHashRoute = compileFunction<(url: URL | null) => boolean>('hasWorkerHashRoute');
+const extractInterruptedNavigationUrls = compileFunction<
+  (error: unknown) => { targetUrl: string; interruptedByUrl: string } | null
+>('extractInterruptedNavigationUrls', { toErrorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err || 'unknown error')) });
+const isRecoverableSameDocumentHashNavigationInterruption = compileFunction<
+  (error: unknown, requestedUrl?: string) => boolean
+>('isRecoverableSameDocumentHashNavigationInterruption', {
+  toErrorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err || 'unknown error')),
+  parseWorkerUrl,
+  sameWorkerDocumentRoute,
+  hasWorkerHashRoute,
+  extractInterruptedNavigationUrls,
+});
 
 describe('test-worker primary lookup candidates', () => {
+  it('installs worker-level goto recovery before generated tests run', () => {
+    expect(source).toContain('installResilientGoto(page);');
+    expect(source).toContain('page.goto recovered after SPA hash navigation interruption');
+  });
+
+  it('treats same-document SPA hash route interruption as recoverable', () => {
+    const error = new Error(
+      'page.goto: Navigation to "https://uat-service.yikaiye.com/#/order/list" is interrupted by another navigation to "https://uat-service.yikaiye.com/#/"'
+    );
+
+    expect(isRecoverableSameDocumentHashNavigationInterruption(error, 'https://uat-service.yikaiye.com/#/order/list')).toBe(true);
+  });
+
+  it('does not treat cross-origin interrupted navigation as hash-route recovery', () => {
+    const error = new Error(
+      'page.goto: Navigation to "https://uat-service.yikaiye.com/#/order/list" is interrupted by another navigation to "https://sso.example.com/login"'
+    );
+
+    expect(isRecoverableSameDocumentHashNavigationInterruption(error, 'https://uat-service.yikaiye.com/#/order/list')).toBe(false);
+  });
+
   it('exports a deterministic visible-filter helper for modal pending-status selection', () => {
     expect(source).toContain('async function applyDeterministicVisibleAntdFilter(page, options)');
     expect(source).toContain('function buildVisibleAntdFilterRootCandidates(page, options)');

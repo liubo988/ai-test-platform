@@ -141,7 +141,11 @@ const PAGE_POST_LOGIN_TRANSITION_TIMEOUT_MS = 4500;
 const PAGE_LOGIN_RETRY_COUNT = 2;
 const PAGE_LOGIN_RETRY_DELAY_MS = 400;
 const PAGE_PRECHECK_TEXT_MAX = 1200;
-const RETRYABLE_PAGE_ACCESS_NAVIGATION_PATTERNS = [/net::ERR_ABORTED/i, /Timeout \d+ms exceeded/i];
+const RETRYABLE_PAGE_ACCESS_NAVIGATION_PATTERNS = [
+  /net::ERR_ABORTED/i,
+  /Timeout \d+ms exceeded/i,
+  /interrupted by another navigation/i,
+];
 
 async function createAnalyzerContext(browser: Browser, storageState?: Exclude<BrowserContextOptions['storageState'], undefined>) {
   return browser.newContext({

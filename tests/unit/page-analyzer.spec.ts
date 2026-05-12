@@ -30,6 +30,13 @@ describe('intent-e2e auth shared helpers', () => {
   it('treats precheck timeout and ERR_ABORTED as retryable page-access navigation errors', () => {
     expect(isRetryablePageAccessNavigationError(new Error('page.goto: Timeout 30000ms exceeded'))).toBe(true);
     expect(isRetryablePageAccessNavigationError(new Error('page.goto: net::ERR_ABORTED at https://example.com'))).toBe(true);
+    expect(
+      isRetryablePageAccessNavigationError(
+        new Error(
+          'page.goto: Navigation to "https://uat-service.yikaiye.com/#/order/list" is interrupted by another navigation to "https://uat-service.yikaiye.com/#/"'
+        )
+      )
+    ).toBe(true);
     expect(isRetryablePageAccessNavigationError(new Error('403 Forbidden'))).toBe(false);
   });
 
