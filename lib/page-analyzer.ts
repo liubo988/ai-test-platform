@@ -4,6 +4,8 @@ import {
   isSmsPasswordLoginDescription,
   loginButtonNamePattern,
   loginPasswordSelector,
+  loginShellFrameSelector,
+  loginShellTextPattern,
   loginSmsCodeSelector,
   loginUsernameSelector,
   loginVerificationSelector,
@@ -290,6 +292,10 @@ async function locatorVisible(locator: Locator, timeout = 400): Promise<boolean>
   return locator.isVisible({ timeout }).catch(() => false);
 }
 
+function normalizeVisibleText(value: string): string {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
 async function switchLoginModeIfNeeded(page: Page, auth: AuthConfig): Promise<void> {
   const description = `${auth.loginDescription || ''}`.trim();
   if (!description) return;
@@ -347,18 +353,37 @@ async function resolveSecretInput(page: Page, auth: AuthConfig): Promise<Locator
   return prefersSmsCodeInput ? page.locator(loginSmsCodeSelector).first() : page.locator(loginPasswordSelector).first();
 }
 
-async function isLikelyLoginPage(page: Page): Promise<boolean> {
+export async function isLikelyLoginPage(page: Page): Promise<boolean> {
   const usernameInput = getUsernameInput(page);
   const loginButton = page.getByRole('button', { name: loginButtonNamePattern }).first();
   const verificationInput = page.locator(loginVerificationSelector).first();
+  const loginShellButton = page.getByRole('button', { name: loginShellTextPattern }).first();
+  const loginShellText = page.getByText(loginShellTextPattern).first();
+  const loginShellFrame = page.locator(loginShellFrameSelector).first();
 
-  const [usernameVisible, loginVisible, verificationVisible] = await Promise.all([
+  const [usernameVisible, loginVisible, verificationVisible, shellButtonVisible, shellTextVisible, shellFrameVisible] = await Promise.all([
     locatorVisible(usernameInput, 800),
     locatorVisible(loginButton, 800),
     locatorVisible(verificationInput, 800),
+    locatorVisible(loginShellButton, 800),
+    locatorVisible(loginShellText, 800),
+    locatorVisible(loginShellFrame, 800),
   ]);
 
-  return usernameVisible && loginVisible && verificationVisible;
+  if (usernameVisible && loginVisible && verificationVisible) {
+    return true;
+  }
+
+  if (shellButtonVisible || shellFrameVisible) {
+    return true;
+  }
+
+  if (!shellTextVisible) {
+    return false;
+  }
+
+  const bodyText = normalizeVisibleText(await page.locator('body').innerText().catch(() => ''));
+  return loginShellTextPattern.test(bodyText);
 }
 
 async function ensureLoginSurface(page: Page, auth: AuthConfig, options?: { fallbackUrl?: string }): Promise<void> {

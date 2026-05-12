@@ -87,6 +87,7 @@ import {
   resolveIntentE2ESharedSessionCacheKey,
   writeIntentE2ESharedSessionCache,
 } from '@/lib/intent-e2e-shared-session-cache';
+import { resolveIntentE2EPrecheckStorageStateCandidates } from '@/lib/intent-e2e-precheck-storage-state';
 import {
   executeIntentE2EFixture,
   resolveIntentE2EFixtureRefForPhase,
@@ -3499,7 +3500,7 @@ type IntentE2EPrecheckResult =
       output: IntentE2ERunResult;
     };
 
-type IntentE2EPrecheckReuseMode = 'shared_session_hit' | 'shared_session_refreshed' | 'fresh_session';
+type IntentE2EPrecheckReuseMode = 'shared_session_hit' | 'shared_session_refreshed' | 'storage_state_seed' | 'fresh_session';
 
 function buildPageAccessPrecheckOptions(
   ignoreFailureClasses: PageAccessPrecheckFailureClass[],
@@ -3552,6 +3553,8 @@ function describeIntentE2EPrecheckReuseMode(
       return '命中 shared session';
     case 'shared_session_refreshed':
       return 'shared session 已刷新';
+    case 'storage_state_seed':
+      return '复用本地登录态';
     case 'fresh_session':
     default:
       return hasIntentE2EAuthConfig(auth) ? '完成显式登录前置检查' : '完成页面连通性检查';
@@ -3566,6 +3569,7 @@ async function runIntentE2EPrecheck(
     description: string;
     platformAssets: ReturnType<typeof buildBrowserE2EPlatformTestAssetBundle>;
     auth?: AuthConfig;
+    intentDraftUid?: string;
     scenarioCard: ScenarioCard;
     precheckPolicy: IntentE2EPrecheckPolicy;
     llmMeta: IntentE2ERunResult['llmMeta'];
@@ -3618,6 +3622,29 @@ async function runIntentE2EPrecheck(
       precheck = fallbackOptions
         ? await precheckPageAccess(precheckUrl, input.auth, fallbackOptions)
         : await precheckPageAccess(precheckUrl, input.auth);
+    }
+    if (precheck.status === 'blocked' && precheck.failureClass === 'auth_failed' && input.intentDraftUid?.trim()) {
+      const storageStateCandidates = resolveIntentE2EPrecheckStorageStateCandidates(precheckUrl);
+      for (const candidate of storageStateCandidates) {
+        await emit(listener, {
+          type: 'stage',
+          stage: 'prechecking',
+          message: `草稿前置登录态未通过，正在尝试复用本地 storageState：${candidate.source}…`,
+        });
+        reuseMode = 'storage_state_seed';
+        const seededOptions = buildPageAccessPrecheckOptions(
+          input.precheckPolicy.ignoreFailureClasses,
+          candidate.storageState,
+          captureSnapshot
+        );
+        const seededPrecheck = seededOptions
+          ? await precheckPageAccess(precheckUrl, input.auth, seededOptions)
+          : await precheckPageAccess(precheckUrl, input.auth);
+        if (seededPrecheck.status === 'ready') {
+          precheck = seededPrecheck;
+          break;
+        }
+      }
     }
     throwIfAborted(signal);
     if (precheck.status === 'ready' && sharedSessionKey) {
@@ -3865,6 +3892,7 @@ export async function runIntentDrivenE2EStream(
       description,
       platformAssets: basePlatformAssets,
       auth: input.auth,
+      intentDraftUid: input.intentDraftUid,
       scenarioCard: scenarioCardOutput.card,
       precheckPolicy,
       llmMeta: scenarioCardOutput.llmMeta,

@@ -1,10 +1,56 @@
 import { describe, expect, it, vi } from 'vitest';
-import { isSmsPasswordLoginDescription, shouldOpenConfiguredLoginUrl } from '../../lib/intent-e2e-auth-shared.mjs';
 import {
+  isSmsPasswordLoginDescription,
+  loginShellFrameSelector,
+  loginUsernameSelector,
+  loginVerificationSelector,
+  shouldOpenConfiguredLoginUrl,
+} from '../../lib/intent-e2e-auth-shared.mjs';
+import {
+  isLikelyLoginPage,
   isRetryablePageAccessNavigationError,
   navigateForPageAccess,
   shouldIgnorePageAccessPrecheckFailure,
 } from '../../lib/page-analyzer';
+
+function createMockLocator(input?: { visible?: boolean; text?: string }) {
+  const locator = {
+    first: vi.fn(() => locator),
+    isVisible: vi.fn().mockResolvedValue(Boolean(input?.visible)),
+    innerText: vi.fn().mockResolvedValue(input?.text || ''),
+  };
+  return locator;
+}
+
+function createLoginDetectionPageMock(input?: {
+  usernameVisible?: boolean;
+  loginButtonVisible?: boolean;
+  verificationVisible?: boolean;
+  shellButtonVisible?: boolean;
+  shellTextVisible?: boolean;
+  shellFrameVisible?: boolean;
+  bodyText?: string;
+}) {
+  const usernameInput = createMockLocator({ visible: input?.usernameVisible });
+  const verificationInput = createMockLocator({ visible: input?.verificationVisible });
+  const loginButton = createMockLocator({ visible: input?.loginButtonVisible });
+  const shellButton = createMockLocator({ visible: input?.shellButtonVisible });
+  const shellText = createMockLocator({ visible: input?.shellTextVisible });
+  const shellFrame = createMockLocator({ visible: input?.shellFrameVisible });
+  const body = createMockLocator({ visible: true, text: input?.bodyText || '' });
+
+  return {
+    locator: vi.fn((selector: string) => {
+      if (selector === loginUsernameSelector) return usernameInput;
+      if (selector === loginVerificationSelector) return verificationInput;
+      if (selector === loginShellFrameSelector) return shellFrame;
+      if (selector === 'body') return body;
+      return createMockLocator();
+    }),
+    getByRole: vi.fn().mockReturnValueOnce(loginButton).mockReturnValueOnce(shellButton),
+    getByText: vi.fn().mockReturnValue(shellText),
+  };
+}
 
 describe('intent-e2e auth shared helpers', () => {
   it('detects sms-code tabs that still require filling the password', () => {
@@ -25,6 +71,34 @@ describe('intent-e2e auth shared helpers', () => {
 
   it('still opens the configured login url when the current page is not a login page', () => {
     expect(shouldOpenConfiguredLoginUrl(false, 'https://uat-service.yikaiye.com/#/')).toBe(true);
+  });
+
+  it('recognizes a normal username and sms-code login form as a login page', async () => {
+    const page = createLoginDetectionPageMock({
+      usernameVisible: true,
+      loginButtonVisible: true,
+      verificationVisible: true,
+    });
+
+    await expect(isLikelyLoginPage(page as any)).resolves.toBe(true);
+  });
+
+  it('recognizes the login-mode shell before the sms form is expanded', async () => {
+    const page = createLoginDetectionPageMock({
+      shellButtonVisible: true,
+      shellTextVisible: true,
+      bodyText: '企业微信登录 管帮手登录 短信验证码登录',
+    });
+
+    await expect(isLikelyLoginPage(page as any)).resolves.toBe(true);
+  });
+
+  it('does not classify a normal business page as a login page', async () => {
+    const page = createLoginDetectionPageMock({
+      bodyText: '订单列表 入账管理 搜索 批量入账',
+    });
+
+    await expect(isLikelyLoginPage(page as any)).resolves.toBe(false);
   });
 
   it('treats precheck timeout and ERR_ABORTED as retryable page-access navigation errors', () => {

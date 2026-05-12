@@ -29,6 +29,7 @@ import {
   resetIntentE2ESharedSessionCache,
   writeIntentE2ESharedSessionCache,
 } from '@/lib/intent-e2e-shared-session-cache';
+import { resolveIntentE2EPrecheckStorageStateCandidates } from '@/lib/intent-e2e-precheck-storage-state';
 import {
   getIntentRepairMemoryPath,
   listRelevantIntentRepairHints,
@@ -75,6 +76,10 @@ vi.mock('@/lib/intent-e2e-fixture-executor', () => ({
     const value = phase === 'setup' ? fixture?.setupRef : fixture?.cleanupRef;
     return typeof value === 'string' ? value.trim() : '';
   }),
+}));
+
+vi.mock('@/lib/intent-e2e-precheck-storage-state', () => ({
+  resolveIntentE2EPrecheckStorageStateCandidates: vi.fn(),
 }));
 
 vi.mock('@/lib/intent-project-onboarding', () => ({
@@ -727,6 +732,7 @@ beforeEach(() => {
   resetIntentE2ESharedSessionCache();
   vi.mocked(getTestCodeSyntaxError).mockReturnValue('');
   vi.mocked(getLLMRuntimeConfig).mockReturnValue({ selfHealRetries: 0 } as any);
+  vi.mocked(resolveIntentE2EPrecheckStorageStateCandidates).mockReturnValue([]);
   vi.mocked(buildIntentE2ERecipePerformanceMapFromData).mockReturnValue({
     'auth.unified-login': {
       runCount: 8,
@@ -1623,6 +1629,79 @@ describe('intent-e2e-service stream', () => {
     });
     expect(readIntentE2ESharedSessionCache('account://qa/shared-checkout')?.storageState).toEqual(refreshedStorageState);
     expect(events.some((event) => event.type === 'stage' && event.message.includes('shared session 已失效'))).toBe(true);
+  });
+
+  it('retries explicit intent draft precheck with a matching local storage state seed', async () => {
+    const seededStorageState = {
+      cookies: [],
+      origins: [
+        {
+          origin: 'https://example.com',
+          localStorage: [
+            {
+              name: 'FUWU_UINFO',
+              value: '{"name":"QA"}',
+            },
+          ],
+        },
+      ],
+    };
+
+    vi.mocked(resolveIntentE2EPrecheckStorageStateCandidates).mockReturnValue([
+      {
+        source: 'local_generated',
+        path: '/tmp/storage-state.json',
+        storageState: seededStorageState,
+      },
+    ]);
+    vi.mocked(precheckPageAccess)
+      .mockResolvedValueOnce({
+        status: 'blocked',
+        url: 'https://example.com/checkout',
+        finalUrl: 'https://example.com/#/user/login',
+        title: '登录页',
+        bodyTextExcerpt: '企业微信登录 管帮手登录 短信验证码登录',
+        failureClass: 'auth_failed',
+        message: '页面前置检查失败: 目标页面当前仍要求登录，请补充统一认证配置。',
+        matchedSignals: ['需要重新登录'],
+      } as any)
+      .mockResolvedValueOnce({
+        status: 'ready',
+        url: 'https://example.com/checkout',
+        finalUrl: 'https://example.com/checkout',
+        title: 'Checkout',
+        bodyTextExcerpt: '提交成功',
+        storageState: seededStorageState,
+      } as any);
+
+    const events: IntentE2EStreamEvent[] = [];
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        intentDraftUid: 'idraft_checkout_storage_state',
+        auth: {
+          loginUrl: 'https://login.example.com',
+          username: 'owner@example.com',
+          password: '',
+          loginDescription: '统一密码登录',
+        },
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(vi.mocked(resolveIntentE2EPrecheckStorageStateCandidates)).toHaveBeenCalledWith('https://example.com/checkout');
+    expect(vi.mocked(precheckPageAccess)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(precheckPageAccess).mock.calls[1]?.[2]).toMatchObject({
+      storageState: seededStorageState,
+      captureSnapshot: true,
+    });
+    expect(vi.mocked(executeTest).mock.calls[0]?.[4]).toMatchObject({
+      storageState: seededStorageState,
+    });
+    expect(events.some((event) => event.type === 'stage' && event.message.includes('复用本地 storageState'))).toBe(true);
   });
 
   it('uses scenario entry url for precheck and initial analysis when it differs from business target url', async () => {

@@ -38385,3 +38385,35 @@
   - 普通新意图仍依赖项目 onboarding / project knowledge / runtime governance 资产来保证高成功率。
 - 下一步：
   - 继续观察草稿真实执行结果；如后续出现 `attempts>0` 后的脚本失败，再按执行日志定位具体 locator / 数据 / 权限问题。
+
+## 2026-05-12 第五百七十次更新（Draft Precheck：storageState auth recovery）
+
+- 本轮目标：
+  - 修复显式意图草稿已进入运行链路后，仍因服务端前置登录态检查 `auth_failed` 以 `attempts=0` 结束的问题。
+  - 保留普通新意图的前置检查语义。
+- 已完成：
+  - 新增 task brief：
+    - [intent-e2e-draft-precheck-storage-state-recovery-task-brief-2026-05-12.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-draft-precheck-storage-state-recovery-task-brief-2026-05-12.md)
+  - 根据真实失败 run `intent-run-b7077050-75b7-4ace-84a4-73eb9f3f19b6` 复盘，确认它不是脚本失败，而是在 `前置检查` 阶段被登录态判定终止。
+  - [page-analyzer.ts](/Users/xiaolongbao/Workspace/ai-test/lib/page-analyzer.ts) 现在复用 worker 的登录壳页识别逻辑，能识别 `企业微信登录 / 管帮手登录 / 短信验证码登录` 与 `qrConnect` 壳页。
+  - 新增 [intent-e2e-precheck-storage-state.ts](/Users/xiaolongbao/Workspace/ai-test/lib/intent-e2e-precheck-storage-state.ts)，支持从 env 指定路径与本地 generated storageState 中发现同源登录态候选。
+  - [intent-e2e-service.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-service.ts) 在显式草稿 `auth_failed` precheck 后，会尝试同源 storageState seed；命中后继续进入 analyze / generate / execute，并把同一份 storageState 传给 worker。
+  - 本地真实验证已发现 2 个 `uat-service.yikaiye.com` 同源 storageState 候选，使用候选 precheck 目标页返回 `ready`。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/page-analyzer.spec.ts tests/unit/intent-e2e-precheck-storage-state.spec.ts tests/unit/test-executor.spec.ts`
+  - `node --env-file-if-exists=.env --experimental-strip-types --import ./scripts/register-ts-alias-loader.mjs -e "<storageState discovery + precheck smoke>"`
+  - `npm run build`
+  - `npm run build:web`
+  - `bash scripts/check-boundaries.sh`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+  - `git diff --check`
+- 当前阶段状态：
+  - 显式意图草稿已覆盖 launch-decision、runtime governance 与 precheck 登录态三层 `attempts=0` 误终止。
+  - release-readiness、benchmark harness、document family 与 OCR 主链路未改。
+- 风险 / 未完成：
+  - storageState 是运行时资产，过期后仍需要刷新或重新提供有效登录态。
+  - 本轮只保证草稿能越过前置登录态误终止进入执行；若执行后失败，应按新 attempt 日志继续定位业务脚本问题。
+- 下一步：
+  - 重新触发该草稿；预期不再以 `前置检查 auth_failed / attempts=0` 结束。
+  - 若新 run 已产生 attempt 但失败，按失败步骤、locator 与业务数据继续修。
