@@ -56,7 +56,7 @@ export function shouldTreatQueryLaunchDecisionAsHardBlock(
   options: { intentDraftUid?: string | null } = {}
 ): boolean {
   const normalized = (decision || '').trim();
-  if (normalized === 'needs_bootstrap' && options.intentDraftUid?.trim()) {
+  if (normalized && options.intentDraftUid?.trim()) {
     return false;
   }
   return normalized !== '' && normalized !== 'auto_run' && normalized !== 'draft_only';

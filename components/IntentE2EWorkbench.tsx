@@ -46,7 +46,6 @@ import {
   INTENT_DRAFT_TEST_FLOW_LAUNCH_MODE,
   normalizeIntentDraftLaunchMode,
   resolveIntentDraftAutoLaunchGate,
-  shouldOverrideDraftAutoRunLaunchDecision,
   shouldTreatQueryLaunchDecisionAsHardBlock,
 } from '@/lib/intent-e2e-draft-launch';
 import {
@@ -8072,35 +8071,12 @@ export default function IntentE2EWorkbench({
       setStreamState({
         ...createEmptyStreamState(),
         stage: 'received',
-        message: '正在评估启动条件…',
-        feed: [{ id: createFeedId(), tone: 'info', text: '正在评估启动条件…' }],
+        message: '正在创建服务端运行…',
+        feed: [{ id: createFeedId(), tone: 'info', text: '意图草稿测试流程已按显式启动直接开跑。' }],
       });
 
       try {
-        const launchDecision = await requestIntentLaunchDecision(launchPayload);
-        if (launchDecision.decision !== 'auto_run' && !shouldOverrideDraftAutoRunLaunchDecision(launchDecision.decision)) {
-          if (isStaleRequest()) return;
-          draftAutoLaunchPendingKeyRef.current = '';
-          draftAutoLaunchHandledKeyRef.current = launchDraftKey;
-          applyBlockedLaunchDecision(launchDecision, {
-            source: 'route',
-            syncQuery: true,
-          });
-          return;
-        }
-
         if (isStaleRequest()) return;
-        if (launchDecision.decision === 'draft_only') {
-          setRestoreNotice('检测到最近相似任务失败压力偏高；这次来自草稿页的显式“测试流程”启动，已继续开跑。');
-        }
-
-        setRunning(true);
-        setStreamState({
-          ...createEmptyStreamState(),
-          stage: 'received',
-          message: '正在创建服务端运行…',
-          feed: [{ id: createFeedId(), tone: 'info', text: '正在创建服务端运行…' }],
-        });
 
         const run = await createIntentRun(launchPayload);
         if (isStaleRequest()) return;
@@ -8133,7 +8109,6 @@ export default function IntentE2EWorkbench({
     void autoLaunchDraftFlow();
   }, [
     activeRunId,
-    applyBlockedLaunchDecision,
     applyRunRecord,
     clearExecutionState,
     draftLaunchHydratedKey,
@@ -9074,6 +9049,11 @@ export default function IntentE2EWorkbench({
     const payload = buildCurrentLaunchPayload();
 
     try {
+      if (launchedFromIntentDraft || typeof payload.intentDraftUid === 'string') {
+        await startIntentRunFromPayload(payload);
+        return;
+      }
+
       const launchDecision = await requestIntentLaunchDecision(payload);
       if (launchDecision.decision !== 'auto_run') {
         applyBlockedLaunchDecision(launchDecision, {

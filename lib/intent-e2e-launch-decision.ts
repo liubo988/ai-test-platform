@@ -249,8 +249,8 @@ function shouldDraftForWeakStructuredPath(input: {
   return false;
 }
 
-function hasExecutableIntentDraftAsset(input: ResolveIntentE2ELaunchDecisionInput): boolean {
-  return Boolean(normalizeString(input.intentDraftUid) && (input.hasPrefilledScenarioCard || input.hasPrefilledPlanCode));
+function hasIntentDraftLaunch(input: ResolveIntentE2ELaunchDecisionInput): boolean {
+  return Boolean(normalizeString(input.intentDraftUid));
 }
 
 export function resolveIntentE2ELaunchDecision(input: ResolveIntentE2ELaunchDecisionInput): IntentE2ELaunchDecision {
@@ -285,7 +285,7 @@ export function resolveIntentE2ELaunchDecision(input: ResolveIntentE2ELaunchDeci
           reason: input.repeatedFailureSuppression.reason.trim(),
         }
       : null;
-  const executableIntentDraftAsset = hasExecutableIntentDraftAsset(input);
+  const intentDraftLaunch = hasIntentDraftLaunch(input);
   const signals: IntentE2ELaunchDecision['signals'] = {
     projectUid,
     moduleUid,
@@ -309,7 +309,15 @@ export function resolveIntentE2ELaunchDecision(input: ResolveIntentE2ELaunchDeci
     repeatedFailureReason: repeatedFailureSuppression?.reason || '',
   };
 
-  if (assetAvailability.status === 'asset_missing' && !executableIntentDraftAsset) {
+  if (intentDraftLaunch) {
+    return {
+      decision: 'auto_run',
+      reasons: ['intent_draft_explicit_launch'],
+      signals,
+    };
+  }
+
+  if (assetAvailability.status === 'asset_missing') {
     return {
       decision: 'needs_bootstrap',
       reasons: uniqueStrings(['project_bootstrap_required', ...assetAvailability.reasons]),
@@ -352,14 +360,6 @@ export function resolveIntentE2ELaunchDecision(input: ResolveIntentE2ELaunchDeci
         !stablePriorityScenarioPath && !stableDocumentScenarioPath ? 'missing_stable_family_path' : '',
         repeatedFailureSuppression.recommendedDecision === 'draft_only' && hasHighFailurePressure ? 'high_failure_pressure' : '',
       ]),
-      signals,
-    };
-  }
-
-  if (executableIntentDraftAsset) {
-    return {
-      decision: 'auto_run',
-      reasons: ['launch_ready'],
       signals,
     };
   }

@@ -81,6 +81,8 @@ describe('intent-e2e draft launch helpers', () => {
     expect(shouldTreatQueryLaunchDecisionAsHardBlock('needs_bootstrap')).toBe(true);
     expect(shouldTreatQueryLaunchDecisionAsHardBlock('needs_bootstrap', { intentDraftUid: 'idraft_1' })).toBe(false);
     expect(shouldTreatQueryLaunchDecisionAsHardBlock('needs_fixture')).toBe(true);
+    expect(shouldTreatQueryLaunchDecisionAsHardBlock('needs_fixture', { intentDraftUid: 'idraft_1' })).toBe(false);
+    expect(shouldTreatQueryLaunchDecisionAsHardBlock('needs_clarify', { intentDraftUid: 'idraft_1' })).toBe(false);
   });
 
   it('allows explicit draft test flow to override draft_only only', () => {
