@@ -2585,7 +2585,7 @@ export function buildPrompt(
   parts.push(`\n## 媒体播放 / 预览 / 下载 / 打开详情成功判定规则
 1. 对“播放录音 / 预览图片或视频 / 打开详情 Drawer / 下载文件”等触发型动作，禁止只写宽泛的 \`expect(...).toBeTruthy()\`、\`page.getByText(/成功/i)\`，也禁止写 \`Promise.race([waitFor(...).catch(() => false), ...])\` 这种会被较早 \`false\` 抢跑的成功判定。
 2. 如果动作会触发明确请求或返回业务数据，优先等待对应接口成功并校验关键字段，例如响应里的 \`code=1\`、媒体 URL、下载地址、详情数据已返回。
-3. 如果页面会出现播放器 / 预览容器 / Drawer / 新窗口，优先断言具体容器、\`audio[src]\` / \`video[src]\` / Drawer 标题 / 同一行按钮状态变化；不要跨整页找模糊 icon 或泛化文本。
+3. 如果页面会出现播放器 / 预览容器 / Drawer / 新窗口，优先断言具体容器、媒体资源 URL、Drawer 标题 / 同一行按钮状态变化；注意很多业务播放器会把 \`audio\` / \`video\` 做成隐藏载体，即使 \`src\` 已经是 \`.wav\` 也会是 hidden，禁止对 \`audio[src]\` / \`video[src]\` 写 \`toBeVisible()\` 或 \`:visible\`，应使用 \`__e2e.waitForMediaPlaybackEvidence(page, { mediaSelector: 'audio, video' })\` 或读取 \`currentSrc/src/source[src]\`。
 4. 当存在多个候选成功信号时，改用“按顺序检查多个信号”或 \`Promise.any(...)\`（失败分支保持 reject）；不要让任一分支的 \`catch(() => false)\` 提前把整体误判为失败。
 5. 如果接口已成功返回媒体 URL、详情数据或下载 token，即使页面上的播放 icon 没立即切换，也应把“业务响应成功 + 关键资源已返回”作为主要成功判定，再补一个轻量 UI 佐证。`);
 
@@ -2702,7 +2702,7 @@ await __e2e.ensureLoggedIn(page, { targetUrl: TARGET_URL });
 21. 禁止写 \`page.getByText(/成功/i).first()\` 这类宽泛成功断言；应优先等待具体 toast/弹窗标题、目标 Drawer/Modal 消失、接口响应成功或业务状态字段发生变化
 21.1 中间步骤的“保存并继续 / 下一步”如果只是切到下一块表单且接口并不明确，禁止发明宽泛的 \`waitForApiResponse({ urlIncludes: '/business', method: 'POST' })\`；优先等待下一块表单标题或字段出现
 21.2 对多步表单 / Ant Tabs 最后一页的“保存 / 提交”，禁止直接写 \`page.getByRole('button', { name: /保\\s*存|提\\s*交/i }).first()\`，也禁止把最终主动作写死成 \`getByRole('button', { name: /^保\\s*存$/ }).first()\`；必须先 scope 到当前可见 \`.ant-tabs-tabpane-active\` / 当前步骤容器，先尝试定位 \`/保\\s*存|提\\s*交|确\\s*定/i\` 的最后一个主动作；如果当前 pane 内根本找不到这个最终主动作，不要立刻退化成整页 \`page.getByRole(...).last()\`，而是改成准备少量 \`candidateContainers\`，至少覆盖末页锚点附近容器、\`attachmentAnchor\` 祖先链、当前可见 tabpane / form，以及可见 footer/action-bar 容器，并继续排除 \`保存并继续\` / \`上一步\`。footer/action-bar 这类 selector 不要统一写成 \`.first()\`；每类 selector 至少枚举前 2-3 个可见命中，依次 push 进 \`candidateContainers\`。如果这些 scoped 容器都 miss，但 \`attachmentAnchor\` 已可见，只允许额外尝试一次更窄的 \`page.getByRole('button', { name: /^提\\s*交$/ }).first()\`；不要把 selector 锁死在 \`.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible\` 这类单一路径。\`attachmentAnchor\` 刚 visible 时底部 action bar 可能还没挂稳，不要只跑一轮 \`count()\` 就立刻 throw；给 scoped candidate scan + exact submit fallback 一个 3-5 秒的短时轮询窗口（例如每 200ms 重试一次），命中后再 \`scrollIntoViewIfNeeded()\`。如果仍是 \`subtree intercepts pointer events\` 才允许对这个 scoped button 使用 \`click({ force: true })\`，同时不要把 \`保存并继续\` 误当最终提交
-22. 对播放录音 / 预览媒体 / 打开详情 / 下载文件这类触发型动作，优先等待业务响应成功、资源 URL 返回或对应容器出现；禁止使用 \`Promise.race([...catch(() => false)])\` 这类会把较早失败误判成整体失败的写法
+22. 对播放录音 / 预览媒体 / 打开详情 / 下载文件这类触发型动作，优先等待业务响应成功、资源 URL 返回或对应容器出现；播放录音时不要断言隐藏 \`audio\` 可见，优先用 \`__e2e.waitForMediaPlaybackEvidence(page, { mediaSelector: 'audio, video' })\` 校验 \`.wav/.mp3/currentSrc/src\`；禁止使用 \`Promise.race([...catch(() => false)])\` 这类会把较早失败误判成整体失败的写法
 23. 有统一登录信息时，优先使用执行环境内置的 \`__e2e.ensureLoggedIn(page, { targetUrl: TARGET_URL })\` 或 \`__e2e.loginWithEnvAuth(page)\`；不要重复手写 \`page.goto(LOGIN_URL)\` 并猜登录页 DOM
 24. 如果当前页已经是登录页，禁止再额外跳一次 \`LOGIN_URL\` 根地址；那可能把页面从真实登录页跳回首页壳，导致后续手机号/验证码输入框全部消失
 25. 对 Ant Design 表格，禁止直接断言裸 \`.ant-table-tbody\` 可见；优先等待目标行、行数或 placeholder，并基于目标行继续操作
@@ -3148,6 +3148,12 @@ export function buildRepairPrompt(
     /录音|播放|audio|audioUrl|\.wav|aplayer|pause/i.test(`${description}\n${repair.previousCode}\n${recentEventText}`)
   ) {
     diagnosisHints.push('这次失败很可能不是“播放没触发”，而是成功判定写错了。最近事件里一旦已经出现 `audioUrl`、`.wav`、`code: 1` / `msg: success` 这类信号，就应优先把“接口成功 + 媒体 URL 返回 + 播放器或同行按钮状态变化”作为成功依据，不要继续写 `expect(triggered).toBeTruthy()` 这类宽泛真值断言。');
+  }
+  if (
+    /expect\(locator\)\.toBeVisible\(\) failed|Expected:\s*visible[\s\S]*Received:\s*hidden/i.test(repair.executionError) &&
+    /录音|播放|audio|audioUrl|\.wav|aplayer|pause/i.test(`${description}\n${repair.previousCode}\n${recentEventText}\n${repair.executionError}`)
+  ) {
+    diagnosisHints.push('这次失败是把隐藏的媒体播放载体当成可见 UI 来断言了。很多 UAT 播放器会渲染 `<audio src="...wav">` 但保持 hidden；修复时禁止继续写 `audio[src]:visible`、`.ant-modal:visible audio[src]` 或 `expect(audio).toBeVisible()`，应改用 `__e2e.waitForMediaPlaybackEvidence(page, { mediaSelector: "audio, video" })`，或直接读取 `currentSrc/src/source[src]` 并校验 `.wav/.mp3/recording` 资源 URL。');
   }
   if (
     /Promise\.race\(/.test(repair.previousCode) &&

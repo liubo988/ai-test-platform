@@ -126,6 +126,13 @@ describe('test-worker primary lookup candidates', () => {
     expect(source).toContain('page.goto recovered after SPA hash navigation interruption');
   });
 
+  it('exports media playback evidence helper without requiring hidden audio to be visible', () => {
+    expect(source).toContain('async function waitForMediaPlaybackEvidence(page, options)');
+    expect(source).toContain("options?.mediaSelector || 'audio, video'");
+    expect(source).toContain('currentSrc || node.src || node.getAttribute');
+    expect(source).toContain('waitForMediaPlaybackEvidence,');
+  });
+
   it('treats same-document SPA hash route interruption as recoverable', () => {
     const error = new Error(
       'page.goto: Navigation to "https://uat-service.yikaiye.com/#/order/list" is interrupted by another navigation to "https://uat-service.yikaiye.com/#/"'

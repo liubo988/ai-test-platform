@@ -6893,7 +6893,8 @@ Error: element(s) not found`,
 
     expect(prompt).toContain('## 媒体播放 / 预览 / 下载 / 打开详情成功判定规则');
     expect(prompt).toContain('Promise.race([waitFor(...).catch(() => false), ...])');
-    expect(prompt).toContain('audio[src]');
+    expect(prompt).toContain('__e2e.waitForMediaPlaybackEvidence');
+    expect(prompt).toContain('禁止对 `audio[src]` / `video[src]` 写 `toBeVisible()` 或 `:visible`');
     expect(prompt).toContain('Promise.any(...)');
     expect(prompt).toContain('业务响应成功 + 关键资源已返回');
   });
@@ -8110,6 +8111,39 @@ Received string: "批量申请入账 订单号：202604011028194322 服务项：
     expect(prompt).toContain('`Promise.any(...)`');
     expect(prompt).toContain('不要改登录流、不要跳去无关页面');
     expect(prompt).toContain('不要发明需求里没有的页面锚点或 DOM id');
+  });
+
+  it('adds playback-specific repair hints when hidden audio is incorrectly asserted visible', () => {
+    const prompt = buildRepairPrompt(
+      {
+        url: 'https://uat.example.com/#/clientmanagement/callloglist',
+        title: '通话记录',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '通话记录' }],
+        screenshot: '',
+      },
+      '在通话记录页随机播放一条录音，确认播放已触发',
+      undefined,
+      [],
+      '',
+      {
+        previousCode: [
+          "const audio = page.locator('.ant-modal:visible audio[src], .ant-drawer:visible audio[src]').first();",
+          'await expect(audio).toBeVisible({ timeout: 12000 });',
+        ].join('\n'),
+        executionError:
+          "expect(locator).toBeVisible() failed\n\nLocator: locator('.ant-modal:visible audio[src], .ant-drawer:visible audio[src]').first()\nExpected: visible\nReceived: hidden",
+        recentEvents: ['<audio autoplay="" preload="auto" src="https://recording.yikaiye.net/20240423/demo.wav"></audio>'],
+      }
+    );
+
+    expect(prompt).toContain('隐藏的媒体播放载体');
+    expect(prompt).toContain('禁止继续写 `audio[src]:visible`');
+    expect(prompt).toContain('__e2e.waitForMediaPlaybackEvidence(page, { mediaSelector: "audio, video" })');
+    expect(prompt).toContain('currentSrc/src/source[src]');
   });
 
   it('renders action DSL constraints from scenario steps and helper preferences', () => {
