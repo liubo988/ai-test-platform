@@ -48,10 +48,13 @@ export interface ResolveIntentE2ELaunchDecisionInput {
   targetUrl?: string | null;
   projectUid?: string | null;
   moduleUid?: string | null;
+  intentDraftUid?: string | null;
   attachments?: unknown[] | null;
   attachmentCount?: number;
   runtimeGovernance?: IntentE2ERuntimeGovernance;
   assetAvailability?: IntentE2EProjectAssetAvailability | null;
+  hasPrefilledScenarioCard?: boolean;
+  hasPrefilledPlanCode?: boolean;
   failurePressureSummary?: IntentVerificationFailurePressureSummary | null;
   requiresFixture?: boolean;
   priorityScenarioFamilyRoute?: IntentE2EPriorityScenarioFamilyRoute | null;
@@ -246,6 +249,10 @@ function shouldDraftForWeakStructuredPath(input: {
   return false;
 }
 
+function hasExecutableIntentDraftAsset(input: ResolveIntentE2ELaunchDecisionInput): boolean {
+  return Boolean(normalizeString(input.intentDraftUid) && (input.hasPrefilledScenarioCard || input.hasPrefilledPlanCode));
+}
+
 export function resolveIntentE2ELaunchDecision(input: ResolveIntentE2ELaunchDecisionInput): IntentE2ELaunchDecision {
   const normalizedInput = normalizeString(input.input);
   const projectUid = normalizeString(input.projectUid);
@@ -278,6 +285,7 @@ export function resolveIntentE2ELaunchDecision(input: ResolveIntentE2ELaunchDeci
           reason: input.repeatedFailureSuppression.reason.trim(),
         }
       : null;
+  const executableIntentDraftAsset = hasExecutableIntentDraftAsset(input);
   const signals: IntentE2ELaunchDecision['signals'] = {
     projectUid,
     moduleUid,
@@ -301,7 +309,7 @@ export function resolveIntentE2ELaunchDecision(input: ResolveIntentE2ELaunchDeci
     repeatedFailureReason: repeatedFailureSuppression?.reason || '',
   };
 
-  if (assetAvailability.status === 'asset_missing') {
+  if (assetAvailability.status === 'asset_missing' && !executableIntentDraftAsset) {
     return {
       decision: 'needs_bootstrap',
       reasons: uniqueStrings(['project_bootstrap_required', ...assetAvailability.reasons]),
@@ -344,6 +352,14 @@ export function resolveIntentE2ELaunchDecision(input: ResolveIntentE2ELaunchDeci
         !stablePriorityScenarioPath && !stableDocumentScenarioPath ? 'missing_stable_family_path' : '',
         repeatedFailureSuppression.recommendedDecision === 'draft_only' && hasHighFailurePressure ? 'high_failure_pressure' : '',
       ]),
+      signals,
+    };
+  }
+
+  if (executableIntentDraftAsset) {
+    return {
+      decision: 'auto_run',
+      reasons: ['launch_ready'],
       signals,
     };
   }

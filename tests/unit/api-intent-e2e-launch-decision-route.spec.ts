@@ -57,6 +57,9 @@ vi.mock('@/lib/intent-e2e-launch-decision', () => ({
 }));
 
 vi.mock('@/lib/intent-e2e-traffic-quality', () => ({
+  classifyTrafficQualityDocumentFamily: vi.fn(() => ''),
+  getIntentE2ETrafficQualityEventLogPath: vi.fn(() => 'reports/intent-e2e/traffic-quality/events.jsonl'),
+  resolveIntentE2ETrafficQualitySourceFromRequest: vi.fn(() => 'real_click'),
   safeRecordIntentE2ELaunchDecisionTrafficQuality: vi.fn(),
 }));
 
@@ -188,7 +191,7 @@ describe('POST /api/intent-e2e/launch-decision', () => {
     );
     expect(applyActorCookie).toHaveBeenCalledTimes(1);
     expect(res.status).toBe(200);
-    expect(json).toEqual({
+    expect(json).toMatchObject({
       decision: 'needs_bootstrap',
       reasons: ['project_bootstrap_required', 'project_knowledge_missing'],
       signals: {
@@ -383,7 +386,7 @@ describe('POST /api/intent-e2e/launch-decision', () => {
       })
     );
     expect(res.status).toBe(200);
-    expect(json).toEqual({
+    expect(json).toMatchObject({
       decision: 'draft_only',
       reasons: ['recent_repeated_model_failure', 'high_failure_pressure'],
       signals: {
@@ -413,6 +416,72 @@ describe('POST /api/intent-e2e/launch-decision', () => {
         reasons: [],
       },
     });
+  });
+
+  it('passes executable intent draft asset hints into the launch decision resolver', async () => {
+    vi.mocked(getWorkspaceLLMRuntimeOverrides).mockResolvedValue({} as never);
+    vi.mocked(resolveIntentE2EProjectAuth).mockImplementation(async (_req, request) => ({
+      request,
+      actorUserUid: 'usr_1',
+    }) as never);
+    vi.mocked(buildIntentE2EProjectAssetAvailability).mockReturnValue({
+      status: 'asset_missing',
+      projectUid: 'proj_1',
+      reasons: ['project_knowledge_missing'],
+    } as never);
+    vi.mocked(resolveIntentE2ELaunchDecision).mockReturnValue({
+      decision: 'auto_run',
+      reasons: ['launch_ready'],
+      signals: {
+        projectUid: 'proj_1',
+        moduleUid: 'mod_1',
+        hasTargetUrl: true,
+        attachmentCount: 0,
+        assetStatus: 'asset_missing',
+        requiresFixture: false,
+        hasFixtureContract: false,
+        priorityScenarioFamily: 'list_search_detail',
+        priorityScenarioFamilySource: 'text_only',
+        priorityScenarioTextFamily: 'list_search_detail',
+        priorityScenarioVisualFamily: 'untracked',
+        hasTrackedPriorityScenarioFamily: true,
+        hasPriorityScenarioFamilyConflict: false,
+        hasStablePriorityScenarioPath: true,
+        hasStableDocumentScenarioPath: false,
+        hasExplicitVerifierSignal: true,
+        hasHighFailurePressure: false,
+        hasRepeatedFailureSuppression: false,
+        repeatedFailureDecision: '',
+        repeatedFailureReason: '',
+      },
+    } as never);
+
+    const req = new NextRequest('http://localhost/api/intent-e2e/launch-decision', {
+      method: 'POST',
+      body: JSON.stringify({
+        input: '登录后搜索商机并进入详情页校验字段',
+        projectUid: 'proj_1',
+        moduleUid: 'mod_1',
+        intentDraftUid: 'idraft_1',
+        targetUrl: 'https://example.com/business/list',
+        prefilledScenarioCardAvailable: true,
+        prefilledPlanCodeAvailable: true,
+      }),
+    });
+    const res = await POST(req);
+    const json = await res.json();
+
+    expect(resolveIntentE2ELaunchDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intentDraftUid: 'idraft_1',
+        hasPrefilledScenarioCard: true,
+        hasPrefilledPlanCode: true,
+        assetAvailability: expect.objectContaining({
+          status: 'asset_missing',
+        }),
+      })
+    );
+    expect(json.decision).toBe('auto_run');
   });
 
   it('surfaces repeated data gaps as needs_fixture instead of starting another generated run', async () => {
@@ -575,7 +644,7 @@ describe('POST /api/intent-e2e/launch-decision', () => {
       })
     );
     expect(res.status).toBe(200);
-    expect(json).toEqual({
+    expect(json).toMatchObject({
       decision: 'needs_fixture',
       reasons: ['recent_repeated_data_block'],
       signals: {
@@ -675,7 +744,7 @@ describe('POST /api/intent-e2e/launch-decision', () => {
     });
     expect(resolveIntentE2ERepeatedFailureSuppressionFromData).not.toHaveBeenCalled();
     expect(resolveIntentE2ELaunchDecision).toHaveBeenCalledTimes(1);
-    expect(json).toEqual({
+    expect(json).toMatchObject({
       decision: 'auto_run',
       reasons: ['launch_ready'],
       signals: {

@@ -26095,6 +26095,8 @@
   - `bash scripts/check-boundaries.sh`
   - `node scripts/check-doc-links.mjs`
   - `node scripts/check-roadmap-progress.mjs`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
 - 当前阶段状态：
   - 当前仍是 `Phase 5 第二刀`，不是 freeze，也不是第三刀。
   - 本轮 touched shared path = 是：
@@ -38324,3 +38326,32 @@
 - 下一步：
   - 只有出现 `realClickFixtureBootstrapCount > 0`、稳定重复 `unknown_business_or_product > 0`、新的未治理 document family、已治理 family 退化，或环境 / 认证 / 数据依赖退化时，再开启下一轮开发。
   - 在此之前，不做 OCR-first，不重复治理已完成 document family，不混用 benchmark / replay / draft_import 分母。
+
+## 2026-05-12 第五百六十八次更新（Draft Launch：bootstrap gate executable draft asset bypass）
+
+- 本轮目标：
+  - 修复意图草稿测试流程被项目 cold-start 资产误拦截的问题。
+  - 保留全新意图缺项目资产时的 `needs_bootstrap` 保护。
+- 已完成：
+  - 新增 task brief：
+    - [intent-e2e-draft-launch-bootstrap-bypass-task-brief-2026-05-12.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-draft-launch-bootstrap-bypass-task-brief-2026-05-12.md)
+  - `buildIntentE2ELaunchDecisionRequestBody` 新增轻量草稿资产可用性提示：
+    - `prefilledScenarioCardAvailable`
+    - `prefilledPlanCodeAvailable`
+  - `resolveIntentE2ELaunchDecision` 现在会识别 `intentDraftUid + 草稿资产可用性`，不再把这类草稿测试流程按项目 cold-start 缺口硬拦截。
+  - `IntentE2EWorkbench` 手动启动草稿时会带回草稿 ScenarioCard / plan code，避免从草稿恢复后退化成普通新意图请求。
+  - 草稿 URL 中历史遗留的 `launchDecision=needs_bootstrap` 不再作为该草稿的查询参数硬阻断。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-request.spec.ts tests/unit/intent-e2e-launch-decision.spec.ts tests/unit/intent-e2e-draft-launch.spec.ts tests/unit/api-intent-e2e-launch-decision-route.spec.ts`
+  - `npm run build`
+  - `npm run build:web`
+  - `bash scripts/check-boundaries.sh`
+- 当前阶段状态：
+  - 意图草稿测试流程的启动 gate 已区分“全新意图项目资产缺失”和“草稿自带可执行资产”。
+  - release-readiness、benchmark harness、document family 与 OCR 主链路未改。
+- 风险 / 未完成：
+  - 该修复不代表缺项目知识的部署环境已经适合高成功率生成全新意图。
+  - 若草稿本身没有 ScenarioCard / plan code，仍会按普通请求进入原有 gate。
+- 下一步：
+  - 继续观察真实意图草稿启动结果。
+  - 若后续出现全新意图重复 `needs_bootstrap`，应补项目 onboarding / project knowledge，而不是继续放宽新意图 gate。

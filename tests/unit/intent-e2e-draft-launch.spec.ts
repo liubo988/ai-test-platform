@@ -79,6 +79,7 @@ describe('intent-e2e draft launch helpers', () => {
     expect(shouldTreatQueryLaunchDecisionAsHardBlock('draft_only')).toBe(false);
     expect(shouldTreatQueryLaunchDecisionAsHardBlock('auto_run')).toBe(false);
     expect(shouldTreatQueryLaunchDecisionAsHardBlock('needs_bootstrap')).toBe(true);
+    expect(shouldTreatQueryLaunchDecisionAsHardBlock('needs_bootstrap', { intentDraftUid: 'idraft_1' })).toBe(false);
     expect(shouldTreatQueryLaunchDecisionAsHardBlock('needs_fixture')).toBe(true);
   });
 

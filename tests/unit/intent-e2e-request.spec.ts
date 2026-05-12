@@ -147,6 +147,7 @@ describe('intent-e2e-request', () => {
       featureDescription: '从草稿复用 ScenarioCard',
     });
     expect(request.intentDraftUid).toBe('idraft_1');
+    expect(request.prefilledScenarioCardAvailable).toBe(true);
     expect(request.prefilledScenarioLlmMeta).toEqual({
       provider: 'openai',
       model: 'gpt-5.4',
@@ -158,6 +159,7 @@ describe('intent-e2e-request', () => {
       attachmentOcrTextSnippetCount: 1,
     });
     expect(request.prefilledPlanCode).toContain("test('draft-prefill'");
+    expect(request.prefilledPlanCodeAvailable).toBe(true);
   });
 
   it('builds a slim launch-decision request body without shipping full draft assets', () => {
@@ -211,6 +213,7 @@ describe('intent-e2e-request', () => {
       projectUid: 'proj_default',
       moduleUid: 'mod_business',
       intentDraftUid: 'idraft_1',
+      prefilledScenarioCardAvailable: true,
       prefilledScenarioLlmMeta: {
         visionEnabled: true,
         attachmentCount: 1,
@@ -219,6 +222,7 @@ describe('intent-e2e-request', () => {
         attachmentOcrVisualAnchorCount: 2,
         attachmentOcrTextSnippetCount: 1,
       },
+      prefilledPlanCodeAvailable: true,
       attachments: [
         {
           name: 'screenshot.png',

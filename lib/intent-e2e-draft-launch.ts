@@ -51,8 +51,14 @@ export function buildIntentDraftTestFlowHref(options: {
   });
 }
 
-export function shouldTreatQueryLaunchDecisionAsHardBlock(decision: string | null | undefined): boolean {
+export function shouldTreatQueryLaunchDecisionAsHardBlock(
+  decision: string | null | undefined,
+  options: { intentDraftUid?: string | null } = {}
+): boolean {
   const normalized = (decision || '').trim();
+  if (normalized === 'needs_bootstrap' && options.intentDraftUid?.trim()) {
+    return false;
+  }
   return normalized !== '' && normalized !== 'auto_run' && normalized !== 'draft_only';
 }
 

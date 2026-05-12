@@ -92,6 +92,10 @@ function normalizePrefilledScenarioCard(value: unknown, fallbackTargetUrl = ''):
   return normalizeScenarioCard(value, fallbackTargetUrl);
 }
 
+function normalizeBooleanFlag(value: unknown): boolean | undefined {
+  return value === true ? true : undefined;
+}
+
 function normalizePrefilledScenarioLlmMeta(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
@@ -123,6 +127,9 @@ function normalizePrefilledScenarioLlmMeta(value: unknown): Record<string, unkno
 export function normalizeIntentE2ERequestBody(body: unknown): IntentE2ERunRequest {
   const record = body && typeof body === 'object' && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
   const targetUrl = typeof record.targetUrl === 'string' ? record.targetUrl.trim() : '';
+  const prefilledScenarioCard = normalizePrefilledScenarioCard(record.prefilledScenarioCard, targetUrl);
+  const prefilledPlanCode =
+    typeof record.prefilledPlanCode === 'string' && record.prefilledPlanCode.trim() ? record.prefilledPlanCode : undefined;
 
   return {
     input: typeof record.input === 'string' ? record.input.trim() : '',
@@ -137,9 +144,11 @@ export function normalizeIntentE2ERequestBody(body: unknown): IntentE2ERunReques
     llmConfig: normalizeLlmConfig(record.llmConfig),
     runControl: normalizeIntentE2ERunControl(record.runControl),
     runtimeGovernance: normalizeIntentE2ERuntimeGovernance(record.runtimeGovernance),
-    prefilledScenarioCard: normalizePrefilledScenarioCard(record.prefilledScenarioCard, targetUrl),
+    prefilledScenarioCard,
+    prefilledScenarioCardAvailable: normalizeBooleanFlag(record.prefilledScenarioCardAvailable) || (prefilledScenarioCard ? true : undefined),
     prefilledScenarioLlmMeta: normalizePrefilledScenarioLlmMeta(record.prefilledScenarioLlmMeta),
-    prefilledPlanCode: typeof record.prefilledPlanCode === 'string' && record.prefilledPlanCode.trim() ? record.prefilledPlanCode : undefined,
+    prefilledPlanCode,
+    prefilledPlanCodeAvailable: normalizeBooleanFlag(record.prefilledPlanCodeAvailable) || (prefilledPlanCode ? true : undefined),
   };
 }
 
@@ -156,7 +165,9 @@ export function buildIntentE2ELaunchDecisionRequestBody(body: unknown): Record<s
     auth: request.auth || undefined,
     llmConfig: request.llmConfig,
     runtimeGovernance: request.runtimeGovernance,
+    prefilledScenarioCardAvailable: request.prefilledScenarioCardAvailable || undefined,
     prefilledScenarioLlmMeta: request.prefilledScenarioLlmMeta,
+    prefilledPlanCodeAvailable: request.prefilledPlanCodeAvailable || undefined,
     attachments: attachments.map((item) => ({
       name: item.name,
       purpose: item.purpose,

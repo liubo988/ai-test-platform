@@ -203,8 +203,10 @@ export interface IntentE2ERunRequest {
   runControl?: IntentE2ERunControl;
   runtimeGovernance?: IntentE2ERuntimeGovernance;
   prefilledScenarioCard?: ScenarioCard;
+  prefilledScenarioCardAvailable?: boolean;
   prefilledScenarioLlmMeta?: unknown;
   prefilledPlanCode?: string;
+  prefilledPlanCodeAvailable?: boolean;
 }
 
 export interface IntentE2EAttempt {

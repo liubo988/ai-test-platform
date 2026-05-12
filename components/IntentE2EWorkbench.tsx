@@ -7396,10 +7396,14 @@ export default function IntentE2EWorkbench({
       return;
     }
 
-    if (!shouldTreatQueryLaunchDecisionAsHardBlock(decision)) {
+    if (!shouldTreatQueryLaunchDecisionAsHardBlock(decision, { intentDraftUid: searchIntentDraftUid })) {
       if (decision === 'draft_only') {
         setRestoreNotice((current) =>
           current || '系统建议先保留草稿：最近相似任务失败压力偏高。当前已恢复草稿上下文，如仍要验证，可继续手动开始自动测试。'
+        );
+      } else if (decision === 'needs_bootstrap' && searchIntentDraftUid.trim()) {
+        setRestoreNotice((current) =>
+          current || '已恢复意图草稿上下文；草稿自带可执行资产时，不再把历史 cold-start 拦截参数当作硬阻断。'
         );
       }
       return;
@@ -7418,7 +7422,7 @@ export default function IntentE2EWorkbench({
       },
       { source: 'query' }
     );
-  }, [activeRunId, applyBlockedLaunchDecision, launchDecisionResult, searchLaunchDecision, searchLaunchReasons]);
+  }, [activeRunId, applyBlockedLaunchDecision, launchDecisionResult, searchIntentDraftUid, searchLaunchDecision, searchLaunchReasons]);
 
   useEffect(() => {
     let active = true;
@@ -7942,7 +7946,7 @@ export default function IntentE2EWorkbench({
       setRestoreChecked(true);
       return;
     }
-    if (shouldTreatQueryLaunchDecisionAsHardBlock(searchLaunchDecision)) {
+    if (shouldTreatQueryLaunchDecisionAsHardBlock(searchLaunchDecision, { intentDraftUid: searchIntentDraftUid })) {
       window.sessionStorage.removeItem(RUN_ID_STORAGE_KEY);
       setRestoreChecked(true);
       return;
@@ -8002,6 +8006,7 @@ export default function IntentE2EWorkbench({
     hydrateLaunchFormFromRun,
     restoreLaunchFormFromDraft,
     searchDraftLaunchMode,
+    searchIntentDraftUid,
     searchLaunchDecision,
     searchRequestedRunId,
     startRunStream,
@@ -8951,7 +8956,9 @@ export default function IntentE2EWorkbench({
 
   const buildCurrentLaunchPayload = useCallback((): Record<string, unknown> => {
     const intentDraftUid = launchedFromIntentDraft ? searchIntentDraftUid.trim() : '';
-    const draftScenarioLlmMeta = launchedFromIntentDraft ? draftLaunchDetailRef.current?.scenarioLlmMeta || {} : {};
+    const draftDetail = launchedFromIntentDraft ? draftLaunchDetailRef.current : null;
+    const draftScenarioLlmMeta = draftDetail?.scenarioLlmMeta || {};
+    const draftPlanCode = draftDetail?.planCode.trim() || '';
 
     return {
       input: input.trim(),
@@ -8959,7 +8966,9 @@ export default function IntentE2EWorkbench({
       projectUid: defaultWorkspaceProjectUid || undefined,
       moduleUid: workspaceModuleUid || undefined,
       intentDraftUid: intentDraftUid || undefined,
+      prefilledScenarioCard: draftDetail?.scenarioCard || undefined,
       prefilledScenarioLlmMeta: Object.keys(draftScenarioLlmMeta).length > 0 ? draftScenarioLlmMeta : undefined,
+      prefilledPlanCode: draftPlanCode || undefined,
       attachments: attachments.map((item) => ({
         name: item.name,
         dataUrl: item.dataUrl,

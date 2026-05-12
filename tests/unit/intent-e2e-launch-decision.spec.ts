@@ -90,6 +90,53 @@ describe('resolveIntentE2ELaunchDecision', () => {
     expect(decision.reasons).toEqual(['project_bootstrap_required', 'onboarding_manifest_missing', 'project_knowledge_missing']);
   });
 
+  it('does not bootstrap-block an executable intent draft even when project assets are missing', () => {
+    const decision = resolveIntentE2ELaunchDecision({
+      input: '登录后搜索商机并进入详情页校验字段',
+      targetUrl: 'https://example.com/business/list',
+      projectUid: 'proj_cold',
+      intentDraftUid: 'idraft_1',
+      assetAvailability: {
+        status: 'asset_missing',
+        projectUid: 'proj_cold',
+        reasons: ['onboarding_manifest_missing', 'project_knowledge_missing'],
+      },
+      hasPrefilledScenarioCard: true,
+      priorityScenarioFamilyRoute: stableListSearchDetailRoute,
+    });
+
+    expect(decision.decision).toBe('auto_run');
+    expect(decision.reasons).toEqual(['launch_ready']);
+    expect(decision.signals.assetStatus).toBe('asset_missing');
+  });
+
+  it('lets executable intent drafts run instead of downgrading untracked paths to draft_only', () => {
+    const decision = resolveIntentE2ELaunchDecision({
+      input: '从订单列表选择待申请入账记录，批量入账后到入账管理用订单号搜索并校验记录存在',
+      targetUrl: 'https://example.com/#/order/list',
+      projectUid: 'proj_default',
+      intentDraftUid: 'idraft_order_batch',
+      assetAvailability: {
+        status: 'asset_missing',
+        projectUid: 'proj_default',
+        reasons: ['project_knowledge_missing'],
+      },
+      hasPrefilledScenarioCard: true,
+      hasPrefilledPlanCode: true,
+      priorityScenarioFamilyRoute: {
+        family: 'untracked',
+        textFamily: 'untracked',
+        visualFamily: 'untracked',
+        source: 'text_only',
+        clarifySignals: [],
+      },
+    });
+
+    expect(decision.decision).toBe('auto_run');
+    expect(decision.reasons).toEqual(['launch_ready']);
+    expect(decision.signals.hasStablePriorityScenarioPath).toBe(false);
+  });
+
   it('returns needs_fixture when request looks mutating and enforced runtime governance lacks a fixture contract', () => {
     const decision = resolveIntentE2ELaunchDecision({
       input: '新建商机并提交后回列表校验',
