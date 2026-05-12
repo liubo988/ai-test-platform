@@ -1861,6 +1861,7 @@ async function runIntentE2ERuntimeGovernanceCheck(
     platformAssets: ReturnType<typeof buildBrowserE2EPlatformTestAssetBundle>;
     auth?: AuthConfig;
     runtimeGovernance?: IntentE2ERuntimeGovernance;
+    intentDraftUid?: string;
     scenarioCard: ScenarioCard;
     llmMeta: IntentE2ERunResult['llmMeta'];
     assetReadiness?: IntentE2EAssetReadiness | null;
@@ -1869,6 +1870,10 @@ async function runIntentE2ERuntimeGovernanceCheck(
   listener?: IntentE2EStreamListener,
   signal?: AbortSignal
 ): Promise<IntentE2ERuntimeGovernanceCheckResult> {
+  if (input.intentDraftUid?.trim()) {
+    return { blocked: false };
+  }
+
   if (!shouldEnforceIntentE2ERuntimeGovernance(input.runtimeGovernance)) {
     return { blocked: false };
   }
@@ -3839,6 +3844,7 @@ export async function runIntentDrivenE2EStream(
       platformAssets: basePlatformAssets,
       auth: input.auth,
       runtimeGovernance: input.runtimeGovernance,
+      intentDraftUid: input.intentDraftUid,
       scenarioCard: scenarioCardOutput.card,
       llmMeta: scenarioCardOutput.llmMeta,
       assetReadiness: baseAssetReadiness,

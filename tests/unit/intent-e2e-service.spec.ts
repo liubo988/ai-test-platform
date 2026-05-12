@@ -5503,6 +5503,42 @@ describe('intent-e2e-service stream', () => {
     );
   });
 
+  it('does not block explicit intent draft runs on runtime governance credential issues', async () => {
+    const events: IntentE2EStreamEvent[] = [];
+
+    const result = await runIntentDrivenE2EStream(
+      {
+        input: '访问结算页并提交，最终看到成功页',
+        intentDraftUid: 'idraft_checkout_explicit_run',
+        auth: {
+          loginUrl: 'https://login.example.com',
+          username: 'owner@example.com',
+          password: 'secret',
+          loginDescription: '统一密码登录',
+        },
+        runtimeGovernance: {
+          environmentProfile: 'test',
+          credential: {
+            source: 'request',
+            sessionMode: 'shared',
+          },
+        },
+      },
+      (event) => {
+        events.push(event);
+      }
+    );
+
+    expect(result.finalResult.success).toBe(true);
+    expect(result.attempts).toHaveLength(1);
+    expect(vi.mocked(precheckPageAccess)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(analyzePage)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(executeTest)).toHaveBeenCalledTimes(1);
+    expect(events.some((event) => event.type === 'stage' && event.stage === 'prechecking' && event.message.includes('治理'))).toBe(
+      false
+    );
+  });
+
   it('executes fixture setup and cleanup around a successful mutating run', async () => {
     const events: IntentE2EStreamEvent[] = [];
 

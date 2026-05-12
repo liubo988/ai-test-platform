@@ -38358,3 +38358,30 @@
 - 下一步：
   - 继续观察真实意图草稿启动结果。
   - 若后续出现全新意图重复 `needs_bootstrap`，应补项目 onboarding / project knowledge，而不是继续放宽新意图 gate。
+
+## 2026-05-12 第五百六十九次更新（Draft Run：runtime governance gate bypass）
+
+- 本轮目标：
+  - 修复显式意图草稿已经创建 run 后，仍在运行服务里被 `runtimeGovernance` 凭证 / fixture 契约提前终止的问题。
+  - 保留普通新意图的运行治理硬门禁。
+- 已完成：
+  - 根据真实失败 run `intent-run-e88f82f2-1527-423a-a577-294f3531e819` 复盘，确认它不是 Playwright 执行失败，而是在 `运行治理校验` 阶段以 `attempts=0` 结束。
+  - [intent-e2e-service.ts](/Users/xiaolongbao/Workspace/ai-test/lib/ai/intent-e2e-service.ts) 的运行治理校验现在识别 `intentDraftUid`，显式草稿运行会继续进入 precheck / analyze / execute。
+  - [intent-e2e-service.spec.ts](/Users/xiaolongbao/Workspace/ai-test/tests/unit/intent-e2e-service.spec.ts) 新增回归用例，覆盖“普通新意图仍阻断、显式草稿不阻断”的差异。
+  - [intent-e2e-draft-launch-bootstrap-bypass-task-brief-2026-05-12.md](/Users/xiaolongbao/Workspace/ai-test/docs/intent-e2e-draft-launch-bootstrap-bypass-task-brief-2026-05-12.md) 已同步本轮运行治理放行范围。
+- 验证：
+  - `npx vitest run tests/unit/intent-e2e-service.spec.ts tests/unit/intent-e2e-request.spec.ts tests/unit/intent-e2e-launch-decision.spec.ts tests/unit/intent-e2e-draft-launch.spec.ts tests/unit/api-intent-e2e-launch-decision-route.spec.ts`
+  - `npm run build`
+  - `npm run build:web`
+  - `bash scripts/check-boundaries.sh`
+  - `node scripts/check-doc-links.mjs`
+  - `node scripts/check-roadmap-progress.mjs`
+  - `git diff --check`
+- 当前阶段状态：
+  - 意图草稿显式运行已同时绕过 launch-decision gate 与运行前 runtime governance gate。
+  - release-readiness、benchmark harness、document family 与 OCR 主链路未改。
+- 风险 / 未完成：
+  - 该放行只保证草稿任务能进入真实执行；若脚本本身 locator、权限或业务数据失败，仍会按正常执行失败处理。
+  - 普通新意图仍依赖项目 onboarding / project knowledge / runtime governance 资产来保证高成功率。
+- 下一步：
+  - 继续观察草稿真实执行结果；如后续出现 `attempts>0` 后的脚本失败，再按执行日志定位具体 locator / 数据 / 权限问题。

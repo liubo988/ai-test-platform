@@ -10,11 +10,13 @@
 ## 本轮目标
 - 保留全新意图的项目 cold-start 保护。
 - 让显式从意图草稿发起的测试流程不再被 `needs_bootstrap / needs_fixture / needs_clarify / draft_only` 等新意图 gate 阻断。
+- 让带 `intentDraftUid` 的草稿运行不再被运行前 `runtimeGovernance` 凭证 / fixture 契约硬阻断。
 
 ## 验收标准
 - [x] launch decision 能识别 `intentDraftUid` 并直接放行显式草稿启动。
 - [x] 草稿 URL 上历史 `launchDecision=*` 查询参数不会继续硬阻断草稿恢复。
 - [x] 草稿自动启动和手动启动都不再先调用 launch-decision gate。
+- [x] 草稿进入运行服务后不再被 `credential.secretRef / credential.accountRef / fixture contract` 等运行治理校验提前终止。
 - [x] 受影响单测、构建和前端构建通过。
 
 ## 范围
@@ -23,6 +25,7 @@
   - `lib/intent-e2e-launch-decision.ts`
   - `lib/intent-e2e-draft-launch.ts`
   - `app/api/intent-e2e/launch-decision/route.ts`
+  - `lib/ai/intent-e2e-service.ts`
   - `components/IntentE2EWorkbench.tsx`
   - 相关 unit tests
 - 不会改：
@@ -38,6 +41,7 @@
 
 ## 验证
 - `npx vitest run tests/unit/intent-e2e-request.spec.ts tests/unit/intent-e2e-launch-decision.spec.ts tests/unit/intent-e2e-draft-launch.spec.ts tests/unit/api-intent-e2e-launch-decision-route.spec.ts`
+- `npx vitest run tests/unit/intent-e2e-service.spec.ts`
 - `npm run build`
 - `npm run build:web`
 - `bash scripts/check-boundaries.sh`
@@ -45,7 +49,7 @@
 - `node scripts/check-roadmap-progress.mjs`
 
 ## 风险 / 未覆盖
-- 本轮只放行带 `intentDraftUid` 的意图草稿测试流程；不改变全新意图缺项目资产时的 `needs_bootstrap` 行为。
+- 本轮只放行带 `intentDraftUid` 的意图草稿测试流程；不改变全新意图缺项目资产时的 `needs_bootstrap` 或运行治理阻断行为。
 - 若部署环境缺少项目知识文件，后续仍应补齐资产以提升新意图成功率。
 
 ## 完成后动作
