@@ -2160,6 +2160,75 @@ describe('test-plan-service', () => {
     );
   });
 
+  it('does not inherit project auth or storage state for task-only browser plans', async () => {
+    vi.mocked(findRunningExecution).mockResolvedValue(null as never);
+    vi.mocked(getPlanByUid).mockResolvedValue({
+      planUid: 'plan_task_only_1',
+      configUid: 'cfg_task_only_1',
+      projectUid: 'proj_task_only_1',
+      moduleUid: 'mod_task_only_1',
+      planTitle: '任务自带登录数据 - 自动测试计划',
+      planVersion: 1,
+      planSummary: '任务描述内手动登录',
+      planCode: "test('manual login', async () => {});",
+      generationPrompt: '',
+    } as never);
+    vi.mocked(getTestConfigByUid).mockResolvedValue({
+      configUid: 'cfg_task_only_1',
+      projectUid: 'proj_task_only_1',
+      moduleUid: 'mod_task_only_1',
+      name: '任务自带登录数据',
+      moduleName: '商机管理',
+      targetUrl: 'https://uat.example.com/#/user/login',
+      featureDescription: '输入手机号：13764376202，验证码：8108820。',
+      taskMode: 'scenario',
+      flowDefinition: null,
+      authSource: 'none',
+      legacyAuthRequired: false,
+      loginDescription: '',
+      loginPasswordPlain: '',
+    } as never);
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_task_only_1',
+      name: '项目',
+      authRequired: true,
+      loginUrl: 'https://uat.example.com/#/',
+      loginUsername: '18717740267',
+      loginDescription: '项目级登录',
+      loginPasswordPlain: '',
+    } as never);
+    vi.mocked(createExecution).mockResolvedValue('exec_task_only_1' as never);
+    vi.mocked(resolveIntentE2EPrecheckStorageStateCandidates).mockReturnValue([
+      {
+        source: 'local_generated',
+        path: '/tmp/storage-state.json',
+        storageState: { cookies: [], origins: [{ origin: 'https://uat.example.com', localStorage: [] }] },
+      },
+    ]);
+    vi.mocked(executeTest).mockResolvedValue({
+      success: true,
+      duration: 100,
+      error: null,
+      steps: [{ title: '手动登录', status: 'passed', duration: 100, at: '2026-05-13T00:00:00.000Z' }],
+    } as never);
+
+    const result = await executePlan('plan_task_only_1', { actorLabel: 'tester' });
+
+    expect(result.executionUid).toBe('exec_task_only_1');
+    await flushAsyncWork();
+
+    expect(resolveIntentE2EPrecheckStorageStateCandidates).not.toHaveBeenCalled();
+    expect(executeTest).toHaveBeenCalledWith(
+      "test('manual login', async () => {});",
+      'uid_1',
+      undefined,
+      expect.any(Object),
+      expect.not.objectContaining({
+        storageState: expect.anything(),
+      })
+    );
+  });
+
   it('automatically launches AI repair and reruns when project execution self-heal is enabled', async () => {
     vi.mocked(findRunningExecution).mockResolvedValue(null as never);
     vi.mocked(getPlanByUid).mockImplementation(async (planUid: string) => {

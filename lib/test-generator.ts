@@ -262,6 +262,90 @@ function buildIntentHaystack(description: string, context?: GenerateTestContext)
     .toLowerCase();
 }
 
+function buildTaskSpecificValueText(description: string, context?: GenerateTestContext): string {
+  return [
+    description,
+    context?.scenarioSummary || '',
+    context?.expectedOutcome || '',
+    context?.cleanupNotes || '',
+    ...(context?.successCriteria || []),
+    ...(context?.scenarioSteps || []).flatMap((step) => [
+      step.title || '',
+      step.instruction || '',
+      step.expectedResult || '',
+      step.extractVariable || '',
+    ]),
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function isBusinessRelevantExplicitField(label: string): boolean {
+  return /手机号|手机号码|验证码|商机来源|来源|业务类型|意向产品|产品|权重|跟进内容|跟进时间|企业名称|联系人|性别/i.test(
+    label
+  );
+}
+
+function collectTaskSpecificFieldValues(description: string, context?: GenerateTestContext): Array<{ label: string; value: string }> {
+  const text = buildTaskSpecificValueText(description, context);
+  const values: Array<{ label: string; value: string }> = [];
+  const seen = new Set<string>();
+  const add = (label: string, value: string) => {
+    const normalizedLabel = label.replace(/[“”"'【】\[\]()（）]/g, '').replace(/\s+/g, '').trim();
+    const normalizedValue = value.replace(/[“”"'【】\[\]]/g, '').replace(/\s+/g, ' ').trim();
+    if (!normalizedLabel || !normalizedValue || !isBusinessRelevantExplicitField(normalizedLabel)) return;
+    if (/^(按钮|页面|字段|选项|输入框|下拉|tab)$/i.test(normalizedValue)) return;
+    const key = `${normalizedLabel}:${normalizedValue}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    values.push({ label: normalizedLabel, value: normalizedValue });
+  };
+
+  for (const match of text.matchAll(/手机号[：:\s]*([1-9]\d{10})/g)) {
+    add('手机号', match[1] || '');
+  }
+
+  for (const match of text.matchAll(/验证码[：:\s]*([A-Za-z0-9_-]{4,12})/g)) {
+    add('验证码', match[1] || '');
+  }
+
+  for (const match of text.matchAll(/输入[“"]([^”"]{1,30})[”"]\s*[：:]\s*([^，。；\n]+)/g)) {
+    add(match[1] || '', match[2] || '');
+  }
+
+  for (const match of text.matchAll(/(?:“([^”]{1,40})”|"([^"]{1,40})"|([^\s，。；、“”"]{1,40}))\s*(?:选择|选中|切换到|填写|输入)\s*(?:为|成|：|:)?\s*(?:“([^”]+)”|"([^"]+)"|([^，。；\n]+))/g)) {
+    add(match[1] || match[2] || match[3] || '', match[4] || match[5] || match[6] || '');
+  }
+
+  return values;
+}
+
+function hasTaskSpecificFieldValues(description: string, context?: GenerateTestContext): boolean {
+  return collectTaskSpecificFieldValues(description, context).length > 0;
+}
+
+function shouldPreferTaskSpecificScenarioValues(
+  snapshot: PageSnapshot,
+  description: string,
+  context?: GenerateTestContext
+): boolean {
+  return context?.taskMode === 'scenario' && looksLikeBusinessCreateTask(snapshot, description, context) && hasTaskSpecificFieldValues(description, context);
+}
+
+function buildTaskSpecificFieldValueSection(description: string, context?: GenerateTestContext): string {
+  const values = collectTaskSpecificFieldValues(description, context);
+  if (!values.length) return '';
+
+  return `\n## 当前任务显式字段值（最高优先级）
+本任务已经给出具体字段值，生成代码必须以这些值为准，不能被历史样本、fixture、项目知识示例或已跑通脚本覆盖。
+${values.map((item) => `- ${item.label}: ${item.value}`).join('\n')}
+
+要求：
+1. 上面这些手机号、验证码、枚举值、产品名、权重、跟进内容等必须原样使用。
+2. 禁止把历史模板里的固定值带入本任务，例如 18717740267、抖音、疑难工商注销、中铁上海工程局集团有限公司、自动化商机 等，除非它们也明确出现在当前任务描述里。
+3. 如果参考示例代码与当前任务字段值冲突，必须丢弃示例字段值，只保留 locator/helper 写法。`;
+}
+
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
   const seen = new Set<string>();
   const items: string[] = [];
@@ -1599,6 +1683,10 @@ function listExistingExampleCandidates(
   context?: GenerateTestContext,
   planning?: ResolvedPromptPlanningContext
 ): ExistingExampleCandidate[] {
+  if (shouldPreferTaskSpecificScenarioValues(snapshot, description, context)) {
+    return [];
+  }
+
   const candidates: ExistingExampleCandidate[] = [];
   const matchedRecipeSlugs = uniqueStrings((planning?.recipes || []).map((item) => item.recipe.slug));
 
@@ -2144,6 +2232,10 @@ function resolveDeterministicRecipeTemplate(
   context?: GenerateTestContext,
   planning?: ResolvedPromptPlanningContext
 ): string {
+  if (shouldPreferTaskSpecificScenarioValues(snapshot, description, context)) {
+    return '';
+  }
+
   const matchedRecipeSlugs = uniqueStrings((planning?.recipes || []).map((item) => item.recipe.slug));
 
   for (const slug of matchedRecipeSlugs) {
@@ -2164,6 +2256,10 @@ export function resolveDeterministicTemplate(
   context?: GenerateTestContext,
   planning?: ResolvedPromptPlanningContext
 ): string {
+  if (shouldPreferTaskSpecificScenarioValues(snapshot, description, context)) {
+    return '';
+  }
+
   const recipeTemplate = resolveDeterministicRecipeTemplate(snapshot, description, existingExample, context, planning);
   if (recipeTemplate) return recipeTemplate;
 
@@ -2347,6 +2443,11 @@ export function buildPrompt(
     parts.push(verificationIntentSection);
   }
 
+  const taskSpecificFieldValueSection = buildTaskSpecificFieldValueSection(description, context);
+  if (taskSpecificFieldValueSection) {
+    parts.push(taskSpecificFieldValueSection);
+  }
+
   parts.push(buildSnapshotSection(context?.taskMode === 'scenario' ? '业务流入口页面信息' : '目标页面信息', snapshot));
   if (context?.repairObservationSnapshot) {
     parts.push(buildSnapshotSection('Repair 观察快照（最新受控观察）', context.repairObservationSnapshot));
@@ -2401,16 +2502,21 @@ export function buildPrompt(
 4. 如果当前字段实际是 row 内 radio / segmented / tab 风格枚举（例如“性别=男/女”），也继续直接用 \`__e2e.selectAntdOption(page, scopedRow, { label: '男' })\`；helper 会先尝试当前 row 内的可见枚举，再处理真实 dropdown，不要手写 \`getByText('男').click()\` 或强行先开 dropdown。
 5. 如果是长列表 / 树形枚举，优先通过 \`searchText\` 缩小范围，再由 helper 负责 scrollIntoViewIfNeeded() 和点击。
 6. 对“企业名称”这类远程搜索 Select，点击 wrapper 后不一定立刻出现候选；必须传 \`searchText\`，helper 会先聚焦字段并输入关键词，再等待候选返回。若任务只要求“输入关键词并选择任意一个模糊匹配项”，不要编造固定 \`label\`，直接加 \`pickFirstSearchMatch: true\` 让 helper 选择首个可见匹配项。
-7. 对 Ant Design 表格目标行，优先直接写：
+7. 对 Ant Design DatePicker / TimePicker / 日期时间字段，不要预设“日期框一定只读”或“一定可直接 fill”，必须基于真实 DOM/行为判断：可编辑 input 可以直接填；如果外层输入带 \`readonly\`、placeholder 为“选择日期 / 选择时间”，或直接 fill 报 \`not editable\`，应通过日期面板/事件完成输入。为了避免误判，优先直接复用 helper：
+   - const nextTimeRow = await __e2e.findAntdFormItemByLabel(modal, '下次跟进时间');
+   - await __e2e.fillAntdDateTime(page, nextTimeRow, { value: futureDateTimeText(7) });
+   - helper 会先判断当前 input 是否可编辑；可编辑则正常填，不可编辑才打开日期面板并尝试面板输入框 + 确定按钮，必要时才用原生 input/change 事件兜底。
+   - 如果同一弹窗里同时有“跟进时间”和“下次跟进时间”，必须按精确 label 找到“下次跟进时间”，不要用宽泛 \`.filter({ hasText: /下次跟进时间/ }).first()\` 猜。
+8. 对 Ant Design 表格目标行，优先直接写：
    - const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [targetPhone, targetName, '新入库'] });
    - helper 会优先选主表体可见行，并按 \`data-row-key\` 去重固定列 / 粘性列克隆；不要继续写 \`page.locator('tbody tr').filter({ hasText: ... }).first()\`，也不要再对它做 \`toHaveCount(1)\`。
-8. 对 Ant Design 表格目标行的勾选场景，优先直接写：
+9. 对 Ant Design 表格目标行的勾选场景，优先直接写：
    - await __e2e.clickAntdRowCheckbox(page, targetRow);
    - helper 会优先点击当前行可见的 checkbox wrapper / label，并在存在固定列克隆时自动回退同一 \`data-row-key\` 的可见克隆行；不要继续手写 \`.ant-checkbox\` / \`.ant-checkbox-input\` 细节。
-9. 对列表行末尾只有三点菜单 / \`.ant-dropdown-trigger\` 的场景，优先直接写：
+10. 对列表行末尾只有三点菜单 / \`.ant-dropdown-trigger\` 的场景，优先直接写：
    - await __e2e.clickAntdRowAction(page, targetRow, '生成订单');
    - await __e2e.clickAntdRowAction(page, targetRow, '查看');
-10. 只要场景是 Ant Design 下拉、Ant Design 表格目标行定位、Ant Design 行勾选或 Ant Design 行操作菜单，默认先考虑 \`__e2e.openAntdDropdown\` / \`__e2e.selectAntdOption\` / \`__e2e.findAntdTableRow\` / \`__e2e.clickAntdRowCheckbox\` / \`__e2e.clickAntdRowAction\`，除非页面控件明显不是该类组件。`);
+11. 只要场景是 Ant Design 下拉、DatePicker/TimePicker、Ant Design 表单 label 定位、Ant Design 表格目标行定位、Ant Design 行勾选或 Ant Design 行操作菜单，默认先考虑 \`__e2e.openAntdDropdown\` / \`__e2e.selectAntdOption\` / \`__e2e.findAntdFormItemByLabel\` / \`__e2e.fillAntdDateTime\` / \`__e2e.findAntdTableRow\` / \`__e2e.clickAntdRowCheckbox\` / \`__e2e.clickAntdRowAction\`，除非页面控件明显不是该类组件。`);
   parts.push(`9. 对商机列表“我创建的 / 我跟进的 / 归属 / 范围”视角切换，优先直接写：
    - await __e2e.switchBusinessListOwnershipView(page, { label: '我创建的', listUrl: LIST_URL });
    - helper 会先尝试 tab / radio / segmented，再尝试顶部归属 dropdown，最后回退到筛选区 dropdown；不要继续手写 \`getByText('我创建的')\` 或 form-item 正则猜控件形态。
@@ -2697,22 +2803,23 @@ await __e2e.ensureLoggedIn(page, { targetUrl: TARGET_URL });
 16. 如果快照暴露了 iframe DOM id / 定位建议 / frame URL，优先使用这些精确线索进入 iframe；不要臆造 iframe[name="..."]。
 17. 修复 iframe 场景时，优先写 “等待 iframe selector 出现 -> 按 selector 或 frame URL 进入 frame -> 等待 frame 内 placeholder/按钮可见” 这类顺序，不要直接在顶层 page 上重试同一个 placeholder
 18. 只要步骤涉及 Ant Design 下拉，优先复用执行环境内置的 \`__e2e.openAntdDropdown\` / \`__e2e.selectAntdOption\`，不要再自行拼装脆弱 helper
-19. 如果任务要求在商机列表切到“我创建的 / 我跟进的 / 归属 / 范围”再搜索或断言，优先复用执行环境内置的 \`__e2e.switchBusinessListOwnershipView(page, { label: '我创建的', listUrl: LIST_URL })\`，不要手写一套 tab/radio/form-item 分支猜测；helper 已处理“当前已是目标视角”和切换后的 settle，默认不要在外层无条件包 \`waitForApiResponse / waitForResponse\`。helper 返回后也不要再补 \`.ant-tabs-tab-active\` / \`.ant-radio-button-wrapper-checked\` / \`.ant-select-selection-selected-value\` 或整页 \`getByText('我创建的')\` 这类 active-locator 断言；helper 成功本身就足够。只有脚本已先确认当前不是目标视角、且必须消费这次切换请求本身时，才允许在 helper 前注册 wait promise；如需辅助收敛，只看已回列表 URL、可见搜索框或列表 ready
-20. 如果列表目标动作收在行尾三点菜单 / \`.ant-dropdown-trigger\` 里，优先复用执行环境内置的 \`__e2e.clickAntdRowAction(page, targetRow, '动作名')\`，不要臆造行内可见按钮
-21. 禁止写 \`page.getByText(/成功/i).first()\` 这类宽泛成功断言；应优先等待具体 toast/弹窗标题、目标 Drawer/Modal 消失、接口响应成功或业务状态字段发生变化
-21.1 中间步骤的“保存并继续 / 下一步”如果只是切到下一块表单且接口并不明确，禁止发明宽泛的 \`waitForApiResponse({ urlIncludes: '/business', method: 'POST' })\`；优先等待下一块表单标题或字段出现
-21.2 对多步表单 / Ant Tabs 最后一页的“保存 / 提交”，禁止直接写 \`page.getByRole('button', { name: /保\\s*存|提\\s*交/i }).first()\`，也禁止把最终主动作写死成 \`getByRole('button', { name: /^保\\s*存$/ }).first()\`；必须先 scope 到当前可见 \`.ant-tabs-tabpane-active\` / 当前步骤容器，先尝试定位 \`/保\\s*存|提\\s*交|确\\s*定/i\` 的最后一个主动作；如果当前 pane 内根本找不到这个最终主动作，不要立刻退化成整页 \`page.getByRole(...).last()\`，而是改成准备少量 \`candidateContainers\`，至少覆盖末页锚点附近容器、\`attachmentAnchor\` 祖先链、当前可见 tabpane / form，以及可见 footer/action-bar 容器，并继续排除 \`保存并继续\` / \`上一步\`。footer/action-bar 这类 selector 不要统一写成 \`.first()\`；每类 selector 至少枚举前 2-3 个可见命中，依次 push 进 \`candidateContainers\`。如果这些 scoped 容器都 miss，但 \`attachmentAnchor\` 已可见，只允许额外尝试一次更窄的 \`page.getByRole('button', { name: /^提\\s*交$/ }).first()\`；不要把 selector 锁死在 \`.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible\` 这类单一路径。\`attachmentAnchor\` 刚 visible 时底部 action bar 可能还没挂稳，不要只跑一轮 \`count()\` 就立刻 throw；给 scoped candidate scan + exact submit fallback 一个 3-5 秒的短时轮询窗口（例如每 200ms 重试一次），命中后再 \`scrollIntoViewIfNeeded()\`。如果仍是 \`subtree intercepts pointer events\` 才允许对这个 scoped button 使用 \`click({ force: true })\`，同时不要把 \`保存并继续\` 误当最终提交
-22. 对播放录音 / 预览媒体 / 打开详情 / 下载文件这类触发型动作，优先等待业务响应成功、资源 URL 返回或对应容器出现；播放录音时不要断言隐藏 \`audio\` 可见，优先用 \`__e2e.waitForMediaPlaybackEvidence(page, { mediaSelector: 'audio, video' })\` 校验 \`.wav/.mp3/currentSrc/src\`；禁止使用 \`Promise.race([...catch(() => false)])\` 这类会把较早失败误判成整体失败的写法
-23. 有统一登录信息时，优先使用执行环境内置的 \`__e2e.ensureLoggedIn(page, { targetUrl: TARGET_URL })\` 或 \`__e2e.loginWithEnvAuth(page)\`；不要重复手写 \`page.goto(LOGIN_URL)\` 并猜登录页 DOM
-24. 如果当前页已经是登录页，禁止再额外跳一次 \`LOGIN_URL\` 根地址；那可能把页面从真实登录页跳回首页壳，导致后续手机号/验证码输入框全部消失
-25. 对 Ant Design 表格，禁止直接断言裸 \`.ant-table-tbody\` 可见；优先等待目标行、行数或 placeholder，并基于目标行继续操作
-26. 对标题会附带业务实体名称的 Modal / Drawer，禁止精确断言整个标题字符串；应在当前可见容器内断言公共后缀文案，必要时直接使用 \`__e2e.waitForVisibleAntdModal(page, { titleIncludes: '公共标题片段' })\`
-27. 优先基于上面的 \`DeterministicExecutionTemplate\` 生成最终代码：保留外层 \`test(...)\`、\`shared / artifacts\`、\`test.step(...)\` 和 slot 顺序，只在 slot 内补 locator / action / assertion 细节
-28. 不要删除 \`SLOT_START / SLOT_END\` 标记，也不要新增第二个 \`test(...)\`；最终脚本只能有一个主测试用例
-29. 最终代码不得残留任何 \`__PLAN_SLOT_\` 占位符；如果某个 slot 无法确定实现，应在该 slot 内抛出带原因的业务错误，而不是保留模板占位实现
-30. 除非任务描述或 cleanupNotes 明确要求恢复现场，否则不要在脚本尾部自动把刚修改的业务数据改回去
-31. 如果 \`VerificationPlan\` 或固定骨架已经给出 \`recordLookup.detailEntry\`，必须保留这条详情入口链：命中目标行 -> \`__e2e.clickAntdRowAction(...)\` -> 若 target=\`drawer_or_modal\` 且标题已知则先 \`__e2e.waitForVisibleAntdModal(... required:false)\`、再 \`__e2e.waitForVisibleDetailSurface(... required:false)\` -> \`__e2e.readDetailField(...)\`。禁止改写成全局点击“查看”或点击后再猜容器。
-31.1 如果当前链路已经有稳定 \`detailUrl\`，且同时给出了 \`detailSurface.titleIncludes\` / 详情标题（如 \`商机详情\`），第一次 \`readDetailField(...)\` 前必须先写 \`const detailSurface = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false })\`；若未出现有效 surface，直接 \`throw new Error('详情页无效：detailUrl 未出现商机详情 surface')\`，不要把错误页继续当正常详情页去读字段。`);
+19. Ant Design DatePicker / TimePicker 要按事实处理：如果目标 input 可编辑，可以直接填；如果目标 input 是 \`readonly\` 或 Playwright 报 \`element is not editable\`，不要继续硬等 \`.fill(...)\`，改用日期面板/事件路径。同一弹窗里有“跟进时间 / 下次跟进时间”时，先用 \`__e2e.findAntdFormItemByLabel(scope, '下次跟进时间')\` 精确定位，再复用 \`__e2e.fillAntdDateTime(page, scopedFormItem, { value })\`，helper 会自行选择 editable fill 或 picker fallback。
+20. 如果任务要求在商机列表切到“我创建的 / 我跟进的 / 归属 / 范围”再搜索或断言，优先复用执行环境内置的 \`__e2e.switchBusinessListOwnershipView(page, { label: '我创建的', listUrl: LIST_URL })\`，不要手写一套 tab/radio/form-item 分支猜测；helper 已处理“当前已是目标视角”和切换后的 settle，默认不要在外层无条件包 \`waitForApiResponse / waitForResponse\`。helper 返回后也不要再补 \`.ant-tabs-tab-active\` / \`.ant-radio-button-wrapper-checked\` / \`.ant-select-selection-selected-value\` 或整页 \`getByText('我创建的')\` 这类 active-locator 断言；helper 成功本身就足够。只有脚本已先确认当前不是目标视角、且必须消费这次切换请求本身时，才允许在 helper 前注册 wait promise；如需辅助收敛，只看已回列表 URL、可见搜索框或列表 ready
+21. 如果列表目标动作收在行尾三点菜单 / \`.ant-dropdown-trigger\` 里，优先复用执行环境内置的 \`__e2e.clickAntdRowAction(page, targetRow, '动作名')\`，不要臆造行内可见按钮
+22. 禁止写 \`page.getByText(/成功/i).first()\` 这类宽泛成功断言；应优先等待具体 toast/弹窗标题、目标 Drawer/Modal 消失、接口响应成功或业务状态字段发生变化
+22.1 中间步骤的“保存并继续 / 下一步”如果只是切到下一块表单且接口并不明确，禁止发明宽泛的 \`waitForApiResponse({ urlIncludes: '/business', method: 'POST' })\`；优先等待下一块表单标题或字段出现
+22.2 对多步表单 / Ant Tabs 最后一页的“保存 / 提交”，禁止直接写 \`page.getByRole('button', { name: /保\\s*存|提\\s*交/i }).first()\`，也禁止把最终主动作写死成 \`getByRole('button', { name: /^保\\s*存$/ }).first()\`；必须先 scope 到当前可见 \`.ant-tabs-tabpane-active\` / 当前步骤容器，先尝试定位 \`/保\\s*存|提\\s*交|确\\s*定/i\` 的最后一个主动作；如果当前 pane 内根本找不到这个最终主动作，不要立刻退化成整页 \`page.getByRole(...).last()\`，而是改成准备少量 \`candidateContainers\`，至少覆盖末页锚点附近容器、\`attachmentAnchor\` 祖先链、当前可见 tabpane / form，以及可见 footer/action-bar 容器，并继续排除 \`保存并继续\` / \`上一步\`。footer/action-bar 这类 selector 不要统一写成 \`.first()\`；每类 selector 至少枚举前 2-3 个可见命中，依次 push 进 \`candidateContainers\`。如果这些 scoped 容器都 miss，但 \`attachmentAnchor\` 已可见，只允许额外尝试一次更窄的 \`page.getByRole('button', { name: /^提\\s*交$/ }).first()\`；不要把 selector 锁死在 \`.ant-tabs-tabpane-active:visible, .step-content:visible, form:visible\` 这类单一路径。\`attachmentAnchor\` 刚 visible 时底部 action bar 可能还没挂稳，不要只跑一轮 \`count()\` 就立刻 throw；给 scoped candidate scan + exact submit fallback 一个 3-5 秒的短时轮询窗口（例如每 200ms 重试一次），命中后再 \`scrollIntoViewIfNeeded()\`。如果仍是 \`subtree intercepts pointer events\` 才允许对这个 scoped button 使用 \`click({ force: true })\`，同时不要把 \`保存并继续\` 误当最终提交
+23. 对播放录音 / 预览媒体 / 打开详情 / 下载文件这类触发型动作，优先等待业务响应成功、资源 URL 返回或对应容器出现；播放录音时不要断言隐藏 \`audio\` 可见，优先用 \`__e2e.waitForMediaPlaybackEvidence(page, { mediaSelector: 'audio, video' })\` 校验 \`.wav/.mp3/currentSrc/src\`；禁止使用 \`Promise.race([...catch(() => false)])\` 这类会把较早失败误判成整体失败的写法
+24. 有统一登录信息时，优先使用执行环境内置的 \`__e2e.ensureLoggedIn(page, { targetUrl: TARGET_URL })\` 或 \`__e2e.loginWithEnvAuth(page)\`；不要重复手写 \`page.goto(LOGIN_URL)\` 并猜登录页 DOM
+25. 如果当前页已经是登录页，禁止再额外跳一次 \`LOGIN_URL\` 根地址；那可能把页面从真实登录页跳回首页壳，导致后续手机号/验证码输入框全部消失
+26. 对 Ant Design 表格，禁止直接断言裸 \`.ant-table-tbody\` 可见；优先等待目标行、行数或 placeholder，并基于目标行继续操作
+27. 对标题会附带业务实体名称的 Modal / Drawer，禁止精确断言整个标题字符串；应在当前可见容器内断言公共后缀文案，必要时直接使用 \`__e2e.waitForVisibleAntdModal(page, { titleIncludes: '公共标题片段' })\`
+28. 优先基于上面的 \`DeterministicExecutionTemplate\` 生成最终代码：保留外层 \`test(...)\`、\`shared / artifacts\`、\`test.step(...)\` 和 slot 顺序，只在 slot 内补 locator / action / assertion 细节
+29. 不要删除 \`SLOT_START / SLOT_END\` 标记，也不要新增第二个 \`test(...)\`；最终脚本只能有一个主测试用例
+30. 最终代码不得残留任何 \`__PLAN_SLOT_\` 占位符；如果某个 slot 无法确定实现，应在该 slot 内抛出带原因的业务错误，而不是保留模板占位实现
+31. 除非任务描述或 cleanupNotes 明确要求恢复现场，否则不要在脚本尾部自动把刚修改的业务数据改回去
+32. 如果 \`VerificationPlan\` 或固定骨架已经给出 \`recordLookup.detailEntry\`，必须保留这条详情入口链：命中目标行 -> \`__e2e.clickAntdRowAction(...)\` -> 若 target=\`drawer_or_modal\` 且标题已知则先 \`__e2e.waitForVisibleAntdModal(... required:false)\`、再 \`__e2e.waitForVisibleDetailSurface(... required:false)\` -> \`__e2e.readDetailField(...)\`。禁止改写成全局点击“查看”或点击后再猜容器。
+32.1 如果当前链路已经有稳定 \`detailUrl\`，且同时给出了 \`detailSurface.titleIncludes\` / 详情标题（如 \`商机详情\`），第一次 \`readDetailField(...)\` 前必须先写 \`const detailSurface = await __e2e.waitForVisibleDetailSurface(page, { titleIncludes: '商机详情', timeoutMs: 2500, required: false })\`；若未出现有效 surface，直接 \`throw new Error('详情页无效：detailUrl 未出现商机详情 surface')\`，不要把错误页继续当正常详情页去读字段。`);
 
   return parts.join('\n');
 }

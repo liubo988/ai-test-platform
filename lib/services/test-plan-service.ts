@@ -65,21 +65,25 @@ function buildAuthContext(
   project: Awaited<ReturnType<typeof getProjectByUid>>,
   config: Awaited<ReturnType<typeof getTestConfigByUid>>
 ) {
-  if (project?.authRequired) {
-    return {
-      loginUrl: project.loginUrl,
-      username: project.loginUsername,
-      password: project.loginPasswordPlain,
-      loginDescription: project.loginDescription,
-    };
+  if (config?.authSource === 'none') {
+    return undefined;
   }
 
-  if (config?.legacyAuthRequired) {
+  if (config?.authSource === 'task' || config?.legacyAuthRequired) {
     return {
       loginUrl: config.legacyLoginUrl,
       username: config.legacyLoginUsername,
       password: config.loginPasswordPlain,
       loginDescription: '',
+    };
+  }
+
+  if ((config?.authSource === 'project' || project?.authRequired) && project) {
+    return {
+      loginUrl: project.loginUrl,
+      username: project.loginUsername,
+      password: project.loginPasswordPlain,
+      loginDescription: project.loginDescription,
     };
   }
 
@@ -1301,11 +1305,13 @@ async function runExecutionInBackground(input: {
     });
 
     const runnerAdapter = resolveIntentRunnerAdapter(input.testType, input.runnerType);
-    const storageStateCandidate = resolveExecutionStorageStateCandidate({
-      targetUrl: input.targetUrl,
-      testType: input.testType,
-      runnerType: input.runnerType,
-    });
+    const storageStateCandidate = input.auth
+      ? resolveExecutionStorageStateCandidate({
+          targetUrl: input.targetUrl,
+          testType: input.testType,
+          runnerType: input.runnerType,
+        })
+      : null;
     const auth = buildStorageStateAwareAuth(input.auth, storageStateCandidate);
     if (storageStateCandidate) {
       await insertExecutionEvent(input.executionUid, 'log', {

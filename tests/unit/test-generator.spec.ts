@@ -7172,6 +7172,57 @@ Error: element(s) not found`,
     expect(template).not.toContain('createOrder');
   });
 
+  it('does not reuse fixed create-business fixture data when scenario steps provide explicit values', () => {
+    const snapshot = {
+      url: 'https://uat.example.com/#/user/login',
+      title: '登录',
+      forms: [],
+      buttons: [],
+      tooltipElements: [],
+      links: [],
+      headings: [{ level: 'H1', text: '登录' }],
+      bodyTextExcerpt: '短信验证码登录 请输入手机号 请输入验证码',
+      screenshot: '',
+    };
+    const description = '访问URL，点击“短信验证码登录”tab，第一个输入框中输入手机号：13764376202，“请输入验证码”框中输入验证码：8108820，然后点击【登 录】按钮。';
+    const context = {
+      taskMode: 'scenario' as const,
+      scenarioEntryUrl: 'https://uat.example.com/#/user/login',
+      expectedOutcome: '成功登录系统，进入系统首页。',
+      cleanupNotes: '无',
+      scenarioSummary: [
+        '1. [ui] 新增商机 -> https://uat.example.com/#/business/createbusiness',
+        '动作: “商机来源”选择“线下活动”，“业务类型”选择“企业业务(拟设立)”，意向产品选择“一键开业套餐-小规模纳税人(零申报)”，权重填写5。',
+        '2. [ui] 商机跟进 -> https://uat.example.com/#/business/businesslist',
+        '动作: 输入“跟进内容”：测试。',
+      ].join('\n'),
+      sharedVariables: ['chanceId'],
+    };
+    const fixedTemplate = [
+      "test('创建商机：无附件提交并在商机列表校验落库', async ({ page }) => {",
+      "  await __e2e.selectAntdOption(page, sourceRow, { label: '抖音', searchText: '抖音', tree: true });",
+      "  await __e2e.selectAntdOption(page, productRow, { label: '疑难工商注销', searchText: '疑难工商注销', tree: true });",
+      '});',
+    ].join('\n');
+    const planning = resolveIntentPromptPlanningContext(snapshot, description, context);
+
+    const template = resolveDeterministicTemplate(snapshot, description, fixedTemplate, context, planning);
+    const prompt = buildPrompt(snapshot, description, undefined, [], '', context, planning);
+
+    expect(template).toBe('');
+    expect(prompt).toContain('## 当前任务显式字段值（最高优先级）');
+    expect(prompt).toContain('- 手机号: 13764376202');
+    expect(prompt).toContain('- 验证码: 8108820');
+    expect(prompt).toContain('- 商机来源: 线下活动');
+    expect(prompt).toContain('- 业务类型: 企业业务(拟设立)');
+    expect(prompt).toContain('- 意向产品: 一键开业套餐-小规模纳税人(零申报)');
+    expect(prompt).toContain('- 权重: 5');
+    expect(prompt).toContain('- 跟进内容: 测试');
+    expect(prompt).toContain('禁止把历史模板里的固定值带入本任务');
+    expect(prompt).toContain("__e2e.findAntdFormItemByLabel(modal, '下次跟进时间')");
+    expect(prompt).toContain('__e2e.fillAntdDateTime(page, nextTimeRow, { value: futureDateTimeText(7) })');
+  });
+
   it('does not let status anchors like 签约成功 hijack create-list verification into the create-order template', () => {
     const snapshot = {
       url: 'https://uat.example.com/#/business/businesslist',

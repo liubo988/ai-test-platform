@@ -1077,6 +1077,156 @@ test('markdown fence wrapper', async () => {
   );
 
   it(
+    'does not treat a sibling checked inline radio as the requested option',
+    async () => {
+      const logs: Array<{ level: string; message: string; meta?: any }> = [];
+      const result = await executeTest(
+        `test('select exact inline radio option', async ({ page }) => {
+          await page.goto('about:blank');
+          await page.setContent(\`
+            <div class="ant-form-item" id="business-type-row">
+              <label title="业务类型">业务类型</label>
+              <label class="ant-radio-wrapper ant-radio-wrapper-checked">
+                <span class="ant-radio ant-radio-checked"><input id="established" type="radio" checked /></span>
+                <span>企业业务(已设立)</span>
+              </label>
+              <label class="ant-radio-wrapper">
+                <span class="ant-radio"><input id="planned" type="radio" /></span>
+                <span>企业业务(拟设立)</span>
+              </label>
+            </div>
+          \`);
+          await page.evaluate(() => {
+            for (const wrapper of document.querySelectorAll('.ant-radio-wrapper')) {
+              wrapper.addEventListener('click', () => {
+                document.querySelectorAll('.ant-radio-wrapper').forEach((node) => node.classList.remove('ant-radio-wrapper-checked'));
+                document.querySelectorAll('.ant-radio').forEach((node) => node.classList.remove('ant-radio-checked'));
+                document.querySelectorAll('input[type="radio"]').forEach((input) => {
+                  if (input instanceof HTMLInputElement) input.checked = false;
+                });
+                wrapper.classList.add('ant-radio-wrapper-checked');
+                wrapper.querySelector('.ant-radio')?.classList.add('ant-radio-checked');
+                const input = wrapper.querySelector('input[type="radio"]');
+                if (input instanceof HTMLInputElement) input.checked = true;
+              });
+            }
+          });
+
+          const row = page.locator('#business-type-row').first();
+          await __e2e.selectAntdOption(page, row, { label: '企业业务(拟设立)' });
+
+          await expect(page.locator('#planned')).toBeChecked();
+          await expect(page.locator('#established')).not.toBeChecked();
+        });`,
+        'worker-select-inline-radio-sibling-checked',
+        undefined,
+        {
+          onLog(payload) {
+            logs.push(payload);
+          },
+        }
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+      expect(logs).not.toContainEqual(
+        expect.objectContaining({
+          message: 'inline enum option already selected',
+          meta: expect.objectContaining({
+            label: '企业业务(拟设立)',
+          }),
+        })
+      );
+    },
+    20000
+  );
+
+  it(
+    'fills the exact next-follow Ant Design date field without touching readonly follow time',
+    async () => {
+      const logs: Array<{ level: string; message: string; meta?: any }> = [];
+      const result = await executeTest(
+        `test('fill exact next follow date field', async ({ page }) => {
+          await page.goto('about:blank');
+          await page.setContent(\`
+            <div class="ant-modal-wrap">
+              <div class="ant-modal-content">
+                <div class="ant-modal-title">添加跟进</div>
+                <div class="ant-form-item" id="follow-time-row">
+                  <div class="ant-form-item-label"><label title="跟进时间">跟进时间</label></div>
+                  <div class="ant-form-item-control"><input id="follow-time" readonly value="2026-05-13 10:00:00" placeholder="选择日期" class="ant-calendar-picker-input ant-input" /></div>
+                </div>
+                <div class="ant-form-item" id="next-follow-time-row">
+                  <div class="ant-form-item-label"><label title="下次跟进时间">下次跟进时间</label></div>
+                  <div class="ant-form-item-control"><input id="next-follow-time" readonly value="" placeholder="选择日期" class="ant-calendar-picker-input ant-input" /></div>
+                </div>
+              </div>
+            </div>
+          \`);
+          await page.evaluate(() => {
+            const nextInput = document.querySelector('#next-follow-time');
+            nextInput?.addEventListener('click', () => {
+              if (document.querySelector('.ant-calendar-picker-container')) return;
+              const panel = document.createElement('div');
+              panel.className = 'ant-calendar-picker-container';
+              panel.innerHTML = '<div class="ant-calendar"><div class="ant-calendar-input-wrap"><input class="ant-calendar-input" /></div><button class="ant-calendar-ok-btn" type="button">确定</button></div>';
+              document.body.appendChild(panel);
+              const popupInput = panel.querySelector('.ant-calendar-input');
+              const ok = panel.querySelector('.ant-calendar-ok-btn');
+              ok?.addEventListener('click', () => {
+                if (nextInput instanceof HTMLInputElement && popupInput instanceof HTMLInputElement) {
+                  nextInput.value = popupInput.value;
+                  nextInput.dispatchEvent(new Event('input', { bubbles: true }));
+                  nextInput.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                panel.remove();
+              });
+            });
+          });
+
+          const modal = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '添加跟进' });
+          const nextTimeRow = await __e2e.findAntdFormItemByLabel(modal, '下次跟进时间');
+          await __e2e.fillAntdDateTime(page, nextTimeRow, { value: '2026-05-20 16:27:00' });
+
+          await expect(page.locator('#next-follow-time')).toHaveValue('2026-05-20 16:27:00');
+          await expect(page.locator('#follow-time')).toHaveValue('2026-05-13 10:00:00');
+        });`,
+        'worker-fill-exact-next-follow-date',
+        undefined,
+        {
+          onLog(payload) {
+            logs.push(payload);
+          },
+        }
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          message: 'ant-form-item resolved by exact label',
+          meta: expect.objectContaining({
+            label: '下次跟进时间',
+          }),
+        })
+      );
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          message: 'ant-date input filled',
+          meta: expect.objectContaining({
+            strategy: 'picker-input',
+          }),
+        })
+      );
+    },
+    20000
+  );
+
+  it(
     'prefers the searchable type-to-open fast path before dropdown reopen retries',
     async () => {
       const logs: Array<{ level: string; message: string; meta?: any }> = [];

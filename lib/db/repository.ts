@@ -48,6 +48,7 @@ export type CoverageMode = 'all_tiers';
 export type Tier = 'simple' | 'medium' | 'complex';
 export type ExecutionStatus = 'queued' | 'running' | 'passed' | 'failed' | 'canceled';
 export type AuthSource = 'project' | 'task' | 'none';
+export type AuthInheritMode = 'inherit_project' | 'task_override' | 'task_only';
 export type ProjectMemberRole = 'owner' | 'editor' | 'viewer';
 export type ProjectActorRole = ProjectMemberRole | 'none';
 export type ProjectActivityEntityType =
@@ -313,6 +314,7 @@ export interface TestConfigRecord {
   flowDefinition: FlowDefinition | null;
   authRequired: boolean;
   authSource: AuthSource;
+  authInheritMode: AuthInheritMode;
   loginUrl: string;
   loginUsername: string;
   loginPasswordMasked: string;
@@ -752,6 +754,13 @@ function maskPassword(raw: string): string {
   if (!raw) return '';
   if (raw.length <= 2) return '**';
   return `${raw.slice(0, 1)}${'*'.repeat(Math.max(2, raw.length - 2))}${raw.slice(-1)}`;
+}
+
+function normalizeAuthInheritMode(value: unknown): AuthInheritMode {
+  if (value === 'inherit_project' || value === 'task_override' || value === 'task_only') {
+    return value;
+  }
+  return 'inherit_project';
 }
 
 function toIso(value: unknown): string {
@@ -1434,6 +1443,40 @@ function resolveAuthFromRow(row: RowDataPacket): {
 } {
   const projectPassword = decryptSecret((row.project_login_password_enc as string | null) ?? null);
   const legacyPassword = decryptSecret((row.login_password_enc as string | null) ?? null);
+  const authInheritMode = normalizeAuthInheritMode(row.auth_inherit_mode);
+
+  if (authInheritMode === 'task_only') {
+    if (!!row.auth_required) {
+      return {
+        source: 'task',
+        authRequired: true,
+        loginUrl: row.login_url ? String(row.login_url) : '',
+        loginUsername: row.login_username ? String(row.login_username) : '',
+        loginPasswordPlain: legacyPassword,
+        loginDescription: '',
+      };
+    }
+
+    return {
+      source: 'none',
+      authRequired: false,
+      loginUrl: '',
+      loginUsername: '',
+      loginPasswordPlain: '',
+      loginDescription: '',
+    };
+  }
+
+  if (authInheritMode === 'task_override' && !!row.auth_required) {
+    return {
+      source: 'task',
+      authRequired: true,
+      loginUrl: row.login_url ? String(row.login_url) : '',
+      loginUsername: row.login_username ? String(row.login_username) : '',
+      loginPasswordPlain: legacyPassword,
+      loginDescription: '',
+    };
+  }
 
   if (!!row.project_auth_required) {
     return {
@@ -1469,6 +1512,7 @@ function resolveAuthFromRow(row: RowDataPacket): {
 
 function normalizeConfigRow(row: RowDataPacket): TestConfigRecord {
   const resolvedAuth = resolveAuthFromRow(row);
+  const authInheritMode = normalizeAuthInheritMode(row.auth_inherit_mode);
   const targetUrl = row.target_url ? String(row.target_url) : '';
   const taskMode = normalizeTaskMode(row.task_mode);
   const normalizedFlow = normalizeFlowDefinition(row.flow_definition, targetUrl);
@@ -1493,6 +1537,7 @@ function normalizeConfigRow(row: RowDataPacket): TestConfigRecord {
     flowDefinition,
     authRequired: resolvedAuth.authRequired,
     authSource: resolvedAuth.source,
+    authInheritMode,
     loginUrl: resolvedAuth.loginUrl,
     loginUsername: resolvedAuth.loginUsername,
     loginPasswordMasked: maskPassword(resolvedAuth.loginPasswordPlain),
