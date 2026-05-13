@@ -54,6 +54,7 @@ import { buildWorkspacePlatformQueryPreset } from '@/lib/workspace-platform-quer
 import { buildCoverageCasesFromTask } from '@/lib/plan-cases';
 import { analyzeRequirementCoverage } from '@/lib/project-knowledge';
 import { buildFlowSummary, collectScenarioSnapshotTargets, type FlowDefinition, type TaskMode } from '@/lib/task-flow';
+import { resolveIntentE2EPrecheckStorageStateCandidates } from '@/lib/intent-e2e-precheck-storage-state';
 
 function buildAuthContext(
   project: Awaited<ReturnType<typeof getProjectByUid>>,
@@ -303,12 +304,52 @@ async function persistRunnerArtifacts(input: {
   }
 }
 
+function errorMessageOf(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error || '');
+}
+
+function isAuthFailedPageAnalysisError(error: unknown): boolean {
+  const message = errorMessageOf(error);
+  return (
+    /页面分析失败/i.test(message) &&
+    /登录后(?:再次访问目标页面)?仍停留在登录页|当前仍要求登录|会话已失效|需要重新登录|请先登录|登录已失效|未能进入可识别的登录页|session expired/i.test(
+      message
+    )
+  );
+}
+
+async function analyzePageWithAuthRecovery(target: string, auth?: AuthConfig): Promise<PageSnapshot> {
+  try {
+    return await analyzePage(target, auth);
+  } catch (error) {
+    if (!isAuthFailedPageAnalysisError(error)) {
+      throw error;
+    }
+
+    const storageStateCandidates = resolveIntentE2EPrecheckStorageStateCandidates(target);
+    for (const candidate of storageStateCandidates) {
+      try {
+        return await analyzePage(target, auth, {
+          storageState: candidate.storageState,
+        });
+      } catch (fallbackError) {
+        if (!isAuthFailedPageAnalysisError(fallbackError)) {
+          throw fallbackError;
+        }
+      }
+    }
+
+    throw error;
+  }
+}
+
 async function analyzeSnapshotTargets(targets: string[], auth?: AuthConfig): Promise<PageSnapshot[]> {
   const snapshots: PageSnapshot[] = [];
 
   for (const [index, target] of targets.entries()) {
     try {
-      snapshots.push(await analyzePage(target, auth));
+      snapshots.push(await analyzePageWithAuthRecovery(target, auth));
     } catch (error) {
       if (index === 0) throw error;
     }

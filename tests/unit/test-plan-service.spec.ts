@@ -31,6 +31,10 @@ vi.mock('@/lib/plan-cases', () => ({
   buildCoverageCasesFromTask: vi.fn(() => []),
 }));
 
+vi.mock('@/lib/intent-e2e-precheck-storage-state', () => ({
+  resolveIntentE2EPrecheckStorageStateCandidates: vi.fn(),
+}));
+
 vi.mock('@/lib/task-flow', () => ({
   buildFlowSummary: vi.fn(() => ''),
   collectScenarioSnapshotTargets: vi.fn(() => []),
@@ -112,6 +116,7 @@ import {
   updateExecutionStatus,
 } from '@/lib/db/repository';
 import { finalizeCapabilityVerification } from '@/lib/capability-verification-service';
+import { resolveIntentE2EPrecheckStorageStateCandidates } from '@/lib/intent-e2e-precheck-storage-state';
 
 describe('test-plan-service', () => {
   type MockSpawnProcess = EventEmitter & {
@@ -191,6 +196,7 @@ describe('test-plan-service', () => {
     vi.mocked(insertProjectActivityLog).mockResolvedValue(undefined as never);
     vi.mocked(updateExecutionStatus).mockResolvedValue(undefined as never);
     vi.mocked(finalizeCapabilityVerification).mockResolvedValue(undefined as never);
+    vi.mocked(resolveIntentE2EPrecheckStorageStateCandidates).mockReturnValue([]);
   });
 
   it('reads execution workspace link contracts from unknown payloads', () => {
@@ -2715,6 +2721,119 @@ describe('test-plan-service', () => {
     expect(createTestPlan).not.toHaveBeenCalled();
     expect(createPlanCases).not.toHaveBeenCalled();
     expect(getLatestPlanByConfigUid).not.toHaveBeenCalled();
+  });
+
+  it('recovers plan generation page analysis with a matching storage state after auth failure', async () => {
+    const storageState = {
+      cookies: [],
+      origins: [
+        {
+          origin: 'https://uat.example.com',
+          localStorage: [{ name: 'FUWU_UINFO', value: '{"name":"QA"}' }],
+        },
+      ],
+    };
+    vi.mocked(getTestConfigByUid).mockResolvedValue({
+      configUid: 'cfg_auth_recovery',
+      projectUid: 'proj_auth_recovery',
+      moduleUid: 'mod_auth_recovery',
+      name: '登录商机订单入账流程一',
+      moduleName: '订单',
+      targetUrl: 'https://uat.example.com/#/order/list',
+      featureDescription: '从订单列表筛选待申请入账并批量入账。',
+      taskMode: 'page',
+      flowDefinition: null,
+      authSource: 'project',
+      loginDescription: '短信验证码登录',
+      loginPasswordPlain: '',
+    } as never);
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_auth_recovery',
+      name: '项目',
+      authRequired: true,
+      loginUrl: 'https://uat.example.com/#/',
+      loginUsername: 'tester',
+      loginPasswordPlain: 'secret',
+      loginDescription: '选择短信验证码登陆tab页，”获取验证码“输入框 输入登陆密码，然后点击登陆。',
+    } as never);
+    vi.mocked(resolveIntentE2EPrecheckStorageStateCandidates).mockReturnValue([
+      {
+        source: 'local_generated',
+        path: '/tmp/storage-state.json',
+        storageState,
+      },
+    ]);
+    vi.mocked(analyzePage)
+      .mockRejectedValueOnce(
+        new Error(
+          '页面分析失败: 登录后再次访问目标页面仍停留在登录页，请检查登录说明或凭证: 选择短信验证码登陆tab页'
+        )
+      )
+      .mockResolvedValueOnce({
+        url: 'https://uat.example.com/#/order/list',
+        title: '订单列表',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [],
+        screenshot: '',
+        frames: [],
+      } as never);
+    vi.mocked(generateTest).mockImplementation(
+      (async function* () {
+        yield { type: 'complete', content: "test('generated', async () => {});" };
+      }) as never
+    );
+    vi.mocked(getLatestPlanByConfigUid).mockResolvedValue(null as never);
+    vi.mocked(createTestPlan).mockResolvedValue({
+      planUid: 'plan_auth_recovery_1',
+      configUid: 'cfg_auth_recovery',
+      projectUid: 'proj_auth_recovery',
+      planTitle: '登录商机订单入账流程一 - 自动测试计划',
+      planVersion: 1,
+      planSummary: 'generated',
+      planCode: "test('generated', async () => {});",
+      generatedFiles: [],
+      createdAt: '2026-05-13T00:00:00.000Z',
+    } as never);
+
+    const result = await generatePlanFromConfig('cfg_auth_recovery');
+
+    expect(result).toEqual({
+      planUid: 'plan_auth_recovery_1',
+      planVersion: 1,
+    });
+    expect(resolveIntentE2EPrecheckStorageStateCandidates).toHaveBeenCalledWith('https://uat.example.com/#/order/list');
+    expect(analyzePage).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(analyzePage).mock.calls[1]).toEqual([
+      'https://uat.example.com/#/order/list',
+      expect.objectContaining({
+        loginUrl: 'https://uat.example.com/#/',
+        username: 'tester',
+        password: 'secret',
+      }),
+      {
+        storageState,
+      },
+    ]);
+    expect(generateTest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: '订单列表',
+      }),
+      expect.stringContaining('从订单列表筛选待申请入账并批量入账。'),
+      expect.objectContaining({
+        username: 'tester',
+      }),
+      expect.any(Object),
+      undefined
+    );
+    expect(createTestPlan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        configUid: 'cfg_auth_recovery',
+        planCode: "test('generated', async () => {});",
+      })
+    );
   });
 
   it('restores a historical plan as a new latest version', async () => {
