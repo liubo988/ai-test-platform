@@ -2052,6 +2052,114 @@ describe('test-plan-service', () => {
     );
   });
 
+  it('executes browser plans with storage state when decrypted password is unavailable', async () => {
+    const storageState = {
+      cookies: [],
+      origins: [
+        {
+          origin: 'https://uat.example.com',
+          localStorage: [{ name: 'token', value: 'local-session' }],
+        },
+      ],
+    };
+    vi.mocked(findRunningExecution).mockResolvedValue(null as never);
+    vi.mocked(getPlanByUid).mockResolvedValue({
+      planUid: 'plan_storage_auth_1',
+      configUid: 'cfg_storage_auth_1',
+      projectUid: 'proj_storage_auth_1',
+      moduleUid: 'mod_storage_auth_1',
+      planTitle: '登录-新建商机-商机跟进流程 - 自动测试计划',
+      planVersion: 1,
+      planSummary: '创建商机并跟进',
+      planCode: "test('create business', async () => {});",
+      generationPrompt: '',
+    } as never);
+    vi.mocked(getTestConfigByUid).mockResolvedValue({
+      configUid: 'cfg_storage_auth_1',
+      projectUid: 'proj_storage_auth_1',
+      moduleUid: 'mod_storage_auth_1',
+      name: '登录-新建商机-商机跟进流程',
+      moduleName: '商机管理',
+      targetUrl: 'https://uat.example.com/#/user/login',
+      featureDescription: '登录后新建商机并跟进。',
+      taskMode: 'scenario',
+      flowDefinition: null,
+      authSource: 'project',
+      loginDescription: '短信登录',
+      loginPasswordPlain: '',
+    } as never);
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_storage_auth_1',
+      name: '项目',
+      authRequired: true,
+      loginUrl: 'https://uat.example.com/#/',
+      loginUsername: 'tester',
+      loginDescription: '短信登录',
+      loginPasswordPlain: '',
+    } as never);
+    vi.mocked(createExecution).mockResolvedValue('exec_storage_auth_1' as never);
+    vi.mocked(resolveIntentE2EPrecheckStorageStateCandidates).mockReturnValue([
+      {
+        source: 'local_generated',
+        path: '/tmp/storage-state.json',
+        storageState,
+      },
+    ]);
+    vi.mocked(executeTest).mockResolvedValue({
+      success: true,
+      duration: 100,
+      error: null,
+      steps: [
+        {
+          title: '创建商机',
+          status: 'passed',
+          duration: 100,
+          at: '2026-05-13T00:00:00.000Z',
+        },
+      ],
+    } as never);
+
+    const result = await executePlan('plan_storage_auth_1', { actorLabel: 'tester' });
+
+    expect(result.executionUid).toBe('exec_storage_auth_1');
+    await flushAsyncWork();
+
+    expect(resolveIntentE2EPrecheckStorageStateCandidates).toHaveBeenCalledWith('https://uat.example.com/#/user/login');
+    expect(executeTest).toHaveBeenCalledWith(
+      "test('create business', async () => {});",
+      'uid_1',
+      expect.objectContaining({
+        loginUrl: 'https://uat.example.com/#/',
+        username: 'tester',
+        password: '__ai_test_storage_state_authenticated__',
+      }),
+      expect.any(Object),
+      expect.objectContaining({
+        storageState,
+      })
+    );
+    expect(insertExecutionEvent).toHaveBeenCalledWith(
+      'exec_storage_auth_1',
+      'log',
+      expect.objectContaining({
+        level: 'info',
+        message: '已复用本地登录态执行浏览器任务',
+        meta: {
+          storageStateSource: 'local_generated',
+        },
+      }),
+      'proj_storage_auth_1'
+    );
+    expect(updateExecutionStatus).toHaveBeenCalledWith(
+      'exec_storage_auth_1',
+      'passed',
+      expect.objectContaining({
+        resultSummary: expect.stringContaining('执行成功'),
+      }),
+      'proj_storage_auth_1'
+    );
+  });
+
   it('automatically launches AI repair and reruns when project execution self-heal is enabled', async () => {
     vi.mocked(findRunningExecution).mockResolvedValue(null as never);
     vi.mocked(getPlanByUid).mockImplementation(async (planUid: string) => {

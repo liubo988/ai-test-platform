@@ -54,7 +54,12 @@ import { buildWorkspacePlatformQueryPreset } from '@/lib/workspace-platform-quer
 import { buildCoverageCasesFromTask } from '@/lib/plan-cases';
 import { analyzeRequirementCoverage } from '@/lib/project-knowledge';
 import { buildFlowSummary, collectScenarioSnapshotTargets, type FlowDefinition, type TaskMode } from '@/lib/task-flow';
-import { resolveIntentE2EPrecheckStorageStateCandidates } from '@/lib/intent-e2e-precheck-storage-state';
+import {
+  resolveIntentE2EPrecheckStorageStateCandidates,
+  type IntentE2EPrecheckStorageStateCandidate,
+} from '@/lib/intent-e2e-precheck-storage-state';
+
+const STORAGE_STATE_AUTH_PLACEHOLDER = '__ai_test_storage_state_authenticated__';
 
 function buildAuthContext(
   project: Awaited<ReturnType<typeof getProjectByUid>>,
@@ -309,6 +314,10 @@ function errorMessageOf(error: unknown): string {
   return String(error || '');
 }
 
+function normalizeAuthValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
 function isAuthFailedPageAnalysisError(error: unknown): boolean {
   const message = errorMessageOf(error);
   return (
@@ -342,6 +351,34 @@ async function analyzePageWithAuthRecovery(target: string, auth?: AuthConfig): P
 
     throw error;
   }
+}
+
+function resolveExecutionStorageStateCandidate(input: {
+  targetUrl: string;
+  testType: IntentImportPlatformSummary['testType'];
+  runnerType: IntentImportPlatformSummary['runnerType'];
+}): IntentE2EPrecheckStorageStateCandidate | null {
+  if (input.testType !== 'browser_e2e' || input.runnerType !== 'playwright_runner') return null;
+  const targetUrl = normalizeAuthValue(input.targetUrl);
+  if (!targetUrl) return null;
+  return resolveIntentE2EPrecheckStorageStateCandidates(targetUrl)[0] || null;
+}
+
+function buildStorageStateAwareAuth(
+  auth: AuthConfig | undefined,
+  storageStateCandidate: IntentE2EPrecheckStorageStateCandidate | null
+): AuthConfig | undefined {
+  if (!storageStateCandidate) return auth;
+
+  const username = normalizeAuthValue(auth?.username);
+  const password = normalizeAuthValue(auth?.password);
+  if (username && password) return auth;
+
+  return {
+    ...(auth || {}),
+    username: username || STORAGE_STATE_AUTH_PLACEHOLDER,
+    password: password || STORAGE_STATE_AUTH_PLACEHOLDER,
+  };
 }
 
 async function analyzeSnapshotTargets(targets: string[], auth?: AuthConfig): Promise<PageSnapshot[]> {
@@ -1105,6 +1142,7 @@ export async function executePlan(
     planTitle: plan.planTitle,
     configUid: config.configUid,
     configName: config.name,
+    targetUrl: config.targetUrl,
     projectUid: config.projectUid,
     executionContext,
     testType: planRunner.testType,
@@ -1237,6 +1275,7 @@ async function runExecutionInBackground(input: {
   planTitle: string;
   configUid: string;
   configName: string;
+  targetUrl: string;
   projectUid: string;
   executionContext: ExecutionWorkspaceContext;
   testType: IntentImportPlatformSummary['testType'];
@@ -1262,10 +1301,27 @@ async function runExecutionInBackground(input: {
     });
 
     const runnerAdapter = resolveIntentRunnerAdapter(input.testType, input.runnerType);
+    const storageStateCandidate = resolveExecutionStorageStateCandidate({
+      targetUrl: input.targetUrl,
+      testType: input.testType,
+      runnerType: input.runnerType,
+    });
+    const auth = buildStorageStateAwareAuth(input.auth, storageStateCandidate);
+    if (storageStateCandidate) {
+      await insertExecutionEvent(input.executionUid, 'log', {
+        level: 'info',
+        message: '已复用本地登录态执行浏览器任务',
+        meta: {
+          storageStateSource: storageStateCandidate.source,
+        },
+        at: new Date().toISOString(),
+      }, input.projectUid);
+    }
     const result = await runnerAdapter.execute({
       sessionId: input.workerSessionId,
       code: input.planCode,
-      auth: input.auth,
+      auth,
+      ...(storageStateCandidate ? { storageState: storageStateCandidate.storageState } : {}),
       testType: input.testType,
       runnerType: input.runnerType,
     }, {
