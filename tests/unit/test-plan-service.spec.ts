@@ -2769,7 +2769,7 @@ describe('test-plan-service', () => {
     });
   });
 
-  it('uses a stale passed plan as the repair baseline instead of the latest failed plan', async () => {
+  it('uses a fresh passed plan as repair baseline when current task has dynamic date requirements', async () => {
     vi.mocked(getExecution).mockResolvedValue({
       executionUid: 'exec_stale_1',
       planUid: 'plan_stale_failed_9',
@@ -2855,7 +2855,7 @@ describe('test-plan-service', () => {
         planCode: "test('passed baseline should be repaired', async () => {});",
         generationPrompt: '平台测试类型：browser_e2e',
         generatedFiles: [],
-        createdAt: '2026-05-14T07:50:00.000Z',
+        createdAt: '2026-05-14T08:00:30.000Z',
       },
     } as never);
     vi.mocked(analyzePage).mockResolvedValue({
@@ -2924,6 +2924,8 @@ describe('test-plan-service', () => {
     expect(findActivityLogCall('plan_repaired', 'plan_repaired_from_success_10')?.meta).toMatchObject({
       successfulExperienceMode: 'repair_base',
       successfulExperienceExecutionUid: 'exec_stale_passed_1',
+      successfulExperiencePlanFresh: true,
+      successfulExperienceDirectReuseBlockedByDynamicRequirements: true,
       repairBasePlanUid: 'plan_stale_passed_1',
       previousPlanUid: 'plan_stale_failed_9',
     });

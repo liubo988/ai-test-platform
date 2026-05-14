@@ -2516,7 +2516,10 @@ export function buildPrompt(
    - const nextTimeRow = await __e2e.findAntdFormItemByLabel(modal, '下次跟进时间');
    - const nextFollowDate = futureDateText(7); // 日期控件只显示日期时用 YYYY-MM-DD，不要强塞完整时分秒
    - await __e2e.fillAntdDateTime(page, nextTimeRow, { value: nextFollowDate });
+   - const nextFollowActual = await nextTimeRow.locator('input:visible').first().inputValue();
+   - if (!nextFollowActual.includes(nextFollowDate)) throw new Error(\`下次跟进时间未匹配目标日期: expected=\${nextFollowDate}; actual=\${nextFollowActual || '(empty)'}\`);
    - helper 会先判断当前 input 是否可编辑；可编辑则正常填，不可编辑才打开日期面板并尝试面板输入框 + 确定按钮；只有显示值匹配目标日期才算成功。
+   - 任务写了“当前日期 N 天后”时，N 必须来自当前任务描述；即使复用历史通过流程，也只能复用登录/导航/定位骨架，不能复用历史日期常量。提交前必须读回 input 值并断言包含目标 YYYY-MM-DD。
    - 如果同一弹窗里同时有“跟进时间”和“下次跟进时间”，必须按精确 label 找到“下次跟进时间”，不要用宽泛 \`.filter({ hasText: /下次跟进时间/ }).first()\` 猜。
 8. 对 Ant Design 表格目标行，优先直接写：
    - const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [targetPhone, targetName, '新入库'] });

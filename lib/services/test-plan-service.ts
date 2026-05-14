@@ -879,6 +879,20 @@ function isSuccessfulExperienceFreshForConfig(plan: TestPlanRecord, config: Test
   return planCreatedAt > 0 && configUpdatedAt > 0 && planCreatedAt >= configUpdatedAt;
 }
 
+function buildTaskRequirementText(config: TestConfigWithSecrets): string {
+  const flowText = (config.flowDefinition?.steps || [])
+    .map((step) => [step.title, step.instruction, step.expectedResult].filter(Boolean).join('\n'))
+    .join('\n');
+  return [config.featureDescription, flowText].filter(Boolean).join('\n');
+}
+
+function hasDynamicTaskSpecificRequirements(config: TestConfigWithSecrets): boolean {
+  const text = buildTaskRequirementText(config);
+  return /当前(?:日期|时间|年月日)|\d+\s*天后|[一二三四五六七八九十]+\s*天后|随机|实际填写|输入[“"']?|选择[“"']?|placeholder\s*=|避免填写/i.test(
+    text
+  );
+}
+
 async function copySuccessfulExperiencePlan(input: {
   sourceExecutionUid: string;
   sourcePlan: TestPlanRecord;
@@ -1037,8 +1051,11 @@ export async function repairExecution(
     excludePlanUid: plan.planUid,
   });
   const successfulExperiencePlan = successfulExperience?.plan || null;
+  const successfulExperienceFresh =
+    successfulExperiencePlan ? isSuccessfulExperienceFreshForConfig(successfulExperiencePlan, config) : false;
+  const hasDynamicCurrentRequirements = hasDynamicTaskSpecificRequirements(config);
 
-  if (successfulExperience && successfulExperiencePlan && isSuccessfulExperienceFreshForConfig(successfulExperiencePlan, config)) {
+  if (successfulExperience && successfulExperiencePlan && successfulExperienceFresh && !hasDynamicCurrentRequirements) {
     const reusedPlan = await copySuccessfulExperiencePlan({
       sourceExecutionUid: successfulExperience.executionUid,
       sourcePlan: successfulExperiencePlan,
@@ -1085,6 +1102,9 @@ export async function repairExecution(
     execution.errorMessage || execution.resultSummary || '执行失败',
     successfulExperience
       ? `已通过经验基线：执行 ${successfulExperience.executionUid}，计划 ${successfulExperiencePlan?.planUid} v${successfulExperiencePlan?.planVersion}。当前任务定义晚于该成功计划或不满足直接复用条件，必须保留成功计划里的登录、等待、导航、表单填写和验收骨架，只按当前任务描述修正必要字段。`
+      : '',
+    successfulExperience && hasDynamicCurrentRequirements
+      ? `当前任务包含当前日期/时间/随机值/显式填写值等动态要求，严禁直接沿用历史计划里的日期、时间、手机号、渠道、联系人或跟进内容常量；必须从当前任务描述重新计算，并在提交前读回页面字段验证。`
       : '',
   ]
     .filter(Boolean)
@@ -1187,7 +1207,8 @@ export async function repairExecution(
             successfulExperienceExecutionUid: successfulExperience.executionUid,
             successfulExperiencePlanUid: successfulExperiencePlan?.planUid || '',
             successfulExperiencePlanVersion: successfulExperiencePlan?.planVersion || 0,
-            successfulExperiencePlanFresh: false,
+            successfulExperiencePlanFresh: successfulExperienceFresh,
+            successfulExperienceDirectReuseBlockedByDynamicRequirements: hasDynamicCurrentRequirements,
           }
         : {}),
       planVersion: repairedPlan.planVersion,

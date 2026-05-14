@@ -7222,6 +7222,8 @@ Error: element(s) not found`,
     expect(prompt).toContain("__e2e.findAntdFormItemByLabel(modal, '下次跟进时间')");
     expect(prompt).toContain('const nextFollowDate = futureDateText(7)');
     expect(prompt).toContain('__e2e.fillAntdDateTime(page, nextTimeRow, { value: nextFollowDate })');
+    expect(prompt).toContain('下次跟进时间未匹配目标日期');
+    expect(prompt).toContain('N 必须来自当前任务描述');
   });
 
   it('does not let status anchors like 签约成功 hijack create-list verification into the create-order template', () => {
