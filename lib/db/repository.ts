@@ -4224,8 +4224,8 @@ export async function createTestConfig(input: TestConfigInput, options?: { actor
 
   await pool.execute<ResultSetHeader>(
     `INSERT INTO test_configurations
-      (config_uid, project_uid, module_uid, sort_order, module_name, name, target_url, feature_description, task_mode, flow_definition, auth_required, login_url, login_username, login_password_enc, coverage_mode, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'all_tiers', 'active')`,
+      (config_uid, project_uid, module_uid, sort_order, module_name, name, target_url, feature_description, task_mode, flow_definition, auth_required, login_url, login_username, login_password_enc, auth_inherit_mode, coverage_mode, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'all_tiers', 'active')`,
     [
       configUid,
       projectUid,
@@ -4241,6 +4241,7 @@ export async function createTestConfig(input: TestConfigInput, options?: { actor
       legacyAuthRequired ? (input.loginUrl?.trim() || null) : null,
       legacyAuthRequired ? (input.loginUsername?.trim() || null) : null,
       encryptedPassword,
+      legacyAuthRequired ? 'task_override' : 'inherit_project',
     ]
   );
 
@@ -4435,6 +4436,51 @@ export async function getLatestPlanByConfigUid(configUid: string): Promise<TestP
   const row = rows[0];
   if (!row) return null;
   return normalizePlanRow(row);
+}
+
+export async function findLatestPassedExecutionPlanByConfigUid(
+  configUid: string,
+  options?: { excludeExecutionUid?: string; excludePlanUid?: string }
+): Promise<{
+  executionUid: string;
+  endedAt: string;
+  durationMs: number;
+  plan: TestPlanRecord;
+} | null> {
+  const pool = getDbPool();
+  const where = [`e.config_uid = ?`, `e.status = 'passed'`];
+  const params: Array<string> = [configUid];
+
+  if (options?.excludeExecutionUid) {
+    where.push(`e.execution_uid <> ?`);
+    params.push(options.excludeExecutionUid);
+  }
+  if (options?.excludePlanUid) {
+    where.push(`e.plan_uid <> ?`);
+    params.push(options.excludePlanUid);
+  }
+
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT p.*,
+            e.execution_uid AS source_execution_uid,
+            e.ended_at AS source_ended_at,
+            e.duration_ms AS source_duration_ms
+     FROM test_executions e
+     INNER JOIN test_plans p ON p.plan_uid = e.plan_uid
+     WHERE ${where.join(' AND ')}
+     ORDER BY e.ended_at DESC, e.id DESC
+     LIMIT 1`,
+    params
+  );
+  const row = rows[0];
+  if (!row) return null;
+
+  return {
+    executionUid: String(row.source_execution_uid),
+    endedAt: toIso(row.source_ended_at),
+    durationMs: Number(row.source_duration_ms || 0),
+    plan: normalizePlanRow(row),
+  };
 }
 
 export async function createTestPlan(input: TestPlanInput): Promise<TestPlanRecord> {

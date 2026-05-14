@@ -662,6 +662,74 @@ test('markdown fence wrapper', async () => {
   );
 
   it(
+    'waits for a delayed protected-route redirect to reveal the login shell',
+    async () => {
+      const result = await executeTest(
+        `test('ensureLoggedIn waits for delayed login shell after protected route', async ({ page }) => {
+          await page.route('https://example.test/protected', async (route) => {
+            const cookie = route.request().headers().cookie || '';
+            if (cookie.includes('auth=1')) {
+              await route.fulfill({
+                contentType: 'text/html; charset=utf-8',
+                body: '<!doctype html><main id="app">业务页面已登录</main>',
+              });
+              return;
+            }
+
+            await route.fulfill({
+              contentType: 'text/html; charset=utf-8',
+              body: \`<!doctype html>
+                <body>
+                  <div id="root">loading</div>
+                  <script>
+                    setTimeout(() => {
+                      document.getElementById('root').innerHTML = [
+                        '<button type="button">短信验证码登录</button>',
+                        '<input id="normal_login_codePhone" placeholder="请输入手机号" />',
+                        '<input id="normal_login_code" placeholder="请输入验证码" />',
+                        '<button id="login-btn" type="button">登 录</button>',
+                      ].join('');
+                      document.getElementById('login-btn').addEventListener('click', () => {
+                        document.cookie = 'auth=1; path=/';
+                        document.body.setAttribute('data-auth', 'ok');
+                        document.getElementById('root').innerHTML = '<h1>登录成功</h1>';
+                      });
+                    }, 180);
+                  </script>
+                </body>\`,
+            });
+          });
+
+          const loginTriggered = await __e2e.ensureLoggedIn(page, {
+            targetUrl: 'https://example.test/protected',
+            loginUrl: 'https://example.test/protected',
+            targetSettleMs: 20,
+            loginDetectionTimeoutMs: 1200,
+            postLoginSettleMs: 20,
+            postLoginTransitionTimeoutMs: 300,
+            postTargetSettleMs: 20,
+          });
+
+          expect(loginTriggered).toBe(true);
+          await expect(page.locator('#app')).toHaveText('业务页面已登录');
+        });`,
+        'worker-delayed-login-shell-detection',
+        {
+          username: '13800138000',
+          password: '123456',
+          loginDescription: '短信验证码登录',
+        }
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+    },
+    20000
+  );
+
+  it(
     'matches nested list records when the fallback identifier is only present in deep array fields',
     async () => {
       const result = await executeTest(
@@ -1219,6 +1287,88 @@ test('markdown fence wrapper', async () => {
           message: 'ant-date input filled',
           meta: expect.objectContaining({
             strategy: 'picker-input',
+          }),
+        })
+      );
+    },
+    20000
+  );
+
+  it(
+    'does not accept today as success when the target next-follow date is different',
+    async () => {
+      const logs: Array<{ level: string; message: string; meta?: any }> = [];
+      const result = await executeTest(
+        `test('reject mismatched next follow date and select target cell', async ({ page }) => {
+          await page.goto('about:blank');
+          await page.setContent(\`
+            <div class="ant-modal-wrap">
+              <div class="ant-modal-content">
+                <div class="ant-modal-title">添加跟进</div>
+                <div class="ant-form-item" id="next-follow-time-row">
+                  <div class="ant-form-item-label"><label title="下次跟进时间">下次跟进时间</label></div>
+                  <div class="ant-form-item-control"><input id="next-follow-time" readonly value="" placeholder="选择日期" class="ant-calendar-picker-input ant-input" /></div>
+                </div>
+              </div>
+            </div>
+          \`);
+          await page.evaluate(() => {
+            window.__selectedNextFollowDate = '';
+            const nextInput = document.querySelector('#next-follow-time');
+            nextInput?.addEventListener('click', () => {
+              if (document.querySelector('.ant-calendar-picker-container')) return;
+              const panel = document.createElement('div');
+              panel.className = 'ant-calendar-picker-container';
+              panel.innerHTML = '<div class="ant-calendar"><div class="ant-calendar-input-wrap"><input class="ant-calendar-input" /></div><table><tbody><tr><td title="2026-05-20"><div class="ant-calendar-date">20</div></td></tr></tbody></table><button class="ant-calendar-ok-btn" type="button">确定</button></div>';
+              document.body.appendChild(panel);
+              panel.querySelector('.ant-calendar-date')?.addEventListener('click', () => {
+                window.__selectedNextFollowDate = '2026-05-20';
+              });
+              panel.querySelector('.ant-calendar-ok-btn')?.addEventListener('click', () => {
+                if (nextInput instanceof HTMLInputElement) {
+                  nextInput.value = window.__selectedNextFollowDate || '2026-05-13';
+                  nextInput.dispatchEvent(new Event('input', { bubbles: true }));
+                  nextInput.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                panel.remove();
+              });
+            });
+          });
+
+          const modal = await __e2e.waitForVisibleAntdModal(page, { titleIncludes: '添加跟进' });
+          const nextTimeRow = await __e2e.findAntdFormItemByLabel(modal, '下次跟进时间');
+          await __e2e.fillAntdDateTime(page, nextTimeRow, { value: '2026-05-20' });
+
+          await expect(page.locator('#next-follow-time')).toHaveValue('2026-05-20');
+        });`,
+        'worker-rejects-mismatched-next-follow-date',
+        undefined,
+        {
+          onLog(payload) {
+            logs.push(payload);
+          },
+        }
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        error: null,
+      });
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          message: 'ant-date picker input did not match target',
+          meta: expect.objectContaining({
+            currentValue: '2026-05-13',
+            value: '2026-05-20',
+          }),
+        })
+      );
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          message: 'ant-date input filled',
+          meta: expect.objectContaining({
+            strategy: 'date-cell',
+            currentValue: '2026-05-20',
           }),
         })
       );

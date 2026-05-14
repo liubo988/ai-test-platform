@@ -488,8 +488,18 @@ function looksLikePrimaryLoginTask(
   const loginUrl = String(auth?.loginUrl || '').trim().toLowerCase();
   if (!loginUrl) return false;
 
-  const firstExecutableStep = dsl.steps.find((step) => step.stepType !== 'cleanup');
+  const executableSteps = dsl.steps.filter((step) => step.stepType !== 'cleanup');
+  const firstExecutableStep = executableSteps[0];
   const target = String(firstExecutableStep?.target || dsl.targetUrl || '').trim().toLowerCase();
+  const hasNonLoginBusinessStep = executableSteps.some((step, index) => {
+    if (index === 0) return false;
+    const stepTarget = String(step.target || '').trim().toLowerCase();
+    const stepHaystack = [step.title || '', step.goal || '', ...(step.requiredAssertions || []), stepTarget].join('\n').toLowerCase();
+    if (stepTarget && stepTarget !== loginUrl && !stepTarget.includes('/login')) return true;
+    return !/登录|登陆|\/login\b|sign in|signin/.test(stepHaystack);
+  });
+  if (hasNonLoginBusinessStep) return false;
+
   const haystack = [
     dsl.summary,
     firstExecutableStep?.title || '',
@@ -2504,8 +2514,9 @@ export function buildPrompt(
 6. 对“企业名称”这类远程搜索 Select，点击 wrapper 后不一定立刻出现候选；必须传 \`searchText\`，helper 会先聚焦字段并输入关键词，再等待候选返回。若任务只要求“输入关键词并选择任意一个模糊匹配项”，不要编造固定 \`label\`，直接加 \`pickFirstSearchMatch: true\` 让 helper 选择首个可见匹配项。
 7. 对 Ant Design DatePicker / TimePicker / 日期时间字段，不要预设“日期框一定只读”或“一定可直接 fill”，必须基于真实 DOM/行为判断：可编辑 input 可以直接填；如果外层输入带 \`readonly\`、placeholder 为“选择日期 / 选择时间”，或直接 fill 报 \`not editable\`，应通过日期面板/事件完成输入。为了避免误判，优先直接复用 helper：
    - const nextTimeRow = await __e2e.findAntdFormItemByLabel(modal, '下次跟进时间');
-   - await __e2e.fillAntdDateTime(page, nextTimeRow, { value: futureDateTimeText(7) });
-   - helper 会先判断当前 input 是否可编辑；可编辑则正常填，不可编辑才打开日期面板并尝试面板输入框 + 确定按钮，必要时才用原生 input/change 事件兜底。
+   - const nextFollowDate = futureDateText(7); // 日期控件只显示日期时用 YYYY-MM-DD，不要强塞完整时分秒
+   - await __e2e.fillAntdDateTime(page, nextTimeRow, { value: nextFollowDate });
+   - helper 会先判断当前 input 是否可编辑；可编辑则正常填，不可编辑才打开日期面板并尝试面板输入框 + 确定按钮；只有显示值匹配目标日期才算成功。
    - 如果同一弹窗里同时有“跟进时间”和“下次跟进时间”，必须按精确 label 找到“下次跟进时间”，不要用宽泛 \`.filter({ hasText: /下次跟进时间/ }).first()\` 猜。
 8. 对 Ant Design 表格目标行，优先直接写：
    - const targetRow = await __e2e.findAntdTableRow(page, { hasTexts: [targetPhone, targetName, '新入库'] });

@@ -44,6 +44,7 @@ vi.mock('@/lib/db/repository', () => ({
   createExecution: vi.fn(),
   createPlanCases: vi.fn(),
   createTestPlan: vi.fn(),
+  findLatestPassedExecutionPlanByConfigUid: vi.fn(),
   findRunningExecution: vi.fn(),
   getExecution: vi.fn(),
   getLatestPlanByConfigUid: vi.fn(),
@@ -98,6 +99,7 @@ import {
   createExecution,
   createPlanCases,
   createTestPlan,
+  findLatestPassedExecutionPlanByConfigUid,
   findRunningExecution,
   getExecution,
   getLatestPlanByConfigUid,
@@ -197,6 +199,7 @@ describe('test-plan-service', () => {
     vi.mocked(updateExecutionStatus).mockResolvedValue(undefined as never);
     vi.mocked(finalizeCapabilityVerification).mockResolvedValue(undefined as never);
     vi.mocked(resolveIntentE2EPrecheckStorageStateCandidates).mockReturnValue([]);
+    vi.mocked(findLatestPassedExecutionPlanByConfigUid).mockResolvedValue(null as never);
   });
 
   it('reads execution workspace link contracts from unknown payloads', () => {
@@ -2585,6 +2588,344 @@ describe('test-plan-service', () => {
           focused: false,
         }),
       },
+    });
+  });
+
+  it('reuses a fresh passed plan before asking AI to repair a failed rerun', async () => {
+    vi.mocked(getExecution).mockResolvedValue({
+      executionUid: 'exec_reuse_1',
+      planUid: 'plan_failed_2',
+      configUid: 'cfg_reuse_1',
+      projectUid: 'proj_reuse_1',
+      status: 'failed',
+      startedAt: '2026-05-14T08:00:00.000Z',
+      endedAt: '2026-05-14T08:00:30.000Z',
+      durationMs: 30000,
+      resultSummary: '执行失败（失败步骤 2）',
+      errorMessage: 'label[title="商机来源"] not found',
+      workerSessionId: 'ws_reuse_1',
+      createdAt: '2026-05-14T08:00:00.000Z',
+    } as never);
+    vi.mocked(getPlanByUid).mockImplementation(async (planUid: string) => {
+      if (planUid === 'plan_failed_2') {
+        return {
+          planUid: 'plan_failed_2',
+          configUid: 'cfg_reuse_1',
+          projectUid: 'proj_reuse_1',
+          planTitle: '坏的 AI 纠错计划',
+          planVersion: 2,
+          planSummary: 'lost login settle',
+          planCode: "test('failed repaired plan', async () => {});",
+          generationPrompt: '',
+          generatedFiles: [],
+          createdAt: '2026-05-14T08:00:00.000Z',
+        } as never;
+      }
+      if (planUid === 'plan_reused_3') {
+        const createdInput = vi.mocked(createTestPlan).mock.calls.at(-1)?.[0];
+        return {
+          planUid: 'plan_reused_3',
+          configUid: 'cfg_reuse_1',
+          projectUid: 'proj_reuse_1',
+          planTitle: '登录-新建商机-商机跟进流程 - 复用成功计划',
+          planVersion: 3,
+          planSummary: createdInput?.planSummary || '',
+          planCode: createdInput?.planCode || '',
+          generationPrompt: createdInput?.generationPrompt || '',
+          generatedFiles: createdInput?.generatedFiles || [],
+          createdAt: '2026-05-14T08:01:00.000Z',
+        } as never;
+      }
+      return null as never;
+    });
+    vi.mocked(getTestConfigByUid).mockResolvedValue({
+      configUid: 'cfg_reuse_1',
+      projectUid: 'proj_reuse_1',
+      moduleUid: 'mod_reuse_1',
+      name: '登录-新建商机-商机跟进流程',
+      moduleName: '商机',
+      targetUrl: 'https://uat.example.com/#/user/login',
+      featureDescription: '登录后新建商机并添加跟进',
+      taskMode: 'scenario',
+      flowDefinition: null,
+      authSource: 'project',
+      loginDescription: '短信登录',
+      loginPasswordPlain: 'secret',
+      updatedAt: '2026-05-14T07:59:00.000Z',
+    } as never);
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_reuse_1',
+      name: '项目',
+      authRequired: true,
+      loginUrl: 'https://uat.example.com/#/user/login',
+      loginUsername: 'tester',
+      loginDescription: '短信登录',
+      loginPasswordPlain: 'secret',
+    } as never);
+    vi.mocked(getLatestPlanByConfigUid).mockResolvedValue({
+      planUid: 'plan_failed_2',
+      configUid: 'cfg_reuse_1',
+      projectUid: 'proj_reuse_1',
+      planTitle: '坏的 AI 纠错计划',
+      planVersion: 2,
+      planSummary: 'lost login settle',
+      planCode: "test('failed repaired plan', async () => {});",
+      generationPrompt: '',
+      generatedFiles: [],
+      createdAt: '2026-05-14T08:00:00.000Z',
+    } as never);
+    vi.mocked(findLatestPassedExecutionPlanByConfigUid).mockResolvedValue({
+      executionUid: 'exec_passed_1',
+      endedAt: '2026-05-14T07:58:30.000Z',
+      durationMs: 48000,
+      plan: {
+        planUid: 'plan_passed_1',
+        configUid: 'cfg_reuse_1',
+        projectUid: 'proj_reuse_1',
+        planTitle: '稳定通过计划',
+        planVersion: 1,
+        planSummary: '登录等待和表单流程已通过',
+        planCode: "test('passed baseline', async () => {});",
+        generationPrompt: '平台测试类型：browser_e2e',
+        generatedFiles: [{ name: 'passed.spec.ts', content: "test('passed baseline', async () => {});", language: 'typescript' }],
+        createdAt: '2026-05-14T08:00:10.000Z',
+      },
+    } as never);
+    vi.mocked(listPlanCases).mockResolvedValue([
+      {
+        caseUid: 'case_passed_1',
+        tier: 'simple',
+        caseName: '稳定成功链路',
+        caseSteps: ['登录', '新建商机', '添加跟进'],
+        expectedResult: '通过',
+        enabled: true,
+        sortOrder: 10,
+      },
+    ] as never);
+    vi.mocked(createTestPlan).mockResolvedValue({
+      planUid: 'plan_reused_3',
+      configUid: 'cfg_reuse_1',
+      projectUid: 'proj_reuse_1',
+      planTitle: '登录-新建商机-商机跟进流程 - 复用成功计划',
+      planVersion: 3,
+      planSummary: 'reused',
+      planCode: "test('passed baseline', async () => {});",
+      generationPrompt: 'successful reuse',
+      generatedFiles: [],
+      createdAt: '2026-05-14T08:01:00.000Z',
+    } as never);
+    vi.mocked(findRunningExecution).mockResolvedValue(null as never);
+    vi.mocked(createExecution).mockResolvedValue('exec_reuse_2' as never);
+    vi.mocked(executeTest).mockResolvedValue({
+      success: true,
+      duration: 1200,
+      error: null,
+      steps: [{ title: '稳定成功链路', status: 'passed', duration: 1200, at: '2026-05-14T08:01:02.000Z' }],
+    } as never);
+
+    const result = await repairExecution('exec_reuse_1', {
+      actorLabel: 'Owner',
+      repairTriggerKind: 'manual',
+      autoRepairRemaining: 2,
+    });
+
+    expect(result).toMatchObject({
+      planUid: 'plan_reused_3',
+      planVersion: 3,
+      executionUid: 'exec_reuse_2',
+      runPath: '/runs/exec_reuse_2',
+    });
+    expect(findLatestPassedExecutionPlanByConfigUid).toHaveBeenCalledWith('cfg_reuse_1', {
+      excludeExecutionUid: 'exec_reuse_1',
+      excludePlanUid: 'plan_failed_2',
+    });
+    expect(repairTest).not.toHaveBeenCalled();
+    expect(analyzePage).not.toHaveBeenCalled();
+    expect(createTestPlan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        configUid: 'cfg_reuse_1',
+        planCode: "test('passed baseline', async () => {});",
+        generationModel: 'successful-experience-reuse',
+        generationPrompt: expect.stringContaining('sourceExecution=exec_passed_1'),
+      })
+    );
+    expect(createPlanCases).toHaveBeenCalledWith([
+      expect.objectContaining({
+        planUid: 'plan_reused_3',
+        caseName: '稳定成功链路',
+      }),
+    ]);
+
+    await flushAsyncWork();
+
+    expect(findActivityLogCall('plan_reused_successful_experience', 'plan_reused_3')?.meta).toMatchObject({
+      successfulExperienceMode: 'direct_reuse',
+      sourceExecutionUid: 'exec_passed_1',
+      sourcePlanUid: 'plan_passed_1',
+    });
+    expect(findActivityLogCall('execution_started', 'exec_reuse_2')?.meta).toMatchObject({
+      autoRepairRemaining: 0,
+      repairTriggerKind: 'manual',
+    });
+  });
+
+  it('uses a stale passed plan as the repair baseline instead of the latest failed plan', async () => {
+    vi.mocked(getExecution).mockResolvedValue({
+      executionUid: 'exec_stale_1',
+      planUid: 'plan_stale_failed_9',
+      configUid: 'cfg_stale_1',
+      projectUid: 'proj_stale_1',
+      status: 'failed',
+      startedAt: '2026-05-14T08:00:00.000Z',
+      endedAt: '2026-05-14T08:00:30.000Z',
+      durationMs: 30000,
+      resultSummary: '执行失败（失败步骤 2）',
+      errorMessage: 'login redirected home before create page settled',
+      workerSessionId: 'ws_stale_1',
+      createdAt: '2026-05-14T08:00:00.000Z',
+    } as never);
+    vi.mocked(getPlanByUid).mockImplementation(async (planUid: string) => {
+      if (planUid === 'plan_stale_failed_9') {
+        return {
+          planUid: 'plan_stale_failed_9',
+          configUid: 'cfg_stale_1',
+          projectUid: 'proj_stale_1',
+          planTitle: '坏的 AI 纠错计划',
+          planVersion: 9,
+          planSummary: 'bad login settle',
+          planCode: "test('latest failed plan', async () => {});",
+          generationPrompt: '',
+          generatedFiles: [],
+          createdAt: '2026-05-14T08:00:00.000Z',
+        } as never;
+      }
+      if (planUid === 'plan_repaired_from_success_10') {
+        const createdInput = vi.mocked(createTestPlan).mock.calls.at(-1)?.[0];
+        return {
+          planUid: 'plan_repaired_from_success_10',
+          configUid: 'cfg_stale_1',
+          projectUid: 'proj_stale_1',
+          planTitle: '登录-新建商机-商机跟进流程 - AI纠错计划',
+          planVersion: 10,
+          planSummary: createdInput?.planSummary || '',
+          planCode: createdInput?.planCode || '',
+          generationPrompt: createdInput?.generationPrompt || '',
+          generatedFiles: createdInput?.generatedFiles || [],
+          createdAt: '2026-05-14T08:01:00.000Z',
+        } as never;
+      }
+      return null as never;
+    });
+    vi.mocked(getTestConfigByUid).mockResolvedValue({
+      configUid: 'cfg_stale_1',
+      projectUid: 'proj_stale_1',
+      moduleUid: 'mod_stale_1',
+      name: '登录-新建商机-商机跟进流程',
+      moduleName: '商机',
+      targetUrl: 'https://uat.example.com/#/user/login',
+      featureDescription: '当前任务要求下次跟进时间选择当前日期5天后的日期',
+      taskMode: 'scenario',
+      flowDefinition: null,
+      authSource: 'project',
+      loginDescription: '短信登录',
+      loginPasswordPlain: 'secret',
+      updatedAt: '2026-05-14T08:00:20.000Z',
+    } as never);
+    vi.mocked(getProjectByUid).mockResolvedValue({
+      projectUid: 'proj_stale_1',
+      name: '项目',
+      authRequired: true,
+      loginUrl: 'https://uat.example.com/#/user/login',
+      loginUsername: 'tester',
+      loginDescription: '短信登录',
+      loginPasswordPlain: 'secret',
+    } as never);
+    vi.mocked(getLatestPlanByConfigUid).mockResolvedValue(null as never);
+    vi.mocked(findLatestPassedExecutionPlanByConfigUid).mockResolvedValue({
+      executionUid: 'exec_stale_passed_1',
+      endedAt: '2026-05-14T07:55:00.000Z',
+      durationMs: 48000,
+      plan: {
+        planUid: 'plan_stale_passed_1',
+        configUid: 'cfg_stale_1',
+        projectUid: 'proj_stale_1',
+        planTitle: '曾经通过计划',
+        planVersion: 8,
+        planSummary: 'stable login settle',
+        planCode: "test('passed baseline should be repaired', async () => {});",
+        generationPrompt: '平台测试类型：browser_e2e',
+        generatedFiles: [],
+        createdAt: '2026-05-14T07:50:00.000Z',
+      },
+    } as never);
+    vi.mocked(analyzePage).mockResolvedValue({
+      url: 'https://uat.example.com/#/user/login',
+      title: '登录页',
+      forms: [],
+      buttons: [],
+      tooltipElements: [],
+      links: [],
+      headings: [],
+      screenshot: '',
+      frames: [],
+    } as never);
+    vi.mocked(listExecutionEvents).mockResolvedValue([
+      {
+        eventType: 'step',
+        payload: { title: '新增商机', status: 'failed', error: 'redirected home' },
+        createdAt: '2026-05-14T08:00:30.000Z',
+      },
+    ] as never);
+    vi.mocked(repairTest).mockImplementation(
+      (async function* () {
+        yield { type: 'complete', content: "test('repaired from passed baseline', async () => {});" };
+      }) as never
+    );
+    vi.mocked(createTestPlan).mockResolvedValue({
+      planUid: 'plan_repaired_from_success_10',
+      configUid: 'cfg_stale_1',
+      projectUid: 'proj_stale_1',
+      planTitle: '登录-新建商机-商机跟进流程 - AI纠错计划',
+      planVersion: 10,
+      planSummary: 'repaired',
+      planCode: "test('repaired from passed baseline', async () => {});",
+      generationPrompt: 'successful baseline',
+      generatedFiles: [],
+      createdAt: '2026-05-14T08:01:00.000Z',
+    } as never);
+    vi.mocked(findRunningExecution).mockResolvedValue(null as never);
+    vi.mocked(createExecution).mockResolvedValue('exec_stale_2' as never);
+    vi.mocked(executeTest).mockResolvedValue({
+      success: true,
+      duration: 1200,
+      error: null,
+      steps: [{ title: '修复后流程', status: 'passed', duration: 1200, at: '2026-05-14T08:01:02.000Z' }],
+    } as never);
+
+    await repairExecution('exec_stale_1', { actorLabel: 'Owner', repairTriggerKind: 'manual' });
+
+    expect(repairTest).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.stringContaining('当前任务要求下次跟进时间选择当前日期5天后的日期'),
+      expect.objectContaining({
+        previousCode: "test('passed baseline should be repaired', async () => {});",
+        executionError: expect.stringContaining('已通过经验基线：执行 exec_stale_passed_1'),
+      }),
+      expect.any(Object),
+      expect.any(Object),
+      undefined
+    );
+    expect(createTestPlan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        planCode: "test('repaired from passed baseline', async () => {});",
+        generationPrompt: expect.stringContaining('[successful_experience_baseline] sourceExecution=exec_stale_passed_1'),
+      })
+    );
+    expect(findActivityLogCall('plan_repaired', 'plan_repaired_from_success_10')?.meta).toMatchObject({
+      successfulExperienceMode: 'repair_base',
+      successfulExperienceExecutionUid: 'exec_stale_passed_1',
+      repairBasePlanUid: 'plan_stale_passed_1',
+      previousPlanUid: 'plan_stale_failed_9',
     });
   });
 

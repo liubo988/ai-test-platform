@@ -24,6 +24,7 @@ import {
   createExecution,
   createPlanCases,
   createTestPlan,
+  findLatestPassedExecutionPlanByConfigUid,
   findRunningExecution,
   getExecution,
   getLatestPlanByConfigUid,
@@ -38,6 +39,7 @@ import {
   listExecutionEvents,
   listLlmConversations,
   listPlanCases,
+  type TestPlanRecord,
   updateExecutionStatus,
 } from '@/lib/db/repository';
 import { uid } from '@/lib/db/ids';
@@ -865,6 +867,123 @@ export async function restoreHistoricalPlanToConfigAsLatest(
   return restoreHistoricalPlanIntoTargetConfig(sourcePlan, config, options);
 }
 
+function parseTimestampMillis(value: string | undefined): number {
+  if (!value) return 0;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function isSuccessfulExperienceFreshForConfig(plan: TestPlanRecord, config: TestConfigWithSecrets): boolean {
+  const planCreatedAt = parseTimestampMillis(plan.createdAt);
+  const configUpdatedAt = parseTimestampMillis(config.updatedAt);
+  return planCreatedAt > 0 && configUpdatedAt > 0 && planCreatedAt >= configUpdatedAt;
+}
+
+async function copySuccessfulExperiencePlan(input: {
+  sourceExecutionUid: string;
+  sourcePlan: TestPlanRecord;
+  latestPlan: TestPlanRecord | null;
+  config: TestConfigWithSecrets;
+  actorLabel?: string;
+  repairTriggerKind: RepairTriggerKind;
+  capabilityVerificationMeta: ReturnType<typeof buildCapabilityVerificationAuditMeta>;
+}): Promise<TestPlanRecord> {
+  const inheritedPlatformPrompt = buildInheritedPlatformPromptSection(input.sourcePlan.generationPrompt);
+  const copiedPlan = await createTestPlan({
+    projectUid: input.config.projectUid,
+    configUid: input.config.configUid,
+    planTitle: `${input.config.name} - 复用成功计划`,
+    planCode: input.sourcePlan.planCode,
+    planSummary: [
+      `复用已通过执行 ${input.sourceExecutionUid} 的计划 v${input.sourcePlan.planVersion}。`,
+      input.sourcePlan.planSummary,
+    ]
+      .filter(Boolean)
+      .join(' '),
+    generationModel: 'successful-experience-reuse',
+    generationPrompt: [
+      inheritedPlatformPrompt,
+      `[successful_experience_reuse] sourceExecution=${input.sourceExecutionUid} sourcePlan=${input.sourcePlan.planUid} v${input.sourcePlan.planVersion}`,
+      `当前任务定义未晚于成功计划，直接复用已通过脚本，避免 AI 纠错覆盖成功经验。`,
+    ]
+      .filter(Boolean)
+      .join('\n\n'),
+    generatedFiles:
+      input.sourcePlan.generatedFiles.length > 0
+        ? input.sourcePlan.generatedFiles
+        : [
+            {
+              name: `successful-experience-v${input.sourcePlan.planVersion}.spec.ts`,
+              content: input.sourcePlan.planCode,
+              language: 'typescript',
+            },
+          ],
+    tiers: { simple: 1, medium: 1, complex: 1 },
+  });
+
+  const sourceCases = await listPlanCases(input.sourcePlan.planUid);
+  await createPlanCases(
+    (sourceCases.length > 0
+      ? sourceCases.map((item) => ({
+          projectUid: input.config.projectUid,
+          planUid: copiedPlan.planUid,
+          tier: item.tier,
+          caseName: item.caseName,
+          caseSteps: item.caseSteps,
+          expectedResult: item.expectedResult,
+          sortOrder: item.sortOrder,
+        }))
+      : buildCoverageCasesFromTask({
+          taskMode: input.config.taskMode,
+          targetUrl: input.config.targetUrl,
+          featureDescription: input.config.featureDescription,
+          flowDefinition: input.config.flowDefinition,
+        }).map((item) => ({
+          projectUid: input.config.projectUid,
+          planUid: copiedPlan.planUid,
+          tier: item.tier,
+          caseName: item.caseName,
+          caseSteps: item.caseSteps,
+          expectedResult: item.expectedResult,
+          sortOrder: item.sortOrder,
+        })))
+  );
+
+  await insertLlmConversation({
+    projectUid: input.config.projectUid,
+    scene: 'plan_generation',
+    refUid: input.config.configUid,
+    role: 'system',
+    messageType: 'status',
+    content: `命中历史通过经验: ${input.sourceExecutionUid} / ${input.sourcePlan.planUid} v${input.sourcePlan.planVersion}，已复用为计划 ${copiedPlan.planUid} v${copiedPlan.planVersion}`,
+  });
+
+  await insertProjectActivityLog({
+    projectUid: input.config.projectUid,
+    entityType: 'plan',
+    entityUid: copiedPlan.planUid,
+    actionType: 'plan_reused_successful_experience',
+    actorLabel: input.actorLabel,
+    title: `为任务「${input.config.name}」复用已通过计划 v${input.sourcePlan.planVersion}`,
+    detail: `已基于通过执行 ${input.sourceExecutionUid} 创建新的当前脚本 v${copiedPlan.planVersion}，本次不再让 AI 纠错重写成功链路。`,
+    meta: {
+      configUid: input.config.configUid,
+      configName: input.config.name,
+      sourceExecutionUid: input.sourceExecutionUid,
+      sourcePlanUid: input.sourcePlan.planUid,
+      sourcePlanVersion: input.sourcePlan.planVersion,
+      previousPlanUid: input.latestPlan?.planUid || '',
+      previousPlanVersion: input.latestPlan?.planVersion || 0,
+      planVersion: copiedPlan.planVersion,
+      repairTriggerKind: input.repairTriggerKind,
+      successfulExperienceMode: 'direct_reuse',
+      ...input.capabilityVerificationMeta,
+    },
+  });
+
+  return copiedPlan;
+}
+
 export async function repairExecution(
   executionUid: string,
   options?: {
@@ -912,6 +1031,42 @@ export async function repairExecution(
   const runtimeConfig = getLLMRuntimeConfig(llmConfig);
   const repairTriggerKind: RepairTriggerKind = options?.repairTriggerKind === 'auto' ? 'auto' : 'manual';
   const capabilityVerificationMeta = buildCapabilityVerificationAuditMeta(config.featureDescription || '');
+  const latestPlan = await getLatestPlanByConfigUid(config.configUid);
+  const successfulExperience = await findLatestPassedExecutionPlanByConfigUid(config.configUid, {
+    excludeExecutionUid: executionUid,
+    excludePlanUid: plan.planUid,
+  });
+  const successfulExperiencePlan = successfulExperience?.plan || null;
+
+  if (successfulExperience && successfulExperiencePlan && isSuccessfulExperienceFreshForConfig(successfulExperiencePlan, config)) {
+    const reusedPlan = await copySuccessfulExperiencePlan({
+      sourceExecutionUid: successfulExperience.executionUid,
+      sourcePlan: successfulExperiencePlan,
+      latestPlan,
+      config,
+      actorLabel: options?.actorLabel,
+      repairTriggerKind,
+      capabilityVerificationMeta,
+    });
+
+    const rerun = await executePlan(reusedPlan.planUid, {
+      actorLabel: options?.actorLabel || '复用成功经验',
+      llmConfig,
+      autoRepairRemaining: 0,
+      repairTriggerKind,
+    });
+    return {
+      planUid: reusedPlan.planUid,
+      planVersion: reusedPlan.planVersion,
+      executionUid: rerun.executionUid,
+      runPath: rerun.runPath,
+      workspacePath: rerun.workspacePath,
+      workspaceHistoryPath: rerun.workspaceHistoryPath,
+      executionContext: rerun.executionContext,
+    };
+  }
+
+  const repairBasePlan = successfulExperiencePlan || plan;
   const { snapshot, promptDescription, promptContext } = await buildGenerationInput(config, auth);
   const events = await listExecutionEvents(executionUid);
 
@@ -921,8 +1076,19 @@ export async function repairExecution(
     refUid: config.configUid,
     role: 'system',
     messageType: 'status',
-    content: `开始根据失败执行 ${executionUid} 进行 AI 纠错`,
+    content: successfulExperience
+      ? `开始根据失败执行 ${executionUid} 进行 AI 纠错；已命中历史通过经验 ${successfulExperience.executionUid} / ${successfulExperiencePlan?.planUid} v${successfulExperiencePlan?.planVersion}，优先作为修复基线`
+      : `开始根据失败执行 ${executionUid} 进行 AI 纠错`,
   });
+
+  const executionError = [
+    execution.errorMessage || execution.resultSummary || '执行失败',
+    successfulExperience
+      ? `已通过经验基线：执行 ${successfulExperience.executionUid}，计划 ${successfulExperiencePlan?.planUid} v${successfulExperiencePlan?.planVersion}。当前任务定义晚于该成功计划或不满足直接复用条件，必须保留成功计划里的登录、等待、导航、表单填写和验收骨架，只按当前任务描述修正必要字段。`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 
   const repairedCode = await collectGeneratedCode({
     projectUid: config.projectUid,
@@ -931,8 +1097,8 @@ export async function repairExecution(
       snapshot,
       promptDescription,
       {
-        previousCode: plan.planCode,
-        executionError: execution.errorMessage || execution.resultSummary || '执行失败',
+        previousCode: repairBasePlan.planCode,
+        executionError,
         recentEvents: buildRepairEventDigest(events),
       },
       auth,
@@ -947,8 +1113,7 @@ export async function repairExecution(
   }
 
   const generatedFileName = `repair-${Date.now()}.spec.ts`;
-  const latestPlan = await getLatestPlanByConfigUid(config.configUid);
-  const inheritedPlatformPrompt = buildInheritedPlatformPromptSection(plan.generationPrompt);
+  const inheritedPlatformPrompt = buildInheritedPlatformPromptSection(repairBasePlan.generationPrompt);
   const repairedPlan = await createTestPlan({
     projectUid: config.projectUid,
     configUid: config.configUid,
@@ -956,7 +1121,14 @@ export async function repairExecution(
     planCode: repairedCode,
     planSummary: `基于失败执行 ${executionUid} 完成 AI 纠错，自动生成于 ${new Date().toLocaleString('zh-CN')}`,
     generationModel: runtimeConfig.model,
-    generationPrompt: [inheritedPlatformPrompt, `[AI纠错] 原执行: ${executionUid}`, promptDescription]
+    generationPrompt: [
+      inheritedPlatformPrompt,
+      successfulExperience
+        ? `[successful_experience_baseline] sourceExecution=${successfulExperience.executionUid} sourcePlan=${successfulExperiencePlan?.planUid} v${successfulExperiencePlan?.planVersion}`
+        : '',
+      `[AI纠错] 原执行: ${executionUid}`,
+      promptDescription,
+    ]
       .filter(Boolean)
       .join('\n\n'),
     generatedFiles: [
@@ -1007,6 +1179,17 @@ export async function repairExecution(
       sourceExecutionUid: executionUid,
       previousPlanUid: plan.planUid,
       previousPlanVersion: plan.planVersion,
+      repairBasePlanUid: repairBasePlan.planUid,
+      repairBasePlanVersion: repairBasePlan.planVersion,
+      ...(successfulExperience
+        ? {
+            successfulExperienceMode: 'repair_base',
+            successfulExperienceExecutionUid: successfulExperience.executionUid,
+            successfulExperiencePlanUid: successfulExperiencePlan?.planUid || '',
+            successfulExperiencePlanVersion: successfulExperiencePlan?.planVersion || 0,
+            successfulExperiencePlanFresh: false,
+          }
+        : {}),
       planVersion: repairedPlan.planVersion,
       generationModel: runtimeConfig.model,
       repairTriggerKind,

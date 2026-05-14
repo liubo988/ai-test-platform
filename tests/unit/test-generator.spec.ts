@@ -7220,7 +7220,8 @@ Error: element(s) not found`,
     expect(prompt).toContain('- 跟进内容: 测试');
     expect(prompt).toContain('禁止把历史模板里的固定值带入本任务');
     expect(prompt).toContain("__e2e.findAntdFormItemByLabel(modal, '下次跟进时间')");
-    expect(prompt).toContain('__e2e.fillAntdDateTime(page, nextTimeRow, { value: futureDateTimeText(7) })');
+    expect(prompt).toContain('const nextFollowDate = futureDateText(7)');
+    expect(prompt).toContain('__e2e.fillAntdDateTime(page, nextTimeRow, { value: nextFollowDate })');
   });
 
   it('does not let status anchors like 签约成功 hijack create-list verification into the create-order template', () => {
@@ -8446,6 +8447,62 @@ Received string: "批量申请入账 订单号：202604011028194322 服务项：
 
     expect(planning.dsl.globalRules.join('\n')).toContain('__e2e.ensureLoggedIn');
     expect(planning.dsl.preferredPrimitives).toContain('ensure_auth(targetUrl?): 通过 helper 统一处理登录态检测、登录和目标页复访');
+    expect(planning.dsl.steps[0]?.preferredHelpers).toContain('__e2e.ensureLoggedIn');
+    expect(planning.dsl.steps[1]?.preferredHelpers).not.toContain('__e2e.ensureLoggedIn');
+    expect(planning.executionPlan?.steps[0]?.preferredHelpers).toContain('__e2e.ensureLoggedIn');
+  });
+
+  it('still preloads ensureLoggedIn when a scenario starts on login but continues into business steps', () => {
+    const planning = resolveIntentPromptPlanningContext(
+      {
+        url: 'https://example.com/login',
+        title: '登录页',
+        forms: [],
+        buttons: [],
+        tooltipElements: [],
+        links: [],
+        headings: [{ level: 'H1', text: '登录' }],
+        bodyTextExcerpt: '手机号 验证码 登录',
+        frames: [],
+        screenshot: '',
+      },
+      '登录后新建商机并添加跟进',
+      {
+        taskMode: 'scenario',
+        scenarioEntryUrl: 'https://example.com/login',
+        expectedOutcome: '成功创建商机并添加跟进',
+        scenarioSteps: [
+          {
+            stepUid: 'step_login',
+            stepType: 'ui',
+            title: '执行登录',
+            target: 'https://example.com/login',
+            instruction: '在登录页输入手机号和验证码并点击登录',
+            expectedResult: '进入首页',
+            extractVariable: '',
+          },
+          {
+            stepUid: 'step_create_business',
+            stepType: 'ui',
+            title: '新增商机',
+            target: 'https://example.com/business/createbusiness',
+            instruction: '填写商机表单并保存',
+            expectedResult: '商机创建成功',
+            extractVariable: 'businessId',
+          },
+        ],
+      },
+      {
+        auth: {
+          loginUrl: 'https://example.com/login',
+          username: '13800138000',
+          password: '123456',
+          loginDescription: '短信验证码登录',
+        },
+      }
+    );
+
+    expect(planning.dsl.globalRules.join('\n')).toContain('__e2e.ensureLoggedIn');
     expect(planning.dsl.steps[0]?.preferredHelpers).toContain('__e2e.ensureLoggedIn');
     expect(planning.dsl.steps[1]?.preferredHelpers).not.toContain('__e2e.ensureLoggedIn');
     expect(planning.executionPlan?.steps[0]?.preferredHelpers).toContain('__e2e.ensureLoggedIn');
